@@ -8,7 +8,7 @@ let hasSpoken = false;
 const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
 
-// 🔑 Your public API (Cloudflare tunnel / custom domain)
+// 🔑 QUICK TUNNEL URL (your current one)
 const API_URL = "https://rare-sentence-toolkit-plc.trycloudflare.com";
 
 const recordBtn = document.getElementById("record");
@@ -33,14 +33,14 @@ async function checkServer() {
 
     if (res.status === 403) {
       serverStatusEl.innerText =
-        "🕒 VERA Offline (outside working hours)";
+        "🕒 VERA Offline (restricted hours)";
       serverStatusEl.className = "status offline";
       recordBtn.disabled = true;
       return false;
     }
   } catch (err) {
     serverStatusEl.innerText =
-      "🔴 VERA Offline (server not reachable)";
+      "🔴 VERA Offline (server unreachable)";
     serverStatusEl.className = "status offline";
     recordBtn.disabled = true;
     return false;
@@ -59,7 +59,7 @@ async function initMic() {
   micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
   audioCtx = new AudioContext();
-  await audioCtx.resume(); // REQUIRED for Chrome
+  await audioCtx.resume(); // Chrome requires this after user gesture
 
   const source = audioCtx.createMediaStreamSource(micStream);
   analyser = audioCtx.createAnalyser();
