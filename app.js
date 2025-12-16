@@ -8,14 +8,14 @@ let hasSpoken = false;
 const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
 
-// 🔑 QUICK TUNNEL URL (your current one)
-const API_URL = "https://rare-sentence-toolkit-plc.trycloudflare.com";
+// 🔑 Quick Tunnel URL (CHANGE when tunnel changes)
+const API_URL = "https://spot-dispatch-assembly-continent.trycloudflare.com";
 
 const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
 const serverStatusEl = document.getElementById("server-status");
 
-/* -------------------- SERVER HEALTH -------------------- */
+/* -------------------- SERVER STATUS (NON-BLOCKING) -------------------- */
 
 async function checkServer() {
   try {
@@ -27,21 +27,19 @@ async function checkServer() {
     if (res.ok) {
       serverStatusEl.innerText = "🟢 VERA Online";
       serverStatusEl.className = "status online";
-      recordBtn.disabled = false;
-      return true;
+      return;
     }
   } catch (err) {
-    serverStatusEl.innerText =
-      "🔴 VERA Offline (server unreachable or restricted hours) ";
-    serverStatusEl.className = "status offline";
-    recordBtn.disabled = true;
-    return false;
+    // Silent fail
   }
+
+  serverStatusEl.innerText = "🔴 VERA Offline (start tunnel)";
+  serverStatusEl.className = "status offline";
 }
 
-// Check on load + every 10s
+// Check on load + every 15s
 checkServer();
-setInterval(checkServer, 10_000);
+setInterval(checkServer, 15_000);
 
 /* -------------------- MIC INIT -------------------- */
 
@@ -51,7 +49,7 @@ async function initMic() {
   micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
   audioCtx = new AudioContext();
-  await audioCtx.resume(); // Chrome requires this after user gesture
+  await audioCtx.resume(); // required in Chrome
 
   const source = audioCtx.createMediaStreamSource(micStream);
   analyser = audioCtx.createAnalyser();
@@ -92,9 +90,6 @@ function detectSilence() {
 /* -------------------- RECORD BUTTON -------------------- */
 
 recordBtn.onclick = async () => {
-  const serverOk = await checkServer();
-  if (!serverOk) return;
-
   await initMic();
 
   audioChunks = [];
@@ -122,34 +117,44 @@ recordBtn.onclick = async () => {
     statusEl.innerText = "Thinking…";
     statusEl.className = "status thinking";
 
-    const blob = new Blob(audioChunks, { type: "audio/webm" });
-    const formData = new FormData();
-    formData.append("audio", blob, "input.webm");
+    try {
+      const blob = new Blob(audioChunks, { type: "audio/webm" });
+      const formData = new FormData();
+      formData.append("audio", blob, "input.webm");
 
-    const res = await fetch(`${API_URL}/infer`, {
-      method: "POST",
-      body: formData
-    });
+      const res = await fetch(`${API_URL}/infer`, {
+        method: "POST",
+        body: formData
+      });
 
-    const data = await res.json();
+      if (!res.ok) {
+        throw new Error("Inference failed");
+      }
 
-    document.getElementById("transcript").innerText = data.transcript;
-    document.getElementById("reply").innerText = data.reply;
+      const data = await res.json();
 
-    const audio = document.getElementById("audio");
-    audio.src = `${API_URL}${data.audio_url}`;
+      document.getElementById("transcript").innerText = data.transcript;
+      document.getElementById("reply").innerText = data.reply;
 
-    audio.onplay = () => {
-      statusEl.innerText = "Speaking…";
-      statusEl.className = "status speaking";
-    };
+      const audio = document.getElementById("audio");
+      audio.src = `${API_URL}${data.audio_url}`;
 
-    audio.onended = () => {
-      statusEl.innerText = "Idle";
-      statusEl.className = "status idle";
-    };
+      audio.onplay = () => {
+        statusEl.innerText = "Speaking…";
+        statusEl.className = "status speaking";
+      };
 
-    audio.play();
+      audio.onended = () => {
+        statusEl.innerText = "Idle";
+        statusEl.className = "status idle";
+      };
+
+      audio.play();
+    } catch (err) {
+      console.error(err);
+      statusEl.innerText = "❌ Server not reachable";
+      statusEl.className = "status offline";
+    }
   };
 
   mediaRecorder.start();
