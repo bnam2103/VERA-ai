@@ -9,7 +9,7 @@ const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
 
 // 🔑 Your public API (Cloudflare tunnel / custom domain)
-const API_URL = "cloudflared tunnel --url http://localhost:8000";
+const API_URL = "https://rare-sentence-toolkit-plc.trycloudflare.com";
 
 const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
