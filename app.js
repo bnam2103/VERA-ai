@@ -7,7 +7,7 @@ let hasSpoken = false;
 
 const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
-const API_URL = "https://incomplete-cams-fluid-raised.trycloudflare.com";
+const API_URL = "https://api.vera-ai.dev";
 
 const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
