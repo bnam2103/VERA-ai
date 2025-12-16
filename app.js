@@ -7,19 +7,59 @@ let hasSpoken = false;
 
 const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
-const API_URL = "https://api.vera-ai.dev";
+
+// 🔑 Your public API (Cloudflare tunnel / custom domain)
+const API_URL = "cloudflared tunnel --url http://localhost:8000";
 
 const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
+const serverStatusEl = document.getElementById("server-status");
 
-// ---------- Mic Init (only once)
+/* -------------------- SERVER HEALTH -------------------- */
+
+async function checkServer() {
+  try {
+    const res = await fetch(`${API_URL}/health`, {
+      method: "GET",
+      cache: "no-store"
+    });
+
+    if (res.ok) {
+      serverStatusEl.innerText = "🟢 VERA Online";
+      serverStatusEl.className = "status online";
+      recordBtn.disabled = false;
+      return true;
+    }
+
+    if (res.status === 403) {
+      serverStatusEl.innerText =
+        "🕒 VERA Offline (outside working hours)";
+      serverStatusEl.className = "status offline";
+      recordBtn.disabled = true;
+      return false;
+    }
+  } catch (err) {
+    serverStatusEl.innerText =
+      "🔴 VERA Offline (server not reachable)";
+    serverStatusEl.className = "status offline";
+    recordBtn.disabled = true;
+    return false;
+  }
+}
+
+// Check on load + every 10s
+checkServer();
+setInterval(checkServer, 10_000);
+
+/* -------------------- MIC INIT -------------------- */
+
 async function initMic() {
   if (micStream) return;
 
   micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
   audioCtx = new AudioContext();
-  await audioCtx.resume(); // Chrome requires this after user gesture
+  await audioCtx.resume(); // REQUIRED for Chrome
 
   const source = audioCtx.createMediaStreamSource(micStream);
   analyser = audioCtx.createAnalyser();
@@ -29,7 +69,8 @@ async function initMic() {
   console.log("🎙️ Mic initialized");
 }
 
-// ---------- Silence Detection
+/* -------------------- SILENCE DETECTION -------------------- */
+
 function detectSilence() {
   const buffer = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buffer);
@@ -56,8 +97,12 @@ function detectSilence() {
   }
 }
 
-// ---------- Record Button
+/* -------------------- RECORD BUTTON -------------------- */
+
 recordBtn.onclick = async () => {
+  const serverOk = await checkServer();
+  if (!serverOk) return;
+
   await initMic();
 
   audioChunks = [];

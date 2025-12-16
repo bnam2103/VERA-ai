@@ -1,13 +1,31 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8" />
   <title>VERA AI</title>
 
   <style>
-    .recording { color: red; font-weight: bold; }
-    .thinking  { color: orange; font-weight: bold; }
-    .speaking  { color: green; font-weight: bold; }
-    .idle      { color: gray; font-weight: bold; }
+    body {
+      font-family: Arial, sans-serif;
+    }
+
+    button {
+      padding: 10px 16px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    .status {
+      font-weight: bold;
+      margin-top: 10px;
+    }
+
+    .recording { color: red; }
+    .thinking  { color: orange; }
+    .speaking  { color: green; }
+    .idle      { color: gray; }
+    .offline   { color: darkred; }
+    .online    { color: darkgreen; }
   </style>
 </head>
 
@@ -16,8 +34,9 @@
 
   <button id="record">🎙️ Record</button>
 
-  <!-- 🔥 THIS WAS MISSING -->
-  <p id="status" class="idle">Idle</p>
+  <!-- Server + recording status -->
+  <p id="server-status" class="status offline">🔴 VERA Offline</p>
+  <p id="status" class="status idle">Idle</p>
 
   <p><b>You said:</b> <span id="transcript"></span></p>
   <p><b>VERA:</b> <span id="reply"></span></p>
