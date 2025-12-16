@@ -4,83 +4,19 @@
   <meta charset="UTF-8" />
   <title>VERA AI</title>
 
-  <!-- Minimal layout-only CSS -->
-  <style>
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #f6f7f8;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-    }
-
-    .app {
-      width: 100%;
-      max-width: 520px;
-      padding: 24px;
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.08);
-      text-align: center;
-    }
-
-    h1 {
-      margin-bottom: 12px;
-      font-size: 24px;
-    }
-
-    button {
-      padding: 10px 18px;
-      font-size: 15px;
-      cursor: pointer;
-      margin-top: 12px;
-    }
-
-    .status {
-      margin-top: 12px;
-      font-weight: 500;
-      font-size: 14px;
-    }
-
-    .hours {
-      margin-top: 10px;
-      font-size: 13px;
-      color: #666;
-    }
-
-    .conversation {
-      margin-top: 16px;
-      text-align: left;
-      font-size: 14px;
-    }
-
-    .conversation p {
-      margin: 6px 0;
-    }
-
-    audio {
-      width: 100%;
-      margin-top: 12px;
-    }
-
-    /* State colors (temporary, minimal) */
-    .idle      { color: #777; }
-    .recording { color: #c0392b; }
-    .thinking  { color: #e67e22; }
-    .speaking  { color: #16a085; }
-    .offline   { color: #8e2c2c; }
-    .online    { color: #1e8449; }
-  </style>
+  <!-- External CSS -->
+  <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
-  <div class="app" id="app">
+  <div class="app idle" id="app">
 
     <h1>Talk to VERA</h1>
 
-    <button id="record">🎙️ Record</button>
+    <!-- 🎙️ Mic centerpiece -->
+    <div class="mic-container">
+      <button id="record">🎙️</button>
+    </div>
 
     <!-- Server + recording status -->
     <div id="server-status" class="status offline">🔴 VERA Offline</div>
