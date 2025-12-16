@@ -30,17 +30,9 @@ async function checkServer() {
       recordBtn.disabled = false;
       return true;
     }
-
-    if (res.status === 403) {
-      serverStatusEl.innerText =
-        "🕒 VERA Offline (restricted hours)";
-      serverStatusEl.className = "status offline";
-      recordBtn.disabled = true;
-      return false;
-    }
   } catch (err) {
     serverStatusEl.innerText =
-      "🔴 VERA Offline (server unreachable)";
+      "🔴 VERA Offline (server unreachable or restricted hours) ";
     serverStatusEl.className = "status offline";
     recordBtn.disabled = true;
     return false;

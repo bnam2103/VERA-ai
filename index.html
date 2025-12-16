@@ -26,6 +26,13 @@
     .idle      { color: gray; }
     .offline   { color: darkred; }
     .online    { color: darkgreen; }
+
+    .hours {
+      margin-top: 12px;
+      font-size: 14px;
+      color: #555;
+      font-style: italic;
+    }
   </style>
 </head>
 
@@ -37,6 +44,11 @@
   <!-- Server + recording status -->
   <p id="server-status" class="status offline">🔴 VERA Offline</p>
   <p id="status" class="status idle">Idle</p>
+
+  <!-- Working hours notice (informational only) -->
+  <p class="hours">
+    ⏰ VERA is usually available from <b>6:00 PM to 12:00 PM</b> (local time)
+  </p>
 
   <p><b>You said:</b> <span id="transcript"></span></p>
   <p><b>VERA:</b> <span id="reply"></span></p>
