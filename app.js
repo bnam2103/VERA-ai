@@ -9,7 +9,7 @@ const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
 
 // 🔑 Quick Tunnel URL (CHANGE when tunnel changes)
-const API_URL = "https://stay-representations-highest-express.trycloudflare.com";
+const API_URL = "https://mice-sauce-citysearch-executed.trycloudflare.com";
 
 const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
