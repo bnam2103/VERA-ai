@@ -48,8 +48,8 @@ async function checkServer() {
 }
 
 // Check on load + every 10s
-// checkServer();
-// setInterval(checkServer, 10_000);
+checkServer();
+setInterval(checkServer, 10_000);
 
 /* -------------------- MIC INIT -------------------- */
 
@@ -100,8 +100,8 @@ function detectSilence() {
 /* -------------------- RECORD BUTTON -------------------- */
 
 recordBtn.onclick = async () => {
-  // const serverOk = await checkServer();
-  // if (!serverOk) return;
+  const serverOk = await checkServer();
+  if (!serverOk) return;
 
   await initMic();
 
