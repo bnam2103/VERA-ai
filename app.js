@@ -7,18 +7,19 @@ let hasSpoken = false;
 
 const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
+const API_URL = "https://incomplete-cams-fluid-raised.trycloudflare.com";
 
 const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
 
-// --------- Mic Init (only once)
+// ---------- Mic Init (only once)
 async function initMic() {
   if (micStream) return;
 
   micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
   audioCtx = new AudioContext();
-  await audioCtx.resume(); // REQUIRED for Chrome
+  await audioCtx.resume(); // Chrome requires this after user gesture
 
   const source = audioCtx.createMediaStreamSource(micStream);
   analyser = audioCtx.createAnalyser();
@@ -28,7 +29,7 @@ async function initMic() {
   console.log("🎙️ Mic initialized");
 }
 
-// --------- Silence Detection
+// ---------- Silence Detection
 function detectSilence() {
   const buffer = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buffer);
@@ -55,7 +56,7 @@ function detectSilence() {
   }
 }
 
-// --------- Record Button
+// ---------- Record Button
 recordBtn.onclick = async () => {
   await initMic();
 
@@ -88,7 +89,7 @@ recordBtn.onclick = async () => {
     const formData = new FormData();
     formData.append("audio", blob, "input.webm");
 
-    const res = await fetch("http://localhost:8000/infer", {
+    const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData
     });
@@ -99,7 +100,7 @@ recordBtn.onclick = async () => {
     document.getElementById("reply").innerText = data.reply;
 
     const audio = document.getElementById("audio");
-    audio.src = "http://localhost:8000" + data.audio_url;
+    audio.src = `${API_URL}${data.audio_url}`;
 
     audio.onplay = () => {
       statusEl.innerText = "Speaking…";
