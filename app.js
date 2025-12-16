@@ -1,3 +1,7 @@
+/* ============================
+   GLOBAL STATE
+============================ */
+
 let mediaRecorder;
 let audioChunks = [];
 let micStream = null;
@@ -8,15 +12,34 @@ let hasSpoken = false;
 const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
 
-// 🔑 Quick Tunnel URL (CHANGE when tunnel changes)
+// ✅ Stable Cloudflare Worker URL
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
+/* ============================
+   DOM ELEMENTS
+============================ */
 
+const appEl = document.getElementById("app");
 const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
 const serverStatusEl = document.getElementById("server-status");
+const transcriptEl = document.getElementById("transcript");
+const replyEl = document.getElementById("reply");
+const audioEl = document.getElementById("audio");
 
-/* -------------------- SERVER STATUS (NON-BLOCKING) -------------------- */
+/* ============================
+   UI STATE HANDLER
+============================ */
+
+function setStatus(text, state) {
+  statusEl.innerText = text;
+  statusEl.className = `status ${state}`;
+  appEl.className = `app ${state}`;
+}
+
+/* ============================
+   SERVER HEALTH CHECK
+============================ */
 
 async function checkServer() {
   try {
@@ -30,19 +53,18 @@ async function checkServer() {
       serverStatusEl.className = "status online";
       return;
     }
-  } catch (err) {
-    // Silent fail
-  }
+  } catch (_) {}
 
-  serverStatusEl.innerText = "🔴 VERA Offline (start tunnel)";
+  serverStatusEl.innerText = "🔴 VERA Offline";
   serverStatusEl.className = "status offline";
 }
 
-// Check on load + every 15s
 checkServer();
 setInterval(checkServer, 15_000);
 
-/* -------------------- MIC INIT -------------------- */
+/* ============================
+   MICROPHONE INITIALIZATION
+============================ */
 
 async function initMic() {
   if (micStream) return;
@@ -50,7 +72,7 @@ async function initMic() {
   micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
   audioCtx = new AudioContext();
-  await audioCtx.resume(); // required in Chrome
+  await audioCtx.resume();
 
   const source = audioCtx.createMediaStreamSource(micStream);
   analyser = audioCtx.createAnalyser();
@@ -60,7 +82,9 @@ async function initMic() {
   console.log("🎙️ Mic initialized");
 }
 
-/* -------------------- SILENCE DETECTION -------------------- */
+/* ============================
+   SILENCE DETECTION
+============================ */
 
 function detectSilence() {
   const buffer = new Float32Array(analyser.fftSize);
@@ -76,8 +100,7 @@ function detectSilence() {
 
     silenceTimer = setTimeout(() => {
       if (mediaRecorder?.state === "recording") {
-        statusEl.innerText = "Recording done";
-        statusEl.className = "status idle";
+        setStatus("Recording done", "idle");
         mediaRecorder.stop();
       }
     }, SILENCE_MS);
@@ -88,7 +111,9 @@ function detectSilence() {
   }
 }
 
-/* -------------------- RECORD BUTTON -------------------- */
+/* ============================
+   RECORD BUTTON HANDLER
+============================ */
 
 recordBtn.onclick = async () => {
   await initMic();
@@ -97,8 +122,7 @@ recordBtn.onclick = async () => {
   hasSpoken = false;
   clearTimeout(silenceTimer);
 
-  statusEl.innerText = "Recording…";
-  statusEl.className = "status recording";
+  setStatus("Recording…", "recording");
 
   mediaRecorder = new MediaRecorder(micStream, {
     mimeType: "audio/webm"
@@ -110,13 +134,11 @@ recordBtn.onclick = async () => {
 
   mediaRecorder.onstop = async () => {
     if (!hasSpoken) {
-      statusEl.innerText = "Idle";
-      statusEl.className = "status idle";
+      setStatus("Idle", "idle");
       return;
     }
 
-    statusEl.innerText = "Thinking…";
-    statusEl.className = "status thinking";
+    setStatus("Thinking…", "thinking");
 
     try {
       const blob = new Blob(audioChunks, { type: "audio/webm" });
@@ -128,33 +150,27 @@ recordBtn.onclick = async () => {
         body: formData
       });
 
-      if (!res.ok) {
-        throw new Error("Inference failed");
-      }
+      if (!res.ok) throw new Error("Inference failed");
 
       const data = await res.json();
 
-      document.getElementById("transcript").innerText = data.transcript;
-      document.getElementById("reply").innerText = data.reply;
+      transcriptEl.innerText = data.transcript;
+      replyEl.innerText = data.reply;
 
-      const audio = document.getElementById("audio");
-      audio.src = `${API_URL}${data.audio_url}`;
+      audioEl.src = `${API_URL}${data.audio_url}`;
 
-      audio.onplay = () => {
-        statusEl.innerText = "Speaking…";
-        statusEl.className = "status speaking";
+      audioEl.onplay = () => {
+        setStatus("Speaking…", "speaking");
       };
 
-      audio.onended = () => {
-        statusEl.innerText = "Idle";
-        statusEl.className = "status idle";
+      audioEl.onended = () => {
+        setStatus("Idle", "idle");
       };
 
-      audio.play();
+      audioEl.play();
     } catch (err) {
       console.error(err);
-      statusEl.innerText = "❌ Server not reachable";
-      statusEl.className = "status offline";
+      setStatus("Server not reachable", "offline");
     }
   };
 
