@@ -9,7 +9,7 @@ const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
 
 // 🔑 Quick Tunnel URL (CHANGE when tunnel changes)
-const API_URL = "https://vera-api-ned.workers.dev";
+const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 
 const recordBtn = document.getElementById("record");
