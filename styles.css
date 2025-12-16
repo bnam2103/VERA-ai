@@ -1,5 +1,5 @@
 /* =========================
-   BASE RESET
+   RESET + LAYOUT
 ========================= */
 
 * {
@@ -8,181 +8,142 @@
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-               Roboto, Helvetica, Arial, sans-serif;
+  font-family: system-ui, sans-serif;
   background: radial-gradient(circle at top, #101820, #05080c);
   color: #eaeaea;
-
-  display: flex;
-  justify-content: center;
-  align-items: center;
   height: 100vh;
 }
 
-/* =========================
-   APP CONTAINER
-========================= */
-
-.app {
-  width: 100%;
-  max-width: 520px;
-  padding: 28px 24px;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 18px;
-  backdrop-filter: blur(10px);
-  box-shadow:
-    0 20px 40px rgba(0, 0, 0, 0.5),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
-
-  text-align: center;
-  transition: background 0.4s ease;
-}
-
-/* =========================
-   TITLE
-========================= */
-
-h1 {
-  margin: 0 0 16px;
-  font-size: 24px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-}
-
-/* =========================
-   MIC CONTAINER (CENTERING)
-========================= */
-
-.mic-container {
+.layout {
   display: flex;
-  justify-content: center;
-  align-items: center;
-  margin: 24px 0;
+  height: 100%;
 }
 
 /* =========================
-   RECORD BUTTON
+   LEFT PANEL
 ========================= */
 
-#record {
-  width: 84px;
-  height: 84px;
-  border-radius: 50%;
-  border: none;
-  background: #0f1a22;
-  color: #ffffff;
-  font-size: 28px;
-  cursor: pointer;
-
+.sidebar {
+  width: 32%;
+  padding: 24px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-
-  box-shadow:
-    0 0 0 2px rgba(90, 200, 250, 0.3),
-    0 0 20px rgba(90, 200, 250, 0.15);
-
-  transition:
-    transform 0.2s ease,
-    box-shadow 0.3s ease;
+  flex-direction: column;
+  gap: 20px;
+  background: rgba(255,255,255,0.04);
 }
 
-#record:hover {
-  transform: scale(1.05);
+.sidebar-section {
+  background: rgba(255,255,255,0.05);
+  padding: 16px;
+  border-radius: 12px;
 }
 
-#record:active {
-  transform: scale(0.95);
+.sidebar-bottom {
+  margin-top: auto;
 }
 
-/* =========================
-   STATUS TEXT
-========================= */
+.sidebar h2 {
+  margin-top: 0;
+  font-size: 18px;
+}
 
-.status {
-  margin-top: 14px;
+.sidebar p,
+.sidebar li {
   font-size: 14px;
-  font-weight: 500;
-  opacity: 0.9;
+  color: #cfd8df;
 }
 
 /* Server status */
-.online  { color: #5cffb1; }
-.offline { color: #ff6b6b; }
 
-/* =========================
-   HOURS
-========================= */
+.server-status {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 8px;
+}
 
-.hours {
-  margin-top: 12px;
-  font-size: 13px;
+.server-status.online  { color: #5cffb1; }
+.server-status.offline { color: #ff6b6b; }
+
+.status-hint {
+  margin-top: 6px;
+  font-size: 12px;
   color: #9aa4ad;
 }
 
 /* =========================
-   CONVERSATION
+   RIGHT PANEL
+========================= */
+
+.chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255,255,255,0.02);
+}
+
+/* =========================
+   CHAT LOG
 ========================= */
 
 .conversation {
-  margin-top: 18px;
-  text-align: left;
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Chat bubbles */
+
+.bubble {
+  max-width: 70%;
+  padding: 10px 14px;
+  border-radius: 16px;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
-.conversation p {
-  margin: 8px 0;
+.bubble.user {
+  align-self: flex-start;
+  background: #1e2a36;
 }
 
-.conversation b {
-  color: #ffffff;
-}
-
-/* =========================
-   AUDIO PLAYER
-========================= */
-
-audio {
-  width: 100%;
-  margin-top: 14px;
+.bubble.vera {
+  align-self: flex-end;
+  background: #2b7cff;
+  color: white;
 }
 
 /* =========================
-   STATE-BASED VISUALS
+   INPUT BAR
 ========================= */
 
-/* Recording */
-.app.recording #record {
-  box-shadow:
-    0 0 0 2px rgba(255, 80, 80, 0.4),
-    0 0 30px rgba(255, 80, 80, 0.6);
-  animation: pulse 1.2s infinite;
+.input-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid rgba(255,255,255,0.08);
 }
 
-/* Thinking */
-.app.thinking {
-  background: rgba(255, 170, 60, 0.06);
+#record {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: #0f1a22;
+  color: white;
+  font-size: 24px;
+  cursor: pointer;
 }
 
-/* Speaking */
-.app.speaking #record {
-  box-shadow:
-    0 0 0 2px rgba(90, 250, 200, 0.4),
-    0 0 35px rgba(90, 250, 200, 0.6);
+.status {
+  font-size: 14px;
+  opacity: 0.85;
 }
 
-/* Idle */
-.app.idle #record {
-  animation: none;
-}
-
-/* =========================
-   ANIMATIONS
-========================= */
-
-@keyframes pulse {
-  0%   { box-shadow: 0 0 0 2px rgba(255, 80, 80, 0.4); }
-  50%  { box-shadow: 0 0 0 6px rgba(255, 80, 80, 0.2); }
-  100% { box-shadow: 0 0 0 2px rgba(255, 80, 80, 0.4); }
-}
+.recording { color: #ff6b6b; }
+.thinking  { color: #ffb347; }
+.speaking  { color: #5cffb1; }
+.idle      { color: #aaa; }
