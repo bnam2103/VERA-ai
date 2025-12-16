@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>VERA AI</title>
+
+  <style>
+    .recording { color: red; font-weight: bold; }
+    .thinking  { color: orange; font-weight: bold; }
+    .speaking  { color: green; font-weight: bold; }
+    .idle      { color: gray; font-weight: bold; }
+  </style>
+</head>
+
+<body>
+  <h1>Talk to VERA</h1>
+
+  <button id="record">🎙️ Record</button>
+
+  <!-- 🔥 THIS WAS MISSING -->
+  <p id="status" class="idle">Idle</p>
+
+  <p><b>You said:</b> <span id="transcript"></span></p>
+  <p><b>VERA:</b> <span id="reply"></span></p>
+
+  <audio id="audio" controls></audio>
+
+  <!-- Script MUST be last -->
+  <script src="app.js"></script>
+</body>
+</html>
