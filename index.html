@@ -93,17 +93,19 @@
 
       <!-- Input Bar (Fixed on Mobile) -->
       <div class="input-bar">
-        <button id="record" aria-label="Record">🎙️</button>
 
-        <span id="status" class="status idle">Idle</span>
+        <div class="input-left">
+          <button id="record" aria-label="Record">🎙️</button>
+          <span id="status" class="status idle">Idle</span>
+        </div>
 
-        <!-- Mobile-only server status -->
         <span
           id="server-status-inline"
           class="server-status offline mobile-only"
         >
           🔴 Offline
         </span>
+
       </div>
 
 
