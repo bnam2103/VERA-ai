@@ -14,6 +14,15 @@ const statusEl = document.getElementById("status");
 const convoEl = document.getElementById("conversation");
 const audioEl = document.getElementById("audio");
 const serverStatusEl = document.getElementById("server-status");
+const feedbackInput = document.getElementById("feedback-input");
+const sendFeedbackBtn = document.getElementById("send-feedback");
+const feedbackStatusEl = document.getElementById("feedback-status");
+const sessionId = crypto.randomUUID();
+
+// Ask for name once (metadata only)
+const displayName =
+  prompt("Enter your name to start VERA:") || "Guest";
+
 
 /* =========================
    SERVER HEALTH
@@ -134,4 +143,35 @@ recordBtn.onclick = async () => {
 
   mediaRecorder.start();
   detectSilence();
+};
+
+/* =========================
+   Feedback
+========================= */
+
+sendFeedbackBtn.onclick = async () => {
+  const text = feedbackInput.value.trim();
+  if (!text) return;
+
+  feedbackStatusEl.textContent = "Sending…";
+
+  try {
+    const res = await fetch(`${API_URL}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        feedback: text,
+        userAgent: navigator.userAgent,
+        timestamp: new Date().toISOString()
+      })
+    });
+
+    if (!res.ok) throw new Error();
+
+    feedbackInput.value = "";
+    feedbackStatusEl.textContent = "Thank you for your feedback!";
+  } catch {
+    feedbackStatusEl.textContent = "Failed to send feedback.";
+    feedbackStatusEl.style.color = "#ff6b6b";
+  }
 };

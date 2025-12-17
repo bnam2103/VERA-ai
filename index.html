@@ -22,6 +22,7 @@
         <p>
           Built to showcase an end-to-end ASR → LLM → TTS pipeline.
         </p>
+        <p><b>Created by Nom</b></p>
       </section>
 
       <!-- Instructions -->
@@ -34,8 +35,32 @@
           <li>Listen to VERA respond</li>
         </ol>
         <p>
-          For best results, use headphones in a quiet environment.
+          A chat log will be displayed in the right section in case
+          VERA couldn’t say something correctly.
         </p>
+        <p>
+          This experience requires a microphone and a speaker.
+          AirPods work, but transcription accuracy may vary. 
+          A good microphone and speakers are recommended for best results.
+        </p>
+      </section>
+      
+      <section class="sidebar-section">
+        <h2>Feedback</h2>
+
+        <p class="feedback-hint">
+          Did something feel off? Let us know.
+        </p>
+
+        <textarea
+          id="feedback-input"
+          placeholder="Your feedback..."
+          rows="3"
+        ></textarea>
+
+        <button id="send-feedback">Send Feedback</button>
+
+        <div id="feedback-status" class="feedback-status"></div>
       </section>
 
       <!-- Server Status (bottom pinned) -->

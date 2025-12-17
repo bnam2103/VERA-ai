@@ -52,7 +52,53 @@ body {
   font-size: 14px;
   color: #cfd8df;
 }
+Add this to styles.css
+/* =========================
+   FEEDBACK
+========================= */
 
+.feedback-hint {
+  font-size: 13px;
+  color: #9aa4ad;
+  margin-bottom: 8px;
+}
+
+#feedback-input {
+  width: 100%;
+  resize: none;
+  padding: 8px;
+  border-radius: 8px;
+  border: none;
+  font-size: 13px;
+  font-family: inherit;
+  background: rgba(255,255,255,0.08);
+  color: #eaeaea;
+}
+
+#feedback-input::placeholder {
+  color: #8a949d;
+}
+
+#send-feedback {
+  margin-top: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  background: #2f3a44;
+  color: #eaeaea;
+}
+
+#send-feedback:hover {
+  background: #3b4853;
+}
+
+.feedback-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #5cffb1;
+}
 /* Server status */
 
 .server-status {
@@ -111,8 +157,8 @@ body {
 
 .bubble.vera {
   align-self: flex-end;
-  background: #2b7cff;
-  color: white;
+  background: #2f3a44;   
+  color: #f1f5f7;
 }
 
 /* =========================
