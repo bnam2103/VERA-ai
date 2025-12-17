@@ -231,59 +231,45 @@ body {
   }
 }
 
-@media (max-width: 768px) {
+/* =========================
+   MOBILE-ONLY SERVER STATUS
+========================= */
 
-  /* Allow scrolling again */
-  html, body {
-    overflow: auto;
-  }
-
-  /* Force vertical layout */
-  .layout {
-    flex-direction: column;
-    height: 100vh;
-    width: 100vw;
-  }
-
-  /* Fully remove sidebar */
-  .sidebar {
-    display: none !important;
-  }
-
-  /* Chat takes full screen */
-  .chat {
-    width: 100vw;
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
-
-  /* Scrollable chat log */
-  .conversation {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  /* Bigger bubbles on phone */
-  .bubble {
-    max-width: 90%;
-  }
-
-  /* Input bar pinned */
-  .input-bar {
-    position: sticky;
-    bottom: 0;
-    background: rgba(0,0,0,0.85);
-    padding: 12px;
-  }
-
-  /* Bigger mic button */
-  #record {
-    width: 64px;
-    height: 64px;
-    font-size: 28px;
-  }
+/* Default: hide mobile status */
+.mobile-only {
+  display: none;
 }
 
+/* PHONE VIEW */
+@media (max-width: 768px) {
+
+  /* Hide sidebar completely */
+  .sidebar {
+    display: none;
+  }
+
+  /* Layout becomes single column */
+  .layout {
+    flex-direction: column;
+  }
+
+  /* Show server status inline */
+  .mobile-only {
+    display: inline;
+  }
+
+  /* Tighten input bar */
+  .input-bar {
+    justify-content: center;
+    gap: 12px;
+  }
+
+  .status {
+    font-size: 14px;
+  }
+
+  .server-status {
+    font-size: 13px;
+    font-weight: 600;
+  }
+}
