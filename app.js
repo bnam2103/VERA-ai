@@ -9,9 +9,14 @@ if (!sessionId) {
 }
 
 let displayName = localStorage.getItem("vera_display_name");
+
+// Mobile-safe name prompt
 if (!displayName) {
-  displayName = prompt("Enter your name to start VERA:") || "Guest";
-  localStorage.setItem("vera_display_name", displayName);
+  setTimeout(() => {
+    const name = prompt("Enter your name to start VERA:");
+    displayName = (name && name.trim()) ? name.trim() : "Guest";
+    localStorage.setItem("vera_display_name", displayName);
+  }, 300);
 }
 
 /* =========================
@@ -37,7 +42,10 @@ const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
 const convoEl = document.getElementById("conversation");
 const audioEl = document.getElementById("audio");
+
+// Desktop + mobile server status
 const serverStatusEl = document.getElementById("server-status");
+const serverStatusInlineEl = document.getElementById("server-status-inline");
 
 const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
@@ -48,17 +56,31 @@ const feedbackStatusEl = document.getElementById("feedback-status");
 ========================= */
 
 async function checkServer() {
+  let online = false;
+
   try {
     const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
-    if (res.ok) {
-      serverStatusEl.textContent = "🟢 Server Online";
-      serverStatusEl.className = "server-status online";
-      return;
-    }
-  } catch (_) {}
+    online = res.ok;
+  } catch {
+    online = false;
+  }
 
-  serverStatusEl.textContent = "🔴 Server Offline";
-  serverStatusEl.className = "server-status offline";
+  // Desktop sidebar
+  if (serverStatusEl) {
+    serverStatusEl.textContent = online ? "🟢 Server Online" : "🔴 Server Offline";
+    serverStatusEl.className = `server-status ${online ? "online" : "offline"}`;
+  }
+
+  // Mobile inline
+  if (serverStatusInlineEl) {
+    serverStatusInlineEl.textContent = online ? "🟢 Online" : "🔴 Offline";
+    serverStatusInlineEl.className =
+      `server-status ${online ? "online" : "offline"} mobile-only`;
+  }
+
+  // Disable mic if offline
+  recordBtn.disabled = !online;
+  recordBtn.style.opacity = online ? "1" : "0.5";
 }
 
 checkServer();
@@ -152,7 +174,6 @@ recordBtn.onclick = async () => {
     const blob = new Blob(audioChunks, { type: "audio/webm" });
     const formData = new FormData();
 
-    // 🔑 REQUIRED FIELDS
     formData.append("audio", blob);
     formData.append("session_id", sessionId);
     formData.append("display_name", displayName);
@@ -164,7 +185,7 @@ recordBtn.onclick = async () => {
       });
 
       if (res.status === 429) {
-        setStatus("Server busy — please try again", "offline");
+        setStatus("Server busy — try again", "offline");
         return;
       }
 
@@ -175,11 +196,15 @@ recordBtn.onclick = async () => {
       addBubble(data.transcript, "user");
       addBubble(data.reply, "vera");
 
-      audioEl.src = `${API_URL}${data.audio_url}`;
-      audioEl.play();
+      if (data.audio_url) {
+        audioEl.src = `${API_URL}${data.audio_url}`;
+        audioEl.play();
 
-      audioEl.onplay = () => setStatus("Speaking…", "speaking");
-      audioEl.onended = () => setStatus("Idle", "idle");
+        audioEl.onplay = () => setStatus("Speaking…", "speaking");
+        audioEl.onended = () => setStatus("Idle", "idle");
+      } else {
+        setStatus("Idle", "idle");
+      }
 
     } catch (err) {
       console.error(err);
@@ -218,6 +243,7 @@ sendFeedbackBtn.onclick = async () => {
 
     feedbackInput.value = "";
     feedbackStatusEl.textContent = "Thank you for your feedback!";
+    feedbackStatusEl.style.color = "#5cffb1";
   } catch {
     feedbackStatusEl.textContent = "Failed to send feedback.";
     feedbackStatusEl.style.color = "#ff6b6b";
