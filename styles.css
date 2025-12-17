@@ -243,25 +243,31 @@ body {
 /* PHONE VIEW */
 @media (max-width: 768px) {
 
-  /* Hide sidebar completely */
+  /* Hide sidebar */
   .sidebar {
     display: none;
   }
 
-  /* Layout becomes single column */
   .layout {
     flex-direction: column;
   }
 
-  /* Show server status inline */
   .mobile-only {
     display: inline;
   }
 
-  /* Tighten input bar */
+  /* ⬆️ LIFT INPUT BAR ABOVE SYSTEM NAV BAR */
   .input-bar {
-    justify-content: center;
+    justify-content: space-between;
     gap: 12px;
+
+    padding-bottom: calc(
+      14px + env(safe-area-inset-bottom)
+    );
+
+    /* Optional but recommended */
+    position: sticky;
+    bottom: 0;
   }
 
   .status {
@@ -271,5 +277,7 @@ body {
   .server-status {
     font-size: 13px;
     font-weight: 600;
+    margin-left: auto;
+    padding-left: 12px;
   }
 }
