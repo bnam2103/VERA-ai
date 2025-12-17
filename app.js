@@ -93,9 +93,15 @@ function addBubble(text, who) {
 async function initMic() {
   if (micStream) return;
 
-  micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false
+    }
+  });
 
-  audioCtx = new AudioContext();
+  audioCtx = new AudioContext({ sampleRate: 16000 });
   await audioCtx.resume();
 
   analyser = audioCtx.createAnalyser();
@@ -103,6 +109,7 @@ async function initMic() {
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
 }
+
 
 /* =========================
    SILENCE DETECTION
