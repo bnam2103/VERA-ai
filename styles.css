@@ -235,13 +235,12 @@ body {
    MOBILE-ONLY SERVER STATUS
 ========================= */
 
+/* Default: hide mobile status */
 .mobile-only {
   display: none;
 }
 
-/* =========================
-   PHONE VIEW
-========================= */
+/* PHONE VIEW */
 @media (max-width: 768px) {
 
   /* Hide sidebar completely */
@@ -259,18 +258,9 @@ body {
     display: inline;
   }
 
-  /* Input bar layout */
+  /* Tighten input bar */
   .input-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between; /* KEY CHANGE */
-    padding: 12px 14px;
-  }
-
-  /* Left group: mic + idle */
-  .input-left {
-    display: flex;
-    align-items: center;
+    justify-content: center;
     gap: 12px;
   }
 
@@ -278,11 +268,8 @@ body {
     font-size: 14px;
   }
 
-  /* Right-aligned server status */
   .server-status {
     font-size: 13px;
     font-weight: 600;
-    margin-left: auto;   /* extra safety */
-    padding-left: 12px;  /* breathing room */
   }
 }
