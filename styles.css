@@ -231,4 +231,59 @@ body {
   }
 }
 
+@media (max-width: 768px) {
+
+  /* Allow scrolling again */
+  html, body {
+    overflow: auto;
+  }
+
+  /* Force vertical layout */
+  .layout {
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* Fully remove sidebar */
+  .sidebar {
+    display: none !important;
+  }
+
+  /* Chat takes full screen */
+  .chat {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Scrollable chat log */
+  .conversation {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Bigger bubbles on phone */
+  .bubble {
+    max-width: 90%;
+  }
+
+  /* Input bar pinned */
+  .input-bar {
+    position: sticky;
+    bottom: 0;
+    background: rgba(0,0,0,0.85);
+    padding: 12px;
+  }
+
+  /* Bigger mic button */
+  #record {
+    width: 64px;
+    height: 64px;
+    font-size: 28px;
+  }
+}
 
