@@ -216,25 +216,45 @@ body {
 /* =========================
    MOBILE (PHONES)
 ========================= */
-
 @media (max-width: 768px) {
+
   .layout {
     flex-direction: column;
+    height: 100vh;
   }
 
+  /* 🚫 Hide sidebar entirely */
   .sidebar {
-    width: 100%;
-    max-width: none;
-    max-height: 45vh;
-    border-bottom: 1px solid rgba(255,255,255,0.08);
+    display: none;
+  }
+
+  /* Chat takes full screen */
+  .chat {
+    flex: 1;
+    height: 100vh;
+  }
+
+  .conversation {
+    padding: 16px;
   }
 
   .bubble {
     max-width: 85%;
   }
 
+  /* Sticky mic bar (ALWAYS reachable) */
   .input-bar {
+    position: sticky;
+    bottom: 0;
+    background: rgba(5, 8, 12, 0.95);
     padding: 12px;
+    z-index: 10;
+  }
+
+  #record {
+    width: 52px;
+    height: 52px;
+    font-size: 22px;
   }
 }
 
