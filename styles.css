@@ -231,3 +231,55 @@ body {
     font-size: 15px;
   }
 }
+
+
+/* =========================
+   MOBILE (PHONES)
+========================= */
+
+@media (max-width: 768px) {
+
+  html, body {
+    overflow: auto; /* allow scrolling on phones */
+  }
+
+  .layout {
+    flex-direction: column;
+    height: auto;
+  }
+
+  /* Hide sidebar by default on phones */
+  .sidebar {
+    display: none;
+  }
+
+  /* Chat takes full screen */
+  .chat {
+    height: 100vh;
+  }
+
+  .conversation {
+    padding-bottom: 90px; /* space for fixed input bar */
+  }
+
+  /* Pin mic bar to bottom */
+  .input-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: rgba(10,15,20,0.95);
+    backdrop-filter: blur(8px);
+  }
+
+  #record {
+    width: 52px;
+    height: 52px;
+    font-size: 22px;
+  }
+
+  .bubble {
+    max-width: 85%;
+  }
+}

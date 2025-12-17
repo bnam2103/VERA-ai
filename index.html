@@ -2,14 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+
+  <!-- 🔑 REQUIRED FOR MOBILE -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
   <title>VERA AI</title>
+
   <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
   <div class="layout">
 
-    <!-- LEFT PANEL -->
+    <!-- =========================
+         SIDEBAR (DESKTOP / TABLET)
+    ========================== -->
     <aside class="sidebar">
 
       <!-- About -->
@@ -22,32 +29,31 @@
         <p>
           Built to showcase an end-to-end ASR → LLM → TTS pipeline.
         </p>
-        <p><b>Created by Nom</b></p>
+        <p><strong>Created by Nom</strong></p>
       </section>
 
       <!-- Instructions -->
       <section class="sidebar-section">
         <h2>How to Use</h2>
         <ol>
-          <li>Click the microphone</li>
+          <li>Tap the microphone</li>
           <li>Speak naturally</li>
           <li>Pause to send</li>
           <li>Listen to VERA respond</li>
         </ol>
         <p>
-          A chat log will be displayed in the right section in case
-          VERA couldn’t say something correctly.
+          A text transcript appears in case speech playback
+          is unclear.
         </p>
         <p>
-          This experience requires a microphone and a speaker.
-          AirPods work, but transcription accuracy may vary. 
-          A good microphone and speakers are recommended for best results.
+          A microphone and speakers are required.
+          Headsets are recommended for best results.
         </p>
       </section>
 
+      <!-- Feedback -->
       <section class="sidebar-section">
         <h2>Feedback</h2>
-
         <p class="feedback-hint">
           Did something feel off? Let me know.
         </p>
@@ -63,7 +69,7 @@
         <div id="feedback-status" class="feedback-status"></div>
       </section>
 
-      <!-- Server Status (bottom pinned) -->
+      <!-- Status (Pinned Bottom) -->
       <section class="sidebar-section sidebar-bottom">
         <h2>Status</h2>
         <div id="server-status" class="server-status offline">
@@ -76,18 +82,21 @@
 
     </aside>
 
-    <!-- RIGHT PANEL -->
+    <!-- =========================
+         CHAT PANEL (ALL DEVICES)
+    ========================== -->
     <main class="chat">
 
-      <!-- Scrollable chat -->
+      <!-- Conversation -->
       <div class="conversation" id="conversation"></div>
 
-      <!-- Mic bar -->
+      <!-- Input Bar (Fixed on Mobile) -->
       <div class="input-bar">
         <button id="record" aria-label="Record">🎙️</button>
         <span id="status" class="status idle">Idle</span>
       </div>
 
+      <!-- Audio Playback -->
       <audio id="audio"></audio>
 
     </main>
