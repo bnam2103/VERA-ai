@@ -1,3 +1,23 @@
+/* =========================
+   SESSION SETUP (PERSISTENT)
+========================= */
+
+let sessionId = localStorage.getItem("vera_session_id");
+if (!sessionId) {
+  sessionId = crypto.randomUUID();
+  localStorage.setItem("vera_session_id", sessionId);
+}
+
+let displayName = localStorage.getItem("vera_display_name");
+if (!displayName) {
+  displayName = prompt("Enter your name to start VERA:") || "Guest";
+  localStorage.setItem("vera_display_name", displayName);
+}
+
+/* =========================
+   GLOBAL STATE
+========================= */
+
 let mediaRecorder;
 let audioChunks = [];
 let micStream = null;
@@ -9,20 +29,19 @@ const SILENCE_MS = 1350;
 const VOLUME_THRESHOLD = 0.004;
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
+/* =========================
+   DOM ELEMENTS
+========================= */
+
 const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
 const convoEl = document.getElementById("conversation");
 const audioEl = document.getElementById("audio");
 const serverStatusEl = document.getElementById("server-status");
+
 const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
 const feedbackStatusEl = document.getElementById("feedback-status");
-const sessionId = crypto.randomUUID();
-
-// Ask for name once (metadata only)
-const displayName =
-  prompt("Enter your name to start VERA:") || "Guest";
-
 
 /* =========================
    SERVER HEALTH
@@ -68,11 +87,15 @@ function addBubble(text, who) {
 
 async function initMic() {
   if (micStream) return;
+
   micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
   audioCtx = new AudioContext();
   await audioCtx.resume();
+
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 2048;
+
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
 }
 
@@ -83,11 +106,15 @@ async function initMic() {
 function detectSilence() {
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
-  const rms = Math.sqrt(buf.reduce((s,v)=>s+v*v,0)/buf.length);
+
+  const rms = Math.sqrt(
+    buf.reduce((s, v) => s + v * v, 0) / buf.length
+  );
 
   if (rms > VOLUME_THRESHOLD) {
     hasSpoken = true;
     clearTimeout(silenceTimer);
+
     silenceTimer = setTimeout(() => {
       if (mediaRecorder.state === "recording") {
         mediaRecorder.stop();
@@ -106,6 +133,7 @@ function detectSilence() {
 
 recordBtn.onclick = async () => {
   await initMic();
+
   audioChunks = [];
   hasSpoken = false;
   setStatus("Recording…", "recording");
@@ -123,22 +151,40 @@ recordBtn.onclick = async () => {
 
     const blob = new Blob(audioChunks, { type: "audio/webm" });
     const formData = new FormData();
+
+    // 🔑 REQUIRED FIELDS
     formData.append("audio", blob);
+    formData.append("session_id", sessionId);
+    formData.append("display_name", displayName);
 
-    const res = await fetch(`${API_URL}/infer`, {
-      method: "POST",
-      body: formData
-    });
+    try {
+      const res = await fetch(`${API_URL}/infer`, {
+        method: "POST",
+        body: formData
+      });
 
-    const data = await res.json();
-    addBubble(data.transcript, "user");
-    addBubble(data.reply, "vera");
+      if (res.status === 429) {
+        setStatus("Server busy — please try again", "offline");
+        return;
+      }
 
-    audioEl.src = `${API_URL}${data.audio_url}`;
-    audioEl.play();
+      if (!res.ok) throw new Error("Inference failed");
 
-    audioEl.onplay = () => setStatus("Speaking…", "speaking");
-    audioEl.onended = () => setStatus("Idle", "idle");
+      const data = await res.json();
+
+      addBubble(data.transcript, "user");
+      addBubble(data.reply, "vera");
+
+      audioEl.src = `${API_URL}${data.audio_url}`;
+      audioEl.play();
+
+      audioEl.onplay = () => setStatus("Speaking…", "speaking");
+      audioEl.onended = () => setStatus("Idle", "idle");
+
+    } catch (err) {
+      console.error(err);
+      setStatus("Server not reachable", "offline");
+    }
   };
 
   mediaRecorder.start();
@@ -146,7 +192,7 @@ recordBtn.onclick = async () => {
 };
 
 /* =========================
-   Feedback
+   FEEDBACK
 ========================= */
 
 sendFeedbackBtn.onclick = async () => {
@@ -160,6 +206,8 @@ sendFeedbackBtn.onclick = async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        session_id: sessionId,
+        display_name: displayName,
         feedback: text,
         userAgent: navigator.userAgent,
         timestamp: new Date().toISOString()
