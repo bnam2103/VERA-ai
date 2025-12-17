@@ -1,270 +1,109 @@
-/* =========================
-   RESET + ROOT
-========================= */
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
 
-* {
-  box-sizing: border-box;
-}
+  <!-- 🔑 REQUIRED FOR MOBILE -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
-html, body {
-  height: 100%;
-  margin: 0;
-}
+  <title>VERA AI</title>
 
-body {
-  font-family: system-ui, sans-serif;
-  background: radial-gradient(circle at top, #101820, #05080c);
-  color: #eaeaea;
-  overflow: hidden; /* prevent page scroll */
-}
+  <link rel="stylesheet" href="styles.css">
+</head>
 
-/* =========================
-   MAIN LAYOUT
-========================= */
+<body>
+  <div class="layout">
 
-.layout {
-  display: flex;
-  height: 100vh;
-  width: 100vw;
-}
+    <!-- =========================
+         SIDEBAR (DESKTOP / TABLET)
+    ========================== -->
+    <aside class="sidebar">
 
-/* =========================
-   SIDEBAR (DESKTOP / TABLET)
-========================= */
+      <!-- About -->
+      <section class="sidebar-section">
+        <h2>About VERA</h2>
+        <p>
+          VERA is a conversational AI demonstrating real-time
+          speech recognition, reasoning, and voice synthesis.
+        </p>
+        <p>
+          Built to showcase an end-to-end ASR → LLM → TTS pipeline.
+        </p>
+        <p><strong>Created by Nom</strong></p>
+      </section>
 
-.sidebar {
-  width: 32%;
-  min-width: 300px;
-  max-width: 420px;
+      <!-- Instructions -->
+      <section class="sidebar-section">
+        <h2>How to Use</h2>
+        <ol>
+          <li>Click the microphone</li>
+          <li>Speak naturally</li>
+          <li>Pause to send</li>
+          <li>Listen to VERA respond</li>
+        </ol>
+        <p>
+          A chat log will be displayed in the right section in case
+          VERA couldn’t say something correctly.
+        </p>
+        <p>
+          This experience requires a microphone and a speaker.
+          AirPods work, but transcription accuracy may vary. 
+          A good microphone and speakers are recommended for best results.
+        </p>
+      </section>
 
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+      <!-- Feedback -->
+      <section class="sidebar-section">
+        <h2>Feedback</h2>
+        <p class="feedback-hint">
+          Did something feel off? Let me know.
+        </p>
 
-  background: rgba(255,255,255,0.04);
-  overflow-y: auto;
-}
+        <textarea
+          id="feedback-input"
+          placeholder="Your feedback..."
+          rows="3"
+        ></textarea>
 
-.sidebar-section {
-  background: rgba(255,255,255,0.05);
-  padding: 16px;
-  border-radius: 12px;
-}
+        <button id="send-feedback">Send Feedback</button>
 
-.sidebar-bottom {
-  margin-top: auto;
-}
+        <div id="feedback-status" class="feedback-status"></div>
+      </section>
 
-.sidebar h2 {
-  margin-top: 0;
-  font-size: 18px;
-}
+      <!-- Status (Pinned Bottom) -->
+      <section class="sidebar-section sidebar-bottom">
+        <h2>Status</h2>
+        <div id="server-status" class="server-status offline">
+          🔴 Server Offline
+        </div>
+        <p class="status-hint">
+          The server must be online to process audio.
+        </p>
+      </section>
 
-.sidebar p,
-.sidebar li {
-  font-size: 14px;
-  color: #cfd8df;
-}
+    </aside>
 
-/* =========================
-   FEEDBACK
-========================= */
+    <!-- =========================
+         CHAT PANEL (ALL DEVICES)
+    ========================== -->
+    <main class="chat">
 
-.feedback-hint {
-  font-size: 13px;
-  color: #9aa4ad;
-  margin-bottom: 8px;
-}
+      <!-- Conversation -->
+      <div class="conversation" id="conversation"></div>
 
-#feedback-input {
-  width: 100%;
-  resize: none;
-  padding: 8px;
-  border-radius: 8px;
-  border: none;
-  font-size: 13px;
-  background: rgba(255,255,255,0.08);
-  color: #eaeaea;
-}
+      <!-- Input Bar (Fixed on Mobile) -->
+      <div class="input-bar">
+        <button id="record" aria-label="Record">🎙️</button>
+        <span id="status" class="status idle">Idle</span>
+      </div>
 
-#feedback-input::placeholder {
-  color: #8a949d;
-}
+      <!-- Audio Playback -->
+      <audio id="audio"></audio>
 
-#send-feedback {
-  margin-top: 8px;
-  padding: 6px 10px;
-  font-size: 13px;
-  border-radius: 8px;
-  border: none;
-  cursor: pointer;
-  background: #2f3a44;
-  color: #eaeaea;
-}
+    </main>
 
-#send-feedback:hover {
-  background: #3b4853;
-}
+  </div>
 
-.feedback-status {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #5cffb1;
-}
-
-/* =========================
-   SERVER STATUS
-========================= */
-
-.server-status {
-  font-size: 14px;
-  font-weight: 600;
-  margin-top: 8px;
-}
-
-.server-status.online  { color: #5cffb1; }
-.server-status.offline { color: #ff6b6b; }
-
-.status-hint {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #9aa4ad;
-}
-
-/* =========================
-   CHAT PANEL
-========================= */
-
-.chat {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  background: rgba(255,255,255,0.02);
-}
-
-/* =========================
-   CHAT LOG
-========================= */
-
-.conversation {
-  flex: 1;
-  padding: 20px;
-  overflow-y: auto;
-
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-/* Chat bubbles */
-
-.bubble {
-  max-width: 70%;
-  padding: 10px 14px;
-  border-radius: 16px;
-  font-size: 14px;
-  line-height: 1.4;
-}
-
-.bubble.user {
-  align-self: flex-start;
-  background: #1e2a36;
-}
-
-.bubble.vera {
-  align-self: flex-end;
-  background: #2f3a44;
-  color: #f1f5f7;
-}
-
-/* =========================
-   INPUT BAR
-========================= */
-
-.input-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
-
-  border-top: 1px solid rgba(255,255,255,0.08);
-  background: rgba(0,0,0,0.15);
-}
-
-#record {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  border: none;
-  background: #0f1a22;
-  color: white;
-  font-size: 24px;
-  cursor: pointer;
-}
-
-.status {
-  font-size: 14px;
-  opacity: 0.85;
-}
-
-.recording { color: #ff6b6b; }
-.thinking  { color: #ffb347; }
-.speaking  { color: #5cffb1; }
-.idle      { color: #aaa; }
-
-/* =========================
-   LARGE SCREENS (27"+)
-========================= */
-
-@media (min-width: 1600px) {
-  .sidebar {
-    width: 420px;
-  }
-
-  .conversation {
-    padding: 28px;
-  }
-
-  .bubble {
-    font-size: 15px;
-  }
-}
-
-/* =========================
-   MOBILE (PHONES)
-========================= */
-
-@media (max-width: 768px) {
-
-  /* Hide sidebar completely */
-  .sidebar {
-    display: none;
-  }
-
-  .layout {
-    flex-direction: column;
-  }
-
-  .chat {
-    height: 100vh;
-  }
-
-  .conversation {
-    padding: 16px;
-  }
-
-  .bubble {
-    max-width: 85%;
-  }
-
-  .input-bar {
-    padding: 12px;
-  }
-
-  #record {
-    width: 60px;
-    height: 60px;
-    font-size: 26px;
-  }
-}
+  <script src="app.js"></script>
+</body>
+</html>
