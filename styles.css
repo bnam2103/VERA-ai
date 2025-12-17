@@ -231,40 +231,4 @@ body {
   }
 }
 
-/* =========================
-   MOBILE (PHONES)
-========================= */
 
-@media (max-width: 768px) {
-
-  /* Hide sidebar completely */
-  .sidebar {
-    display: none;
-  }
-
-  .layout {
-    flex-direction: column;
-  }
-
-  .chat {
-    height: 100vh;
-  }
-
-  .conversation {
-    padding: 16px;
-  }
-
-  .bubble {
-    max-width: 85%;
-  }
-
-  .input-bar {
-    padding: 12px;
-  }
-
-  #record {
-    width: 60px;
-    height: 60px;
-    font-size: 26px;
-  }
-}
