@@ -1,35 +1,49 @@
 /* =========================
-   RESET + LAYOUT
+   RESET + ROOT
 ========================= */
 
 * {
   box-sizing: border-box;
 }
 
-body {
+html, body {
+  height: 100%;
   margin: 0;
+  overflow: hidden; /* prevent page scroll */
+}
+
+body {
   font-family: system-ui, sans-serif;
   background: radial-gradient(circle at top, #101820, #05080c);
   color: #eaeaea;
-  height: 100vh;
-}
-
-.layout {
-  display: flex;
-  height: 100%;
 }
 
 /* =========================
-   LEFT PANEL
+   MAIN LAYOUT
+========================= */
+
+.layout {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* =========================
+   LEFT PANEL (SIDEBAR)
 ========================= */
 
 .sidebar {
   width: 32%;
+  min-width: 300px;
+  max-width: 420px;
+
   padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 20px;
+
   background: rgba(255,255,255,0.04);
+  overflow-y: auto; /* sidebar scrolls, not page */
 }
 
 .sidebar-section {
@@ -39,7 +53,7 @@ body {
 }
 
 .sidebar-bottom {
-  margin-top: auto;
+  margin-top: auto; /* pin to bottom */
 }
 
 .sidebar h2 {
@@ -52,7 +66,7 @@ body {
   font-size: 14px;
   color: #cfd8df;
 }
-Add this to styles.css
+
 /* =========================
    FEEDBACK
 ========================= */
@@ -99,7 +113,10 @@ Add this to styles.css
   font-size: 12px;
   color: #5cffb1;
 }
-/* Server status */
+
+/* =========================
+   SERVER STATUS
+========================= */
 
 .server-status {
   font-size: 14px;
@@ -117,7 +134,7 @@ Add this to styles.css
 }
 
 /* =========================
-   RIGHT PANEL
+   RIGHT PANEL (CHAT)
 ========================= */
 
 .chat {
@@ -135,6 +152,7 @@ Add this to styles.css
   flex: 1;
   padding: 20px;
   overflow-y: auto;
+
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -157,12 +175,12 @@ Add this to styles.css
 
 .bubble.vera {
   align-self: flex-end;
-  background: #2f3a44;   
+  background: #2f3a44;
   color: #f1f5f7;
 }
 
 /* =========================
-   INPUT BAR
+   INPUT BAR (PINNED)
 ========================= */
 
 .input-bar {
@@ -171,6 +189,7 @@ Add this to styles.css
   gap: 12px;
   padding: 14px;
   border-top: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.15);
 }
 
 #record {
@@ -193,3 +212,46 @@ Add this to styles.css
 .thinking  { color: #ffb347; }
 .speaking  { color: #5cffb1; }
 .idle      { color: #aaa; }
+
+/* =========================
+   MOBILE (PHONES)
+========================= */
+
+@media (max-width: 768px) {
+  .layout {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    max-width: none;
+    max-height: 45vh;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .bubble {
+    max-width: 85%;
+  }
+
+  .input-bar {
+    padding: 12px;
+  }
+}
+
+/* =========================
+   LARGE SCREENS (27"+)
+========================= */
+
+@media (min-width: 1600px) {
+  .sidebar {
+    width: 420px;
+  }
+
+  .conversation {
+    padding: 28px;
+  }
+
+  .bubble {
+    font-size: 15px;
+  }
+}
