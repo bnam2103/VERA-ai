@@ -8,17 +8,6 @@ if (!sessionId) {
   localStorage.setItem("vera_session_id", sessionId);
 }
 
-let displayName = localStorage.getItem("vera_display_name");
-
-// Mobile-safe name prompt
-if (!displayName) {
-  setTimeout(() => {
-    const name = prompt("Enter your name to start VERA:");
-    displayName = (name && name.trim()) ? name.trim() : "Guest";
-    localStorage.setItem("vera_display_name", displayName);
-  }, 300);
-}
-
 /* =========================
    GLOBAL STATE
 ========================= */
@@ -43,7 +32,6 @@ const statusEl = document.getElementById("status");
 const convoEl = document.getElementById("conversation");
 const audioEl = document.getElementById("audio");
 
-// Desktop + mobile server status
 const serverStatusEl = document.getElementById("server-status");
 const serverStatusInlineEl = document.getElementById("server-status-inline");
 
@@ -61,24 +49,19 @@ async function checkServer() {
   try {
     const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
     online = res.ok;
-  } catch {
-    online = false;
-  }
+  } catch {}
 
-  // Desktop sidebar
   if (serverStatusEl) {
     serverStatusEl.textContent = online ? "🟢 Server Online" : "🔴 Server Offline";
     serverStatusEl.className = `server-status ${online ? "online" : "offline"}`;
   }
 
-  // Mobile inline
   if (serverStatusInlineEl) {
     serverStatusInlineEl.textContent = online ? "🟢 Online" : "🔴 Offline";
     serverStatusInlineEl.className =
       `server-status ${online ? "online" : "offline"} mobile-only`;
   }
 
-  // Disable mic if offline
   recordBtn.disabled = !online;
   recordBtn.style.opacity = online ? "1" : "0.5";
 }
@@ -129,9 +112,7 @@ function detectSilence() {
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
 
-  const rms = Math.sqrt(
-    buf.reduce((s, v) => s + v * v, 0) / buf.length
-  );
+  const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
 
   if (rms > VOLUME_THRESHOLD) {
     hasSpoken = true;
@@ -176,7 +157,6 @@ recordBtn.onclick = async () => {
 
     formData.append("audio", blob);
     formData.append("session_id", sessionId);
-    formData.append("display_name", displayName);
 
     try {
       const res = await fetch(`${API_URL}/infer`, {
@@ -199,15 +179,13 @@ recordBtn.onclick = async () => {
       if (data.audio_url) {
         audioEl.src = `${API_URL}${data.audio_url}`;
         audioEl.play();
-
         audioEl.onplay = () => setStatus("Speaking…", "speaking");
         audioEl.onended = () => setStatus("Idle", "idle");
       } else {
         setStatus("Idle", "idle");
       }
 
-    } catch (err) {
-      console.error(err);
+    } catch {
       setStatus("Server not reachable", "offline");
     }
   };
@@ -232,7 +210,6 @@ sendFeedbackBtn.onclick = async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         session_id: sessionId,
-        display_name: displayName,
         feedback: text,
         userAgent: navigator.userAgent,
         timestamp: new Date().toISOString()
