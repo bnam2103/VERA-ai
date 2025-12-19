@@ -133,4 +133,97 @@ function detectSilence() {
 function startRecording() {
   if (!micStream) return;
 
-  audioCh
+  audioChunks = [];
+  hasSpoken = false;
+
+  mediaRecorder = new MediaRecorder(micStream);
+  mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+  mediaRecorder.onstop = sendUtterance;
+
+  mediaRecorder.start();
+  detectSilence();
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+  }
+}
+
+/* =========================
+   SEND UTTERANCE
+========================= */
+
+async function sendUtterance() {
+  if (!hasSpoken || !serverOnline) return;
+
+  processing = true;
+  setStatus("Thinking…", "thinking");
+
+  const blob = new Blob(audioChunks, { type: "audio/webm" });
+  const formData = new FormData();
+  formData.append("audio", blob);
+  formData.append("session_id", sessionId);
+
+  try {
+    const res = await fetch(`${API_URL}/infer`, {
+      method: "POST",
+      body: formData
+    });
+
+    if (!res.ok) throw new Error();
+
+    const data = await res.json();
+
+    addBubble(data.transcript, "user");
+    addBubble(data.reply, "vera");
+
+    audioEl.src = `${API_URL}${data.audio_url}`;
+
+    audioEl
+      .play()
+      .then(() => setStatus("Speaking…", "speaking"))
+      .catch(() => {
+        setStatus("Tap to enable audio", "idle");
+      });
+
+    audioEl.onended = () => {
+      processing = false;
+      if (listening) {
+        setStatus("Listening…", "recording");
+        startRecording();
+      } else {
+        setStatus("Idle", "idle");
+      }
+    };
+
+  } catch {
+    processing = false;
+    setStatus("Request failed", "idle");
+  }
+}
+
+/* =========================
+   MIC BUTTON
+========================= */
+
+recordBtn.onclick = async () => {
+  if (!serverOnline) return;
+
+  try {
+    await initMic();
+  } catch {
+    return;
+  }
+
+  listening = !listening;
+  recordBtn.setAttribute("aria-pressed", listening);
+
+  if (listening) {
+    setStatus("Listening…", "recording");
+    startRecording();
+  } else {
+    stopRecording();
+    setStatus(processing ? "Thinking…" : "Idle", "idle");
+  }
+};
