@@ -1,5 +1,5 @@
 /* =========================
-   SESSION SETUP (PERSISTENT)
+   SESSION
 ========================= */
 
 let sessionId = localStorage.getItem("vera_session_id");
@@ -9,22 +9,24 @@ if (!sessionId) {
 }
 
 /* =========================
-   GLOBAL STATE
+   STATE MACHINE
 ========================= */
+
+let listening = false;
+let processing = false;
 
 let mediaRecorder;
 let audioChunks = [];
-let micStream = null;
-let analyser, audioCtx;
+let micStream, audioCtx, analyser;
 let silenceTimer;
 let hasSpoken = false;
 
-const SILENCE_MS = 1350;
+const SILENCE_MS = 1800;
 const VOLUME_THRESHOLD = 0.004;
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /* =========================
-   DOM ELEMENTS
+   DOM
 ========================= */
 
 const recordBtn = document.getElementById("record");
@@ -32,45 +34,8 @@ const statusEl = document.getElementById("status");
 const convoEl = document.getElementById("conversation");
 const audioEl = document.getElementById("audio");
 
-const serverStatusEl = document.getElementById("server-status");
-const serverStatusInlineEl = document.getElementById("server-status-inline");
-
-const feedbackInput = document.getElementById("feedback-input");
-const sendFeedbackBtn = document.getElementById("send-feedback");
-const feedbackStatusEl = document.getElementById("feedback-status");
-
 /* =========================
-   SERVER HEALTH
-========================= */
-
-async function checkServer() {
-  let online = false;
-
-  try {
-    const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
-    online = res.ok;
-  } catch {}
-
-  if (serverStatusEl) {
-    serverStatusEl.textContent = online ? "🟢 Server Online" : "🔴 Server Offline";
-    serverStatusEl.className = `server-status ${online ? "online" : "offline"}`;
-  }
-
-  if (serverStatusInlineEl) {
-    serverStatusInlineEl.textContent = online ? "🟢 Online" : "🔴 Offline";
-    serverStatusInlineEl.className =
-      `server-status ${online ? "online" : "offline"} mobile-only`;
-  }
-
-  recordBtn.disabled = !online;
-  recordBtn.style.opacity = online ? "1" : "0.5";
-}
-
-checkServer();
-setInterval(checkServer, 15_000);
-
-/* =========================
-   UI HELPERS
+   UI
 ========================= */
 
 function setStatus(text, cls) {
@@ -87,35 +52,28 @@ function addBubble(text, who) {
 }
 
 /* =========================
-   MIC SETUP
+   MIC INIT
 ========================= */
 
 async function initMic() {
   if (micStream) return;
 
-  micStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false
-    }
-  });
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
   audioCtx = new AudioContext({ sampleRate: 16000 });
-  await audioCtx.resume();
-
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 2048;
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
 }
 
-
 /* =========================
-   SILENCE DETECTION
+   SILENCE LOOP
 ========================= */
 
 function detectSilence() {
+  if (!listening) return;
+
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
 
@@ -124,112 +82,91 @@ function detectSilence() {
   if (rms > VOLUME_THRESHOLD) {
     hasSpoken = true;
     clearTimeout(silenceTimer);
-
-    silenceTimer = setTimeout(() => {
-      if (mediaRecorder.state === "recording") {
-        mediaRecorder.stop();
-      }
-    }, SILENCE_MS);
+    silenceTimer = setTimeout(finalizeUtterance, SILENCE_MS);
   }
 
-  if (mediaRecorder.state === "recording") {
-    requestAnimationFrame(detectSilence);
+  requestAnimationFrame(detectSilence);
+}
+
+/* =========================
+   RECORDING
+========================= */
+
+function startRecording() {
+  audioChunks = [];
+  hasSpoken = false;
+
+  mediaRecorder = new MediaRecorder(micStream);
+  mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+  mediaRecorder.start();
+
+  detectSilence();
+}
+
+function finalizeUtterance() {
+  if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+  mediaRecorder.stop();
+}
+
+mediaRecorder?.addEventListener?.("stop", sendUtterance);
+
+async function sendUtterance() {
+  if (!hasSpoken) return;
+
+  processing = true;
+  setStatus("Thinking…", "thinking");
+
+  const blob = new Blob(audioChunks, { type: "audio/webm" });
+  const formData = new FormData();
+  formData.append("audio", blob);
+  formData.append("session_id", sessionId);
+
+  try {
+    const res = await fetch(`${API_URL}/infer`, {
+      method: "POST",
+      body: formData
+    });
+
+    const data = await res.json();
+
+    addBubble(data.transcript, "user");
+    addBubble(data.reply, "vera");
+
+    audioEl.src = `${API_URL}${data.audio_url}`;
+    audioEl.play();
+
+    audioEl.onplay = () => setStatus("Speaking…", "speaking");
+    audioEl.onended = () => {
+      processing = false;
+      if (listening) {
+        setStatus("Listening…", "recording");
+        startRecording();
+      } else {
+        setStatus("Idle", "idle");
+      }
+    };
+
+  } catch {
+    setStatus("Server error", "offline");
+    processing = false;
   }
 }
 
 /* =========================
-   RECORD BUTTON
+   MIC BUTTON
 ========================= */
 
 recordBtn.onclick = async () => {
   await initMic();
 
-  audioChunks = [];
-  hasSpoken = false;
-  setStatus("Recording…", "recording");
+  listening = !listening;
+  recordBtn.setAttribute("aria-pressed", listening);
 
-  mediaRecorder = new MediaRecorder(micStream);
-  mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-
-  mediaRecorder.onstop = async () => {
-    if (!hasSpoken) {
-      setStatus("Idle", "idle");
-      return;
-    }
-
-    setStatus("Thinking…", "thinking");
-
-    const blob = new Blob(audioChunks, { type: "audio/webm" });
-    const formData = new FormData();
-
-    formData.append("audio", blob);
-    formData.append("session_id", sessionId);
-
-    try {
-      const res = await fetch(`${API_URL}/infer`, {
-        method: "POST",
-        body: formData
-      });
-
-      if (res.status === 429) {
-        setStatus("Server busy — try again", "offline");
-        return;
-      }
-
-      if (!res.ok) throw new Error("Inference failed");
-
-      const data = await res.json();
-
-      addBubble(data.transcript, "user");
-      addBubble(data.reply, "vera");
-
-      if (data.audio_url) {
-        audioEl.src = `${API_URL}${data.audio_url}`;
-        audioEl.play();
-        audioEl.onplay = () => setStatus("Speaking…", "speaking");
-        audioEl.onended = () => setStatus("Idle", "idle");
-      } else {
-        setStatus("Idle", "idle");
-      }
-
-    } catch {
-      setStatus("Server not reachable", "offline");
-    }
-  };
-
-  mediaRecorder.start();
-  detectSilence();
-};
-
-/* =========================
-   FEEDBACK
-========================= */
-
-sendFeedbackBtn.onclick = async () => {
-  const text = feedbackInput.value.trim();
-  if (!text) return;
-
-  feedbackStatusEl.textContent = "Sending…";
-
-  try {
-    const res = await fetch(`${API_URL}/feedback`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: sessionId,
-        feedback: text,
-        userAgent: navigator.userAgent,
-        timestamp: new Date().toISOString()
-      })
-    });
-
-    if (!res.ok) throw new Error();
-
-    feedbackInput.value = "";
-    feedbackStatusEl.textContent = "Thank you for your feedback!";
-    feedbackStatusEl.style.color = "#5cffb1";
-  } catch {
-    feedbackStatusEl.textContent = "Failed to send feedback.";
-    feedbackStatusEl.style.color = "#ff6b6b";
+  if (listening) {
+    setStatus("Listening…", "recording");
+    startRecording();
+  } else {
+    setStatus(processing ? "Thinking…" : "Idle", "idle");
+    mediaRecorder?.stop();
   }
 };

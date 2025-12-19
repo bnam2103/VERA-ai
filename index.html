@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
 
-  <!-- REQUIRED FOR MOBILE -->
+  <!-- 🔑 REQUIRED FOR MOBILE -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <title>VERA AI</title>
@@ -36,19 +36,19 @@
       <section class="sidebar-section">
         <h2>How to Use</h2>
         <ol>
-          <li>Click the microphone</li>
+          <li>Click the microphone to start listening</li>
           <li>Speak naturally</li>
-          <li>Pause to send</li>
-          <li>Listen to VERA respond</li>
+          <li>Pause to let VERA think and respond</li>
+          <li>Click the microphone again to stop listening</li>
         </ol>
         <p>
-          A chat log will be displayed in the right section in case
-          VERA couldn’t say something correctly.
+          A chat log will be displayed in case
+          VERA couldn’t say something clearly.
         </p>
         <p>
           This experience requires a microphone and a speaker.
-          AirPods work, but transcription accuracy may vary. 
-          A good microphone and speakers are recommended for best results.
+          Headphones work, but transcription accuracy may vary.
+          A good microphone is recommended for best results.
         </p>
       </section>
 
@@ -77,9 +77,10 @@
           🔴 Server Offline
         </div>
         <p class="status-hint">
-          The server must be online to process audio. 
+          The server must be online to process audio.
+        </p>
         <p>
-          Working Hours: 6pm - 12am (PST)
+          Working Hours: 6pm – 12am (PST)
         </p>
       </section>
 
@@ -95,8 +96,18 @@
 
       <!-- Input Bar (Fixed on Mobile) -->
       <div class="input-bar">
-        <button id="record" aria-label="Record">🎙️</button>
 
+        <!-- 🎙️ TOGGLE MIC -->
+        <button
+          id="record"
+          aria-label="Toggle microphone"
+          aria-pressed="false"
+          data-state="idle"
+        >
+          🎙️
+        </button>
+
+        <!-- System Status -->
         <span id="status" class="status idle">Idle</span>
 
         <!-- Mobile-only server status -->
@@ -108,9 +119,8 @@
         </span>
       </div>
 
-
       <!-- Audio Playback -->
-      <audio id="audio"></audio>
+      <audio id="audio" preload="auto"></audio>
 
     </main>
 
@@ -119,4 +129,3 @@
   <script src="app.js"></script>
 </body>
 </html>
-
