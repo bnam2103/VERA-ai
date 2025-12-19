@@ -9,18 +9,17 @@ if (!sessionId) {
 }
 
 /* =========================
-   STATE
+   STATE MACHINE
 ========================= */
 
-let micOn = false;
+let listening = false;
 let processing = false;
 
-let micStream, audioCtx, analyser;
 let mediaRecorder;
-
-let currentChunks = [];
+let audioChunks = [];
+let micStream, audioCtx, analyser;
 let silenceTimer;
-let hasSpeech = false;
+let hasSpoken = false;
 
 const SILENCE_MS = 1800;
 const VOLUME_THRESHOLD = 0.004;
@@ -66,18 +65,14 @@ async function initMic() {
   analyser.fftSize = 2048;
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
-
-  mediaRecorder = new MediaRecorder(micStream);
-  mediaRecorder.ondataavailable = e => currentChunks.push(e.data);
-  mediaRecorder.start(); // 🔑 start ONCE
 }
 
 /* =========================
-   SILENCE DETECTOR
+   SILENCE LOOP
 ========================= */
 
 function detectSilence() {
-  if (!micOn) return;
+  if (!listening) return;
 
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
@@ -85,42 +80,43 @@ function detectSilence() {
   const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
 
   if (rms > VOLUME_THRESHOLD) {
-    hasSpeech = true;
+    hasSpoken = true;
     clearTimeout(silenceTimer);
-
-    silenceTimer = setTimeout(() => {
-      if (hasSpeech && !processing) {
-        finalizeUtterance();
-      }
-    }, SILENCE_MS);
+    silenceTimer = setTimeout(finalizeUtterance, SILENCE_MS);
   }
 
   requestAnimationFrame(detectSilence);
 }
 
 /* =========================
-   UTTERANCE FINALIZATION
+   RECORDING
 ========================= */
 
-function finalizeUtterance() {
-  if (currentChunks.length === 0) return;
+function startRecording() {
+  audioChunks = [];
+  hasSpoken = false;
 
-  const chunks = currentChunks.slice();
-  currentChunks = [];
-  hasSpeech = false;
+  mediaRecorder = new MediaRecorder(micStream);
+  mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+  mediaRecorder.start();
 
-  sendUtterance(chunks);
+  detectSilence();
 }
 
-/* =========================
-   SEND TO BACKEND
-========================= */
+function finalizeUtterance() {
+  if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+  mediaRecorder.stop();
+}
 
-async function sendUtterance(chunks) {
+mediaRecorder?.addEventListener?.("stop", sendUtterance);
+
+async function sendUtterance() {
+  if (!hasSpoken) return;
+
   processing = true;
   setStatus("Thinking…", "thinking");
 
-  const blob = new Blob(chunks, { type: "audio/webm" });
+  const blob = new Blob(audioChunks, { type: "audio/webm" });
   const formData = new FormData();
   formData.append("audio", blob);
   formData.append("session_id", sessionId);
@@ -142,16 +138,17 @@ async function sendUtterance(chunks) {
     audioEl.onplay = () => setStatus("Speaking…", "speaking");
     audioEl.onended = () => {
       processing = false;
-      if (micOn) {
+      if (listening) {
         setStatus("Listening…", "recording");
+        startRecording();
       } else {
         setStatus("Idle", "idle");
       }
     };
 
   } catch {
-    processing = false;
     setStatus("Server error", "offline");
+    processing = false;
   }
 }
 
@@ -162,13 +159,14 @@ async function sendUtterance(chunks) {
 recordBtn.onclick = async () => {
   await initMic();
 
-  micOn = !micOn;
-  recordBtn.setAttribute("aria-pressed", micOn);
+  listening = !listening;
+  recordBtn.setAttribute("aria-pressed", listening);
 
-  if (micOn) {
+  if (listening) {
     setStatus("Listening…", "recording");
-    detectSilence();
+    startRecording();
   } else {
     setStatus(processing ? "Thinking…" : "Idle", "idle");
+    mediaRecorder?.stop();
   }
 };
