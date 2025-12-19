@@ -9,22 +9,20 @@ if (!sessionId) {
 }
 
 /* =========================
-   STATE
+   STATE MACHINE
 ========================= */
 
 let listening = false;
 let processing = false;
 
-let micStream, audioCtx, analyser;
 let mediaRecorder;
-
-let buffer = [];
+let audioChunks = [];
+let micStream, audioCtx, analyser;
 let silenceTimer;
 let hasSpoken = false;
 
 const SILENCE_MS = 1800;
 const VOLUME_THRESHOLD = 0.004;
-const MIN_AUDIO_BYTES = 1000; // 🔑 prevents 422s
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /* =========================
@@ -36,11 +34,8 @@ const statusEl = document.getElementById("status");
 const convoEl = document.getElementById("conversation");
 const audioEl = document.getElementById("audio");
 
-const serverStatusEl = document.getElementById("server-status");
-const serverStatusInlineEl = document.getElementById("server-status-inline");
-
 /* =========================
-   UI HELPERS
+   UI
 ========================= */
 
 function setStatus(text, cls) {
@@ -57,41 +52,6 @@ function addBubble(text, who) {
 }
 
 /* =========================
-   SERVER HEALTH CHECK
-========================= */
-
-async function checkServer() {
-  try {
-    const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
-    if (!res.ok) throw new Error();
-
-    serverStatusEl.textContent = "🟢 Server Online";
-    serverStatusEl.className = "server-status online";
-
-    serverStatusInlineEl.textContent = "🟢 Online";
-    serverStatusInlineEl.className =
-      "server-status online mobile-only";
-
-    recordBtn.disabled = false;
-    recordBtn.style.opacity = "1";
-
-  } catch {
-    serverStatusEl.textContent = "🔴 Server Offline";
-    serverStatusEl.className = "server-status offline";
-
-    serverStatusInlineEl.textContent = "🔴 Offline";
-    serverStatusInlineEl.className =
-      "server-status offline mobile-only";
-
-    recordBtn.disabled = true;
-    recordBtn.style.opacity = "0.5";
-  }
-}
-
-checkServer();
-setInterval(checkServer, 15_000);
-
-/* =========================
    MIC INIT
 ========================= */
 
@@ -105,15 +65,10 @@ async function initMic() {
   analyser.fftSize = 2048;
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
-
-  // 🔑 ONE continuous recorder
-  mediaRecorder = new MediaRecorder(micStream);
-  mediaRecorder.ondataavailable = e => buffer.push(e.data);
-  mediaRecorder.start(250); // slice every 250ms
 }
 
 /* =========================
-   SILENCE DETECTION LOOP
+   SILENCE LOOP
 ========================= */
 
 function detectSilence() {
@@ -122,57 +77,48 @@ function detectSilence() {
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
 
-  const rms = Math.sqrt(
-    buf.reduce((s, v) => s + v * v, 0) / buf.length
-  );
+  const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
 
   if (rms > VOLUME_THRESHOLD) {
     hasSpoken = true;
     clearTimeout(silenceTimer);
-
-    silenceTimer = setTimeout(() => {
-      if (hasSpoken && !processing) {
-        finalizeUtterance();
-      }
-    }, SILENCE_MS);
+    silenceTimer = setTimeout(finalizeUtterance, SILENCE_MS);
   }
 
   requestAnimationFrame(detectSilence);
 }
 
 /* =========================
-   FINALIZE UTTERANCE
+   RECORDING
 ========================= */
 
-function finalizeUtterance() {
-  if (buffer.length === 0) return;
-
-  const chunks = buffer.slice();
-  buffer = [];
+function startRecording() {
+  audioChunks = [];
   hasSpoken = false;
 
-  sendUtterance(chunks);
+  mediaRecorder = new MediaRecorder(micStream);
+  mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+  mediaRecorder.start();
+
+  detectSilence();
 }
 
-/* =========================
-   SEND TO BACKEND
-========================= */
+function finalizeUtterance() {
+  if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+  mediaRecorder.stop();
+}
 
-async function sendUtterance(chunks) {
-  const blob = new Blob(chunks, { type: "audio/webm" });
+mediaRecorder?.addEventListener?.("stop", sendUtterance);
 
-  // 🔑 HARD GUARD AGAINST EMPTY / INVALID AUDIO
-  if (blob.size < MIN_AUDIO_BYTES) {
-    processing = false;
-    setStatus(listening ? "Listening…" : "Idle", "idle");
-    return;
-  }
+async function sendUtterance() {
+  if (!hasSpoken) return;
 
   processing = true;
   setStatus("Thinking…", "thinking");
 
+  const blob = new Blob(audioChunks, { type: "audio/webm" });
   const formData = new FormData();
-  formData.append("audio", blob, "speech.webm");
+  formData.append("audio", blob);
   formData.append("session_id", sessionId);
 
   try {
@@ -180,8 +126,6 @@ async function sendUtterance(chunks) {
       method: "POST",
       body: formData
     });
-
-    if (!res.ok) throw new Error();
 
     const data = await res.json();
 
@@ -194,17 +138,22 @@ async function sendUtterance(chunks) {
     audioEl.onplay = () => setStatus("Speaking…", "speaking");
     audioEl.onended = () => {
       processing = false;
-      setStatus(listening ? "Listening…" : "Idle", "idle");
+      if (listening) {
+        setStatus("Listening…", "recording");
+        startRecording();
+      } else {
+        setStatus("Idle", "idle");
+      }
     };
 
   } catch {
-    processing = false;
     setStatus("Server error", "offline");
+    processing = false;
   }
 }
 
 /* =========================
-   MIC BUTTON (TOGGLE)
+   MIC BUTTON
 ========================= */
 
 recordBtn.onclick = async () => {
@@ -215,8 +164,9 @@ recordBtn.onclick = async () => {
 
   if (listening) {
     setStatus("Listening…", "recording");
-    detectSilence();
+    startRecording();
   } else {
     setStatus(processing ? "Thinking…" : "Idle", "idle");
+    mediaRecorder?.stop();
   }
 };
