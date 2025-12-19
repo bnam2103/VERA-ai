@@ -21,8 +21,9 @@ let audioChunks = [];
 let silenceTimer = null;
 let hasSpoken = false;
 
-let listening = false;     // user toggle
-let processing = false;   // backend busy
+let listening = false;   // ASR active
+let processing = false; // backend busy
+let paused = false;     // 🔑 unified pause state
 let rafId = null;
 
 /* =========================
@@ -120,7 +121,7 @@ async function initMic() {
 }
 
 /* =========================
-   SILENCE DETECTION LOOP
+   SILENCE DETECTION
 ========================= */
 
 function detectSilence() {
@@ -146,7 +147,7 @@ function detectSilence() {
 }
 
 /* =========================
-   START LISTENING LOOP
+   START LISTENING
 ========================= */
 
 function startListening() {
@@ -162,26 +163,46 @@ function startListening() {
   mediaRecorder.start();
   detectSilence();
 
-  setStatus("Listening…", "recording");
+  if (paused) {
+    setStatus("Paused — say “unpause” or press mic to continue", "paused");
+  } else {
+    setStatus("Listening…", "recording");
+  }
 }
 
 /* =========================
-   STOP EVERYTHING
+   BACKEND UNPAUSE SYNC
 ========================= */
 
-function stopListening() {
-  listening = false;
+async function sendUnpauseCommand() {
+  const formData = new FormData();
+  formData.append("audio", new Blob([], { type: "audio/webm" }));
+  formData.append("session_id", sessionId);
+  formData.append("force_unpause", "1");
 
-  if (rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
+  try {
+    await fetch(`${API_URL}/infer`, {
+      method: "POST",
+      body: formData
+    });
+  } catch {}
+}
 
-  if (mediaRecorder && mediaRecorder.state === "recording") {
-    mediaRecorder.stop();
-  }
+/* =========================
+   MANUAL PAUSE
+========================= */
 
-  setStatus("Paused", "idle");
+function pauseAssistant() {
+  paused = true;
+  processing = false;
+
+  audioEl.pause();
+  audioEl.src = "";
+
+  setStatus("Paused — say “unpause” or press mic to continue", "paused");
+
+  listening = true;
+  startListening();
 }
 
 /* =========================
@@ -212,17 +233,37 @@ async function handleUtterance() {
     });
 
     if (!res.ok) throw new Error();
-
     const data = await res.json();
 
-    // 🔑 BACKEND SILENT SKIP
-    if (data.skip) {
+    if (data.command === "pause") {
+      pauseAssistant();
+      return;
+    }
+
+    if (data.command === "unpause") {
+      paused = false;
       processing = false;
       setStatus("Listening…", "recording");
       startListening();
       return;
     }
-    
+
+    if (data.paused && !paused) {
+      paused = true;
+      processing = false;
+      setStatus("Paused — say “unpause” or press mic to continue", "paused");
+      startListening();
+      return;
+    }
+
+    if (data.skip) {
+      processing = false;
+      startListening();
+      return;
+    }
+
+    paused = false;
+
     addBubble(data.transcript, "user");
     addBubble(data.reply, "vera");
 
@@ -233,7 +274,7 @@ async function handleUtterance() {
       audioEl.onplay = () => setStatus("Speaking…", "speaking");
       audioEl.onended = () => {
         processing = false;
-        startListening(); // 🔁 resume loop
+        startListening();
       };
     } else {
       processing = false;
@@ -241,23 +282,34 @@ async function handleUtterance() {
     }
 
   } catch {
-    setStatus("Server error", "offline");
     processing = false;
+    setStatus("Server error", "offline");
   }
 }
 
 /* =========================
-   MIC BUTTON TOGGLE
+   MIC BUTTON
 ========================= */
 
 recordBtn.onclick = async () => {
   if (!listening) {
     await initMic();
     listening = true;
+    paused = false;
     startListening();
-  } else {
-    stopListening();
+    return;
   }
+
+  if (paused) {
+    paused = false;
+    processing = false;
+    setStatus("Listening…", "recording");
+    await sendUnpauseCommand();
+    startListening();
+    return;
+  }
+
+  pauseAssistant();
 };
 
 /* =========================

@@ -219,6 +219,13 @@ body {
 .speaking  { color: #5cffb1; }
 .idle      { color: #aaa; }
 
+/* Paused state */
+.paused {
+  color: #aaa;
+  font-style: italic;
+  opacity: 0.9;
+}
+
 /* =========================
    LARGE SCREENS (27"+)
 ========================= */
