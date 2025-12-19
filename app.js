@@ -24,6 +24,7 @@ let hasSpoken = false;
 
 const SILENCE_MS = 1800;
 const VOLUME_THRESHOLD = 0.004;
+const MIN_AUDIO_BYTES = 1000; // 🔑 prevents 422s
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /* =========================
@@ -64,38 +65,29 @@ async function checkServer() {
     const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
     if (!res.ok) throw new Error();
 
-    if (serverStatusEl) {
-      serverStatusEl.textContent = "🟢 Server Online";
-      serverStatusEl.className = "server-status online";
-    }
+    serverStatusEl.textContent = "🟢 Server Online";
+    serverStatusEl.className = "server-status online";
 
-    if (serverStatusInlineEl) {
-      serverStatusInlineEl.textContent = "🟢 Online";
-      serverStatusInlineEl.className =
-        "server-status online mobile-only";
-    }
+    serverStatusInlineEl.textContent = "🟢 Online";
+    serverStatusInlineEl.className =
+      "server-status online mobile-only";
 
     recordBtn.disabled = false;
     recordBtn.style.opacity = "1";
 
   } catch {
-    if (serverStatusEl) {
-      serverStatusEl.textContent = "🔴 Server Offline";
-      serverStatusEl.className = "server-status offline";
-    }
+    serverStatusEl.textContent = "🔴 Server Offline";
+    serverStatusEl.className = "server-status offline";
 
-    if (serverStatusInlineEl) {
-      serverStatusInlineEl.textContent = "🔴 Offline";
-      serverStatusInlineEl.className =
-        "server-status offline mobile-only";
-    }
+    serverStatusInlineEl.textContent = "🔴 Offline";
+    serverStatusInlineEl.className =
+      "server-status offline mobile-only";
 
     recordBtn.disabled = true;
     recordBtn.style.opacity = "0.5";
   }
 }
 
-// run on load + every 15s
 checkServer();
 setInterval(checkServer, 15_000);
 
@@ -167,12 +159,20 @@ function finalizeUtterance() {
 ========================= */
 
 async function sendUtterance(chunks) {
+  const blob = new Blob(chunks, { type: "audio/webm" });
+
+  // 🔑 HARD GUARD AGAINST EMPTY / INVALID AUDIO
+  if (blob.size < MIN_AUDIO_BYTES) {
+    processing = false;
+    setStatus(listening ? "Listening…" : "Idle", "idle");
+    return;
+  }
+
   processing = true;
   setStatus("Thinking…", "thinking");
 
-  const blob = new Blob(chunks, { type: "audio/webm" });
   const formData = new FormData();
-  formData.append("audio", blob);
+  formData.append("audio", blob, "speech.webm");
   formData.append("session_id", sessionId);
 
   try {
