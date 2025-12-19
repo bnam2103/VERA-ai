@@ -15,7 +15,7 @@ body {
   font-family: system-ui, sans-serif;
   background: radial-gradient(circle at top, #101820, #05080c);
   color: #eaeaea;
-  overflow: hidden; /* prevent page scroll */
+  overflow: hidden; /* desktop safety */
 }
 
 /* =========================
@@ -140,6 +140,7 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
+  height: 100vh; /* 🔑 critical */
   background: rgba(255,255,255,0.02);
 }
 
@@ -151,10 +152,13 @@ body {
   flex: 1;
   padding: 20px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 
   display: flex;
   flex-direction: column;
   gap: 12px;
+
+  padding-bottom: 32px; /* breathing room above input bar */
 }
 
 /* Chat bubbles */
@@ -183,13 +187,15 @@ body {
 ========================= */
 
 .input-bar {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 14px;
 
   border-top: 1px solid rgba(255,255,255,0.08);
-  background: rgba(0,0,0,0.15);
+  background: rgba(0,0,0,0.25);
+  backdrop-filter: blur(8px);
 }
 
 #record {
@@ -232,18 +238,19 @@ body {
 }
 
 /* =========================
-   MOBILE-ONLY SERVER STATUS
+   MOBILE
 ========================= */
 
-/* Default: hide mobile status */
 .mobile-only {
   display: none;
 }
 
-/* PHONE VIEW */
 @media (max-width: 768px) {
 
-  /* Hide sidebar */
+  body {
+    overflow: auto; /* 🔑 re-enable scrolling */
+  }
+
   .sidebar {
     display: none;
   }
@@ -256,22 +263,10 @@ body {
     display: inline;
   }
 
-  /* ⬆️ LIFT INPUT BAR ABOVE SYSTEM NAV BAR */
   .input-bar {
-    justify-content: space-between;
-    gap: 12px;
-
     padding-bottom: calc(
       14px + env(safe-area-inset-bottom)
     );
-
-    /* Optional but recommended */
-    position: sticky;
-    bottom: 0;
-  }
-
-  .status {
-    font-size: 14px;
   }
 
   .server-status {
