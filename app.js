@@ -35,8 +35,11 @@ const statusEl = document.getElementById("status");
 const convoEl = document.getElementById("conversation");
 const audioEl = document.getElementById("audio");
 
+const serverStatusEl = document.getElementById("server-status");
+const serverStatusInlineEl = document.getElementById("server-status-inline");
+
 /* =========================
-   UI
+   UI HELPERS
 ========================= */
 
 function setStatus(text, cls) {
@@ -53,6 +56,50 @@ function addBubble(text, who) {
 }
 
 /* =========================
+   SERVER HEALTH CHECK
+========================= */
+
+async function checkServer() {
+  try {
+    const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
+    if (!res.ok) throw new Error();
+
+    if (serverStatusEl) {
+      serverStatusEl.textContent = "🟢 Server Online";
+      serverStatusEl.className = "server-status online";
+    }
+
+    if (serverStatusInlineEl) {
+      serverStatusInlineEl.textContent = "🟢 Online";
+      serverStatusInlineEl.className =
+        "server-status online mobile-only";
+    }
+
+    recordBtn.disabled = false;
+    recordBtn.style.opacity = "1";
+
+  } catch {
+    if (serverStatusEl) {
+      serverStatusEl.textContent = "🔴 Server Offline";
+      serverStatusEl.className = "server-status offline";
+    }
+
+    if (serverStatusInlineEl) {
+      serverStatusInlineEl.textContent = "🔴 Offline";
+      serverStatusInlineEl.className =
+        "server-status offline mobile-only";
+    }
+
+    recordBtn.disabled = true;
+    recordBtn.style.opacity = "0.5";
+  }
+}
+
+// run on load + every 15s
+checkServer();
+setInterval(checkServer, 15_000);
+
+/* =========================
    MIC INIT
 ========================= */
 
@@ -67,10 +114,10 @@ async function initMic() {
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
 
-  // 🔑 START ONE RECORDER ONLY
+  // 🔑 ONE continuous recorder
   mediaRecorder = new MediaRecorder(micStream);
   mediaRecorder.ondataavailable = e => buffer.push(e.data);
-  mediaRecorder.start(250); // timeslice = 250ms
+  mediaRecorder.start(250); // slice every 250ms
 }
 
 /* =========================
@@ -83,7 +130,9 @@ function detectSilence() {
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
 
-  const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
+  const rms = Math.sqrt(
+    buf.reduce((s, v) => s + v * v, 0) / buf.length
+  );
 
   if (rms > VOLUME_THRESHOLD) {
     hasSpoken = true;
@@ -132,6 +181,8 @@ async function sendUtterance(chunks) {
       body: formData
     });
 
+    if (!res.ok) throw new Error();
+
     const data = await res.json();
 
     addBubble(data.transcript, "user");
@@ -153,7 +204,7 @@ async function sendUtterance(chunks) {
 }
 
 /* =========================
-   MIC BUTTON
+   MIC BUTTON (TOGGLE)
 ========================= */
 
 recordBtn.onclick = async () => {
