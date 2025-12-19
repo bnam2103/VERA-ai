@@ -12,19 +12,29 @@ if (!sessionId) {
    GLOBAL STATE
 ========================= */
 
-let mediaRecorder;
-let audioChunks = [];
 let micStream = null;
-let analyser, audioCtx;
-let silenceTimer;
+let audioCtx = null;
+let analyser = null;
+let mediaRecorder = null;
+
+let audioChunks = [];
+let silenceTimer = null;
 let hasSpoken = false;
 
+let listening = false;     // user toggle
+let processing = false;   // backend busy
+let rafId = null;
+
+/* =========================
+   CONFIG
+========================= */
+
 const SILENCE_MS = 1350;
-const VOLUME_THRESHOLD = 0.004;
+const VOLUME_THRESHOLD = 0.006;
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /* =========================
-   DOM ELEMENTS
+   DOM
 ========================= */
 
 const recordBtn = document.getElementById("record");
@@ -45,11 +55,13 @@ const feedbackStatusEl = document.getElementById("feedback-status");
 
 async function checkServer() {
   let online = false;
-
   try {
     const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
     online = res.ok;
   } catch {}
+
+  recordBtn.disabled = !online;
+  recordBtn.style.opacity = online ? "1" : "0.5";
 
   if (serverStatusEl) {
     serverStatusEl.textContent = online ? "🟢 Server Online" : "🔴 Server Offline";
@@ -61,9 +73,6 @@ async function checkServer() {
     serverStatusInlineEl.className =
       `server-status ${online ? "online" : "offline"} mobile-only`;
   }
-
-  recordBtn.disabled = !online;
-  recordBtn.style.opacity = online ? "1" : "0.5";
 }
 
 checkServer();
@@ -87,7 +96,7 @@ function addBubble(text, who) {
 }
 
 /* =========================
-   MIC SETUP
+   MIC INIT (ONCE)
 ========================= */
 
 async function initMic() {
@@ -110,12 +119,13 @@ async function initMic() {
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
 }
 
-
 /* =========================
-   SILENCE DETECTION
+   SILENCE DETECTION LOOP
 ========================= */
 
 function detectSilence() {
+  if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
 
@@ -132,104 +142,155 @@ function detectSilence() {
     }, SILENCE_MS);
   }
 
-  if (mediaRecorder.state === "recording") {
-    requestAnimationFrame(detectSilence);
+  rafId = requestAnimationFrame(detectSilence);
+}
+
+/* =========================
+   START LISTENING LOOP
+========================= */
+
+function startListening() {
+  if (!listening || processing) return;
+
+  audioChunks = [];
+  hasSpoken = false;
+
+  mediaRecorder = new MediaRecorder(micStream);
+  mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+  mediaRecorder.onstop = handleUtterance;
+
+  mediaRecorder.start();
+  detectSilence();
+
+  setStatus("Listening…", "recording");
+}
+
+/* =========================
+   STOP EVERYTHING
+========================= */
+
+function stopListening() {
+  listening = false;
+
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+  }
+
+  setStatus("Paused", "idle");
+}
+
+/* =========================
+   HANDLE UTTERANCE
+========================= */
+
+async function handleUtterance() {
+  if (!hasSpoken || !listening) return;
+
+  processing = true;
+  setStatus("Thinking…", "thinking");
+
+  const blob = new Blob(audioChunks, { type: "audio/webm" });
+  if (blob.size < 1500) {
+    processing = false;
+    startListening();
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("audio", blob);
+  formData.append("session_id", sessionId);
+
+  try {
+    const res = await fetch(`${API_URL}/infer`, {
+      method: "POST",
+      body: formData
+    });
+
+    if (!res.ok) throw new Error();
+
+    const data = await res.json();
+
+    // 🔑 BACKEND SILENT SKIP
+    if (data.skip) {
+      processing = false;
+      setStatus("Listening…", "recording");
+      startListening();
+      return;
+    }
+    
+    addBubble(data.transcript, "user");
+    addBubble(data.reply, "vera");
+
+    if (data.audio_url) {
+      audioEl.src = `${API_URL}${data.audio_url}`;
+      audioEl.play();
+
+      audioEl.onplay = () => setStatus("Speaking…", "speaking");
+      audioEl.onended = () => {
+        processing = false;
+        startListening(); // 🔁 resume loop
+      };
+    } else {
+      processing = false;
+      startListening();
+    }
+
+  } catch {
+    setStatus("Server error", "offline");
+    processing = false;
   }
 }
 
 /* =========================
-   RECORD BUTTON
+   MIC BUTTON TOGGLE
 ========================= */
 
 recordBtn.onclick = async () => {
-  await initMic();
-
-  audioChunks = [];
-  hasSpoken = false;
-  setStatus("Recording…", "recording");
-
-  mediaRecorder = new MediaRecorder(micStream);
-  mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-
-  mediaRecorder.onstop = async () => {
-    if (!hasSpoken) {
-      setStatus("Idle", "idle");
-      return;
-    }
-
-    setStatus("Thinking…", "thinking");
-
-    const blob = new Blob(audioChunks, { type: "audio/webm" });
-    const formData = new FormData();
-
-    formData.append("audio", blob);
-    formData.append("session_id", sessionId);
-
-    try {
-      const res = await fetch(`${API_URL}/infer`, {
-        method: "POST",
-        body: formData
-      });
-
-      if (res.status === 429) {
-        setStatus("Server busy — try again", "offline");
-        return;
-      }
-
-      if (!res.ok) throw new Error("Inference failed");
-
-      const data = await res.json();
-
-      addBubble(data.transcript, "user");
-      addBubble(data.reply, "vera");
-
-      if (data.audio_url) {
-        audioEl.src = `${API_URL}${data.audio_url}`;
-        audioEl.play();
-        audioEl.onplay = () => setStatus("Speaking…", "speaking");
-        audioEl.onended = () => setStatus("Idle", "idle");
-      } else {
-        setStatus("Idle", "idle");
-      }
-
-    } catch {
-      setStatus("Server not reachable", "offline");
-    }
-  };
-
-  mediaRecorder.start();
-  detectSilence();
+  if (!listening) {
+    await initMic();
+    listening = true;
+    startListening();
+  } else {
+    stopListening();
+  }
 };
 
 /* =========================
    FEEDBACK
 ========================= */
 
-sendFeedbackBtn.onclick = async () => {
-  const text = feedbackInput.value.trim();
-  if (!text) return;
+if (sendFeedbackBtn) {
+  sendFeedbackBtn.onclick = async () => {
+    const text = feedbackInput.value.trim();
+    if (!text) return;
 
-  feedbackStatusEl.textContent = "Sending…";
+    feedbackStatusEl.textContent = "Sending…";
 
-  try {
-    const res = await fetch(`${API_URL}/feedback`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: sessionId,
-        feedback: text,
-        userAgent: navigator.userAgent,
-        timestamp: new Date().toISOString()
-      })
-    });
+    try {
+      const res = await fetch(`${API_URL}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          feedback: text,
+          userAgent: navigator.userAgent,
+          timestamp: new Date().toISOString()
+        })
+      });
 
-    if (!res.ok) throw new Error();
+      if (!res.ok) throw new Error();
 
-    feedbackInput.value = "";
-    feedbackStatusEl.textContent = "Thank you for your feedback!";
-    feedbackStatusEl.style.color = "#5cffb1";
-  } catch {
-    feedbackStatusEl.textContent = "Failed to send feedback.";
-    feedbackStatusEl.style.color = "#ff6b6b";
-  }
-};
+      feedbackInput.value = "";
+      feedbackStatusEl.textContent = "Thank you for your feedback!";
+      feedbackStatusEl.style.color = "#5cffb1";
+    } catch {
+      feedbackStatusEl.textContent = "Failed to send feedback.";
+      feedbackStatusEl.style.color = "#ff6b6b";
+    }
+  };
+}
