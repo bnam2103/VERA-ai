@@ -19,7 +19,9 @@ let mediaRecorder = null;
 
 let audioChunks = [];
 let silenceTimer = null;
+
 let hasSpoken = false;
+let speechFrames = 0; // 🔑 NEW
 
 let listening = false;
 let processing = false;
@@ -32,7 +34,10 @@ let rafId = null;
 
 const SILENCE_MS = 1350;
 const MAX_WAIT_FOR_SPEECH_MS = 2000;
+const TRAILING_MS = 300;
+
 const VOLUME_THRESHOLD = 0.006;
+const MIN_SPEECH_FRAMES = 8; // ~8 * 16ms ≈ 130ms
 const MIN_AUDIO_BYTES = 1500;
 
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
@@ -49,10 +54,10 @@ const audioEl = document.getElementById("audio");
 const serverStatusEl = document.getElementById("server-status");
 const serverStatusInlineEl = document.getElementById("server-status-inline");
 
-
 const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
 const feedbackStatusEl = document.getElementById("feedback-status");
+
 /* =========================
    SERVER HEALTH
 ========================= */
@@ -138,12 +143,19 @@ function detectSilence() {
   const rms = Math.sqrt(sum / buf.length);
 
   if (rms > VOLUME_THRESHOLD) {
-    hasSpoken = true;
+    speechFrames++;
 
-    clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(() => {
-      mediaRecorder.stop();
-    }, SILENCE_MS);
+    // 🔑 require sustained speech
+    if (speechFrames >= MIN_SPEECH_FRAMES) {
+      hasSpoken = true;
+
+      clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        mediaRecorder.stop();
+      }, SILENCE_MS);
+    }
+  } else {
+    speechFrames = 0; // reset on silence
   }
 
   rafId = requestAnimationFrame(detectSilence);
@@ -158,6 +170,7 @@ function startListening() {
 
   audioChunks = [];
   hasSpoken = false;
+  speechFrames = 0;
 
   mediaRecorder = new MediaRecorder(micStream);
   mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
@@ -187,7 +200,6 @@ function startListening() {
 ========================= */
 
 async function handleUtterance() {
-  // 🔑 HARD DROP: no speech detected
   if (!hasSpoken || !listening) {
     processing = false;
     startListening();
@@ -196,7 +208,6 @@ async function handleUtterance() {
 
   const blob = new Blob(audioChunks, { type: "audio/webm" });
 
-  // 🔑 HARD DROP: too small
   if (blob.size < MIN_AUDIO_BYTES) {
     processing = false;
     startListening();
