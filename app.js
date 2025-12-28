@@ -18,10 +18,8 @@ let analyser = null;
 let mediaRecorder = null;
 
 let audioChunks = [];
-let silenceTimer = null;
-
 let hasSpoken = false;
-let speechFrames = 0; // 🔑 NEW
+let lastVoiceTime = 0;
 
 let listening = false;
 let processing = false;
@@ -32,12 +30,10 @@ let rafId = null;
    CONFIG
 ========================= */
 
-const SILENCE_MS = 1350;
-const MAX_WAIT_FOR_SPEECH_MS = 2000;
-const TRAILING_MS = 300;
-
 const VOLUME_THRESHOLD = 0.006;
-const MIN_SPEECH_FRAMES = 7; // ~8 * 16ms ≈ 130ms
+const SILENCE_MS = 600;     // silence before ending speech
+const TRAILING_MS = 300;   // guaranteed tail
+const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
 
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
@@ -73,7 +69,9 @@ async function checkServer() {
   recordBtn.style.opacity = online ? "1" : "0.5";
 
   if (serverStatusEl) {
-    serverStatusEl.textContent = online ? "🟢 Server Online" : "🔴 Server Offline";
+    serverStatusEl.textContent = online
+      ? "🟢 Server Online"
+      : "🔴 Server Offline";
     serverStatusEl.className = `server-status ${online ? "online" : "offline"}`;
   }
 
@@ -105,7 +103,7 @@ function addBubble(text, who) {
 }
 
 /* =========================
-   MIC INIT (ONCE)
+   MIC INIT
 ========================= */
 
 async function initMic() {
@@ -129,10 +127,10 @@ async function initMic() {
 }
 
 /* =========================
-   SILENCE / SPEECH DETECTION
+   SPEECH DETECTION
 ========================= */
 
-function detectSilence() {
+function detectSpeech() {
   if (!mediaRecorder || mediaRecorder.state !== "recording") return;
 
   const buf = new Float32Array(analyser.fftSize);
@@ -142,23 +140,22 @@ function detectSilence() {
   for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
   const rms = Math.sqrt(sum / buf.length);
 
+  const now = performance.now();
+
   if (rms > VOLUME_THRESHOLD) {
-    speechFrames++;
-
-    // 🔑 require sustained speech
-    if (speechFrames >= MIN_SPEECH_FRAMES) {
-      hasSpoken = true;
-
-      clearTimeout(silenceTimer);
-      silenceTimer = setTimeout(() => {
-        mediaRecorder.stop();
-      }, SILENCE_MS);
-    }
-  } else {
-    speechFrames = 0; // reset on silence
+    hasSpoken = true;
+    lastVoiceTime = now;
   }
 
-  rafId = requestAnimationFrame(detectSilence);
+  if (
+    hasSpoken &&
+    now - lastVoiceTime > SILENCE_MS + TRAILING_MS
+  ) {
+    mediaRecorder.stop();
+    return;
+  }
+
+  rafId = requestAnimationFrame(detectSpeech);
 }
 
 /* =========================
@@ -170,7 +167,7 @@ function startListening() {
 
   audioChunks = [];
   hasSpoken = false;
-  speechFrames = 0;
+  lastVoiceTime = 0;
 
   mediaRecorder = new MediaRecorder(micStream);
   mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
@@ -178,19 +175,16 @@ function startListening() {
 
   mediaRecorder.start();
 
-  // auto-stop if user never speaks
-  silenceTimer = setTimeout(() => {
+  setTimeout(() => {
     if (!hasSpoken && mediaRecorder.state === "recording") {
       mediaRecorder.stop();
     }
   }, MAX_WAIT_FOR_SPEECH_MS);
 
-  detectSilence();
+  detectSpeech();
 
   setStatus(
-    paused
-      ? "Paused — say “unpause” or press mic"
-      : "Listening…",
+    paused ? "Paused — say “unpause” or press mic" : "Listening…",
     paused ? "paused" : "recording"
   );
 }
@@ -227,7 +221,6 @@ async function handleUtterance() {
       body: formData
     });
 
-    if (!res.ok) throw new Error();
     const data = await res.json();
 
     if (data.skip) {
@@ -262,19 +255,14 @@ async function handleUtterance() {
     addBubble(data.transcript, "user");
     addBubble(data.reply, "vera");
 
-    if (data.audio_url) {
-      audioEl.src = `${API_URL}${data.audio_url}`;
-      audioEl.play();
+    audioEl.src = `${API_URL}${data.audio_url}`;
+    audioEl.play();
 
-      audioEl.onplay = () => setStatus("Speaking…", "speaking");
-      audioEl.onended = () => {
-        processing = false;
-        startListening();
-      };
-    } else {
+    audioEl.onplay = () => setStatus("Speaking…", "speaking");
+    audioEl.onended = () => {
       processing = false;
       startListening();
-    }
+    };
   } catch {
     processing = false;
     setStatus("Server error", "offline");
@@ -294,17 +282,11 @@ recordBtn.onclick = async () => {
     return;
   }
 
-  if (paused) {
-    paused = false;
-    processing = false;
-    startListening();
-    return;
-  }
-
-  paused = true;
+  paused = !paused;
   processing = false;
   startListening();
 };
+
 
 /* =========================
    FEEDBACK
