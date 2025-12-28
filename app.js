@@ -37,7 +37,7 @@ const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const TRAILING_MS = 300;
 
 const VOLUME_THRESHOLD = 0.006;
-const MIN_SPEECH_FRAMES = 8; // ~8 * 16ms ≈ 130ms
+const MIN_SPEECH_FRAMES = 7; // ~8 * 16ms ≈ 130ms
 const MIN_AUDIO_BYTES = 1500;
 
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
