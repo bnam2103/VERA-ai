@@ -21,9 +21,9 @@ let audioChunks = [];
 let silenceTimer = null;
 let hasSpoken = false;
 
-let listening = false;   // ASR active
-let processing = false; // backend busy
-let paused = false;     // 🔑 unified pause state
+let listening = false;
+let processing = false;
+let paused = false;
 let rafId = null;
 
 /* =========================
@@ -31,7 +31,10 @@ let rafId = null;
 ========================= */
 
 const SILENCE_MS = 1350;
+const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const VOLUME_THRESHOLD = 0.006;
+const MIN_AUDIO_BYTES = 1500;
+
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /* =========================
@@ -46,10 +49,10 @@ const audioEl = document.getElementById("audio");
 const serverStatusEl = document.getElementById("server-status");
 const serverStatusInlineEl = document.getElementById("server-status-inline");
 
+
 const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
 const feedbackStatusEl = document.getElementById("feedback-status");
-
 /* =========================
    SERVER HEALTH
 ========================= */
@@ -121,7 +124,7 @@ async function initMic() {
 }
 
 /* =========================
-   SILENCE DETECTION
+   SILENCE / SPEECH DETECTION
 ========================= */
 
 function detectSilence() {
@@ -130,16 +133,16 @@ function detectSilence() {
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
 
-  const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  const rms = Math.sqrt(sum / buf.length);
 
   if (rms > VOLUME_THRESHOLD) {
     hasSpoken = true;
-    clearTimeout(silenceTimer);
 
+    clearTimeout(silenceTimer);
     silenceTimer = setTimeout(() => {
-      if (mediaRecorder.state === "recording") {
-        mediaRecorder.stop();
-      }
+      mediaRecorder.stop();
     }, SILENCE_MS);
   }
 
@@ -161,48 +164,22 @@ function startListening() {
   mediaRecorder.onstop = handleUtterance;
 
   mediaRecorder.start();
+
+  // auto-stop if user never speaks
+  silenceTimer = setTimeout(() => {
+    if (!hasSpoken && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+    }
+  }, MAX_WAIT_FOR_SPEECH_MS);
+
   detectSilence();
 
-  if (paused) {
-    setStatus("Paused — say “unpause” or press mic to continue", "paused");
-  } else {
-    setStatus("Listening…", "recording");
-  }
-}
-
-/* =========================
-   BACKEND UNPAUSE SYNC
-========================= */
-
-async function sendUnpauseCommand() {
-  const formData = new FormData();
-  formData.append("audio", new Blob([], { type: "audio/webm" }));
-  formData.append("session_id", sessionId);
-  formData.append("force_unpause", "1");
-
-  try {
-    await fetch(`${API_URL}/infer`, {
-      method: "POST",
-      body: formData
-    });
-  } catch {}
-}
-
-/* =========================
-   MANUAL PAUSE
-========================= */
-
-function pauseAssistant() {
-  paused = true;
-  processing = false;
-
-  audioEl.pause();
-  audioEl.src = "";
-
-  setStatus("Paused — say “unpause” or press mic to continue", "paused");
-
-  listening = true;
-  startListening();
+  setStatus(
+    paused
+      ? "Paused — say “unpause” or press mic"
+      : "Listening…",
+    paused ? "paused" : "recording"
+  );
 }
 
 /* =========================
@@ -210,17 +187,24 @@ function pauseAssistant() {
 ========================= */
 
 async function handleUtterance() {
-  if (!hasSpoken || !listening) return;
-
-  processing = true;
-  setStatus("Thinking…", "thinking");
-
-  const blob = new Blob(audioChunks, { type: "audio/webm" });
-  if (blob.size < 1500) {
+  // 🔑 HARD DROP: no speech detected
+  if (!hasSpoken || !listening) {
     processing = false;
     startListening();
     return;
   }
+
+  const blob = new Blob(audioChunks, { type: "audio/webm" });
+
+  // 🔑 HARD DROP: too small
+  if (blob.size < MIN_AUDIO_BYTES) {
+    processing = false;
+    startListening();
+    return;
+  }
+
+  processing = true;
+  setStatus("Thinking…", "thinking");
 
   const formData = new FormData();
   formData.append("audio", blob);
@@ -235,28 +219,28 @@ async function handleUtterance() {
     if (!res.ok) throw new Error();
     const data = await res.json();
 
+    if (data.skip) {
+      processing = false;
+      startListening();
+      return;
+    }
+
     if (data.command === "pause") {
-      pauseAssistant();
+      paused = true;
+      processing = false;
+      startListening();
       return;
     }
 
     if (data.command === "unpause") {
       paused = false;
       processing = false;
-      setStatus("Listening…", "recording");
       startListening();
       return;
     }
 
-    if (data.paused && !paused) {
+    if (data.paused) {
       paused = true;
-      processing = false;
-      setStatus("Paused — say “unpause” or press mic to continue", "paused");
-      startListening();
-      return;
-    }
-
-    if (data.skip) {
       processing = false;
       startListening();
       return;
@@ -280,7 +264,6 @@ async function handleUtterance() {
       processing = false;
       startListening();
     }
-
   } catch {
     processing = false;
     setStatus("Server error", "offline");
@@ -303,13 +286,13 @@ recordBtn.onclick = async () => {
   if (paused) {
     paused = false;
     processing = false;
-    setStatus("Listening…", "recording");
-    await sendUnpauseCommand();
     startListening();
     return;
   }
 
-  pauseAssistant();
+  paused = true;
+  processing = false;
+  startListening();
 };
 
 /* =========================
@@ -322,6 +305,7 @@ if (sendFeedbackBtn) {
     if (!text) return;
 
     feedbackStatusEl.textContent = "Sending…";
+    feedbackStatusEl.style.color = "";
 
     try {
       const res = await fetch(`${API_URL}/feedback`, {
