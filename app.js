@@ -30,7 +30,7 @@ let rafId = null;
    CONFIG
 ========================= */
 
-const VOLUME_THRESHOLD = 0.015; // TUNER
+const VOLUME_THRESHOLD = 0.011; // TUNER
 const SILENCE_MS = 1050;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
 const MAX_WAIT_FOR_SPEECH_MS = 2000;
