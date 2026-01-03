@@ -975,7 +975,11 @@ body::before {
 
   /* 🔑 NAV FIX (ADD THIS) */
   .nav-right {
-    display: none; /* hide cluttered buttons */
+    gap: 16px;
+  }
+
+  .nav-right .nav-link:not(.music-toggle) {
+    display: none; /* hide text links */
   }
 
   .hamburger {
