@@ -1098,7 +1098,7 @@ body.vera-mode {
     position: fixed;
     right: 16px;
     top: 50%;
-    transform: translateY(-60%);
+    transform: translateY(-70%);
 
     font-size: 12px;
     opacity: 0.85;
