@@ -478,11 +478,20 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
 
   // Enter VERA App
   enterBtn.onclick = () => {
+    // 🔇 Stop background music when entering app
+    if (!bgMusic.paused) {
+      bgMusic.pause();
+      bgMusic.currentTime = 0; // optional: reset track
+      musicToggle.classList.remove("active");
+      localStorage.setItem(MUSIC_KEY, "false");
+    }
+
+    // Switch UI
     home.hidden = true;
     veraApp.hidden = false;
 
     document.body.classList.add("app-open");
-    document.body.classList.add("vera-mode"); // 🔑 NEW
+    document.body.classList.add("vera-mode");
 
     window.scrollTo(0, 0);
   };
