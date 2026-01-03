@@ -73,6 +73,15 @@
       <button class="nav-link" id="nav-projects">My Other Projects</button>
 
     </div>
+    <button class="hamburger" id="hamburger" aria-label="Open menu">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+</nav>
+  <div class="mobile-menu" id="mobile-menu">
+    <!-- we MOVE the existing buttons here via JS -->
+  </div>
   </nav>
 
   <header class="title-hero">
@@ -626,40 +635,87 @@ on creating meaningful interactions rather than just automation.`;
 
   revealEls.forEach(el => revealObserver.observe(el));
   /* =========================
-   BACKGROUND MUSIC
-========================= */
+    BACKGROUND MUSIC
+  ========================= */
 
-const bgMusic = document.getElementById("bg-music");
-const musicToggle = document.getElementById("music-toggle");
+  const bgMusic = document.getElementById("bg-music");
+  const musicToggle = document.getElementById("music-toggle");
 
-const BASE_MUSIC_VOLUME = 0.25;
-const MUSIC_KEY = "vera_music_enabled";
+  const BASE_MUSIC_VOLUME = 0.25;
+  const MUSIC_KEY = "vera_music_enabled";
 
-bgMusic.volume = BASE_MUSIC_VOLUME;
-bgMusic.loop = true;
+  bgMusic.volume = BASE_MUSIC_VOLUME;
+  bgMusic.loop = true;
 
-/* restore preference (but DO NOT autoplay sound) */
-const musicEnabled = localStorage.getItem(MUSIC_KEY) === "false";
-if (musicEnabled) {
-  musicToggle.classList.add("active");
-}
-
-/* user gesture REQUIRED */
-musicToggle.onclick = async () => {
-  if (bgMusic.paused) {
-    try {
-      await bgMusic.play(); // 🔑 this unlocks audio
-      bgMusic.volume = BASE_MUSIC_VOLUME;
-      musicToggle.classList.add("active");
-      localStorage.setItem(MUSIC_KEY, "true");
-    } catch (e) {
-      console.warn("Music play blocked:", e);
-    }
-  } else {
-    bgMusic.pause();
-    musicToggle.classList.remove("active");
-    localStorage.setItem(MUSIC_KEY, "false");
+  /* restore preference (but DO NOT autoplay sound) */
+  const musicEnabled = localStorage.getItem(MUSIC_KEY) === "false";
+  if (musicEnabled) {
+    musicToggle.classList.add("active");
   }
+
+  /* user gesture REQUIRED */
+  musicToggle.onclick = async () => {
+    if (bgMusic.paused) {
+      try {
+        await bgMusic.play(); // 🔑 this unlocks audio
+        bgMusic.volume = BASE_MUSIC_VOLUME;
+        musicToggle.classList.add("active");
+        localStorage.setItem(MUSIC_KEY, "true");
+      } catch (e) {
+        console.warn("Music play blocked:", e);
+      }
+    } else {
+      bgMusic.pause();
+      musicToggle.classList.remove("active");
+      localStorage.setItem(MUSIC_KEY, "false");
+    }
+  };
+  /* =========================
+    MOBILE NAV LOGIC
+  ========================= */
+
+  const hamburger = document.getElementById("hamburger");
+  const mobileMenu = document.getElementById("mobile-menu");
+  const navRight = document.getElementById("nav-right");
+
+  let navMoved = false;
+
+  function enableMobileNav() {
+    if (navMoved) return;
+
+    // move existing buttons into mobile menu
+    [...navRight.children].forEach(el => {
+      mobileMenu.appendChild(el);
+    });
+
+    navMoved = true;
+  }
+
+  function disableMobileNav() {
+    if (!navMoved) return;
+
+    // move buttons back to top nav
+    [...mobileMenu.children].forEach(el => {
+      navRight.appendChild(el);
+    });
+
+    mobileMenu.classList.remove("open");
+    navMoved = false;
+  }
+
+  function handleResize() {
+    if (window.innerWidth <= 768) {
+      enableMobileNav();
+    } else {
+      disableMobileNav();
+    }
+  }
+
+  handleResize();
+  window.addEventListener("resize", handleResize);
+
+  hamburger.onclick = () => {
+    mobileMenu.classList.toggle("open");
 };
 
 </script>

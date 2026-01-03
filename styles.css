@@ -136,6 +136,51 @@ body::before {
 }
 
 /* =========================
+   MOBILE NAV
+========================= */
+
+.hamburger {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hamburger span {
+  width: 22px;
+  height: 2px;
+  background: currentColor;
+  opacity: 0.85;
+}
+
+/* slide-down menu */
+.mobile-menu {
+  position: fixed;
+  top: 64px;
+  left: 0;
+  right: 0;
+
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+
+  background: rgba(0,0,0,0.85);
+  backdrop-filter: blur(14px);
+
+  transform: translateY(-120%);
+  transition: transform 0.35s ease;
+  z-index: 99;
+}
+
+.mobile-menu.open {
+  transform: translateY(0);
+}
+
+/* =========================
    MUSIC INDICATOR (FINAL FIX)
 ========================= */
 
@@ -409,12 +454,12 @@ body::before {
 }
 
 /* subtle vertical guide */
-#about-vera .hero-split::before {
+/* #about-vera .hero-split::before {
   content: "";
   position: absolute;
 
   left: 18%;
-  transform: translateX(-18%); /* true center of content */
+  transform: translateX(-18%); 
 
   top: -20px;
   width: 1px;
@@ -431,7 +476,7 @@ body::before {
 /* optional: reduce total void slightly */
 #about-vera.hero {
   max-height: 90vh;
-}
+} */
 
 .patch-notes {
   font-size: clamp(2.2rem, 5vw, 3.2rem);
@@ -927,6 +972,17 @@ body::before {
 }
 
 @media (max-width: 768px) {
+
+  /* 🔑 NAV FIX (ADD THIS) */
+  .nav-right {
+    display: none; /* hide cluttered buttons */
+  }
+
+  .hamburger {
+    display: flex; /* show triple-line menu */
+  }
+
+  /* 🔑 REST OF YOUR EXISTING MOBILE STYLES */
   .title-text {
     letter-spacing: 0.2em;
     font-size: 28px;
