@@ -1095,14 +1095,14 @@ body.vera-mode {
   }
 
   #server-status-inline {
-      position: fixed;
-      right: 16px;
-      bottom: calc(16px + env(safe-area-inset-bottom));
+    position: fixed;
+    right: 16px;
+    top: 50%;
+    transform: translateY(-50%);
 
-      font-size: 12px;
-      opacity: 0.85;
+    font-size: 12px;
+    opacity: 0.85;
 
-      pointer-events: none; /* purely informational */
-    }
-
+    pointer-events: none; /* purely informational */
+  }
 }
