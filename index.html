@@ -480,7 +480,10 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
   enterBtn.onclick = () => {
     home.hidden = true;
     veraApp.hidden = false;
+
     document.body.classList.add("app-open");
+    document.body.classList.add("vera-mode"); // 🔑 NEW
+
     window.scrollTo(0, 0);
   };
 
@@ -710,6 +713,20 @@ on creating meaningful interactions rather than just automation.`;
     mobileMenu.classList.toggle("open");
 };
 
+  function addMessage(text, sender) {
+    const role = sender === "user" ? "user" : "vera";
+
+    const row = document.createElement("div");
+    row.className = `message-row ${role}`;
+
+    const bubble = document.createElement("div");
+    bubble.className = `bubble ${role}`;
+    bubble.textContent = text;
+
+    row.appendChild(bubble);
+    conversation.appendChild(row);
+    conversation.scrollTop = conversation.scrollHeight;
+  }
 </script>
 
 

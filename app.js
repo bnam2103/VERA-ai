@@ -95,10 +95,15 @@ function setStatus(text, cls) {
 }
 
 function addBubble(text, who) {
-  const div = document.createElement("div");
-  div.className = `bubble ${who}`;
-  div.textContent = text;
-  convoEl.appendChild(div);
+  const row = document.createElement("div");
+  row.className = `message-row ${who}`;
+
+  const bubble = document.createElement("div");
+  bubble.className = `bubble ${who}`;
+  bubble.textContent = text;
+
+  row.appendChild(bubble);
+  convoEl.appendChild(row);
   convoEl.scrollTop = convoEl.scrollHeight;
 }
 

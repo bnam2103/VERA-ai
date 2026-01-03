@@ -42,6 +42,27 @@ body::before {
 }
 
 /* =========================
+   VERA MODE (HARD LOCK)
+========================= */
+
+body.vera-mode::before {
+  background: radial-gradient(
+    circle at top,
+    rgb(6, 14, 28),
+    rgb(2, 6, 12)
+  ) !important;
+}
+
+body.vera-mode #bg-video {
+  display: none !important;
+}
+
+/* stop JS-controlled z-index weirdness */
+body.vera-mode {
+  --bg-z: -1;
+}
+
+/* =========================
    BACKGROUND VIDEO
 ========================= */
 
@@ -898,27 +919,50 @@ body::before {
   flex: 1;
   padding: 20px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding-bottom: 32px;
+
+  padding-bottom: calc(32px + env(safe-area-inset-bottom)); /* 🔑 */
 }
 
+/* One row per message */
+.message-row {
+  display: flex;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+/* alignment */
+.message-row.user {
+  justify-content: flex-start;
+}
+
+.message-row.vera {
+  justify-content: flex-end;
+}
+
+/* Chat bubbles */
+
 .bubble {
+  display: inline-block;      /* 🔑 shrink to content */
+  width: fit-content;         /* 🔑 no forced width */
   max-width: 70%;
+
   padding: 10px 14px;
   border-radius: 16px;
   font-size: 14px;
   line-height: 1.4;
+
+  word-wrap: break-word;
+  white-space: pre-wrap;
 }
 
+
+/* USER — LEFT */
 .bubble.user {
-  align-self: flex-start;
   background: #1e2a36;
 }
 
+/* VERA — RIGHT */
 .bubble.vera {
-  align-self: flex-end;
   background: #2f3a44;
 }
 
@@ -930,11 +974,18 @@ body::before {
   display: flex;
   align-items: center;
   gap: 12px;
+
   padding: 14px;
+  padding-bottom: calc(14px + env(safe-area-inset-bottom)); /* 🔑 */
+
   border-top: 1px solid rgba(255,255,255,0.08);
   background: rgba(0,0,0,0.25);
   backdrop-filter: blur(8px);
+
+  position: sticky;
+  bottom: 0;
 }
+
 
 #record {
   width: 56px;
@@ -999,6 +1050,14 @@ body::before {
 
   body {
     overflow: auto;
+  }
+
+  body.vera-mode {
+    overflow: hidden; /* prevent background scroll */
+  }
+
+  .chat {
+    height: 100dvh; /* dynamic viewport height */
   }
 
   .sidebar {
