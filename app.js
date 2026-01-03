@@ -287,7 +287,13 @@ recordBtn.onclick = async () => {
     return;
   }
 
-  paused = !paused;
+  if (paused) {
+    // Tell backend to unpause
+    addBubble("unpause", "user");
+
+    paused = false;
+  }
+
   processing = false;
   startListening();
 };
