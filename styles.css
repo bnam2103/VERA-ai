@@ -1097,7 +1097,7 @@ body.vera-mode {
   #server-status-inline {
     position: fixed;
     right: 16px;
-    top: 30%;
+    top: 40%;
     transform: translateY(-70%);
 
     font-size: 12px;
