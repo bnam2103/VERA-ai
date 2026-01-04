@@ -177,6 +177,9 @@ const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
 const feedbackStatusEl = document.getElementById("feedback-status");
 
+function logPause(source) {
+  console.log(`[PAUSE] ${source}:`, paused);
+}
 /* =========================
    SERVER HEALTH
 ========================= */
@@ -386,24 +389,17 @@ async function handleUtterance() {
       return;
     }
 
-    if (data1.command) {
-      processing = false;
-      startListening();
-      return;
-    }
+
     if (data1.paused) {
       paused = true;
+      logPause("infer");
       processing = false;
+      setStatus("Paused — say “unpause” or press mic", "paused");
       startListening();
       return;
     }
-    
+
     const transcript = data1.transcript;
-    if (paused || data1.paused) {
-      processing = false;
-      startListening();
-      return;
-    }
 
     /* =========================
       STEP 2: ANALYZE COMPLEXITY (EARLY)
@@ -424,7 +420,7 @@ async function handleUtterance() {
       STEP 4: UI + LLM
     ========================= */
 
-    addBubble(transcript, "user");
+    
 
     const formData2 = new FormData();
     formData2.append("session_id", sessionId);
@@ -448,18 +444,28 @@ async function handleUtterance() {
     ========================= */
 
     if (data2.command) {
+      if (data2.command === "pause") {
+        paused = true;
+        logPause("continue"); // 🔑 HERE
+      }
+
+      if (data2.command === "unpause") {
+        paused = false;
+        logPause("continue"); // 🔑 HERE
+      }
+
+      setStatus(
+        paused
+          ? "Paused — say “unpause” or press mic"
+          : "Listening…",
+        paused ? "paused" : "recording"
+      );
+
       processing = false;
       startListening();
       return;
     }
-
-    if (data2.paused) {
-      paused = true;
-      processing = false;
-      startListening();
-      return;
-    }
-
+    addBubble(transcript, "user");
     addBubble(data2.reply, "vera");
 
     audioEl.src = `${API_URL}${data2.audio_url}`;
@@ -496,16 +502,13 @@ recordBtn.onclick = async () => {
     return;
   }
 
-  if (paused) {
-  paused = false;
-  await sendCommand("unpause");
-} else {
-  paused = true;
-  await sendCommand("pause");
-}
+    if (paused) {
+    await sendCommand("unpause");
+  } else {
+    await sendCommand("pause");
+  }
 
 processing = false;
-startListening();
 }
 
 
