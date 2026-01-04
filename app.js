@@ -38,6 +38,45 @@ const MIN_AUDIO_BYTES = 1500;
 
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
+/* =========================
+   THINKING FILLER
+========================= */
+
+const THINKING_FILLERS = [
+  "Hmm… let me think.",
+  "Let me see.",
+  "Alright, give me a second.",
+  "Okay… thinking.",
+  "One moment."
+];
+
+const FILLER_WORD_THRESHOLD = 20;
+
+let fillerAudio = null;
+
+function playThinkingFiller() {
+  if (fillerAudio) return;
+
+  const text =
+    THINKING_FILLERS[Math.floor(Math.random() * THINKING_FILLERS.length)];
+
+  fillerAudio = new Audio(
+    `${API_URL}/tts_filler?text=${encodeURIComponent(text)}`
+  );
+
+  fillerAudio.volume = 0.85;
+  fillerAudio.play().catch(() => {});
+}
+
+function stopThinkingFiller() {
+  if (!fillerAudio) return;
+  fillerAudio.pause();
+  fillerAudio = null;
+}
+
+function clearFillerTimer(timer) {
+  if (timer) clearTimeout(timer);
+}
 
 /* =========================
    DOM
@@ -233,7 +272,6 @@ async function handleUtterance() {
   }
 
   const blob = new Blob(audioChunks, { type: "audio/webm" });
-
   if (blob.size < MIN_AUDIO_BYTES) {
     processing = false;
     startListening();
@@ -243,67 +281,111 @@ async function handleUtterance() {
   processing = true;
   setStatus("Thinking…", "thinking");
 
-  const formData = new FormData();
-  formData.append("audio", blob);
-  formData.append("session_id", sessionId);
-
   try {
-    const res = await fetch(`${API_URL}/infer`, {
+    /* =========================
+       STEP 1: ASR ONLY
+    ========================= */
+
+    const formData = new FormData();
+    formData.append("audio", blob);
+    formData.append("session_id", sessionId);
+
+    const res1 = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData
     });
 
-    const data = await res.json();
+    const data1 = await res1.json();
 
-    if (data.skip) {
+    if (data1.skip) {
       processing = false;
       startListening();
       return;
     }
 
-    if (data.command === "pause") {
+    if (data1.command) {
+      processing = false;
+      startListening();
+      return;
+    }
+    if (data1.paused) {
       paused = true;
       processing = false;
       startListening();
       return;
     }
+    
+    const transcript = data1.transcript;
+    addBubble(transcript, "user");
 
-    if (data.command === "unpause") {
-      paused = false;
+    /* =========================
+       STEP 2: DECIDE FILLER
+    ========================= */
+
+    const wordCount = transcript.trim().split(/\s+/).length;
+    const shouldUseFiller = !paused && wordCount >= FILLER_WORD_THRESHOLD;
+
+    let fillerTimer = null;
+    if (shouldUseFiller) {
+      fillerTimer = setTimeout(playThinkingFiller, 200);
+    }
+
+    /* =========================
+       STEP 3: CONTINUE (LLM + TTS)
+    ========================= */
+
+    const formData2 = new FormData();
+    formData2.append("session_id", sessionId);
+    formData2.append("transcript", transcript);
+
+    const res2 = await fetch(`${API_URL}/continue`, {
+      method: "POST",
+      body: formData2
+    });
+
+    const data2 = await res2.json();
+
+    if (data2.command) {
+      stopThinkingFiller();
       processing = false;
       startListening();
       return;
     }
-
-    if (data.paused) {
+    if (data2.paused) {
+      clearFillerTimer(fillerTimer);
       paused = true;
+      stopThinkingFiller();
       processing = false;
       startListening();
       return;
     }
 
-    paused = false;
+    addBubble(data2.reply, "vera");
 
-    addBubble(data.transcript, "user");
-    addBubble(data.reply, "vera");
-
-    audioEl.src = `${API_URL}${data.audio_url}`;
+    audioEl.src = `${API_URL}${data2.audio_url}`;
     audioEl.play();
 
-    audioEl.onplay = () => setStatus("Speaking…", "speaking");
+    audioEl.onplay = () => {
+      if (fillerTimer) clearTimeout(fillerTimer);
+      stopThinkingFiller();
+      setStatus("Speaking…", "speaking");
+    };
+
     audioEl.onended = () => {
       setTimeout(() => {
-        hasSpoken = false;
-        lastVoiceTime = 0;
         processing = false;
         startListening();
       }, 250);
     };
-  } catch {
+
+  } catch (err) {
+    console.error(err);
+    stopThinkingFiller();
     processing = false;
     setStatus("Server error", "offline");
   }
 }
+
 
 /* =========================
    MIC BUTTON
