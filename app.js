@@ -25,6 +25,7 @@ let listening = false;
 let processing = false;
 let paused = false;
 let rafId = null;
+let fillerStartedAt = null;
 
 /* =========================
    CONFIG
@@ -35,47 +36,129 @@ const SILENCE_MS = 1050;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
 const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
-
+const THINKING_FILLERS = [ "Let me see", "Let me think…", ];
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
+const ENABLE_THINKING_FILLER = false;
 
 /* =========================
    THINKING FILLER
 ========================= */
 
-const THINKING_FILLERS = [
-  "Hmm… let me think.",
-  "Let me see.",
-  "Alright, give me a second.",
-  "Okay… thinking.",
-  "One moment."
+const fillerClips = [
+  new Audio("think.wav"),
+  new Audio("see.wav")
 ];
 
-const FILLER_WORD_THRESHOLD = 20;
+for (const a of fillerClips) {
+  a.preload = "auto";
+  a.volume = 0.85;
+}
 
+let activeFiller = null;
 let fillerAudio = null;
 
+// function playThinkingFiller() {
+//   if (fillerAudio) return;
+
+//   const clip =
+//     fillerClips[Math.floor(Math.random() * fillerClips.length)];
+
+//   console.log("[FILLER] playing local clip");
+
+//   clip.currentTime = 0;
+//   fillerAudio = clip;
+
+//   clip.onended = () => {
+//     fillerAudio = null;
+//   };
+
+//   clip.onerror = () => {
+//     console.warn("[FILLER] clip error");
+//     fillerAudio = null;
+//   };
+
+//   clip.play().catch(err => {
+//     console.warn("[FILLER] play failed:", err.name);
+//     fillerAudio = null;
+//   });
+// }
+
+// function stopThinkingFiller() {
+//   if (!fillerAudio) return;
+
+//   const cleanup = () => {
+//     fillerAudio.pause();
+//     fillerAudio.src = "";
+//     fillerAudio = null;
+//     fillerStartedAt = null;
+//   };
+
+//   cleanup();
+// }
 function playThinkingFiller() {
-  if (fillerAudio) return;
-
-  const text =
-    THINKING_FILLERS[Math.floor(Math.random() * THINKING_FILLERS.length)];
-
-  fillerAudio = new Audio(
-    `${API_URL}/tts_filler?text=${encodeURIComponent(text)}`
-  );
-
-  fillerAudio.volume = 0.85;
-  fillerAudio.play().catch(() => {});
+  return;
 }
 
 function stopThinkingFiller() {
-  if (!fillerAudio) return;
-  fillerAudio.pause();
-  fillerAudio = null;
+  return;
 }
 
-function clearFillerTimer(timer) {
-  if (timer) clearTimeout(timer);
+function analyzeTranscriptComplexity(text) {
+  const lower = text.toLowerCase().trim();
+  const wordCount = lower.split(/\s+/).length;
+
+  let score = 0;
+  const reasons = [];
+
+  // 1️⃣ Explicit length requests (strong signal)
+  if (
+    /\b(in|about|around|roughly|at\s+least|no\s+more\s+than|under|over)\s+\d+\s+(word|words|paragraph|paragraphs)\b/i
+      .test(lower)
+  ) {
+    score += 2;
+    reasons.push("explicit length request");
+  }
+
+  // 2️⃣ Open-ended explanation verbs
+  if (
+    /\b(explain|describe|tell me about|walk me through|analyze|summarize)\b/.test(lower)
+  ) {
+    score += 2;
+    reasons.push("open-ended explanation");
+  }
+
+  // 3️⃣ Depth modifiers
+  if (
+    /\b(detailed|in depth|deep dive|thorough|comprehensive)\b/.test(lower)
+  ) {
+    score += 2;
+    reasons.push("depth modifier");
+  }
+
+  // 4️⃣ Large / complex topics
+  if (
+    /\b(war|history|system|architecture|model|theory)\b/.test(lower)
+  ) {
+    score += 1;
+    reasons.push("large topic");
+  }
+
+  // 5️⃣ Long question itself (weak but useful)
+  if (wordCount > 18) {
+    score += 3;
+    reasons.push("long prompt");
+  }
+
+  return {
+    wordCount,
+    score,
+    reasons,
+    shouldUseFiller: score >= 3
+  };
+}
+
+function yieldToBrowser(ms = 80) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /* =========================
@@ -316,23 +399,32 @@ async function handleUtterance() {
     }
     
     const transcript = data1.transcript;
-    addBubble(transcript, "user");
-
-    /* =========================
-       STEP 2: DECIDE FILLER
-    ========================= */
-
-    const wordCount = transcript.trim().split(/\s+/).length;
-    const shouldUseFiller = !paused && wordCount >= FILLER_WORD_THRESHOLD;
-
-    let fillerTimer = null;
-    if (shouldUseFiller) {
-      fillerTimer = setTimeout(playThinkingFiller, 200);
+    if (paused || data1.paused) {
+      processing = false;
+      startListening();
+      return;
     }
 
     /* =========================
-       STEP 3: CONTINUE (LLM + TTS)
+      STEP 2: ANALYZE COMPLEXITY (EARLY)
     ========================= */
+
+    const analysis = analyzeTranscriptComplexity(transcript);
+    console.log("[FILLER_ANALYSIS]", analysis);
+
+    /* =========================
+      STEP 3: START FILLER BEFORE LLM
+    ========================= */
+
+    if (ENABLE_THINKING_FILLER && analysis.shouldUseFiller) {
+      playThinkingFiller();
+    }
+
+    /* =========================
+      STEP 4: UI + LLM
+    ========================= */
+
+    addBubble(transcript, "user");
 
     const formData2 = new FormData();
     formData2.append("session_id", sessionId);
@@ -345,16 +437,24 @@ async function handleUtterance() {
 
     const data2 = await res2.json();
 
+    /* =========================
+      STEP 5: STOP FILLER (ONCE)
+    ========================= */
+
+    stopThinkingFiller();
+
+    /* =========================
+      STEP 6: HANDLE RESPONSE
+    ========================= */
+
     if (data2.command) {
-      stopThinkingFiller();
       processing = false;
       startListening();
       return;
     }
+
     if (data2.paused) {
-      clearFillerTimer(fillerTimer);
       paused = true;
-      stopThinkingFiller();
       processing = false;
       startListening();
       return;
@@ -366,8 +466,6 @@ async function handleUtterance() {
     audioEl.play();
 
     audioEl.onplay = () => {
-      if (fillerTimer) clearTimeout(fillerTimer);
-      stopThinkingFiller();
       setStatus("Speaking…", "speaking");
     };
 
@@ -377,15 +475,13 @@ async function handleUtterance() {
         startListening();
       }, 250);
     };
-
-  } catch (err) {
-    console.error(err);
-    stopThinkingFiller();
-    processing = false;
-    setStatus("Server error", "offline");
-  }
+  } catch (err) { 
+    console.error(err); 
+    stopThinkingFiller(); 
+    processing = false; 
+    setStatus("Server error", "offline"); 
+  } 
 }
-
 
 /* =========================
    MIC BUTTON
