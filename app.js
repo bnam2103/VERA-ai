@@ -321,7 +321,7 @@ function detectSpeech() {
 
 function startListening() {
   if (!listening || processing) return;
-
+  if (mediaRecorder && mediaRecorder.state === "recording") return; // 🔑 ADD THIS
   audioChunks = [];
   hasSpoken = false;
   lastVoiceTime = 0;
@@ -392,15 +392,11 @@ async function handleUtterance() {
 
     if (data1.paused) {
       paused = true;
-      logPause("infer");
-      processing = false;
       setStatus("Paused — say “unpause” or press mic", "paused");
-      startListening();
-      return;
+      // 🔑 DO NOT RETURN
     }
 
     const transcript = data1.transcript;
-
     /* =========================
       STEP 2: ANALYZE COMPLEXITY (EARLY)
     ========================= */
@@ -446,25 +442,25 @@ async function handleUtterance() {
     if (data2.command) {
       if (data2.command === "pause") {
         paused = true;
-        logPause("continue"); // 🔑 HERE
+        logPause("continue");
+        setStatus("Paused — say “unpause” or press mic", "paused");
+        processing = false;
+        startListening(); // 🔑 KEEP MIC OPEN
+
+        return;
       }
 
       if (data2.command === "unpause") {
         paused = false;
-        logPause("continue"); // 🔑 HERE
+        logPause("continue");
+        setStatus("Listening…", "recording");
+        processing = false;
+
+        startListening();
+        return;
       }
-
-      setStatus(
-        paused
-          ? "Paused — say “unpause” or press mic"
-          : "Listening…",
-        paused ? "paused" : "recording"
-      );
-
-      processing = false;
-      startListening();
-      return;
     }
+
     addBubble(transcript, "user");
     addBubble(data2.reply, "vera");
 
@@ -502,15 +498,23 @@ recordBtn.onclick = async () => {
     return;
   }
 
-  // Request pause/unpause
   if (paused) {
     await sendCommand("unpause");
+    paused = false;
+    logPause("button-unpause");
+    startListening(); // ✅ resume
   } else {
     await sendCommand("pause");
+    paused = true;
+    logPause("button-pause");
   }
 
-  // 🔑 Force backend → frontend state sync
-  await sendUnpauseCommand();
+  setStatus(
+    paused
+      ? "Paused — say “unpause” or press mic"
+      : "Listening…",
+    paused ? "paused" : "recording"
+  );
 
   processing = false;
 };
