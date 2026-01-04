@@ -502,14 +502,18 @@ recordBtn.onclick = async () => {
     return;
   }
 
-    if (paused) {
+  // Request pause/unpause
+  if (paused) {
     await sendCommand("unpause");
   } else {
     await sendCommand("pause");
   }
 
-processing = false;
-}
+  // 🔑 Force backend → frontend state sync
+  await sendUnpauseCommand();
+
+  processing = false;
+};
 
 
 /* =========================
