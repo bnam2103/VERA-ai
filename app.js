@@ -25,7 +25,52 @@ let listening = false;
 let processing = false;
 let paused = false;
 let rafId = null;
+let fillerTimer = null;
+let fillerPlaying = false;
+let fillerStartedAt = 0;
+let pendingMainAnswer = null;
 
+const FILLER_DELAY_MS = 4500;  // feels natural
+const FILLER_GRACE_MS = 250;  
+
+const FILLER_AUDIO_FILES = [
+  "/static/fillers/moment.wav",
+  "/static/fillers/one_second.wav",
+  "/static/fillers/give_me_a_second.wav",
+  "/static/fillers/one_moment.wav"
+];
+let requestInFlight = false; // 🔑 NEW
+
+function startFillerTimer() {
+  clearTimeout(fillerTimer);
+
+  fillerPlaying = false;
+  fillerStartedAt = 0;
+
+  fillerTimer = setTimeout(() => {
+    if (!requestInFlight) return;
+    if (fillerPlaying) return;
+
+    const filler =
+      FILLER_AUDIO_FILES[Math.floor(Math.random() * FILLER_AUDIO_FILES.length)];
+
+    fillerPlaying = true;
+    fillerStartedAt = performance.now();
+
+    audioEl.onended = () => {
+      fillerPlaying = false;
+
+      // If backend already returned, play main answer now
+      if (!requestInFlight && pendingMainAnswer) {
+        pendingMainAnswer();
+        pendingMainAnswer = null;
+      }
+    };
+
+    audioEl.src = `${API_URL}${filler}`;
+    audioEl.play().catch(console.warn);
+  }, FILLER_DELAY_MS);
+}
 /* =========================
    CONFIG
 ========================= */
@@ -238,9 +283,11 @@ async function handleUtterance() {
     startListening();
     return;
   }
-
+  requestInFlight = true;
   processing = true;
   setStatus("Thinking…", "thinking");
+
+  startFillerTimer(); // 🔑 START IMMEDIATELY
 
   const formData = new FormData();
   formData.append("audio", blob);
@@ -253,7 +300,10 @@ async function handleUtterance() {
     });
 
     const data = await res.json();
+    requestInFlight = false;
+    clearTimeout(fillerTimer);
 
+    // 🔑 HANDLE CONTROL FLOW FIRST (NO AUDIO YET)
     if (data.skip) {
       processing = false;
       startListening();
@@ -283,19 +333,33 @@ async function handleUtterance() {
 
     paused = false;
 
+    // update UI text
     addBubble(data.transcript, "user");
     addBubble(data.reply, "vera");
 
-    audioEl.src = `${API_URL}${data.audio_url}`;
-    audioEl.play();
+    // play the real answer (with overlap smoothing)
+    const playMainAnswer = () => {
+      audioEl.src = `${API_URL}${data.audio_url}`;
+      audioEl.play();
 
-    audioEl.onplay = () => setStatus("Speaking…", "speaking");
-    audioEl.onended = () => {
-      processing = false;
-      startListening();
+      audioEl.onplay = () => setStatus("Speaking…", "speaking");
+      audioEl.onended = () => {
+        processing = false;
+        startListening();
+      };
     };
+
+    if (fillerPlaying) {
+      // Store callback until filler ends
+      pendingMainAnswer = playMainAnswer;
+    } else {
+      playMainAnswer();
+    }
+
   } catch {
     processing = false;
+    requestInFlight = false;
+    clearTimeout(fillerTimer);
     setStatus("Server error", "offline");
   }
 }
