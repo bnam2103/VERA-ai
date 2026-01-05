@@ -30,7 +30,7 @@ let fillerPlaying = false;
 let fillerStartedAt = 0;
 let pendingMainAnswer = null;
 
-const FILLER_DELAY_MS = 4500;  // feels natural
+const FILLER_DELAY_MS = 5300;  // feels natural
 const FILLER_GRACE_MS = 250;  
 
 const FILLER_AUDIO_FILES = [
