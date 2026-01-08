@@ -26,12 +26,18 @@ let processing = false;
 let paused = false;
 let rafId = null;
 let fillerTimer = null;
+let fillerPlayedThisTurn = false;
+let interruptSpeechFrames = 0;
+
 let fillerPlaying = false;
 let fillerStartedAt = 0;
 let pendingMainAnswer = null;
+let audioStartedAt = 0;
+// let interruptStart = 0;
+
 
 const FILLER_DELAY_MS = 5300;  // feels natural
-const FILLER_GRACE_MS = 250;  
+const FILLER_GRACE_MS = 1000;  
 
 const FILLER_AUDIO_FILES = [
   "/static/fillers/moment.wav",
@@ -55,22 +61,25 @@ function startFillerTimer() {
       FILLER_AUDIO_FILES[Math.floor(Math.random() * FILLER_AUDIO_FILES.length)];
 
     fillerPlaying = true;
+    fillerPlayedThisTurn = true;
     fillerStartedAt = performance.now();
 
     audioEl.onended = () => {
-      fillerPlaying = false;
+    fillerPlaying = false;
 
-      // If backend already returned, play main answer now
-      if (!requestInFlight && pendingMainAnswer) {
-        pendingMainAnswer();
+    if (!requestInFlight && pendingMainAnswer) {
+      setTimeout(() => {
+        pendingMainAnswer?.();
         pendingMainAnswer = null;
-      }
-    };
+      }, FILLER_GRACE_MS);
+    }
+  };
 
     audioEl.src = `${API_URL}${filler}`;
     audioEl.play().catch(console.warn);
   }, FILLER_DELAY_MS);
 }
+
 /* =========================
    CONFIG
 ========================= */
@@ -80,7 +89,13 @@ const SILENCE_MS = 1050;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
 const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
+const INTERRUPT_MIN_FRAMES = 6; 
 
+const INTERRUPT_ZCR_MIN = 0.02;
+const INTERRUPT_ZCR_MAX = 0.15;
+
+const INTERRUPT_RMS = 0.009;   // higher than normal speech start
+// const INTERRUPT_MS = 140;    
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /* =========================
@@ -178,6 +193,95 @@ async function sendUnpauseCommand() {
   });
 }
 
+function interruptSpeech() {
+  if (audioEl.paused) return;
+
+  interruptStart = 0;
+
+  audioEl.pause();
+  audioEl.currentTime = 0;
+
+  fillerPlaying = false;
+  pendingMainAnswer = null;
+  clearTimeout(fillerTimer);
+
+  processing = false;
+  listening = true; // 🔑 ADD THIS
+  setStatus("Listening…", "recording");
+
+  startListening(); // 🔑 FORCE restart
+}
+
+function detectInterrupt() {
+  if (!analyser) {
+    requestAnimationFrame(detectInterrupt);
+    return;
+  }
+
+  const buf = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buf);
+
+  // RMS
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  const rms = Math.sqrt(sum / buf.length);
+
+  // ZCR
+  const zcr = computeZCR(buf);
+
+  const now = performance.now();
+
+  // Only interrupt while VERA is speaking (not filler)
+  if (!audioEl.paused && !fillerPlaying && !paused) {
+    // grace period to avoid clicks
+    if (now - audioStartedAt > 200) {
+
+      const speechLike =
+        rms > INTERRUPT_RMS &&
+        zcr > INTERRUPT_ZCR_MIN &&
+        zcr < INTERRUPT_ZCR_MAX;
+
+      if (speechLike) {
+        interruptSpeechFrames++;
+      } else {
+        interruptSpeechFrames = 0;
+      }
+
+      if (interruptSpeechFrames >= INTERRUPT_MIN_FRAMES) {
+        interruptSpeech();
+        interruptSpeechFrames = 0;
+      }
+    }
+  } else {
+    interruptSpeechFrames = 0;
+  }
+
+  if (Math.random() < 0.02) {
+    console.log(
+      "rms:",
+      rms.toFixed(4),
+      "zcr:",
+      zcr.toFixed(3),
+      "frames:",
+      interruptSpeechFrames
+    );
+  }
+
+  requestAnimationFrame(detectInterrupt);
+}
+
+
+function computeZCR(buf) {
+  let crossings = 0;
+  for (let i = 1; i < buf.length; i++) {
+    if ((buf[i - 1] >= 0 && buf[i] < 0) ||
+        (buf[i - 1] < 0 && buf[i] >= 0)) {
+      crossings++;
+    }
+  }
+  return crossings / buf.length;
+}
+
 /* =========================
    MIC INIT
 ========================= */
@@ -200,6 +304,8 @@ async function initMic() {
   analyser.fftSize = 2048;
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
+  detectInterrupt();
+
 }
 
 /* =========================
@@ -225,7 +331,8 @@ function detectSpeech() {
 
   if (
     hasSpoken &&
-    now - lastVoiceTime > SILENCE_MS + TRAILING_MS
+    now - lastVoiceTime > SILENCE_MS + TRAILING_MS &&
+    audioEl.paused // 🔑 only stop when not speaking
   ) {
     mediaRecorder.stop();
     return;
@@ -285,6 +392,7 @@ async function handleUtterance() {
   }
   requestInFlight = true;
   processing = true;
+  fillerPlayedThisTurn = false;
   setStatus("Thinking…", "thinking");
 
   startFillerTimer(); // 🔑 START IMMEDIATELY
@@ -333,16 +441,24 @@ async function handleUtterance() {
 
     paused = false;
 
-    // update UI text
     addBubble(data.transcript, "user");
-    addBubble(data.reply, "vera");
 
-    // play the real answer (with overlap smoothing)
     const playMainAnswer = () => {
+      if (fillerPlayedThisTurn) {
+        setTimeout(() => {
+          addBubble(data.reply, "vera");
+        }, FILLER_GRACE_MS);
+      } else {
+        addBubble(data.reply, "vera");
+      }
       audioEl.src = `${API_URL}${data.audio_url}`;
       audioEl.play();
 
-      audioEl.onplay = () => setStatus("Speaking…", "speaking");
+      audioEl.onplay = () => {
+        audioStartedAt = performance.now();
+        setStatus("Speaking… (You can interrupt by talking over it!)", "speaking");
+      };
+
       audioEl.onended = () => {
         processing = false;
         startListening();

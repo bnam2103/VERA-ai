@@ -91,7 +91,7 @@
       <div class="hero-left">
         <button
           id="enter-vera"
-          class="hero-label pulse"
+          class="hero-label scroll-reveal"
           aria-label="Enter VERA app"
         >
           ABOUT VERA
@@ -99,8 +99,15 @@
       </div>
 
       <div class="hero-right">
-        <p class="hero-text">
-          <span id="typed-text"></span>
+        <h3 class="hero-headline">
+          <span id="typed-headline"></span>
+        </h3>
+
+        <p class="hero-text scroll-reveal">
+          VERA is a conversational AI that demonstrates real-time
+          speech recognition, reasoning, and voice synthesis. It listens,
+          understands, and responds (either with words or actions). VERA focuses
+          on creating meaningful interactions rather than just automation.
         </p>
       </div>
 
@@ -290,6 +297,44 @@
     </div>
   </header>
 
+    <!-- =========================
+      HERO — CREDITS
+  ========================= -->
+  <header class="hero" id="credits">
+  <div class="hero-split reverse scroll-reveal">
+
+    <!-- LEFT: CONTENT -->
+    <div class="hero-left hero-text-left">
+      <div class="credits-content">
+
+        <span class="credits-eyebrow">Credits</span>
+
+        <p class="credits-block">
+          <strong>Music</strong><br>
+          <em>Moog City</em> — C418
+        </p>
+
+        <p class="credits-block">
+          <strong>Trailer</strong><br>
+          Created and edited by me.<br>
+          <a
+            href="https://www.youtube.com/watch?v=apjsbT-B-VY"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="credits-link"
+          >
+            Watch trailer again here
+          </a>
+        </p>
+        <p class="credits-section">
+          <strong>Inspiration</strong><br>
+          Red Barrels — cinematic UI direction and tone.
+        </p>
+      </div>
+    </div>
+
+    </div>
+  </header>
 
 </section>
 
@@ -562,31 +607,31 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
   /* =========================
      TYPING ANIMATION
   ========================= */
+const HEADLINE_TEXT = "VERA, A Personal AI Agent";
+const headlineEl = document.getElementById("typed-headline");
+const heroParagraph = document.querySelector("#about-vera .hero-text");
 
-  const ABOUT_TEXT = `VERA is a conversational AI that demonstrates real-time
-speech recognition, reasoning, and voice synthesis. It listens,
-understands, and responds (either with words or actions). VERA focuses
-on creating meaningful interactions rather than just automation.`;
-  typedEl.textContent = ABOUT_TEXT; // For instant display (no typing)
-  let typeIndex = 0;
-  let typingStarted = false;
+let headlineIndex = 0;
+let typingStarted = false; // 🔑 THIS WAS MISSING
+const heroLabel = document.getElementById("enter-vera");
 
-  function startTyping() {
-    if (typingStarted) return;
-    typingStarted = true;
+function startTyping() {
+  if (typingStarted) return;
+  typingStarted = true;
 
-    // subtle pulse on [ ABOUT VERA ]
-    enterBtn.classList.add("pulse");
+  const interval = setInterval(() => {
+    headlineEl.textContent += HEADLINE_TEXT[headlineIndex];
+    headlineIndex++;
 
-    const typeInterval = setInterval(() => {
-      typedEl.textContent += ABOUT_TEXT[typeIndex];
-      typeIndex++;
+    if (headlineIndex >= HEADLINE_TEXT.length) {
+      clearInterval(interval);
 
-      if (typeIndex >= ABOUT_TEXT.length) {
-        clearInterval(typeInterval);
-      }
-    }, 16);
-  }
+      // reveal paragraph using existing patch-notes animation
+      heroLabel.classList.add("visible");
+      heroParagraph.classList.add("visible");
+    }
+  }, 45);
+}
 
   /* Trigger typing when About section enters view */
   const observer = new IntersectionObserver(
@@ -601,7 +646,7 @@ on creating meaningful interactions rather than just automation.`;
   function triggerTitleFlash() {
     document.querySelector(".title-text")?.classList.add("flash");
   }
-  // observer.observe(aboutVeraSection); // Disabled to auto-start typing on page load
+  observer.observe(aboutVeraSection); // Disabled to auto-start typing on page load
   const navAboutMe = document.getElementById("nav-about-me");
   const aboutMeSection = document.getElementById("about-me");
 
@@ -737,6 +782,8 @@ on creating meaningful interactions rather than just automation.`;
     conversation.appendChild(row);
     conversation.scrollTop = conversation.scrollHeight;
   }
+
+
 </script>
 
 
