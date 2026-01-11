@@ -148,7 +148,7 @@ body.vera-mode {
   text-decoration: none;
   color: inherit;
   cursor: pointer;
-  opacity: 0.95;
+  opacity: 0.6;
 
   /* 🔑 BUTTON RESET (ADD THESE) */
   background: none;
