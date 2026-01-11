@@ -94,7 +94,7 @@ const INTERRUPT_MIN_FRAMES = 6;
 const INTERRUPT_ZCR_MIN = 0.02;
 const INTERRUPT_ZCR_MAX = 0.15;
 
-const INTERRUPT_RMS = 0.050;   // higher than normal speech start
+const INTERRUPT_RMS = 0.010;   // higher than normal speech start
 // const INTERRUPT_MS = 140;    
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
