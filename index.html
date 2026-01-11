@@ -55,7 +55,7 @@
   <!-- TOP NAV -->
   <nav class="top-nav">
     <div class="nav-left">
-      <a href="/" class="nav-logo" id="nav-home">VERA</a>
+      <a href="#" class="nav-logo" id="nav-home">VERA</a>
     </div>
 
     <div class="nav-right">
@@ -544,10 +544,8 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
 
   // Logo reload (file-safe)
   navHome.onclick = (e) => {
-    if (location.protocol === "file:") {
-      e.preventDefault();
-      location.reload();
-    }
+    e.preventDefault();
+    window.location.reload();
   };
 
   /* =========================
