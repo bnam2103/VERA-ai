@@ -1167,7 +1167,11 @@ body.vera-mode {
   }
 
   .nav-logo {
-    font-size: 24px;
+    background: none;
+    border: none;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
   }
 
   .nav-link {
