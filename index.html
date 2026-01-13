@@ -106,8 +106,8 @@
         <p class="hero-text scroll-reveal">
           VERA is a conversational AI that demonstrates real-time
           speech recognition, reasoning, and voice synthesis. It listens,
-          understands, and responds (either with words or actions). VERA focuses
-          on creating meaningful interactions rather than just automation.
+          understands, and responds through speech or actions (though mostly speech).
+          VERA draws its inspiration from JARVIS, a fictional AI from the Iron Man series.
         </p>
       </div>
 
@@ -139,8 +139,8 @@
         <li>
           Two personas:
           <ul>
-            <li><strong>Default (LLaMA 3.0)</strong> — task-oriented</li>
-            <li><strong>JARVIS</strong> — conversational, affirming, Iron Man–inspired</li>
+            <li><strong>Default (LLaMA 3.0)</strong>: task-oriented</li>
+            <li><strong>JARVIS</strong>: conversational and affirming</li>
           </ul>
         </li>
         <li>Balanced, informative UX</li>
@@ -174,29 +174,77 @@
       <hr />
 
       <h2>VERSION 2.0</h2>
-      <h3>In Progress</h3>
+      <h3>Testing</h3>
       <ul>
-        <li>Improved TTS (Coqui)</li>
         <li>
-          UI overhaul:
-          keyboard input, smoother animations,
-          simplified layout, scroll-based explanation
-          (Red Barrels–inspired)
+          <strong>Main page UI</strong>:
+          Smoother animations, simplified layout, scroll-based explanation
         </li>
         <li>
-          Trailer concept:
-          all-caps typography,
-          Alan Watts narration,
-          cinematic montage
+          <strong>Web App UI</strong>: Keyboard input support, improved mobile layout (pending more user feedback)
         </li>
-        <li>Expanded actions</li>
+        <li><strong>Trailer Concept</strong>: all-caps typography, Alan Watts narration, All Caps - MF DOOM instrumental
+        </li>
+        <li><strong>Expanded Actions</strong>: News summaries, weather checks, Google search, potential Spotify control</li>
         <li>
-          Concurrent recording (interruptible streaming TTS)
+          <strong>Natural Conversation (Early Strategies):</strong>
+          <ul>
+            <li><strong>Interruptibility</strong> via concurrent audio recording</li>
+            <li><strong>Filler words</strong> (“let me think,” “hmm”) for longer response realism</li>
+          </ul>
         </li>
-        <li>Public access & distribution strategy</li>
-        <li>Persona cloning and optimization</li>
+        <li>
+          <strong>Persona Optimization: </strong>
+          <ul>
+            <li><strong>JARVIS:</strong> increased wit and dry humor, with deeper personalization based on user behavior patterns</li>
+          </ul>
+        </li>
       </ul>
+      
+      <hr />
 
+      <h2>VERSION 3.0</h2>
+      <h3>Brainstorming</h3>
+      <ul>
+        <li><strong>Improved TTS:</strong> Coqui-XTTSv2 for more natural prosody and speech flow</li>
+        <li>
+          <strong>Advanced Conversational Control:</strong>
+          <ul>
+            <li>Editable prompts during “thinking” state (QoL)</li>
+            <li>Reduced latency via frontend/backend restructuring</li>
+            <li>AI-initiated interruptions (user-configurable, turn-yield detection)</li>
+            <li>Rant Mode: AI remains silent unless triggered by keywords</li>
+          </ul>
+        </li>
+        <li>
+          <strong>User Memory & Personalization:</strong> Text-bubble selection for preference tuning
+        </li>
+        <li>
+          <strong>New personas: </strong>
+          <ul>
+            <li><strong>Arthur:</strong> a calm, wise, and humorous assistant designed to act as a reflective, therapist-like companion, capable of guiding conversation thoughtfully and capable of playing music (on demand)</li>
+          </ul>
+        </li>
+        <li>
+          <strong>Voice-Based Authentication:</strong> Voice biometrics using a user-specific voice matrix to filter speakers
+        </li>
+        <li>
+          <strong>LLM Backend Testing:</strong> Evaluate LLMs comparable in size to LLaMA 3.0 to balance response quality and latency
+        </li>
+        <li>
+          <strong>System-Level Actions:</strong>
+          <ul>
+            <li>Device control (app installs, volume, etc.)</li>
+            <li>Restricted to admins/testers to prevent accidental misuse</li>
+          </ul>
+        </li>
+        <li>
+          <strong>Fun Visual Personality Layer:</strong> Context-aware UI memes (thinking state: monkey thinking finger in mouth meme, response state: monkey pointing meme, user detected lying or trying (currently LLAMA 3.0 is not very capable of detecting lies and): wong why is he lying meme, etc)
+        </li>
+        <li>
+          <strong>Media:</strong> 3 additional trailers of VERA persona, response and experience
+        </li>
+      </ul>
     </div>
   </section>
   <!-- =========================
@@ -218,12 +266,13 @@
         </a>
 
         <p class="hero-text">
-          My name is Nam, and I am a third-year undergraduate student majoring in Data Science
+          My name is Nam. I'm a third-year undergraduate student majoring in Data Science
           at the University of California, Irvine. Over the past few years, I have developed a strong
           interest in machine learning and artificial intelligence, which led me to participate
           in Kaggle competitions and work on transformer models. These experiences ultimately
-          brought me to this project VERA. My work blends engineering, design, and interaction,
-          with a focus on intentional, user-centered experiences.
+          brought me to this project VERA. My goal with VERA is to build a functional conversational
+          AI that integrates modern machine learning techniques with software engineering best 
+          practices to deliver a seamless user experience.
         </p>
       </div>
 
@@ -253,7 +302,7 @@
         class="other-projects-title pulse"
         aria-label="Open GitHub profile"
       >
-        OTHER PROJECTS
+        MY OTHER PROJECTS
       </a>
 
       <!-- PROJECT LIST -->
@@ -311,7 +360,7 @@
 
         <p class="credits-block">
           <strong>Music</strong><br>
-          <em>Moog City</em> — C418
+          <em>Moog City</em> - C418
         </p>
 
         <p class="credits-block">
@@ -605,7 +654,7 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
   /* =========================
      TYPING ANIMATION
   ========================= */
-const HEADLINE_TEXT = "VERA, A Personal AI Agent";
+const HEADLINE_TEXT = "VERA, a personal AI agent";
 const headlineEl = document.getElementById("typed-headline");
 const heroParagraph = document.querySelector("#about-vera .hero-text");
 
