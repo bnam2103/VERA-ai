@@ -1228,20 +1228,18 @@ body.vera-mode {
   .mobile-only {
     display: inline;
   }
-
   #server-status-inline {
-    position: fixed;
-    right: 16px;
-    top: 40%;
-    transform: translateY(-60%);
-
-    font-size: 12px;
-    opacity: 0.85;
-
-    pointer-events: none; /* purely informational */
-  }
-  #send-text {
     display: none;
+  }
+  #server-status-inline.offline {
+    display: inline;
+  }
+  #server-status-inline {
+    position: static;
+    margin-left: auto;
+    font-size: 11px;
+    opacity: 0.75;
+    pointer-events: none;
   }
   
 }
