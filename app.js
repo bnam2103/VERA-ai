@@ -114,6 +114,8 @@ const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
 const feedbackStatusEl = document.getElementById("feedback-status");
 
+const textInput = document.getElementById("text-input");
+const sendTextBtn = document.getElementById("send-text");
 /* =========================
    SERVER HEALTH
 ========================= */
@@ -421,6 +423,10 @@ async function handleUtterance() {
     if (data.command === "pause") {
       paused = true;
       processing = false;
+
+      setStatus("Paused — say “unpause” or press mic", "paused");
+
+      listening = true;   // 🔑 allow startListening to run
       startListening();
       return;
     }
@@ -428,6 +434,10 @@ async function handleUtterance() {
     if (data.command === "unpause") {
       paused = false;
       processing = false;
+
+      setStatus("Listening…", "recording");
+
+      listening = true;
       startListening();
       return;
     }
@@ -435,6 +445,10 @@ async function handleUtterance() {
     if (data.paused) {
       paused = true;
       processing = false;
+
+      setStatus("Paused — say “unpause” or press mic", "paused");
+
+      listening = true;
       startListening();
       return;
     }
@@ -481,6 +495,102 @@ async function handleUtterance() {
 }
 
 /* =========================
+   TEXT INPUT PIPELINE
+========================= */
+
+async function sendTextMessage() {
+  const text = textInput.value.trim();
+  if (!text || requestInFlight) return;
+
+  textInput.value = "";
+
+  listening = false;
+  processing = true;
+  requestInFlight = true;
+
+  clearTimeout(fillerTimer);
+  fillerPlaying = false;
+  pendingMainAnswer = null;
+
+  addBubble(text, "user");
+
+  try {
+    const res = await fetch(`${API_URL}/text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        session_id: sessionId
+      })
+    });
+
+    const data = await res.json();
+
+    requestInFlight = false;
+
+    if (data.command === "pause") {
+      paused = true;
+      processing = false;
+
+      setStatus("Paused — say “unpause” or press mic", "paused");
+
+      listening = true;   // 🔑 allow startListening to run
+      startListening();
+      return;
+    }
+
+    if (data.command === "unpause") {
+      paused = false;
+      processing = false;
+
+      setStatus("Listening…", "recording");
+
+      listening = true;
+      startListening();
+      return;
+    }
+
+    if (data.paused) {
+      paused = true;
+      processing = false;
+
+      setStatus("Paused — say “unpause” or press mic", "paused");
+
+      listening = true;
+      startListening();
+      return;
+    }
+    const playReply = () => {
+      addBubble(data.reply, "vera");
+
+      if (data.audio_url) {
+        audioEl.src = `${API_URL}${data.audio_url}`;
+        audioEl.play();
+      }
+
+      audioEl.onplay = () => {
+        audioStartedAt = performance.now();
+        setStatus("Speaking…", "speaking");
+      };
+
+      audioEl.onended = () => {
+        processing = false;
+        listening = true;
+        startListening();
+      };
+    };
+
+    playReply();
+
+  } catch (err) {
+    console.error(err);
+    requestInFlight = false;
+    processing = false;
+    setStatus("Server error", "offline");
+  }
+}
+
+/* =========================
    MIC BUTTON
 ========================= */
 
@@ -505,6 +615,15 @@ processing = false;
 startListening();
 }
 
+if (sendTextBtn && textInput) {
+  sendTextBtn.onclick = sendTextMessage;
+
+  textInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      sendTextMessage();
+    }
+  });
+}
 
 /* =========================
    FEEDBACK

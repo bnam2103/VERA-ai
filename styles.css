@@ -892,6 +892,50 @@ body.vera-mode {
   width: 100vw;
 }
 
+.mic-status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.mic-status .status {
+  font-size: 0.85rem;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+#text-input {
+  flex: 1;
+  min-width: 0;
+
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+
+  color: #eaeaea;
+  padding: 10px 12px;
+  margin: 0 8px;
+
+  font-size: 14px;
+  outline: none;
+}
+
+#text-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+#send-text {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: #eaeaea;
+}
+
+#send-text:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
 /* =========================
    SIDEBAR
 ========================= */

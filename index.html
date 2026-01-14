@@ -447,14 +447,29 @@
       <div class="conversation" id="conversation"></div>
 
       <div class="input-bar">
-        <button id="record">🎙️</button>
-        <span id="status" class="status idle">Idle</span>
+
+        <div class="mic-status">
+          <button id="record" title="Voice input">🎙️</button>
+          <span id="status" class="status idle">Idle</span>
+        </div>
+
+        <input
+          id="text-input"
+          type="text"
+          placeholder="Type a message…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+
+        <button id="send-text" title="Send message">➤</button>
+
         <span
           id="server-status-inline"
           class="server-status offline mobile-only"
         >
           🔴 Offline
         </span>
+
       </div>
 
       <audio id="audio" preload="auto"></audio>
