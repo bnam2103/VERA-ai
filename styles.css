@@ -1241,5 +1241,9 @@ body.vera-mode {
     opacity: 0.75;
     pointer-events: none;
   }
+  #text-input,
+  #send-text {
+    display: none;
+  }
   
 }

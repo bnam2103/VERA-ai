@@ -116,6 +116,8 @@ const feedbackStatusEl = document.getElementById("feedback-status");
 
 const textInput = document.getElementById("text-input");
 const sendTextBtn = document.getElementById("send-text");
+const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
+
 /* =========================
    SERVER HEALTH
 ========================= */
@@ -615,7 +617,7 @@ processing = false;
 startListening();
 }
 
-if (sendTextBtn && textInput) {
+if (!IS_MOBILE && sendTextBtn && textInput) {
   sendTextBtn.onclick = sendTextMessage;
 
   textInput.addEventListener("keydown", (e) => {
