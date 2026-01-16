@@ -1229,13 +1229,9 @@ body.vera-mode {
     display: inline;
   }
   .vera-log.scroll-reveal {
-    opacity: 0;
-    transform: translateY(24px);
-    filter: none;
-  }
-  .vera-log.scroll-reveal.visible {
-    opacity: 1;
-    transform: translateY(0);
+    opacity: 1 !important;
+    transform: none !important;
+    filter: none !important;
   }
   #server-status-inline {
     display: none;
