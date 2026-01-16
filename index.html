@@ -781,47 +781,6 @@ function startTyping() {
     MOBILE NAV LOGIC
   ========================= */
 
-const hamburger = document.getElementById("hamburger");
-const mobileMenu = document.getElementById("mobile-menu");
-const navRight = document.getElementById("nav-right");
-
-let navMoved = false;
-
-function enableMobileNav() {
-  if (navMoved) return;
-
-  [...navRight.children].forEach(el => {
-    mobileMenu.appendChild(el);
-  });
-
-  navMoved = true;
-}
-
-function disableMobileNav() {
-  if (!navMoved) return;
-
-  [...mobileMenu.children].forEach(el => {
-    navRight.appendChild(el);
-  });
-
-  mobileMenu.classList.remove("open");
-  navMoved = false;
-}
-
-function handleResize() {
-  if (window.innerWidth <= 768) {
-    enableMobileNav();
-  } else {
-    disableMobileNav();
-  }
-}
-
-handleResize();
-window.addEventListener("resize", handleResize);
-
-hamburger.onclick = () => {
-  mobileMenu.classList.toggle("open");
-};
 
   function addMessage(text, sender) {
     const role = sender === "user" ? "user" : "vera";
