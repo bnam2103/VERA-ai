@@ -1229,9 +1229,12 @@ body.vera-mode {
     display: inline;
   }
   .vera-log.scroll-reveal {
-    opacity: 1 !important;
-    transform: none !important;
-    filter: none !important;
+    transform: translateY(24px);
+    filter: none;
+  }
+
+  .vera-log.scroll-reveal.visible {
+    transform: translateY(0);
   }
   #server-status-inline {
     display: none;
