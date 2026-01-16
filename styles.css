@@ -1228,6 +1228,11 @@ body.vera-mode {
   .mobile-only {
     display: inline;
   }
+  .vera-log.scroll-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    filter: none !important;
+  }
   #server-status-inline {
     display: none;
   }

@@ -782,22 +782,6 @@ function startTyping() {
   ========================= */
 
 
-  function addMessage(text, sender) {
-    const role = sender === "user" ? "user" : "vera";
-
-    const row = document.createElement("div");
-    row.className = `message-row ${role}`;
-
-    const bubble = document.createElement("div");
-    bubble.className = `bubble ${role}`;
-    bubble.textContent = text;
-
-    row.appendChild(bubble);
-    conversation.appendChild(row);
-    conversation.scrollTop = conversation.scrollHeight;
-  }
-
-
 </script>
 
 
