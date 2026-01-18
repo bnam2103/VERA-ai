@@ -85,7 +85,7 @@ function startFillerTimer() {
 ========================= */
 
 const VOLUME_THRESHOLD = 0.009; // TUNER
-const SILENCE_MS = 1050;     // silence before ending speech
+const SILENCE_MS = 750;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
 const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
