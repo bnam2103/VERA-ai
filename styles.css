@@ -1279,12 +1279,11 @@ body.vera-mode {
   }
   #ptt {
     display: none;
-    margin-left: auto; /* 🔑 push to right */
+    margin-left: auto;
   }
 
-  /* show ONLY when server is online */
-  #server-status-inline.online ~ #ptt,
-  #server-status-inline.online + #ptt {
+  /* show PTT ONLY when server is online */
+  .input-bar:has(#server-status-inline.online) #ptt {
     display: flex;
   }
 }
