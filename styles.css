@@ -1283,7 +1283,7 @@ body.vera-mode {
   }
 
   /* show PTT ONLY when server is online */
-  .input-bar:has(#server-status-inline.online) #ptt {
+  body.server-online #ptt {
     display: flex;
   }
 }
