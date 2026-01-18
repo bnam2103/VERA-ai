@@ -487,7 +487,7 @@ async function handleUtterance() {
 
       audioEl.onplay = () => {
         audioStartedAt = performance.now();
-        setStatus("Speaking… (You can interrupt by talking over it!)", "speaking");
+        setStatus("Speaking… (Interruptible)", "speaking");
       };
 
       audioEl.onended = () => {
