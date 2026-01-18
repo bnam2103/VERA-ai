@@ -1277,9 +1277,14 @@ body.vera-mode {
   #send-text {
     display: none;
   }
-  .ptt-btn {
-    width: 48px;
-    height: 48px;
-    font-size: 20px;
+  #ptt {
+    display: none;
+    margin-left: auto; /* 🔑 push to right */
+  }
+
+  /* show ONLY when server is online */
+  #server-status-inline.online ~ #ptt,
+  #server-status-inline.online + #ptt {
+    display: flex;
   }
 }
