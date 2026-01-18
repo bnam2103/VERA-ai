@@ -1278,7 +1278,7 @@ body.vera-mode {
     display: none;
   }
   #ptt {
-    display: none;
+    display: flex;
     margin-left: auto;
   }
 
@@ -1287,3 +1287,4 @@ body.vera-mode {
     display: flex;
   }
 }
+
