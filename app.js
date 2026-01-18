@@ -34,10 +34,11 @@ let fillerStartedAt = 0;
 let pendingMainAnswer = null;
 let audioStartedAt = 0;
 // let interruptStart = 0;
-
+let listeningMode = "continuous"; 
 
 const FILLER_DELAY_MS = 5300;  // feels natural
 const FILLER_GRACE_MS = 1000;  
+const pttBtn = document.getElementById("ptt");
 
 const FILLER_AUDIO_FILES = [
   "/static/fillers/moment.wav",
@@ -236,7 +237,12 @@ function detectInterrupt() {
   const now = performance.now();
 
   // Only interrupt while VERA is speaking (not filler)
-  if (!audioEl.paused && !fillerPlaying && !paused) {
+  if (
+  listeningMode === "continuous" &&
+  !audioEl.paused &&
+  !fillerPlaying &&
+  !paused
+) {
     // grace period to avoid clicks
     if (now - audioStartedAt > 200) {
 
@@ -361,6 +367,7 @@ function startListening() {
   mediaRecorder.onstop = handleUtterance;
 
   mediaRecorder.start();
+  detectSpeech();
 
   setTimeout(() => {
     if (!hasSpoken && mediaRecorder.state === "recording") {
@@ -381,7 +388,7 @@ function startListening() {
 ========================= */
 
 async function handleUtterance() {
-  if (!hasSpoken || !listening) {
+  if (listeningMode === "continuous" && !hasSpoken) {
     processing = false;
     startListening();
     return;
@@ -391,7 +398,11 @@ async function handleUtterance() {
 
   if (blob.size < MIN_AUDIO_BYTES) {
     processing = false;
-    startListening();
+
+    if (listeningMode === "continuous") {
+      startListening();
+    }
+
     return;
   }
   requestInFlight = true;
@@ -404,6 +415,11 @@ async function handleUtterance() {
   const formData = new FormData();
   formData.append("audio", blob);
   formData.append("session_id", sessionId);
+
+  // 🔑 ADD THIS
+  if (listeningMode === "ptt") {
+    formData.append("mode", "ptt");
+  }
 
   try {
     const res = await fetch(`${API_URL}/infer`, {
@@ -418,38 +434,36 @@ async function handleUtterance() {
     // 🔑 HANDLE CONTROL FLOW FIRST (NO AUDIO YET)
     if (data.skip) {
       processing = false;
-      startListening();
+
+      if (listeningMode === "continuous") {
+        startListening();
+      }
+
       return;
     }
 
-    if (data.command === "pause") {
+    if (listeningMode === "continuous" && data.command === "pause") {
       paused = true;
       processing = false;
-
       setStatus("Paused — say “unpause” or press mic", "paused");
-
-      listening = true;   // 🔑 allow startListening to run
-      startListening();
-      return;
-    }
-
-    if (data.command === "unpause") {
-      paused = false;
-      processing = false;
-
-      setStatus("Listening…", "recording");
-
       listening = true;
       startListening();
       return;
     }
 
-    if (data.paused) {
+    if (listeningMode === "continuous" && data.command === "unpause") {
+      paused = false;
+      processing = false;
+      setStatus("Listening…", "recording");
+      listening = true;
+      startListening();
+      return;
+    }
+
+    if (listeningMode === "continuous" && data.paused) {
       paused = true;
       processing = false;
-
       setStatus("Paused — say “unpause” or press mic", "paused");
-
       listening = true;
       startListening();
       return;
@@ -477,7 +491,10 @@ async function handleUtterance() {
 
       audioEl.onended = () => {
         processing = false;
-        startListening();
+
+        if (listeningMode === "continuous") {
+          startListening();
+        }
       };
     };
 
@@ -530,7 +547,7 @@ async function sendTextMessage() {
 
     requestInFlight = false;
 
-    if (data.command === "pause") {
+    if (listeningMode === "continuous" && data.command === "pause") {
       paused = true;
       processing = false;
 
@@ -541,7 +558,7 @@ async function sendTextMessage() {
       return;
     }
 
-    if (data.command === "unpause") {
+    if (listeningMode === "continuous" && data.command === "pause") {
       paused = false;
       processing = false;
 
@@ -595,8 +612,54 @@ async function sendTextMessage() {
 /* =========================
    MIC BUTTON
 ========================= */
+if (pttBtn) {
+  pttBtn.onmousedown = async () => {
+    listeningMode = "ptt";
+
+    await initMic();
+
+    listening = true;
+    processing = false;
+
+    audioChunks = [];
+    hasSpoken = true;
+    lastVoiceTime = 0;
+
+    mediaRecorder = new MediaRecorder(micStream);
+    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+    mediaRecorder.onstop = handleUtterance;
+
+    mediaRecorder.start();
+
+    setStatus("Listening (PTT)…", "recording");
+  };
+
+  pttBtn.onmouseup = () => {
+    if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+
+    listening = false;
+    mediaRecorder.stop(); // triggers handleUtterance()
+  };
+
+  // safety for mouse leaving button
+  pttBtn.onmouseup = () => {
+  if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+
+    listening = false;
+
+    // 🔑 give recorder time to flush audio frames
+    setTimeout(() => {
+      if (mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+      }
+    }, 120); // 100–150ms is ideal
+  };
+
+}
 
 recordBtn.onclick = async () => {
+  listeningMode = "continuous";   // 🔑 CRITICAL FIX
+
   if (!listening) {
     await initMic();
     listening = true;
