@@ -28,6 +28,7 @@ let rafId = null;
 let fillerTimer = null;
 let fillerPlayedThisTurn = false;
 let interruptSpeechFrames = 0;
+let pttRecording = false;
 
 let fillerPlaying = false;
 let fillerStartedAt = 0;
@@ -613,48 +614,46 @@ async function sendTextMessage() {
    MIC BUTTON
 ========================= */
 if (pttBtn) {
-  pttBtn.onmousedown = async () => {
-    listeningMode = "ptt";
+  pttBtn.onclick = async () => {
+    // prevent double firing while request is running
+    if (requestInFlight) return;
 
-    await initMic();
+    // ---------- START PTT ----------
+    if (!pttRecording) {
+      listeningMode = "ptt";
+      pttRecording = true;
 
-    listening = true;
-    processing = false;
+      await initMic();
 
-    audioChunks = [];
-    hasSpoken = true;
-    lastVoiceTime = 0;
+      listening = true;
+      processing = false;
 
-    mediaRecorder = new MediaRecorder(micStream);
-    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-    mediaRecorder.onstop = handleUtterance;
+      audioChunks = [];
+      hasSpoken = false;
+      lastVoiceTime = 0;
 
-    mediaRecorder.start();
+      mediaRecorder = new MediaRecorder(micStream);
+      mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+      mediaRecorder.onstop = handleUtterance;
 
-    setStatus("Listening (PTT)…", "recording");
-  };
+      mediaRecorder.start();
 
-  pttBtn.onmouseup = () => {
-    if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+      setStatus("Listening (PTT)… tap again to send", "recording");
+      return;
+    }
 
-    listening = false;
-    mediaRecorder.stop(); // triggers handleUtterance()
-  };
+    // ---------- STOP PTT ----------
+    if (pttRecording) {
+      pttRecording = false;
+      listening = false;
 
-  // safety for mouse leaving button
-  pttBtn.onmouseup = () => {
-  if (!mediaRecorder || mediaRecorder.state !== "recording") return;
-
-    listening = false;
-
-    // 🔑 give recorder time to flush audio frames
-    setTimeout(() => {
-      if (mediaRecorder.state === "recording") {
-        mediaRecorder.stop();
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        mediaRecorder.stop(); // triggers handleUtterance()
       }
-    }, 120); // 100–150ms is ideal
-  };
 
+      setStatus("Processing…", "thinking");
+    }
+  };
 }
 
 recordBtn.onclick = async () => {
