@@ -42,7 +42,12 @@
   <button id="skip-intro" class="intro-btn skip">
     Skip the trailer
   </button>
+  <div class="intro-disclaimer">
+    <p>VERA is an ongoing personal research project.</p>
+    <p>The trailer highlights system concepts and interaction goals rather than a finished product.</p>
+  </div>
 </div>
+
 <audio id="bg-music" loop preload="auto">
   <source src="background-music.mp3" type="audio/mpeg">
 </audio>
@@ -520,6 +525,7 @@
   const introVideo = document.getElementById("intro-video");
   const skipBtn = document.getElementById("skip-intro");
   const soundBtn = document.getElementById("enable-sound");
+  const disclaimer = document.querySelector(".intro-disclaimer");
 
   const home = document.getElementById("home");
   const veraApp = document.getElementById("vera-app");
@@ -571,14 +577,15 @@ function triggerTitleFlash() {
 ========================= */
 
 function hideIntro() {
+  // fade disclaimer too
+  disclaimer?.classList.add("hidden");
+
   intro.style.transition = "opacity 0.8s ease";
   intro.style.opacity = "0";
 
   setTimeout(() => {
     intro.remove();
     sessionStorage.setItem(INTRO_SEEN_KEY, "true");
-
-    // 🔑 trigger AFTER intro is gone
     triggerTitleFlash();
   }, 800);
 }
@@ -587,6 +594,9 @@ soundBtn.onclick = () => {
   introVideo.muted = false;
   introVideo.play();
   soundBtn.remove();
+
+  // fade disclaimer when trailer starts
+  disclaimer?.classList.add("hidden");
 };
 
 skipBtn.onclick = hideIntro;
