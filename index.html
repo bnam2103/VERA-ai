@@ -117,7 +117,7 @@
   </header>
   <section class="vera-log scroll-reveal">
     <div class="vera-log-inner">
-      <h1 class="patch-notes">PATCH NOTES/DEV LOGS</h1>
+      <h1 class="patch-notes">PATCH NOTES / DEV LOGS</h1>
       <h2>VERSION 1.0</h2>
       <p class="vera-log-intro">
         A usable conversational AI using speech as both input and output.
@@ -175,34 +175,51 @@
 
       <hr />
       <h2>VERSION 2.0</h2>
-      <h3>In progress/Testing</h3>
+      <p class="vera-log-intro">
+        This version focuses on making interaction with VERA feel more natural, flexible, 
+        and intentional. Building on the stable voice pipeline from Version 1.0, 
+        this release expands input modes, extends actions (e.g., news summaries, weather checks),
+        introduces early interruptibility and conversational pacing strategies, and begins deeper persona refinement.
+      </p>
+      <h3>Features / Implementations</h3>
       <ul>
+        <li><strong>Expanded Actions</strong>: news summaries and weather checks, alongside a restructured intent classification pipeline to separate actionable queries from free-form generation</li>
         <li>
-          <strong>Main page UI</strong>:
-          Smoother animations, simplified layout, scroll-based explanation
-        </li>
-        <li>
-          <strong>Web App UI</strong>: Keyboard input support (only on desktop), improved mobile layout (pending more user feedback)
-        </li>
-        <li><strong>Trailer Concept</strong>: all-caps typography, Alan Watts narration, All Caps - MF DOOM instrumental
-        </li>
-        <li><strong>Expanded Actions</strong>: News summaries, weather checks, Google search, potential Spotify control</li>
-        <li><strong>Push-to-Talk Button:</strong> mainly so users can operate it in environments without a microphone</li>
-        <li>
-          <strong>Natural Conversation (Early Strategies):</strong>
+          <strong>Natural Conversation (Early Strategies; Continuous Listening):</strong>
           <ul>
-            <li><strong>Interruptibility</strong> via concurrent audio recording</li>
-            <li><strong>Filler words</strong> (“let me think,” “hmm”) for longer response realism</li>
+            <li><strong>Interruptibility</strong> enabled via concurrent audio recording and explicit microphone state management</li>
+            <li><strong>Filler words</strong> (“let me think,” “hmm”) triggered by a front-end timing mechanism for more natural response pacing</li>
           </ul>
         </li>
         <li>
-          <strong>Persona Optimization: </strong>
-          <ul>
-            <li><strong>JARVIS:</strong> increased wit and dry humor, with deeper personalization based on user behavior patterns</li>
-          </ul>
+          <strong>Persona Optimization and Personalization:</strong>
+          increased wit and dry humor, tailored to user behavior patterns via JSON-based prompt-level personalization injection 
         </li>
-      </ul>
-      
+      </ul>  
+      <h3>Presentation</h3>
+        <ul>
+          <li>
+            <strong>Trailer Concept:</strong>
+            all-caps typography, Alan Watts narration, All Caps – MF DOOM instrumental
+          </li>
+          <li>
+            <strong>Main page UI:</strong>
+            smoother animations, simplified layout, scroll-based explanation
+          </li>
+        </ul>
+      <h3>Quality of Life Improvements / Issues Fixed</h3>
+        <ul>
+          <li>
+              <strong>More User Inputs</strong>: 
+              <ul>
+                <li><strong>Push-to-Talk Button:</strong> mainly used in a noisy environments. This ensures so each speech input is properly isolated and more intentional</li>
+                <li><strong>Keyboard Input:</strong> mainly used in a environment where users cannot speak</li>
+              </ul>
+            </li>
+          <li>
+            Reduced latency by adjusting LLM parameters
+          </li>  
+        </ul>       
       <hr />
       <h1 class="roadmap">Vision Roadmap</h1>
       <h2>VERSION 3.0</h2>
@@ -210,35 +227,35 @@
       <ul>
         <li><strong>Improved TTS:</strong> Coqui-XTTSv2 for more natural prosody and speech flow</li>
         <li>
+          <strong>LLM Backend Testing:</strong> Evaluate LLMs using LFM2 1.2B and Gemma 3 1B to find a balance between response quality and latency
+        </li>
+        <li>
           <strong>Advanced Conversational Control:</strong>
           <ul>
-            <li>Editable prompts during “thinking” state (QoL)</li>
-            <li>Reduced latency via frontend/backend restructuring</li>
-            <li>AI-initiated interruptions (user-configurable, turn-yield detection)</li>
-            <li>Rant Mode: AI remains silent unless triggered by keywords</li>
+            <li>Editable prompts during “thinking” state (QoL) by managing microphone state and concatenating with previous prompt (cool in theory but could increase latency)</li>
+            <li>Reduced latency via more frontend/backend restructuring</li>
+            <li>AI-initiated interruptions (this can only be done if ASR works concurrently as user speaking and trigger a must_interruption classification; very difficult to implement; also come with certain safety issues)</li>
           </ul>
         </li>
         <li>
-          <strong>User Memory & Personalization:</strong> Text-bubble selection for preference tuning
+          <strong>User Memory & Personalization:</strong> Text-bubble selection for preference tuning (e.g by selecting/highlighting certain responses, VERA saves user preferences to local JSON-based memory after each session)
         </li>
         <li>
-          <strong>Voice-Based Authentication:</strong> Voice biometrics using a user-specific voice matrix to filter speakers
+          <strong>Voice-Based Authentication:</strong> Voice biometrics using a user-specific voice matrix to filter speakers (an issue is that user voice can change based on mic quality and tone; need to research more)
         </li>
+        
         <li>
-          <strong>LLM Backend Testing:</strong> Evaluate LLMs comparable in size to LLaMA 3.0 to balance response quality and latency
+          <strong>System-Level Actions:</strong>
+          <ul>
+            <li>searching and opening Gmail, TikTok, Instagram, YouTube, and Spotify using side-panel views (an issue is that user must have their accounts signed in for certain platforms; could use json file to store the information)</li>
+          </ul>
         </li>
         <li>
           <strong>System-Level Actions:</strong>
           <ul>
-            <li>Device control (app installs, volume, etc.)</li>
-            <li>Restricted to admins/testers to prevent accidental misuse</li>
+            <li><strong>Fun Visual Personality Layer:</strong> Context-aware interface memes (thinking state: monkey thinking finger in mouth meme, response state: monkey pointing meme, playful contradiction or inconsistency detection: wong why is he lying meme, etc)</li>
+            <li><strong>Issues:</strong> timing with interface and context</li>
           </ul>
-        </li>
-        <li>
-          <strong>Fun Visual Personality Layer:</strong> Context-aware UI memes (thinking state: monkey thinking finger in mouth meme, response state: monkey pointing meme, playful contradiction or inconsistency detection: wong why is he lying meme, etc)
-        </li>
-        <li>
-          <strong>Media:</strong> 3 additional trailers of VERA persona, response and experience
         </li>
       </ul>
     </div>
@@ -406,15 +423,25 @@
       </section>
 
       <section class="sidebar-section">
-        <h2>How to Use</h2>
-        <ol>
-          <li>Click the microphone to start listening</li>
-          <li>Speak naturally</li>
-          <li>Pause to let VERA think and respond</li>
-          <li>Click the microphone again to stop listening</li>
-          <li><strong>Refresh the page to return to the main website</strong></li>
-        </ol>
-      </section>
+      <h2>How to Use</h2>
+      <ol>
+        <li>
+          <strong>Continuous Listening</strong><br>
+            Click <strong>the microphone 🎙️</strong> to let VERA listen continuously. Click again to pause/unpause.
+        </li>
+        <li>
+          <strong>Keyboard Input</strong><br>
+          Type your message and press <em>Enter</em> to send.
+        </li>
+        <li>
+          <strong>Push-to-Talk</strong><br>
+          Press <strong>the headphones 🎧</strong> to start speaking. Press again to send, then repeat.
+        </li>
+        <li>
+          <strong>Refresh the page</strong> to return to the main website.
+        </li>
+      </ol>
+    </section>
 
       <section class="sidebar-section">
         <h2>Feedback</h2>
