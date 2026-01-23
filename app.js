@@ -95,7 +95,7 @@ const INTERRUPT_MIN_FRAMES = 6;
 
 const INTERRUPT_ZCR_MIN = 0.02;
 const INTERRUPT_ZCR_MAX = 0.15;
-
+const MAX_SPEECH_RMS = 0.035;
 const INTERRUPT_RMS = 0.010;   // higher than normal speech start
 // const INTERRUPT_MS = 140;    
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
@@ -249,6 +249,7 @@ function detectInterrupt() {
 
       const speechLike =
         rms > INTERRUPT_RMS &&
+        rms < MAX_SPEECH_RMS &&
         zcr > INTERRUPT_ZCR_MIN &&
         zcr < INTERRUPT_ZCR_MAX;
 
