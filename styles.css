@@ -1299,7 +1299,7 @@ body.vera-mode {
     display: none;
   }
   #ptt {
-    display: none;
+    display: flex;
     margin-left: auto;
   }
 
