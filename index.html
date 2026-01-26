@@ -226,43 +226,151 @@
           </li>  
         </ul>       
       <hr />
-      <h1 class="roadmap">Vision Roadmap</h1>
-      <h2>VERSION 3.0</h2>
-      <h3>Brainstorming</h3>
-      <ul>
-        <li><strong>Improved TTS:</strong> Coqui-XTTSv2 for more natural prosody and speech flow</li>
-        <li>
-          <strong>LLM Backend Testing:</strong> Evaluate LLMs using LFM2 1.2B and Gemma 3 1B to find a balance between response quality and latency
-        </li>
-        <li>
-          <strong>Advanced Conversational Control:</strong>
-          <ul>
-            <li>Editable prompts during “thinking” state (QoL) by managing microphone state and concatenating with previous prompt (cool in theory but could increase latency)</li>
-            <li>Reduced latency via more frontend/backend restructuring</li>
-            <li>AI-initiated interruptions (this can only be done if ASR works concurrently as user speaking and trigger a must_interruption classification; very difficult to implement; also come with certain safety issues)</li>
-          </ul>
-        </li>
-        <li>
-          <strong>User Memory & Personalization:</strong> Text-bubble selection for preference tuning (e.g by selecting/highlighting certain responses, VERA saves user preferences to local JSON-based memory after each session)
-        </li>
-        <li>
-          <strong>Voice-Based Authentication:</strong> Voice biometrics using a user-specific voice matrix to filter speakers (an issue is that user voice can change based on mic quality and tone; need to research more)
-        </li>
-        
-        <li>
-          <strong>System-Level Actions:</strong>
-          <ul>
-            <li>Searching and opening Gmail, TikTok, Instagram, YouTube, and Spotify using side-panel views (an issue is that user must have their accounts signed in for certain platforms; could use json file to store the information)</li>
-          </ul>
-        </li>
-        <li>
-          <strong>System-Level Actions:</strong>
-          <ul>
-            <li><strong>Fun Visual Personality Layer:</strong> Context-aware interface memes (thinking state: monkey thinking finger in mouth meme, response state: monkey pointing meme, playful contradiction or inconsistency detection: wong why is he lying meme, etc)</li>
-            <li><strong>Issues:</strong> timing with interface and context</li>
-          </ul>
-        </li>
-      </ul>
+
+        <h1 class="roadmap">Vision Roadmap</h1>
+
+        <h2>VERSION 3.0</h2>
+        <h3 class="vera-subtitle">Persistent Memory & Conversational Intelligence</h3>
+
+        <p class="vera-log-intro">
+          Version 3.0 represents a shift from session-based interaction toward
+          <strong>long-term conversational continuity</strong>, while preserving
+          user control, transparency, and bounded behavior.
+          This release introduces selective memory retrieval across sessions,
+          deeper conversational control, and infrastructure improvements aimed
+          at reducing latency and improving realism.
+        </p>
+
+        <!-- =========================
+            MEMORY & PERSONALIZATION
+        ========================= -->
+        <h3>User Memory & Personalization <span class="vera-tag">(Retrieval-Based)</span></h3>
+
+        <p>
+          Rather than relying solely on static prompt injection, Version 3.0 introduces
+          <strong>retrieval-augmented memory</strong>, allowing VERA to selectively recall
+          relevant user information from past interactions only when it is useful.
+        </p>
+
+        <ul>
+          <li>
+            <strong>Stable identity remains static:</strong>
+            user identity, preferences, and assistant behavior rules are always present
+            and never depend on retrieval.
+          </li>
+          <li>
+            <strong>Dynamic context is distilled:</strong>
+            conversational history, goals, and evolving context are stored as compact
+            memory artifacts rather than raw transcripts.
+          </li>
+          <li>
+            <strong>Query-dependent recall:</strong>
+            memories are retrieved only when relevant to the current interaction,
+            preventing over-injection or unnecessary references to past conversations.
+          </li>
+        </ul>
+
+        <p><strong>Planned implementations:</strong></p>
+        <ul>
+          <li>
+            Text-bubble selection and highlighting to explicitly mark preferences or
+            important moments for memory retention
+          </li>
+          <li>
+            Session-end summarization into compact memory entries
+            (e.g., goals, projects, behavioral preferences)
+          </li>
+          <li>
+            Retrieval of a small, relevance-filtered set of memories at response time
+          </li>
+          <li>
+            Clear separation between <em>always-on personalization</em> and
+            <em>dynamic memory recall</em>
+          </li>
+        </ul>
+
+        <p class="vera-note">
+          This approach allows VERA to maintain continuity across sessions while
+          remaining predictable, respectful, and user-controlled.
+        </p>
+
+        <!-- =========================
+            CONVERSATIONAL CONTROL
+        ========================= -->
+        <h3>Advanced Conversational Control</h3>
+        <ul>
+          <li>
+            Editable prompts during the “thinking” state by managing microphone state
+            and controlled prompt concatenation
+            <em>(experimental; latency trade-offs under evaluation)</em>
+          </li>
+          <li>
+            Reduced end-to-end latency through frontend/backend restructuring
+          </li>
+          <li>
+            Exploration of AI-initiated interruptions using concurrent ASR and
+            high-confidence interruption classification
+            <em>(research-heavy, safety-constrained)</em>
+          </li>
+        </ul>
+
+        <!-- =========================
+            VOICE & MODELS
+        ========================= -->
+        <h3>Voice & Model Improvements</h3>
+        <ul>
+          <li>
+            Improved TTS using <strong>Coqui-XTTSv2</strong> for more natural prosody
+            and speech pacing
+          </li>
+          <li>
+            LLM backend evaluation using lightweight models
+            (<strong>LFM2 1.2B</strong>, <strong>Gemma 3 1B</strong>) to balance
+            response quality and real-time latency
+          </li>
+        </ul>
+
+        <!-- =========================
+            AUTHENTICATION
+        ========================= -->
+        <h3>Authentication & Identity</h3>
+        <ul>
+          <li>
+            Voice-based speaker filtering using user-specific voice embeddings
+            <em>(research phase; robustness to microphone and tonal variation under investigation)</em>
+          </li>
+        </ul>
+
+        <!-- =========================
+            SYSTEM ACTIONS
+        ========================= -->
+        <h3>System-Level Actions</h3>
+        <ul>
+          <li>
+            Side-panel search and navigation for Gmail, YouTube, Spotify, TikTok,
+            and Instagram
+          </li>
+          <li>
+            Exploration of local or encrypted JSON-based account context
+            <em>(user opt-in only)</em>
+          </li>
+        </ul>
+
+        <!-- =========================
+            VISUAL PERSONALITY
+        ========================= -->
+        <h3>Visual Personality Layer</h3>
+        <ul>
+          <li>
+            Context-aware interface states with lightweight visual humor
+            (thinking, contradiction detection, uncertainty)
+          </li>
+          <li>
+            Careful synchronization between UI state and conversational context
+            to avoid timing mismatches
+          </li>
+        </ul>
+
     </div>
   </section>
   <!-- =========================
