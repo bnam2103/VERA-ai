@@ -377,8 +377,6 @@ function startListening() {
     }
   }, MAX_WAIT_FOR_SPEECH_MS);
 
-  detectSpeech();
-
   setStatus(
     paused ? "Paused — say “unpause” or press mic" : "Listening…",
     paused ? "paused" : "recording"
