@@ -101,11 +101,11 @@ const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
 const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
-const INTERRUPT_MIN_FRAMES = 16; 
+const INTERRUPT_MIN_FRAMES = 6; 
 
-const INTERRUPT_ZCR_MIN = 0.02;
-const INTERRUPT_ZCR_MAX = 0.15;
-const MAX_SPEECH_RMS = 0.035;
+const INTERRUPT_ZCR_MIN = 0.015;
+const INTERRUPT_ZCR_MAX = 0.25; 
+const MAX_SPEECH_RMS = 0.080;
 const INTERRUPT_RMS = 0.010;   // higher than normal speech start
 // const INTERRUPT_MS = 140;    
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
