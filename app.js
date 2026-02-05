@@ -101,7 +101,7 @@ const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
 const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
-const INTERRUPT_MIN_FRAMES = 6; 
+const INTERRUPT_MIN_FRAMES = 2; 
 
 const INTERRUPT_ZCR_MIN = 0.015;
 const INTERRUPT_ZCR_MAX = 0.25; 
