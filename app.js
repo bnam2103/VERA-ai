@@ -97,11 +97,11 @@ function startFillerTimer() {
 ========================= */
 
 const VOLUME_THRESHOLD = 0.009; // TUNER
-const SILENCE_MS = 750;     // silence before ending speech
+const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
 const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
-const INTERRUPT_MIN_FRAMES = 6; 
+const INTERRUPT_MIN_FRAMES = 16; 
 
 const INTERRUPT_ZCR_MIN = 0.02;
 const INTERRUPT_ZCR_MAX = 0.15;
@@ -209,6 +209,34 @@ async function sendUnpauseCommand() {
   });
 }
 
+let fillerAuthInterval = null;
+
+function waitForFillerAuthorization() {
+  if (fillerAuthInterval) return;
+
+  fillerAuthInterval = setInterval(async () => {
+    if (!requestInFlight) {
+      clearInterval(fillerAuthInterval);
+      fillerAuthInterval = null;
+      return;
+    }
+
+    const res = await fetch(
+      `${API_URL}/thinking_allowed?session_id=${sessionId}`,
+      { cache: "no-store" }
+    );
+    const data = await res.json();
+
+    if (data.allow_filler) {
+      clearInterval(fillerAuthInterval);
+      fillerAuthInterval = null;
+
+      // 🔑 THIS IS THE ONLY PLACE WE CALL IT
+      startFillerTimer();
+    }
+  }, 150);
+}
+
 function interruptSpeech() {
   if (audioEl.paused || !interruptRecording) return;
   setStatus("Listening… (interrupted)", "recording");
@@ -264,15 +292,22 @@ function detectInterrupt() {
         zcr < INTERRUPT_ZCR_MAX;
 
       if (speechLike) {
+        if (interruptSpeechFrames === 0) {
+          interruptSpeechStart = now;
+        }
         interruptSpeechFrames++;
       } else {
         interruptSpeechFrames = 0;
+        interruptSpeechStart = 0;
       }
 
-      if (interruptSpeechFrames >= INTERRUPT_MIN_FRAMES) {
-        
+      if (
+        interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
+        now - interruptSpeechStart > 150
+      ) {
         interruptSpeech();
         interruptSpeechFrames = 0;
+        interruptSpeechStart = 0;
       }
     }
   } else {
@@ -385,12 +420,12 @@ async function handleInterruptUtterance(blob) {
   }
 
   requestInFlight = true;
+  startFillerTimer();
   processing = true;
   fillerPlayedThisTurn = false;
   setStatus("Thinking…", "thinking");
 
   // ✅ start filler exactly like normal flow
-  startFillerTimer();
 
   const formData = new FormData();
   formData.append("audio", blob);
@@ -416,6 +451,7 @@ async function handleInterruptUtterance(blob) {
     if (data.skip) {
       processing = false;
       listening = true;
+      startListening();
       return;
     }
 
@@ -442,6 +478,7 @@ async function handleInterruptUtterance(blob) {
       processing = false;
       setStatus("Paused — say “unpause” or press mic", "paused");
       listening = true;
+      startListening();
       return;
     }
 
@@ -593,11 +630,11 @@ async function handleUtterance() {
     return;
   }
   requestInFlight = true;
+  startFillerTimer();
   processing = true;
   fillerPlayedThisTurn = false;
   setStatus("Thinking…", "thinking");
 
-  startFillerTimer(); // 🔑 START IMMEDIATELY
 
   const formData = new FormData();
   formData.append("audio", blob);
@@ -715,7 +752,7 @@ async function sendTextMessage() {
   listening = false;
   processing = true;
   requestInFlight = true;
-
+  startFillerTimer();
   clearTimeout(fillerTimer);
   fillerPlaying = false;
   pendingMainAnswer = null;
