@@ -302,7 +302,7 @@ function detectInterrupt() {
       }
 
       if (
-        // interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
+        interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
         now - interruptSpeechStart > 150
       ) {
         interruptSpeech();
