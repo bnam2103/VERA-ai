@@ -61,6 +61,7 @@ function startFillerTimer() {
   fillerTimer = setTimeout(() => {
     if (!requestInFlight) return;
     if (fillerPlaying) return;
+    if (paused) return; 
 
     const filler =
       FILLER_AUDIO_FILES[Math.floor(Math.random() * FILLER_AUDIO_FILES.length)];
