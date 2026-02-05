@@ -16,6 +16,9 @@ let micStream = null;
 let audioCtx = null;
 let analyser = null;
 let mediaRecorder = null;
+let interruptRecorder = null;
+let interruptChunks = [];
+let interruptRecording = false;
 
 let audioChunks = [];
 let hasSpoken = false;
@@ -66,19 +69,26 @@ function startFillerTimer() {
     fillerPlayedThisTurn = true;
     fillerStartedAt = performance.now();
 
-    audioEl.onended = () => {
-    fillerPlaying = false;
-
-    if (!requestInFlight && pendingMainAnswer) {
-      setTimeout(() => {
-        pendingMainAnswer?.();
-        pendingMainAnswer = null;
-      }, FILLER_GRACE_MS);
-    }
-  };
-
-    audioEl.src = `${API_URL}${filler}`;
+    const fillerSrc = `${API_URL}${filler}`;
+    resetAudioHandlers();
+    audioEl.src = fillerSrc;
     audioEl.play().catch(console.warn);
+
+    audioEl.addEventListener(
+      "ended",
+      () => {
+        if (audioEl.src !== fillerSrc) return; // 🔑 guard
+        fillerPlaying = false;
+
+        if (!requestInFlight && pendingMainAnswer) {
+          setTimeout(() => {
+            pendingMainAnswer?.();
+            pendingMainAnswer = null;
+          }, FILLER_GRACE_MS);
+        }
+      },
+      { once: true }
+    );
   }, FILLER_DELAY_MS);
 }
 
@@ -200,22 +210,23 @@ async function sendUnpauseCommand() {
 }
 
 function interruptSpeech() {
-  if (audioEl.paused) return;
-
-  interruptStart = 0;
+  if (audioEl.paused || !interruptRecording) return;
+  setStatus("Listening… (interrupted)", "recording");
+  resetAudioHandlers();
 
   audioEl.pause();
   audioEl.currentTime = 0;
 
+  clearTimeout(fillerTimer);
   fillerPlaying = false;
   pendingMainAnswer = null;
-  clearTimeout(fillerTimer);
 
+  listening = true;
   processing = false;
-  listening = true; // 🔑 ADD THIS
-  setStatus("Listening…", "recording");
-
-  startListening(); // 🔑 FORCE restart
+  
+  
+  interruptLastVoiceTime = performance.now();
+  requestAnimationFrame(detectInterruptSpeechEnd);
 }
 
 function detectInterrupt() {
@@ -241,8 +252,7 @@ function detectInterrupt() {
   if (
   listeningMode === "continuous" &&
   !audioEl.paused &&
-  !fillerPlaying &&
-  !paused
+  !fillerPlaying 
 ) {
     // grace period to avoid clicks
     if (now - audioStartedAt > 200) {
@@ -260,6 +270,7 @@ function detectInterrupt() {
       }
 
       if (interruptSpeechFrames >= INTERRUPT_MIN_FRAMES) {
+        
         interruptSpeech();
         interruptSpeechFrames = 0;
       }
@@ -282,6 +293,40 @@ function detectInterrupt() {
   requestAnimationFrame(detectInterrupt);
 }
 
+function resetAudioHandlers() {
+  audioEl.onplay = null;
+  audioEl.onended = null;
+}
+
+let interruptLastVoiceTime = 0;
+
+function detectInterruptSpeechEnd() {
+  if (!interruptRecording || interruptRecorder?.state !== "recording") return;
+
+  const buf = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buf);
+
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  const rms = Math.sqrt(sum / buf.length);
+
+  const now = performance.now();
+
+  if (rms > VOLUME_THRESHOLD) {
+    interruptLastVoiceTime = now;
+  }
+
+  if (
+    interruptLastVoiceTime &&
+    now - interruptLastVoiceTime > SILENCE_MS
+  ) {
+    interruptRecorder.stop(); // ✅ NOW stop
+    interruptRecording = false;
+    return;
+  }
+
+  requestAnimationFrame(detectInterruptSpeechEnd);
+}
 
 function computeZCR(buf) {
   let crossings = 0;
@@ -294,6 +339,148 @@ function computeZCR(buf) {
   return crossings / buf.length;
 }
 
+function startInterruptCapture() {
+  // 🔥 HARD FLUSH — stop and discard any previous capture
+  if (interruptRecorder && interruptRecorder.state !== "inactive") {
+    try {
+      interruptRecorder.ondataavailable = null;
+      interruptRecorder.onstop = null;
+      interruptRecorder.stop();
+    } catch {}
+  }
+
+  interruptRecorder = null;
+  interruptRecording = false;
+  interruptChunks = [];
+  interruptSpeechFrames = 0;
+
+  // ---------- START FRESH RECORDER ----------
+  interruptRecorder = new MediaRecorder(micStream);
+
+  interruptRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) {
+      interruptChunks.push(e.data);
+    }
+  };
+
+  interruptRecorder.onstop = () => {
+    const blob = new Blob(interruptChunks, { type: "audio/webm" });
+
+    interruptRecorder = null;
+    interruptRecording = false;
+    interruptChunks = [];
+
+    handleInterruptUtterance(blob);
+  };
+
+  interruptRecorder.start();   // 🚀 clean segment start
+  interruptRecording = true;
+}
+
+async function handleInterruptUtterance(blob) {
+  pendingMainAnswer = null; 
+  if (blob.size < MIN_AUDIO_BYTES) {
+    listening = true;
+    return;
+  }
+
+  requestInFlight = true;
+  processing = true;
+  fillerPlayedThisTurn = false;
+  setStatus("Thinking…", "thinking");
+
+  // ✅ start filler exactly like normal flow
+  startFillerTimer();
+
+  const formData = new FormData();
+  formData.append("audio", blob);
+  formData.append("session_id", sessionId);
+  formData.append("mode", "interrupt"); // backend can branch if desired
+
+  try {
+    const res = await fetch(`${API_URL}/infer`, {
+      method: "POST",
+      body: formData
+    });
+
+    const data = await res.json();
+
+    requestInFlight = false;
+    clearTimeout(fillerTimer);
+    fillerPlaying = false;
+
+    /* =========================
+       CONTROL FLOW (FIRST)
+    ========================= */
+
+    if (data.skip) {
+      processing = false;
+      listening = true;
+      return;
+    }
+
+    if (listeningMode === "continuous" && data.command === "pause") {
+      paused = true;
+      processing = false;
+      setStatus("Paused — say “unpause” or press mic", "paused");
+      listening = true;
+      startListening();
+      return;
+    }
+
+    if (listeningMode === "continuous" && data.command === "unpause") {
+      paused = false;
+      processing = false;
+      setStatus("Listening…", "recording");
+      listening = true;
+      startListening();
+      return;
+    }
+
+    if (listeningMode === "continuous" && data.paused) {
+      paused = true;
+      processing = false;
+      setStatus("Paused — say “unpause” or press mic", "paused");
+      listening = true;
+      return;
+    }
+
+    paused = false;
+
+    /* =========================
+       NORMAL INTERRUPT REPLY
+    ========================= */
+
+    addBubble(data.transcript, "user");
+
+    playInterruptAnswer(data);
+
+  } catch {
+    requestInFlight = false;
+    clearTimeout(fillerTimer);
+    fillerPlaying = false;
+    setStatus("Server error", "offline");
+    listening = true;
+  }
+}
+
+function playInterruptAnswer(data) {
+  addBubble(data.reply, "vera");
+  resetAudioHandlers();
+  audioEl.src = `${API_URL}${data.audio_url}`;
+  audioEl.play();
+
+  audioEl.onplay = () => {
+    audioStartedAt = performance.now();
+    setStatus("Speaking… (can only be interrupted once)", "speaking");
+    processing = false;
+  };
+
+  audioEl.onended = () => {
+    listening = true;
+    startListening(); 
+  };
+}
 /* =========================
    MIC INIT
 ========================= */
@@ -481,12 +668,14 @@ async function handleUtterance() {
       } else {
         addBubble(data.reply, "vera");
       }
+      resetAudioHandlers();
       audioEl.src = `${API_URL}${data.audio_url}`;
       audioEl.play();
 
       audioEl.onplay = () => {
         audioStartedAt = performance.now();
         setStatus("Speaking… (Interruptible)", "speaking");
+        startInterruptCapture();
       };
 
       audioEl.onended = () => {
@@ -558,7 +747,7 @@ async function sendTextMessage() {
       return;
     }
 
-    if (listeningMode === "continuous" && data.command === "pause") {
+    if (listeningMode === "continuous" && data.command === "unpause") {
       paused = false;
       processing = false;
 
