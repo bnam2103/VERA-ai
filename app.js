@@ -212,31 +212,31 @@ async function sendUnpauseCommand() {
 
 let fillerAuthInterval = null;
 
-function waitForFillerAuthorization() {
-  if (fillerAuthInterval) return;
+// function waitForFillerAuthorization() {
+//   if (fillerAuthInterval) return;
 
-  fillerAuthInterval = setInterval(async () => {
-    if (!requestInFlight) {
-      clearInterval(fillerAuthInterval);
-      fillerAuthInterval = null;
-      return;
-    }
+//   fillerAuthInterval = setInterval(async () => {
+//     if (!requestInFlight) {
+//       clearInterval(fillerAuthInterval);
+//       fillerAuthInterval = null;
+//       return;
+//     }
 
-    const res = await fetch(
-      `${API_URL}/thinking_allowed?session_id=${sessionId}`,
-      { cache: "no-store" }
-    );
-    const data = await res.json();
+//     const res = await fetch(
+//       `${API_URL}/thinking_allowed?session_id=${sessionId}`,
+//       { cache: "no-store" }
+//     );
+//     const data = await res.json();
 
-    if (data.allow_filler) {
-      clearInterval(fillerAuthInterval);
-      fillerAuthInterval = null;
+//     if (data.allow_filler) {
+//       clearInterval(fillerAuthInterval);
+//       fillerAuthInterval = null;
 
-      // 🔑 THIS IS THE ONLY PLACE WE CALL IT
-      startFillerTimer();
-    }
-  }, 150);
-}
+//       // 🔑 THIS IS THE ONLY PLACE WE CALL IT
+//       startFillerTimer();
+//     }
+//   }, 150);
+// }
 
 function interruptSpeech() {
   if (audioEl.paused || !interruptRecording) return;
@@ -743,16 +743,44 @@ async function handleUtterance() {
 /* =========================
    TEXT INPUT PIPELINE
 ========================= */
+function micIsReady() {
+  return !!micStream;
+}
 
 async function sendTextMessage() {
   const text = textInput.value.trim();
-  if (!text || requestInFlight) return;
 
+  // 🔑 EARLY GUARD — before requestInFlight / thinking
+  if (/pause/i.test(text) && !micIsReady()) {
+    addBubble(text, "user");
+    setStatus("Can’t pause — microphone isn’t active", "idle");
+
+    // HARD RESET
+    requestInFlight = false;
+    processing = false;
+    paused = false;
+    listening = false;
+
+    textInput.value = "";
+    return;
+  }
+
+  // 🔑 recover from offline
+  if (statusEl.classList.contains("offline")) {
+    requestInFlight = false;
+    processing = false;
+    paused = false;
+    listening = false;
+    setStatus("Ready", "idle");
+  }
+
+  if (!text || requestInFlight) return;
   textInput.value = "";
 
   listening = false;
   processing = true;
   requestInFlight = true;
+  setStatus("Thinking…", "thinking");
   startFillerTimer();
   clearTimeout(fillerTimer);
   fillerPlaying = false;
@@ -774,13 +802,22 @@ async function sendTextMessage() {
 
     requestInFlight = false;
 
-    if (listeningMode === "continuous" && data.command === "pause") {
-      paused = true;
+    if (data.command === "pause") {
       processing = false;
+      requestInFlight = false;
 
+      if (!micIsReady()) {
+        // 🔑 graceful rejection
+        setStatus("Can’t pause — microphone isn’t active", "idle");
+        paused = false;
+        listening = false;
+        return;
+      }
+
+      paused = true;
       setStatus("Paused — say “unpause” or press mic", "paused");
 
-      listening = true;   // 🔑 allow startListening to run
+      listening = true;
       startListening();
       return;
     }
