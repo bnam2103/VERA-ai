@@ -120,7 +120,107 @@
 
     </div>
   </header>
-  <section class="vera-log scroll-reveal">
+  <section id="vera-use-cases" class="vera-use-cases">
+  <div class="vera-use-cases-inner">
+    
+    <h2 class="vera-section-title soft type-title" data-text="How does VERA work?"></h2>
+
+
+    <div class="vera-use-cases-content">
+      
+      <div class="use-cases-layout">
+      <div class="use-cases-nav scroll-reveal delay-1">
+
+        <button class="use-case-btn" data-case="realtime">
+          🎙️ Real-time Conversation
+        </button>
+        <button class="use-case-btn" data-case="interrupt">
+          ⏸️ Interruptibility
+        </button>
+        <button class="use-case-btn" data-case="personalization">
+          🎨 Personalization
+        </button>
+        <button class="use-case-btn" data-case="actions">
+          ⚙️ System Actions
+        </button>
+      </div>
+
+      <div class="use-cases-panel use-cases-window scroll-reveal delay-2">
+
+        <div class="use-case-content" id="case-realtime">
+          <h3>Real-time Voice Processing</h3>
+          <p>
+            VERA lets you talk naturally and get spoken responses back in real time,
+            similar to a human conversation. In noisy environments or when a 
+            microphone isn't available, you can also type or use Push-to-Talk.
+          </p>
+        </div>
+
+        <div class="use-case-content" id="case-interrupt">
+          <h3>Interruptibility</h3>
+          <p>
+            Users can interrupt VERA mid-response to correct, redirect, 
+            or add context. This creates a more fluid and natural conversational 
+            flow, similar to speaking with another person rather than a turn-based conversation.
+          </p>
+        </div>
+
+        <div class="use-case-content" id="case-personalization">
+          <h3>Personalization</h3>
+          <p>
+            VERA uses context like habits and preferences to give more helpful responses.
+            Personal data is planned to stay local on the user’s device.
+          </p>
+        </div>
+
+        <div class="use-case-content" id="case-actions">
+          <h3>Actions and Queries</h3>
+          <p>
+            VERA can retrieve real-time information such as news, weather,
+            and time through simple voice commands. This helps eliminates the need 
+            for manual searching and enabling faster access to information.
+          </p>
+        </div>
+      </div>
+    </div>
+    </div>
+  </div>
+<section class="vera-use-access">
+  <div class="vera-use-access-inner">
+
+    <h2 class="vera-section-title soft type-title" data-text="How to use VERA"></h2>
+
+
+    <p class="vera-use-access-text scroll-reveal delay-1">
+      VERA currently runs entirely on a local machine and does not rely on any paid
+      services or cloud infrastructure. To preserve system stability and performance,
+      access requires manual server activation.
+      <br><br>
+      Below, you can request access by selecting a preferred date and time.
+      Click
+      <a href="#" id="enter-vera-link" class="vera-inline-link">
+         here 
+      </a>at your requested date and time to use the system.
+    </p>
+
+    <!-- Placeholder for future date/time input -->
+    <div class="vera-use-access-placeholder scroll-reveal delay-2">
+      <form
+        id="access-form"
+        class="vera-access-form"
+      >
+        <input type="date" name="preferred_date" required />
+        <input type="time" name="preferred_time" required />
+        <button type="submit">Request Access</button>
+      </form>
+      <p class="vera-access-note" id="access-confirmation" hidden>
+      </p>
+    </div>
+
+  </div>
+</section>
+</section>
+  <section class="vera-log">
     <div class="vera-log-inner">
       <h1 class="patch-notes">PATCH NOTES / DEV LOGS</h1>
       <h2>VERSION 1.0</h2>
@@ -224,153 +324,35 @@
           <li>
             Reduced latency by adjusting LLM parameters
           </li>  
-        </ul>       
+        </ul>
       <hr />
+      <h2>VERSION 2.5</h2>
+      <p class="vera-log-intro">
+        Version 2.5 is a refinement release mainly focused on
+        <strong>response reliability, latency reduction, and conversational correctness</strong>.
+        Rather than introducing new features, this version addresses
+        systemic weaknesses observed during extended testing.
+      </p>
 
-        <h1 class="roadmap">Vision Roadmap</h1>
-
-        <h2>VERSION 3.0</h2>
-        <h3 class="vera-subtitle">Persistent Memory & Conversational Intelligence</h3>
-
-        <p class="vera-log-intro">
-          Version 3.0 represents a shift from session-based interaction toward
-          <strong>long-term conversational continuity</strong>, while preserving
-          user control, transparency, and bounded behavior.
-          This release introduces selective memory retrieval across sessions,
-          deeper conversational control, and infrastructure improvements aimed
-          at reducing latency and improving realism.
-        </p>
-
-        <!-- =========================
-            MEMORY & PERSONALIZATION
-        ========================= -->
-        <h3>User Memory & Personalization <span class="vera-tag">(Retrieval-Based)</span></h3>
-
-        <p>
-          Rather than relying solely on static prompt injection, Version 3.0 introduces
-          <strong>retrieval-augmented memory</strong>, allowing VERA to selectively recall
-          relevant user information from past interactions only when it is useful.
-        </p>
-
-        <ul>
-          <li>
-            <strong>Stable identity remains static:</strong>
-            user identity, preferences, and assistant behavior rules are always present
-            and never depend on retrieval.
-          </li>
-          <li>
-            <strong>Dynamic context is distilled:</strong>
-            conversational history, goals, and evolving context are stored as compact
-            memory artifacts rather than raw transcripts.
-          </li>
-          <li>
-            <strong>Query-dependent recall:</strong>
-            memories are retrieved only when relevant to the current interaction,
-            preventing over-injection or unnecessary references to past conversations.
-          </li>
-        </ul>
-
-        <p><strong>Planned implementations:</strong></p>
-        <ul>
-          <li>
-            Text-bubble selection and highlighting to explicitly mark preferences or
-            important moments for memory retention
-          </li>
-          <li>
-            Session-end summarization into compact memory entries
-            (e.g., goals, projects, behavioral preferences)
-          </li>
-          <li>
-            Retrieval of a small, relevance-filtered set of memories at response time
-          </li>
-          <li>
-            Clear separation between <em>always-on personalization</em> and
-            <em>dynamic memory recall</em>
-          </li>
-        </ul>
-
-        <p class="vera-note">
-          This approach allows VERA to maintain continuity across sessions while
-          remaining predictable, respectful, and user-controlled.
-        </p>
-
-        <!-- =========================
-            CONVERSATIONAL CONTROL
-        ========================= -->
-        <h3>Advanced Conversational Control</h3>
-        <ul>
-          <li>
-            Editable prompts during the “thinking” state by managing microphone state
-            and controlled prompt concatenation
-            <em>(experimental; latency trade-offs under evaluation)</em>
-          </li>
-          <li>
-            Reduced end-to-end latency through frontend/backend restructuring
-          </li>
-          <li>
-            Exploration of AI-initiated interruptions using concurrent ASR and
-            high-confidence interruption classification
-            <em>(research-heavy, safety-constrained)</em>
-          </li>
-        </ul>
-
-        <!-- =========================
-            VOICE & MODELS
-        ========================= -->
-        <h3>Voice & Model Improvements</h3>
-        <ul>
-          <li>
-            Improved TTS using <strong>Coqui-XTTSv2</strong> for more natural prosody
-            and speech pacing
-          </li>
-          <li>
-            LLM backend evaluation using lightweight models
-            (<strong>LFM2 1.2B</strong>, <strong>Gemma 3 1B</strong>) to balance
-            response quality and real-time latency
-          </li>
-        </ul>
-
-        <!-- =========================
-            AUTHENTICATION
-        ========================= -->
-        <h3>Authentication & Identity</h3>
-        <ul>
-          <li>
-            Voice-based speaker filtering using user-specific voice embeddings
-            <em>(research phase; robustness to microphone and tonal variation under investigation)</em>
-          </li>
-        </ul>
-
-        <!-- =========================
-            SYSTEM ACTIONS
-        ========================= -->
-        <h3>System-Level Actions</h3>
-        <ul>
-          <li>
-            Side-panel search and navigation for Gmail, YouTube, Spotify, TikTok,
-            and Instagram
-          </li>
-          <li>
-            Exploration of local or encrypted JSON-based account context
-            <em>(user opt-in only)</em>
-          </li>
-        </ul>
-
-        <!-- =========================
-            VISUAL PERSONALITY
-        ========================= -->
-        <h3>Visual Personality Layer</h3>
-        <ul>
-          <li>
-            Context-aware interface states with lightweight visual humor
-            (thinking, contradiction detection, uncertainty)
-          </li>
-          <li>
-            Careful synchronization between UI state and conversational context
-            to avoid timing mismatches
-          </li>
-        </ul>
-
+      <h3>Key Improvements</h3>
+      <ul>
+        <li>
+          <strong>Hallucination Reduction via Confidence Gating:</strong>
+          introduced a confidence-aware filter that reroutes
+          low-confidence generations, significantly reducing incorrect outputs
+          during ambiguous queries
+        </li>
+        <li>
+          <strong>Interruptibility Latency Reduction:</strong>
+          restructured frontend audio handling and interrupt detection logic to
+          reduce delay when users interject mid-response
+        </li>
+        <li>
+          <strong>Improved Response Quality:</strong>
+          upgraded the LLM backend to a higher-quality model (Qwen2.5-3B-Instruct), alllowing a
+          more coherent reasoning and improved conversational tone
+        </li>
+      </ul>
     </div>
   </section>
   <!-- =========================
@@ -476,7 +458,7 @@
       HERO — CREDITS
   ========================= -->
   <header class="hero" id="credits">
-  <div class="hero-split reverse scroll-reveal">
+  <div class="hero-split reverse">
 
     <!-- LEFT: CONTENT -->
     <div class="hero-left hero-text-left">
@@ -932,8 +914,135 @@ function startTyping() {
   /* =========================
     MOBILE NAV LOGIC
   ========================= */
+const caseButtons = document.querySelectorAll(".use-case-btn");
+const caseContents = document.querySelectorAll(".use-case-content");
 
+caseButtons.forEach(btn => {
+  btn.addEventListener("click", () => {
+    const target = btn.dataset.case;
 
+    caseButtons.forEach(b => b.classList.remove("active"));
+    caseContents.forEach(c => c.classList.remove("active"));
+
+    btn.classList.add("active");
+    document.getElementById(`case-${target}`).classList.add("active");
+  });
+});
+
+const DEFAULT_CASE = "realtime";
+
+const defaultBtn = document.querySelector(
+  `.use-case-btn[data-case="${DEFAULT_CASE}"]`
+);
+const defaultPanel = document.getElementById(`case-${DEFAULT_CASE}`);
+
+if (defaultBtn && defaultPanel) {
+  defaultBtn.classList.add("active");
+  defaultPanel.classList.add("active");
+}
+
+const ACCESS_REQUEST_KEY = "vera_access_requested";
+
+const form = document.getElementById("access-form");
+const confirmation = document.getElementById("access-confirmation");
+
+const submitBtn = form.querySelector("button");
+
+if (sessionStorage.getItem(ACCESS_REQUEST_KEY)) {
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Request Already Sent";
+
+  confirmation.hidden = false;
+  confirmation.textContent =
+    "";
+
+  // optional: fully lock inputs
+  form.querySelectorAll("input").forEach(input => {
+    input.disabled = true;
+  });
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const button = form.querySelector("button");
+  button.disabled = true;
+  button.textContent = "Sending…";
+
+  try {
+    const res = await fetch("https://formspree.io/f/mzdazqdp", {
+      method: "POST",
+      headers: { "Accept": "application/json" },
+      body: new FormData(form)
+    });
+
+    const data = await res.json();
+
+    if (data.ok) {
+      sessionStorage.setItem(ACCESS_REQUEST_KEY, "true");
+
+      form.reset();
+      confirmation.hidden = false;
+      confirmation.textContent =
+        "";
+
+      button.textContent = "Request Sent ✓";
+      button.disabled = true;
+
+      form.querySelectorAll("input").forEach(input => {
+        input.disabled = true;
+      });
+    }
+  } catch (err) {
+    console.error(err);
+    button.disabled = false;
+    button.textContent = "Try Again";
+  }
+});
+
+const enterVeraLink = document.getElementById("enter-vera-link");
+
+enterVeraLink?.addEventListener("click", (e) => {
+  e.preventDefault();
+  enterBtn.click(); // reuse existing logic
+});
+
+const typeTitles = document.querySelectorAll(".type-title");
+
+function typeText(el, text, speed = 45) {
+  let i = 0;
+  el.textContent = "";
+
+  const interval = setInterval(() => {
+    el.textContent += text[i];
+    i++;
+
+    if (i >= text.length) {
+      clearInterval(interval);
+    }
+  }, speed);
+}
+
+const titleObserver = new IntersectionObserver(
+  (entries) => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+
+      const el = entry.target;
+      const text = el.dataset.text;
+
+      // prevent retrigger
+      if (el.dataset.typed) return;
+      el.dataset.typed = "true";
+
+      typeText(el, text, 40);
+      titleObserver.unobserve(el);
+    });
+  },
+  { threshold: 0.6 }
+);
+
+typeTitles.forEach(el => titleObserver.observe(el));
 </script>
 
 

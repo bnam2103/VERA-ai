@@ -444,6 +444,238 @@ body.vera-mode {
 /* =========================
    HERO — ABOUT VERA
 ========================= */
+.vera-use-cases {
+  padding: 160px 0 120px;
+}
+.vera-use-cases::after {
+  content: "";
+  display: block;
+
+  width: 100%;
+  max-width: 900px;
+  height: 1px;
+
+  margin: 120px auto 0;
+
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(255,255,255,0.12),
+    transparent
+  );
+}
+
+.vera-use-cases::after {
+  opacity: 0;          /* invisible */
+  pointer-events: none;
+}
+
+/* 🔑 centers content like hero / patch notes */
+.vera-use-cases-inner {
+  max-width: 1000px;   /* 🔑 editorial, premium width */
+
+  margin: 0 auto;
+  padding: 0 2rem;
+
+  text-align: left;
+}
+.vera-use-cases-inner > .vera-section-title {
+  text-align: center;
+}
+.vera-section-title.soft {
+  font-size: clamp(1.6rem, 3vw, 2.2rem);  /* 🔑 smaller */
+  font-weight: 500;
+
+  letter-spacing: 0.02em;
+  text-transform: none;
+
+  opacity: 0.95;
+  margin-bottom: 32px;
+  color: rgba(255,255,255,0.95);
+}
+
+.use-cases-panel {
+  max-width: 100%;
+  margin: 0;
+}
+
+.use-cases-window {
+  width: 100%;
+  max-width: 1000px;      /* 🔥 very wide */
+  min-height: 360px;     /* 🔥 tall enough to feel like a stage */
+
+  margin: 0 auto;
+
+  padding: 72px 88px;
+
+  background: rgba(255,255,255,0.035);
+  backdrop-filter: blur(14px);
+
+  border-radius: 32px;
+  border: 1px solid rgba(255,255,255,0.08);
+
+  box-shadow:
+    0 60px 160px rgba(0,0,0,0.5);
+}
+
+.vera-section-title.soft {
+  margin-bottom: 40px; /* was too tight */
+}
+/* layout */
+.use-cases-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 48px;
+}
+
+/* left nav */
+.use-cases-nav {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+
+  align-items: flex-start;
+  justify-content: flex-start;
+
+  margin-top: 12px; /* aligns with window content */
+}
+.use-cases-nav {
+  gap: 22px;          /* was ~18 */
+  margin-bottom: 36px;
+}
+/* buttons */
+.use-case-btn {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.28); /* slightly stronger */
+
+  padding: 10px 18px;        /* 🔑 bigger hit area */
+  min-height: 40px;          /* 🔑 consistent height */
+
+  font-size: 13px;           /* 🔑 larger text */
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+
+  border-radius: 999px;
+  transition:
+    color 0.25s ease,
+    border-color 0.25s ease,
+    background 0.25s ease;
+}
+
+.use-case-btn {
+  width: 100%;
+  text-align: left;
+
+  padding: 8px 12px;
+
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+
+  background: transparent;
+  border: none;
+
+  color: rgba(255,255,255,0.6);
+  cursor: pointer;
+
+  transition: color 0.25s ease, transform 0.25s ease;
+}
+
+.use-case-btn:hover {
+  color: rgba(255,255,255,0.95);
+  border-color: rgba(255,255,255,0.55);
+}
+
+.use-case-btn.active {
+  background: rgba(255,255,255,0.9);
+  border-color: rgba(255,255,255,0.9);
+  color: #000;
+}
+.use-case-btn {
+  filter: grayscale(100%);
+  opacity: 0.8;
+
+  /* 🔑 FORCE SINGLE LINE */
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+}
+
+
+/* 🔑 THIS IS WHY ALL CONTENT SHOWED BEFORE */
+.use-case-content {
+  position: absolute;
+  inset: 0;
+
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+
+  max-width: 720px;
+  margin: 0 auto;
+
+  padding: 0 16px;
+
+  /* 👇 subtle intentional bias */
+  transform: translate(-44px, -28px);
+
+  opacity: 0;
+  pointer-events: none;
+
+  transition:
+    opacity 0.45s ease,
+    transform 0.45s ease;
+}
+
+.use-case-content.active {
+  opacity: 1;
+  transform: translate(-40px, -28px);
+}
+
+.use-case-content.active {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.use-cases-panel {
+  position: relative;
+  display: flex;
+  align-items: center;   /* 🔑 THIS is the missing anchor */
+}
+
+.use-case-content h3 {
+  margin-top: 0;
+  margin-bottom: 14px;
+
+  font-size: 1.05rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+
+  opacity: 0.85;
+}
+
+.use-case-content p {
+  line-height: 1.7;
+  opacity: 0.9;
+}
+
+/* =========================
+   USE CASES — MOBILE
+========================= */
+
+@media (max-width: 768px) {
+  .use-cases-nav {
+    display: flex;
+    flex-wrap: wrap;          /* 🔑 allow wrapping */
+    gap: 12px;                /* spacing like reference */
+    align-items: center;
+  }
+}
+
 
 .hero {
   min-height: 100vh;
@@ -502,6 +734,132 @@ body.vera-mode {
   position: relative;        /* 🔑 anchor for the line */
 }
 
+/* =========================
+   HOW TO USE VERA — ACCESS
+========================= */
+
+.vera-use-access {
+  padding: 220px 0 200px;   /* 🔑 more vertical air */
+  position: relative;
+}
+
+/* subtle divider ABOVE the section */
+.vera-use-access::before {
+  content: "";
+  display: block;
+
+  width: 100%;
+  max-width: 900px;
+  height: 1px;
+
+  margin: 0 auto 120px;
+
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(255,255,255,0.12),
+    transparent
+  );
+}
+
+.vera-use-access::before {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* centered editorial container */
+.vera-use-access-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0 2rem;
+
+  text-align: center;
+}
+
+/* title spacing tweak */
+.vera-use-access .vera-section-title {
+  margin-bottom: 32px;
+}
+
+/* body copy */
+.vera-use-access-text {
+  font-size: 16px;
+  line-height: 1.75;
+  opacity: 0.9;
+
+  max-width: 720px;
+  margin: 0 auto 48px;
+}
+
+/* placeholder area (future input UI) */
+.vera-use-access-placeholder {
+  height: 120px;
+  border-radius: 18px;
+
+  background: rgba(255,255,255,0.035);
+  border: 1px dashed rgba(255,255,255,0.18);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vera-access-form {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.vera-access-form input {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #eaeaea;
+  font-size: 14px;
+}
+
+.vera-access-form button {
+  background: rgba(255,255,255,0.9);
+  color: #000;
+  border: none;
+  border-radius: 999px;
+  padding: 12px 22px;
+  cursor: pointer;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+}
+.vera-access-note {
+  margin-top: 16px;
+  font-size: 13px;
+  opacity: 0.55;
+  text-align: center;
+}
+
+.vera-inline-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  opacity: 0.85;
+}
+
+.vera-inline-link:hover {
+  opacity: 1;
+}
+
+.type-title {
+  opacity: 0;
+  transform: translateY(10px);
+  transition:
+    opacity 0.4s ease,
+    transform 0.4s ease;
+}
+
+.type-title[data-typed="true"] {
+  opacity: 1;
+  transform: translateY(0);
+}
 /* subtle vertical guide */
 /* #about-vera .hero-split::before {
   content: "";
@@ -569,7 +927,7 @@ body.vera-mode {
   display: block;
   width: 100%;
   height: 1px;
-  margin-top: 140px;
+  margin-top: 90px;
 
   background: linear-gradient(
     to right,
@@ -578,7 +936,11 @@ body.vera-mode {
     transparent
   );
 }
-
+.vera-log::after {
+  content: "";
+  display: block;
+  background: none;
+}
 .vera-log-inner {
   max-width: 900px;
   margin: 0 auto;

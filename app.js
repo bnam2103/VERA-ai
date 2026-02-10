@@ -288,9 +288,9 @@ function detectInterrupt() {
 
       const speechLike =
         rms > INTERRUPT_RMS &&
-        rms < MAX_SPEECH_RMS &&
-        zcr > INTERRUPT_ZCR_MIN &&
-        zcr < INTERRUPT_ZCR_MAX;
+        rms < MAX_SPEECH_RMS;
+        // zcr > INTERRUPT_ZCR_MIN &&
+        // zcr < INTERRUPT_ZCR_MAX;
 
       if (speechLike) {
         if (interruptSpeechFrames === 0) {
