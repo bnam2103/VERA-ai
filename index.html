@@ -209,8 +209,17 @@
         id="access-form"
         class="vera-access-form"
       >
+        <!-- OPTIONAL NAME -->
+        <input
+          type="text"
+          name="name"
+          placeholder="Your name (optional)"
+          autocomplete="name"
+        />
+
         <input type="date" name="preferred_date" required />
         <input type="time" name="preferred_time" required />
+
         <button type="submit">Request Access</button>
       </form>
       <p class="vera-access-note" id="access-confirmation" hidden>
