@@ -1996,4 +1996,9 @@ body.app-open {
   body.server-online #ptt {
     display: flex;
   }
+  .startup-text {
+    white-space: nowrap;
+    font-size: clamp(12px, 3.8vw, 16px);
+    bottom: 100px;
+  }
 }
