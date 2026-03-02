@@ -48,6 +48,16 @@
   </div>
 </div>
 
+<div id="boot-loader" class="boot-loader">
+  <div class="boot-inner">
+    <div class="boot-label">Initializing VERA...</div>
+    <div class="boot-progress">
+      <div class="boot-bar" id="boot-bar"></div>
+    </div>
+    <div class="boot-percent" id="boot-percent">0%</div>
+  </div>
+</div>
+
 <audio id="bg-music" loop preload="auto">
   <source src="background-music.mp3" type="audio/mpeg">
 </audio>
@@ -185,66 +195,32 @@
     </div>
     </div>
   </div>
-<section class="vera-use-access">
-  <div class="vera-use-access-inner">
-
-    <h2 class="vera-section-title soft type-title" data-text="How to use VERA"></h2>
-
-
-    <p class="vera-use-access-text scroll-reveal delay-1">
-      VERA currently runs entirely on a local machine and does not rely on any paid
-      services or cloud infrastructure. To preserve system stability and performance,
-      access requires manual server activation.
-      <br><br>
-      Below, you can request access by selecting a preferred date and time.
-      Click
-      <a href="#" id="enter-vera-link" class="vera-inline-link">
-         here 
-      </a>at your requested date and time to use the system.
-    </p>
-
-    <!-- Placeholder for future date/time input -->
-    <div class="vera-use-access-placeholder scroll-reveal delay-2">
-      <form
-        id="access-form"
-        class="vera-access-form"
-      >
-        <!-- OPTIONAL NAME -->
-        <input
-          type="text"
-          name="name"
-          placeholder="Your name (optional)"
-          autocomplete="name"
-        />
-
-        <input type="date" name="preferred_date" required />
-        <input type="time" name="preferred_time" required />
-
-        <button type="submit">Request Access</button>
-      </form>
-      <p class="vera-access-note" id="access-confirmation" hidden>
-      </p>
-    </div>
-
-  </div>
-</section>
 </section>
   <section class="vera-log">
-    <div class="vera-log-inner">
-      <h1 class="patch-notes">PATCH NOTES / DEV LOGS</h1>
-      <h2>VERSION 1.0</h2>
-      <p class="vera-log-intro">
-        A usable conversational AI using speech as both input and output.
-        Turn-based interaction: user speaks → AI responds.
-        Transcriptions appear as chat bubbles in real time.
-      </p>
+  <div class="vera-log-inner">
 
-      <p class="vera-log-stack">
-        <strong>Core Stack:</strong>
-        ASR (Whisper-large) · LLM (LLaMA 3.2) · TTS (fine-tuned)
-      </p>
+    <!-- MAIN COLLAPSE -->
+    <details class="patch-collapse">
+      <summary class="patch-main-title">
+        PATCH NOTES / DEV LOGS
+      </summary>
 
-      <h3>Features / Implementations</h3>
+      <!-- VERSION 1.0 -->
+      <details class="patch-version">
+        <summary>VERSION 1.0</summary>
+        <div class="patch-content">
+        <p class="vera-log-intro">
+          A usable conversational AI using speech as both input and output.
+          Turn-based interaction: user speaks → AI responds.
+          Transcriptions appear as chat bubbles in real time.
+        </p>
+
+        <p class="vera-log-stack">
+          <strong>Core Stack:</strong>
+          ASR (Whisper-large) · LLM (LLaMA 3.2) · TTS (fine-tuned)
+        </p>
+
+        <h3>Features / Implementations</h3>
       <ul>
         <li>Pause / Unpause via voice commands or physical button</li>
         <li>Real-time time and date queries</li>
@@ -286,9 +262,12 @@
           transcriptions only logged temporarily for debugging (will be removed in future)
         </li>
       </ul>
-
+      </div>
+      </details>
       <hr />
-      <h2>VERSION 2.0</h2>
+      <details class="patch-version">
+        <summary>VERSION 2.0</summary>
+        <div class="patch-content">
       <p class="vera-log-intro">
         This version focuses on making interaction with VERA feel more natural, flexible, 
         and intentional. Building on the stable voice pipeline from Version 1.0, 
@@ -334,8 +313,12 @@
             Reduced latency by adjusting LLM parameters
           </li>  
         </ul>
+        </div>
+      </details>
       <hr />
-      <h2>VERSION 2.5</h2>
+      <details class="patch-version">
+        <summary>VERSION 2.5</summary>
+        <div class="patch-content">
       <p class="vera-log-intro">
         Version 2.5 is a refinement release mainly focused on
         <strong>response reliability, latency reduction, and conversational correctness</strong>.
@@ -362,6 +345,11 @@
           more coherent reasoning and improved conversational tone
         </li>
       </ul>
+      </div>
+      </details>
+
+    </details>
+
     </div>
   </section>
   <!-- =========================
@@ -509,70 +497,19 @@
 ========================= -->
 <section id="vera-app" hidden>
 
-  <div class="layout">
+  <!-- Top Bar -->
 
-    <!-- SIDEBAR -->
-    <aside class="sidebar">
 
-      <section class="sidebar-section">
-        <h2>About VERA</h2>
-        <p>
-          VERA is a conversational AI demonstrating real-time
-          speech recognition, reasoning, and voice synthesis.
-        </p>
-        <p>
-          Built to showcase an end-to-end ASR → LLM → TTS pipeline.
-        </p>
-        <p><strong>Created by Nom</strong></p>
-      </section>
-
-      <section class="sidebar-section">
-      <h2>How to Use</h2>
-      <ol>
-        <li>
-          <strong>Continuous Listening</strong><br>
-            Click <strong>the headphones 🎧</strong> to let VERA listen continuously. Click again to pause/unpause.
-        </li>
-        <li>
-          <strong>Keyboard Input</strong><br>
-          Type your message and press <em>Enter</em> to send.
-        </li>
-        <li>
-          <strong>Push-to-Talk</strong><br>
-          Press <strong>the microphone 🎙️</strong> to start speaking. Press again to send, then repeat.
-        </li>
-        <li>
-          <strong>Refresh the page</strong> to return to the main website.
-        </li>
-      </ol>
-    </section>
-
-      <section class="sidebar-section">
-        <h2>Feedback</h2>
-        <textarea
-          id="feedback-input"
-          placeholder="Your feedback..."
-          rows="3"
-        ></textarea>
-        <button id="send-feedback">Send Feedback</button>
-        <div id="feedback-status"></div>
-      </section>
-
-      <section class="sidebar-section sidebar-bottom">
-        <h2>Status</h2>
-        <div id="server-status" class="server-status offline">
-          🔴 Server Offline
-        </div>
-        <p>Working Hours: 6pm – 12am (PST)</p>
-      </section>
-
-    </aside>
-
-    <!-- CHAT -->
-    <main class="chat">
-
+  <!-- Chat Container -->
+  <main class="chat-centered">
+    <div class="chat-header">
+      <button id="return-home" class="nav-logo">
+        VERA
+      </button>
+    </div>
       <div class="conversation" id="conversation"></div>
-
+      <div class="input-container">
+      <div class="startup-text" id="startup-text"></div>
       <div class="input-bar">
 
         <div class="mic-status">
@@ -604,12 +541,14 @@
         </span>
 
       </div>
-
+      </div>
       <audio id="audio" preload="auto"></audio>
+      <audio id="startup-audio" preload="auto">
+        <source src="startup-typing.wav" type="audio/wav">
+      </audio>
 
-    </main>
 
-  </div>
+</main>
 </section>
 
 <!-- =========================
@@ -628,7 +567,6 @@
 
   const home = document.getElementById("home");
   const veraApp = document.getElementById("vera-app");
-  const enterBtn = document.getElementById("enter-vera");
 
   const navHome = document.getElementById("nav-home");
   const navAboutVera = document.getElementById("nav-about-vera");
@@ -643,7 +581,7 @@
   ========================= */
 
   const INTRO_SEEN_KEY = "vera_intro_seen_session";
-
+  const STARTUP_AUDIO_KEY = "vera_startup_audio_played";
   const MAX_SCROLL = 700;
   const BASE_BRIGHTNESS = 0.3;
   const DARK_RANGE = 0.25;
@@ -685,7 +623,7 @@ function hideIntro() {
   setTimeout(() => {
     intro.remove();
     sessionStorage.setItem(INTRO_SEEN_KEY, "true");
-    triggerTitleFlash();
+    startBootSequence();
   }, 800);
 }
 
@@ -709,7 +647,7 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
   intro.remove();
 
   // 🔑 slight delay ensures layout + CSS are ready
-  setTimeout(triggerTitleFlash, 60);
+  setTimeout(startBootSequence, 60);
 }
 
   /* =========================
@@ -724,25 +662,6 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
     });
   };
 
-  // Enter VERA App
-  enterBtn.onclick = () => {
-    // 🔇 Stop background music when entering app
-    if (!bgMusic.paused) {
-      bgMusic.pause();
-      bgMusic.currentTime = 0; // optional: reset track
-      musicToggle.classList.remove("active");
-      localStorage.setItem(MUSIC_KEY, "false");
-    }
-
-    // Switch UI
-    home.hidden = true;
-    veraApp.hidden = false;
-
-    document.body.classList.add("app-open");
-    document.body.classList.add("vera-mode");
-
-    window.scrollTo(0, 0);
-  };
 
   // Logo reload (file-safe)
   navHome.onclick = (e) => {
@@ -950,72 +869,6 @@ if (defaultBtn && defaultPanel) {
   defaultPanel.classList.add("active");
 }
 
-const ACCESS_REQUEST_KEY = "vera_access_requested";
-
-const form = document.getElementById("access-form");
-const confirmation = document.getElementById("access-confirmation");
-
-const submitBtn = form.querySelector("button");
-
-if (sessionStorage.getItem(ACCESS_REQUEST_KEY)) {
-  submitBtn.disabled = true;
-  submitBtn.textContent = "Request Already Sent";
-
-  confirmation.hidden = false;
-  confirmation.textContent =
-    "";
-
-  // optional: fully lock inputs
-  form.querySelectorAll("input").forEach(input => {
-    input.disabled = true;
-  });
-}
-
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-
-  const button = form.querySelector("button");
-  button.disabled = true;
-  button.textContent = "Sending…";
-
-  try {
-    const res = await fetch("https://formspree.io/f/mzdazqdp", {
-      method: "POST",
-      headers: { "Accept": "application/json" },
-      body: new FormData(form)
-    });
-
-    const data = await res.json();
-
-    if (data.ok) {
-      sessionStorage.setItem(ACCESS_REQUEST_KEY, "true");
-
-      form.reset();
-      confirmation.hidden = false;
-      confirmation.textContent =
-        "";
-
-      button.textContent = "Request Sent ✓";
-      button.disabled = true;
-
-      form.querySelectorAll("input").forEach(input => {
-        input.disabled = true;
-      });
-    }
-  } catch (err) {
-    console.error(err);
-    button.disabled = false;
-    button.textContent = "Try Again";
-  }
-});
-
-const enterVeraLink = document.getElementById("enter-vera-link");
-
-enterVeraLink?.addEventListener("click", (e) => {
-  e.preventDefault();
-  enterBtn.click(); // reuse existing logic
-});
-
 const typeTitles = document.querySelectorAll(".type-title");
 
 function typeText(el, text, speed = 45) {
@@ -1052,6 +905,209 @@ const titleObserver = new IntersectionObserver(
 );
 
 typeTitles.forEach(el => titleObserver.observe(el));
+
+const patchCollapse = document.querySelector(".patch-collapse");
+
+patchCollapse.addEventListener("toggle", () => {
+  if (patchCollapse.open) {
+    const versions = patchCollapse.querySelectorAll(".patch-version");
+
+    versions.forEach((version, index) => {
+      version.style.transitionDelay = `${index * 120}ms`;
+    });
+
+    requestAnimationFrame(() => {
+      patchCollapse.classList.add("animate-versions");
+    });
+  } else {
+    patchCollapse.classList.remove("animate-versions");
+
+    const versions = patchCollapse.querySelectorAll(".patch-version");
+    versions.forEach(version => {
+      version.style.transitionDelay = "0ms";
+    });
+  }
+});
+document.querySelectorAll(".patch-version").forEach(details => {
+  details.addEventListener("toggle", () => {
+    if (details.open) {
+      // small delay allows browser to complete layout
+      requestAnimationFrame(() => {
+        details.classList.add("animate");
+      });
+    } else {
+      details.classList.remove("animate");
+    }
+  });
+});
+const bootLoader = document.getElementById("boot-loader");
+const bootBar = document.getElementById("boot-bar");
+const bootPercent = document.getElementById("boot-percent");
+
+let currentProgress = 0;
+
+function setProgress(value) {
+  currentProgress = value;
+  bootBar.style.width = value + "%";
+  bootPercent.textContent = value + "%";
+}
+
+let hitStarting = false;
+
+async function startBootSequence() {
+  home.hidden = true;
+  bootLoader.classList.add("active");
+  setProgress(0);
+
+  const interval = setInterval(async () => {
+    const state = await checkServer();
+
+    if (state === "offline") {
+      setProgress(0);
+    }
+
+    if (state === "starting") {
+      if (!hitStarting) {
+        hitStarting = true;
+        setProgress(50);
+      }
+    }
+
+    if (state === "ready") {
+      if (hitStarting && currentProgress < 100) {
+        setTimeout(() => {
+          setProgress(100);
+          clearInterval(interval);
+          revealApp();
+        }, 400); // small dwell at 50%
+      } else {
+        setProgress(100);
+        clearInterval(interval);
+        revealApp();
+      }
+    }
+  }, 400);
+}
+
+function revealApp() {
+  setTimeout(() => {
+    bootLoader.classList.remove("active");
+    veraApp.hidden = false;
+    document.body.classList.add("app-open");
+
+    typeStartup({
+      typingSpeed: 50,      // slower typing
+      startDelay: 800,      // cinematic pause before speaking
+      fadeIn: true,
+      cursor: true
+    }); // 🔥 THIS WAS MISSING
+  }, 500);
+}
+
+document.getElementById("return-home").onclick = async () => {
+  // Fade out VERA app
+  veraApp.classList.add("fade-out");
+
+  setTimeout(async () => {
+    veraApp.hidden = true;
+    veraApp.classList.remove("fade-out");
+
+    document.body.classList.remove("app-open");
+
+    // Show home
+    home.hidden = false;
+    home.classList.add("fade-out"); // start transparent
+
+    requestAnimationFrame(() => {
+      home.classList.remove("fade-out");
+      home.classList.add("fade-in");
+    });
+
+    window.scrollTo({ top: 0 });
+
+    setTimeout(() => {
+      triggerTitleFlash();
+    }, 150);
+
+    // Restore music if enabled
+    const musicEnabled =
+      localStorage.getItem("vera_music_enabled") === "true";
+
+    if (musicEnabled && bgMusic.paused) {
+      try {
+        await bgMusic.play();
+        bgMusic.volume = BASE_MUSIC_VOLUME;
+        musicToggle.classList.add("active");
+      } catch (err) {
+        console.warn("Autoplay blocked:", err);
+      }
+    }
+  }, 600); // matches CSS duration
+};
+function typeStartup(options = {}) {
+  const el = document.getElementById("startup-text");
+  const text = options.text || "Hi, my name is VERA. How can I help you?";
+
+  const config = {
+    typingSpeed: options.typingSpeed ?? 45,   // ms per character
+    startDelay: options.startDelay ?? 400,    // delay before typing
+    fadeIn: options.fadeIn ?? true,
+    cursor: options.cursor ?? true
+  };
+
+  let i = 0;
+  el.textContent = "";
+  const startupAudio = document.getElementById("startup-audio");
+
+  if (!sessionStorage.getItem(STARTUP_AUDIO_KEY)) {
+    if (startupAudio) {
+      startupAudio.currentTime = 0;
+      startupAudio.volume = 0.6;
+
+      // 🔥 Pause before audio starts
+      setTimeout(() => {
+        startupAudio.play().catch(err => {
+          console.warn("Startup audio blocked:", err);
+        });
+      }, 800); // ← adjust pause here (ms)
+    }
+
+    sessionStorage.setItem(STARTUP_AUDIO_KEY, "true");
+  }
+  if (config.cursor) {
+    el.classList.add("typing-cursor");
+  }
+
+  if (config.fadeIn) {
+    el.style.opacity = 0;
+    el.style.transform = "translate(-50%, 6px)";
+    requestAnimationFrame(() => {
+      el.style.transition = "opacity 0.8s ease, transform 0.8s ease";
+      el.style.opacity = 1;
+      el.style.transform = "translate(-50%, 0)";
+    });
+  }
+
+  setTimeout(() => {
+    function type() {
+      if (i < text.length) {
+        el.textContent += text.charAt(i);
+        i++;
+        setTimeout(type, config.typingSpeed);
+      } else {
+        if (config.cursor) {
+          el.classList.remove("typing-cursor");
+        }
+
+        // 🔥 IMPORTANT — release inline control
+        el.style.opacity = "";
+        el.style.transform = "";
+        el.style.transition = "";
+      }
+    }
+    type();
+  }, config.startDelay);
+}
 </script>
 
 

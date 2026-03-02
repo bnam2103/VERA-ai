@@ -136,27 +136,70 @@ const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
 ========================= */
 
 async function checkServer() {
-  let online = false;
+  let state = "offline";
+
   try {
-    const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
-    online = res.ok;
-  } catch {}
+    // 🔥 NEW — check full server state
+    const statusRes = await fetch(`${API_URL}/status`, {
+      cache: "no-store"
+    });
+
+    if (statusRes.ok) {
+      const data = await statusRes.json();
+      state = data.state; // "ready" or "starting"
+    } else {
+      state = "offline";
+    }
+  } catch {
+    state = "offline";
+  }
+
+  // =========================
+  // KEEP YOUR OLD UI LOGIC
+  // =========================
+
+  const online = state === "ready";
 
   recordBtn.disabled = !online;
   recordBtn.style.opacity = online ? "1" : "0.5";
 
   if (serverStatusEl) {
-    serverStatusEl.textContent = online
-      ? "🟢 Server Online"
-      : "🔴 Server Offline";
-    serverStatusEl.className = `server-status ${online ? "online" : "offline"}`;
+    serverStatusEl.textContent =
+      state === "ready"
+        ? "🟢 Server Online"
+        : state === "starting"
+        ? "🟡 Server Starting"
+        : "🔴 Server Offline";
+
+    serverStatusEl.className =
+      `server-status ${
+        state === "ready"
+          ? "online"
+          : state === "starting"
+          ? "starting"
+          : "offline"
+      }`;
   }
 
   if (serverStatusInlineEl) {
-    serverStatusInlineEl.textContent = online ? "🟢 Online" : "🔴 Offline";
+    serverStatusInlineEl.textContent =
+      state === "ready"
+        ? "🟢 Online"
+        : state === "starting"
+        ? "🟡 Starting"
+        : "🔴 Offline";
+
     serverStatusInlineEl.className =
-      `server-status ${online ? "online" : "offline"} mobile-only`;
+      `server-status ${
+        state === "ready"
+          ? "online"
+          : state === "starting"
+          ? "starting"
+          : "offline"
+      } mobile-only`;
   }
+
+  return state; // 🔥 IMPORTANT
 }
 
 checkServer();
@@ -697,7 +740,9 @@ async function handleUtterance() {
     paused = false;
 
     addBubble(data.transcript, "user");
-
+    if (!document.body.classList.contains("chat-started")) {
+      document.body.classList.add("chat-started");
+    }
     const playMainAnswer = () => {
       if (fillerPlayedThisTurn) {
         setTimeout(() => {
@@ -786,7 +831,9 @@ async function sendTextMessage() {
   pendingMainAnswer = null;
 
   addBubble(text, "user");
-
+  if (!document.body.classList.contains("chat-started")) {
+    document.body.classList.add("chat-started");
+  }
   try {
     const res = await fetch(`${API_URL}/text`, {
       method: "POST",
@@ -986,3 +1033,5 @@ if (sendFeedbackBtn) {
     }
   };
 }
+
+

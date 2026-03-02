@@ -22,7 +22,10 @@ body {
 body.app-open {
   overflow: hidden;
 }
-
+body.app-open #bg-video {
+  opacity: 0;
+  pointer-events: none;
+}
 /* =========================
    GRADIENT BACKGROUND
 ========================= */
@@ -145,6 +148,59 @@ body.vera-mode {
 .intro-btn.sound { left: 32px; }
 .intro-btn.skip  { right: 32px; }
 
+.boot-loader[hidden] {
+  display: none !important;
+}
+.boot-loader {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s ease;
+}
+
+.boot-loader.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+.boot-loader {
+  position: fixed;
+  inset: 0;
+  background: #05070c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.boot-inner {
+  width: 280px;
+  text-align: center;
+  font-family: monospace;
+  letter-spacing: 0.1em;
+}
+
+.boot-label {
+  opacity: 0.6;
+  margin-bottom: 20px;
+}
+
+.boot-progress {
+  height: 2px;
+  background: rgba(255,255,255,0.1);
+  overflow: hidden;
+}
+
+.boot-bar {
+  height: 100%;
+  width: 0%;
+  background: white;
+  transition: width 0.4s ease;
+}
+
+.boot-percent {
+  margin-top: 14px;
+  font-size: 0.9rem;
+  opacity: 0.6;
+}
 /* =========================
    TOP NAV
 ========================= */
@@ -860,6 +916,17 @@ body.vera-mode {
   opacity: 1;
   transform: translateY(0);
 }
+.typing-cursor::after {
+  content: "";
+  margin-left: 4px;
+  animation: blink 1s infinite;
+  opacity: 0.7;
+}
+
+@keyframes blink {
+  0%, 50%, 100% { opacity: 0.7; }
+  25%, 75% { opacity: 0; }
+}
 /* subtle vertical guide */
 /* #about-vera .hero-split::before {
   content: "";
@@ -936,11 +1003,6 @@ body.vera-mode {
     transparent
   );
 }
-.vera-log::after {
-  content: "";
-  display: block;
-  background: none;
-}
 .vera-log-inner {
   max-width: 900px;
   margin: 0 auto;
@@ -948,6 +1010,116 @@ body.vera-mode {
   color: #e6e6e6;
 }
 
+/* main container */
+.patch-collapse {
+  margin-top: 12px;
+}
+
+/* remove default marker */
+.patch-collapse summary,
+.patch-version summary {
+  list-style: none;
+}
+
+.patch-collapse summary::-webkit-details-marker,
+.patch-version summary::-webkit-details-marker {
+  display: none;
+}
+
+/* MAIN TITLE (PATCH NOTES / DEV LOGS) */
+.patch-main-title {
+  font-size: clamp(2.2rem, 5vw, 3.2rem);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 500;
+  opacity: 0.9;
+
+  cursor: pointer;
+  position: relative;
+  padding-right: 28px;
+}
+
+/* VERSION HEADINGS */
+.patch-version summary {
+  font-size: 1.6rem;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+
+  margin-top: 28px;
+  padding-right: 24px;
+  position: relative;
+}
+
+/* arrow indicator */
+.patch-collapse summary::after,
+.patch-version summary::after {
+  content: "▸";
+  position: absolute;
+  right: 0;
+  top: 0;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+  opacity: 0.6;
+}
+
+.patch-collapse[open] > summary::after,
+.patch-version[open] > summary::after {
+  transform: rotate(90deg);
+  opacity: 1;
+}
+.patch-collapse[open] > .patch-version:first-of-type {
+  margin-top: 32px;
+}
+
+/* also add slight bottom padding to main title */
+.patch-main-title {
+  padding-bottom: 12px;
+}
+/* subtle spacing */
+.patch-version[open] {
+  padding-bottom: 12px;
+}
+.patch-version[open] > *:not(summary):first-of-type {
+  margin-top: 18px;
+}
+
+/* slightly more breathing room under summary */
+.patch-version summary {
+  padding-bottom: 8px;
+}
+.patch-version summary {
+  font-weight: 600;
+}
+/* soften hr when inside collapsible */
+.patch-collapse hr {
+  margin: 36px 0;
+}
+.patch-collapse .patch-version {
+  opacity: 0;
+  transform: translateY(-20px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+/* stagger class added via JS */
+.patch-collapse.animate-versions .patch-version {
+  opacity: 1;
+  transform: translateY(0);
+}
+.patch-version .patch-content {
+  opacity: 0;
+  transform: translateY(-25px);
+  max-height: 0;
+  overflow: hidden;
+  transition:
+    opacity 0.6s ease,
+    transform 0.6s ease,
+    max-height 0.6s ease;
+}
+
+.patch-version.animate .patch-content {
+  opacity: 1;
+  transform: translateY(0);
+  max-height: 10000px;
+}
 .vera-log h2 {
   font-size: 1.8rem;
   margin-bottom: 12px;
@@ -1276,15 +1448,28 @@ body.vera-mode {
   user-select: none;
 }
 
+#vera-app,
+#vera-app {
+  transition: opacity 0.8s ease;
+}
+
+#home {
+  transition: opacity 1.4s cubic-bezier(0.22, 0.8, 0.2, 1);
+}
+
+/* hidden state */
+.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fade-in {
+  opacity: 1;
+}
+
 /* =========================
    MAIN LAYOUT (VERA APP)
 ========================= */
-
-.layout {
-  display: flex;
-  height: 100vh;
-  width: 100vw;
-}
 
 .mic-status {
   display: flex;
@@ -1357,42 +1542,6 @@ body.vera-mode {
 #send-text:hover {
   background: rgba(255, 255, 255, 0.2);
 }
-/* =========================
-   SIDEBAR
-========================= */
-
-.sidebar {
-  width: 32%;
-  min-width: 300px;
-  max-width: 420px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  background: rgba(255,255,255,0.04);
-  overflow-y: auto;
-}
-
-.sidebar-section {
-  background: rgba(255,255,255,0.05);
-  padding: 16px;
-  border-radius: 12px;
-}
-
-.sidebar-bottom {
-  margin-top: auto;
-}
-
-.sidebar h2 {
-  margin-top: 0;
-  font-size: 18px;
-}
-
-.sidebar p,
-.sidebar li {
-  font-size: 14px;
-  color: #cfd8df;
-}
 
 /* =========================
    FEEDBACK (RESTORED)
@@ -1460,23 +1609,204 @@ body.vera-mode {
 }
 
 /* =========================
-   CHAT
+   VERA APP — CENTERED LAYOUT
+========================= */
+/* =========================
+   CENTER MODE (DEFAULT)
 ========================= */
 
-.chat {
-  flex: 1;
+.input-container {
+  position: fixed;
+  inset: 0;
+
   display: flex;
-  flex-direction: column;
-  height: 100vh;
-  background: rgba(255,255,255,0.02);
+  align-items: center;
+  justify-content: center;
+
+  pointer-events: none;
 }
 
-.conversation {
-  flex: 1;
-  padding: 20px;
-  overflow-y: auto;
+.input-bar {
+  position: relative;
+  pointer-events: auto;
 
-  padding-bottom: calc(32px + env(safe-area-inset-bottom)); /* 🔑 */
+  width: 100%;
+  max-width: 760px;
+
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  padding: 14px 18px;
+
+  border-radius: 28px;
+  background: rgba(20, 20, 20, 0.7);
+  backdrop-filter: blur(18px);
+
+  border: 1px solid rgba(255,255,255,0.08);
+
+  transition:
+    transform 0.6s cubic-bezier(0.2, 0.9, 0.3, 1),
+    opacity 0.4s ease;
+}
+
+/* =========================
+   STARTUP TYPING TEXT
+========================= */
+
+.startup-text {
+  position: absolute;
+  top: calc(50% - 90px); /* sits above centered input */
+
+  left: 50%;
+  transform: translateX(-50%);
+
+  max-width: 600px;
+  text-align: center;
+
+  font-size: 22px;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+
+  color: rgba(255,255,255,0.85);
+
+  opacity: 1;
+  transition:
+    opacity 0.6s ease,
+    transform 0.6s ease;
+} 
+/* hide after first message */
+body.chat-started .startup-text {
+  opacity: 0;
+  transform: translate(-50%, -12px);
+  pointer-events: none;
+}
+/* =========================
+   CHAT STARTED MODE
+========================= */
+
+body.chat-started .input-container {
+  align-items: flex-end;
+  padding-bottom: 40px;   /* 🔥 was 40px */
+}
+
+body.chat-started .input-bar {
+  position: relative;
+  pointer-events: auto;
+
+  transform: translateY(0);
+}
+/* =========================
+   CHAT HEADER (FLOW MODE)
+========================= */
+
+.chat-header {
+  position: fixed;
+  top: 20px;
+  left: 24px;
+
+  z-index: 1000;
+}
+
+.chat-logo {
+  background: none;
+  border: none;
+
+  font-size: 18px;          /* match main page */
+  font-weight: 500;         /* stronger presence */
+  letter-spacing: 0.32em;   /* tighter + cleaner */
+  text-transform: uppercase;
+
+  color: rgba(255,255,255,0.9);  /* brighter like homepage */
+
+  cursor: pointer;
+  padding: 0;
+
+  transition: opacity 0.3s ease;
+}
+
+.chat-logo:hover {
+  opacity: 0.75;
+}
+
+.chat-centered {
+  height: 100vh;
+  overflow-y: auto;   /* 🔥 MOVE SCROLL HERE */
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+
+  padding-top: 60px;
+}
+
+
+/* =========================
+   CHAT
+========================= */
+.conversation {
+  width: 100%;
+  max-width: 760px;
+
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+
+  padding: 20px 0 200px; /* 🔥 increase this */
+}
+
+/* 🔥 Only when chat has started */
+body.chat-started .chat-centered::after {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+
+  height: 180px; /* match input zone height */
+
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(5, 10, 18, 0.9) 40%,
+    rgba(5, 10, 18, 1) 100%
+  );
+
+  pointer-events: none;
+  z-index: 900; /* below input (1000), above messages */
+}
+.chat-centered::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-centered::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-centered::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
+  border-radius: 10px;
+}
+
+.chat-centered::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.25);
+}
+
+/* Firefox */
+.chat-centered {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.18) transparent;
+}
+/* =========================
+   BOTTOM FADE MASK
+========================= */
+
+body.chat-started .input-container {
+  z-index: 1000;
+}
+
+body.app-open {
+  overflow: hidden;
 }
 
 /* One row per message */
@@ -1526,21 +1856,7 @@ body.vera-mode {
    INPUT BAR
 ========================= */
 
-.input-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
 
-  padding: 14px;
-  padding-bottom: calc(14px + env(safe-area-inset-bottom)); /* 🔑 */
-
-  border-top: 1px solid rgba(255,255,255,0.08);
-  background: rgba(0,0,0,0.25);
-  backdrop-filter: blur(8px);
-
-  position: sticky;
-  bottom: 0;
-}
 
 
 #record {
