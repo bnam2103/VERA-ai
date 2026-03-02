@@ -2001,4 +2001,38 @@ body.app-open {
     font-size: clamp(12px, 3.8vw, 16px);
     bottom: 100px;
   }
+  .input-container {
+    padding: 8px 12px;
+  }
+
+  /* 🔹 Shrink the input bar */
+  .input-bar {
+    height: 44px;           /* was likely ~56-60px */
+    padding: 0 8px;
+    border-radius: 14px;
+  }
+
+  /* 🔹 Text input smaller */
+  #text-input {
+    font-size: 14px;
+  }
+
+  /* 🔹 Buttons smaller */
+  #record,
+  #ptt,
+  #send-text {
+    width: 34px;
+    height: 34px;
+    font-size: 16px;
+  }
+
+  /* 🔹 Mic status spacing tighter */
+  .mic-status {
+    gap: 6px;
+  }
+
+  /* 🔹 Status text slightly smaller */
+  .status {
+    font-size: 12px;
+  }
 }
