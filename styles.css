@@ -1656,7 +1656,7 @@ body.vera-mode {
 
 .startup-text {
   position: absolute;
-  top: calc(50% - 90px); /* sits above centered input */
+  top: calc(50% - 110px); /* sits above centered input */
 
   left: 50%;
   transform: translateX(-50%);
@@ -1738,6 +1738,19 @@ body.chat-started .input-bar {
   align-items: center;
 
   padding-top: 60px;
+}
+
+.wave-container {
+  flex: 1;
+  position: relative;
+  height: 60px;   /* 🔥 FIX */
+  margin: 0 12px;
+}
+
+#waveform {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 

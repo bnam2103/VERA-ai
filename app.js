@@ -39,6 +39,8 @@ let pendingMainAnswer = null;
 let audioStartedAt = 0;
 // let interruptStart = 0;
 let listeningMode = "continuous"; 
+let waveState = "idle";   
+let waveEnergy = 0;     
 
 const FILLER_DELAY_MS = 5300;  // feels natural
 const FILLER_GRACE_MS = 1000;  
@@ -119,6 +121,33 @@ const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
 const convoEl = document.getElementById("conversation");
 const audioEl = document.getElementById("audio");
+const canvas = document.getElementById("waveform");
+const waveCtx = canvas?.getContext("2d");
+
+let waveformData = null;
+let waveformRaf = null;
+
+function resizeWaveCanvas() {
+  if (!canvas || !waveCtx) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+
+  // 🔥 RESET TRANSFORM FIRST
+  waveCtx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // 🔥 THEN SCALE
+  waveCtx.scale(dpr, dpr);
+}
+
+window.addEventListener("load", () => {
+  resizeWaveCanvas();
+});
+
+window.addEventListener("resize", resizeWaveCanvas);
 
 const serverStatusEl = document.getElementById("server-status");
 const serverStatusInlineEl = document.getElementById("server-status-inline");
@@ -295,7 +324,7 @@ function interruptSpeech() {
 
   listening = true;
   processing = false;
-  
+  waveState = "listening";
   
   interruptLastVoiceTime = performance.now();
   requestAnimationFrame(detectInterruptSpeechEnd);
@@ -467,6 +496,7 @@ async function handleInterruptUtterance(blob) {
   startFillerTimer();
   processing = true;
   fillerPlayedThisTurn = false;
+  waveState = "idle";
   setStatus("Thinking…", "thinking");
 
   // ✅ start filler exactly like normal flow
@@ -552,12 +582,14 @@ function playInterruptAnswer(data) {
   audioEl.play();
 
   audioEl.onplay = () => {
+    waveState = "speaking";
     audioStartedAt = performance.now();
     setStatus("Speaking… (can only be interrupted once)", "speaking");
     processing = false;
   };
 
   audioEl.onended = () => {
+    
     listening = true;
     startListening(); 
   };
@@ -579,15 +611,109 @@ async function initMic() {
 
   audioCtx = new AudioContext({ sampleRate: 16000 });
   await audioCtx.resume();
-
+  resizeWaveCanvas();   
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 2048;
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
   detectInterrupt();
-
+  startWaveAnimation();
 }
+/* =========================
+   WAVE ANIMATION
+========================= */
 
+function startWaveAnimation() {
+  if (!canvas || !waveCtx || waveformRaf) return;
+
+  function draw() {
+    waveformRaf = requestAnimationFrame(draw);
+
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.width / dpr;
+    const height = canvas.height / dpr;
+
+    waveCtx.clearRect(0, 0, width, height);
+
+    const centerY = height / 2;
+
+    let buf = null;
+
+    if (waveState === "listening" && analyser) {
+      if (!waveformData) {
+        waveformData = new Float32Array(analyser.fftSize);
+      }
+      analyser.getFloatTimeDomainData(waveformData);
+      buf = waveformData;
+    }
+
+    // 🔥 ENERGY FIX (speaking must not be zero)
+    const targetEnergy =
+      waveState === "speaking" ? 0 :
+      waveState === "listening" ? 0.8 :
+      0;
+
+    waveEnergy += (targetEnergy - waveEnergy) * 0.06;
+
+    const bars = 60;                 // number of bars
+    const barSpacing = width / bars;
+    const barWidth = barSpacing * 0.35;
+
+    waveCtx.fillStyle = "rgba(255,255,255,0.95)";
+    waveCtx.shadowBlur = 14;
+    waveCtx.shadowColor = "rgba(255,255,255,0.7)";
+
+    for (let i = 0; i < bars; i++) {
+
+      let v = 0;
+
+      if (waveState === "listening" && buf) {
+        const idx = Math.floor((i / bars) * buf.length);
+
+        // 🔥 average neighboring samples for smoother motion
+        let sum = 0;
+        const windowSize = 8;   // increase for smoother grouping
+
+        for (let j = 0; j < windowSize; j++) {
+          const sampleIndex = idx + j;
+          if (sampleIndex < buf.length) {
+            sum += Math.abs(buf[sampleIndex]);
+          }
+        }
+
+        v = sum / windowSize;
+      }
+
+      // 🔥 CENTER ENVELOPE CURVE (gives that Spotify/ChatGPT look)
+      const mid = bars / 2;
+      const distance = Math.abs(i - mid) / mid;
+      const envelope = Math.pow(1 - distance, 2.2);
+
+      const boost =
+        waveState === "speaking" ? 3.0 :
+        waveState === "listening" ? 7.2 :
+        0;
+
+      const barHeight =
+        Math.max(0.04, v) * height * boost * envelope * waveEnergy;
+
+      const x = i * barSpacing + (barSpacing - barWidth) / 2;
+
+      // 🔥 FULLY ROUNDED VERTICAL BAR
+      waveCtx.beginPath();
+      waveCtx.roundRect(
+        x,
+        centerY - barHeight,
+        barWidth,
+        barHeight * 2,
+        barWidth / 2
+      );
+      waveCtx.fill();
+    }
+  }
+
+  draw();
+}
 /* =========================
    SPEECH DETECTION
 ========================= */
@@ -627,7 +753,7 @@ function detectSpeech() {
 
 function startListening() {
   if (!listening || processing) return;
-
+  waveState = "listening";
   audioChunks = [];
   hasSpoken = false;
   lastVoiceTime = 0;
@@ -677,8 +803,9 @@ async function handleUtterance() {
   startFillerTimer();
   processing = true;
   fillerPlayedThisTurn = false;
-  setStatus("Thinking…", "thinking");
+  waveState = "idle";
 
+  setStatus("Thinking…", "thinking");
 
   const formData = new FormData();
   formData.append("audio", blob);
@@ -756,12 +883,14 @@ async function handleUtterance() {
       audioEl.play();
 
       audioEl.onplay = () => {
+        waveState = "speaking";
         audioStartedAt = performance.now();
         setStatus("Speaking… (Interruptible)", "speaking");
         startInterruptCapture();
       };
 
       audioEl.onended = () => {
+        waveState = "listening";
         processing = false;
 
         if (listeningMode === "continuous") {
@@ -898,11 +1027,13 @@ async function sendTextMessage() {
       }
 
       audioEl.onplay = () => {
+        waveState = "speaking";
         audioStartedAt = performance.now();
         setStatus("Speaking…", "speaking");
       };
 
       audioEl.onended = () => {
+        waveState = "listening";
         processing = false;
         listening = true;
         startListening();
@@ -936,6 +1067,7 @@ if (pttBtn) {
 
       listening = true;
       processing = false;
+      waveState = "listening"; 
 
       audioChunks = [];
       hasSpoken = false;
@@ -955,7 +1087,7 @@ if (pttBtn) {
     if (pttRecording) {
       pttRecording = false;
       listening = false;
-
+      waveState = "idle"; 
       if (mediaRecorder && mediaRecorder.state === "recording") {
         mediaRecorder.stop(); // triggers handleUtterance()
       }
