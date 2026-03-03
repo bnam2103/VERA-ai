@@ -1079,7 +1079,7 @@ if (pttBtn) {
 
       mediaRecorder.start();
 
-      setStatus("Listening (PTT)… tap again to send", "recording");
+      setStatus("Listening (PTT)", "recording");
       return;
     }
 
