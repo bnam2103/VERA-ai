@@ -509,40 +509,49 @@
     </div>
       <div class="conversation" id="conversation"></div>
       <div class="input-container">
-      <div class="startup-text" id="startup-text"></div>
-      <div class="input-bar">
+        <div class="startup-text" id="startup-text"></div>
 
-        <div class="mic-status">
-          <button id="record" title="Voice input">🎧</button>
-          <span id="status" class="status idle">Idle</span>
-        </div>
-        <div class="wave-container">
-          <canvas id="waveform"></canvas>
-        </div>
-        <!-- <input
-          id="text-input"
-          type="text"
-          placeholder="Type a message…"
-          autocomplete="off"
-          spellcheck="false"
-        />
-
-        <button id="send-text" title="Send message">➤</button> -->
+        <!-- 🔹 TOGGLE OUTSIDE -->
         <button
-          id="ptt"
-          class="ptt-btn"
-          title="Push to talk"
+          id="input-toggle"
+          class="input-toggle-btn"
+          title="Switch input mode"
         >
-          🎙️
+          ⌨️
         </button>
-        <span
-          id="server-status-inline"
-          class="server-status offline mobile-only"
-        >
-          🔴 Offline
-        </span>
 
-      </div>
+        <!-- 🔹 VOICE BAR -->
+        <div id="voice-bar" class="input-bar">
+          <div class="mic-status">
+            <button id="record" title="Voice input">🎧</button>
+            <span id="status" class="status idle">Idle</span>
+          </div>
+
+          <div class="wave-container">
+            <canvas id="waveform"></canvas>
+          </div>
+
+          <button id="ptt" class="ptt-btn">🎙️</button>
+
+          <span
+            id="server-status-inline"
+            class="server-status offline mobile-only"
+          >
+            🔴 Offline
+          </span>
+        </div>
+
+        <!-- 🔹 KEYBOARD BAR -->
+        <div id="keyboard-bar" class="input-bar hidden">
+          <input
+            id="text-input"
+            type="text"
+            placeholder="Type a message…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button id="send-text" title="Send message">➤</button>
+        </div>
       </div>
       <audio id="audio" preload="auto"></audio>
       <audio id="startup-audio" preload="auto">
@@ -1110,6 +1119,25 @@ function typeStartup(options = {}) {
     type();
   }, config.startDelay);
 }
+
+const toggleBtn = document.getElementById("input-toggle");
+const voiceBar = document.getElementById("voice-bar");
+const keyboardBar = document.getElementById("keyboard-bar");
+
+let keyboardMode = false;
+
+toggleBtn.addEventListener("click", () => {
+  keyboardMode = !keyboardMode;
+
+  voiceBar.classList.toggle("hidden", keyboardMode);
+  keyboardBar.classList.toggle("hidden", !keyboardMode);
+
+  toggleBtn.textContent = keyboardMode ? "🎙️" : "⌨️";
+
+  if (keyboardMode) {
+    document.getElementById("text-input").focus();
+  }
+});
 </script>
 
 

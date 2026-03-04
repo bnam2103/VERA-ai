@@ -1509,6 +1509,35 @@ body.vera-mode {
 .ptt-btn:active {
   background: rgba(255,255,255,0.25);
 }
+/* =========================
+   INPUT MODE TOGGLE
+========================= */
+
+.input-toggle-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+
+  background: rgba(255,255,255,0.08);
+  color: #eaeaea;
+  font-size: 16px;
+
+  cursor: pointer;
+  opacity: 0.75;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  transition: background 0.2s ease, opacity 0.2s ease;
+}
+
+.input-toggle-btn:hover {
+  opacity: 1;
+  background: rgba(255,255,255,0.15);
+}
+
 
 #text-input {
   flex: 1;
@@ -1612,8 +1641,12 @@ body.vera-mode {
    VERA APP — CENTERED LAYOUT
 ========================= */
 /* =========================
-   CENTER MODE (DEFAULT)
+   INPUT SYSTEM (FINAL CLEAN)
 ========================= */
+
+.hidden {
+  display: none !important;
+}
 
 .input-container {
   position: fixed;
@@ -1622,12 +1655,17 @@ body.vera-mode {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 14px;
 
   pointer-events: none;
 }
 
+.input-toggle-btn {
+  pointer-events: auto;
+}
+
+/* shared style */
 .input-bar {
-  position: relative;
   pointer-events: auto;
 
   width: 100%;
@@ -1642,12 +1680,9 @@ body.vera-mode {
   border-radius: 28px;
   background: rgba(20, 20, 20, 0.7);
   backdrop-filter: blur(18px);
-
   border: 1px solid rgba(255,255,255,0.08);
 
-  transition:
-    transform 0.6s cubic-bezier(0.2, 0.9, 0.3, 1),
-    opacity 0.4s ease;
+  transition: all 0.4s ease;
 }
 
 /* =========================
@@ -1656,8 +1691,7 @@ body.vera-mode {
 
 .startup-text {
   position: absolute;
-  top: calc(50% - 110px); /* sits above centered input */
-
+  top: calc(50% - 110px);
   left: 50%;
   transform: translateX(-50%);
 
@@ -1665,16 +1699,14 @@ body.vera-mode {
   text-align: center;
 
   font-size: 22px;
+  font-weight: 600;
   line-height: 1.5;
   letter-spacing: 0.04em;
 
   color: rgba(255,255,255,0.85);
 
-  opacity: 1;
-  transition:
-    opacity 0.6s ease,
-    transform 0.6s ease;
-} 
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
 /* hide after first message */
 body.chat-started .startup-text {
   opacity: 0;
@@ -2011,8 +2043,8 @@ body.app-open {
   }
   .startup-text {
     white-space: nowrap;
-    font-size: clamp(12px, 3.8vw, 16px);
-    bottom: 100px;
+    font-size: clamp(13px, 4vw, 16px);
+    top: calc(50% - 90px);
   }
   .input-container {
     padding: 8px 12px;
