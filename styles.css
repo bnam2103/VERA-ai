@@ -2070,7 +2070,14 @@ body.app-open {
     height: 34px;
     font-size: 16px;
   }
+  #keyboard-bar {
+    display: none !important;
+  }
 
+  /* 🔒 Hide toggle button */
+  .input-toggle-btn {
+    display: none !important;
+  }
   /* 🔹 Mic status spacing tighter */
   .mic-status {
     gap: 6px;
