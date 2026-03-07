@@ -113,6 +113,22 @@ const INTERRUPT_RMS = 0.010;   // higher than normal speech start
 // const INTERRUPT_MS = 140;    
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
+let keepAliveInterval = null;
+
+function startKeepAlive() {
+  if (keepAliveInterval) return;
+
+  keepAliveInterval = setInterval(() => {
+    fetch(`${API_URL}/status`, { cache: "no-store" }).catch(() => {});
+  }, 25000); // every 25s
+}
+
+function stopKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+}
 /* =========================
    DOM
 ========================= */
@@ -233,7 +249,7 @@ async function checkServer() {
 
 checkServer();
 setInterval(checkServer, 15_000);
-
+startKeepAlive();
 /* =========================
    UI HELPERS
 ========================= */
@@ -1166,4 +1182,6 @@ if (sendFeedbackBtn) {
   };
 }
 
-
+window.addEventListener("beforeunload", () => {
+  stopKeepAlive();
+});
