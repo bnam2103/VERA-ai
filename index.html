@@ -964,6 +964,7 @@ function setProgress(value) {
 }
 
 let hitStarting = false;
+let appRevealed = false;
 
 async function startBootSequence() {
   home.hidden = true;
@@ -984,7 +985,7 @@ async function startBootSequence() {
       }
     }
 
-    if (state === "ready") {
+    if (state === "ready" && !appRevealed) {
       if (hitStarting && currentProgress < 100) {
         setTimeout(() => {
           setProgress(100);
@@ -1001,17 +1002,28 @@ async function startBootSequence() {
 }
 
 function revealApp() {
+  if (appRevealed) return;
+  appRevealed = true;
+
   setTimeout(() => {
     bootLoader.classList.remove("active");
     veraApp.hidden = false;
     document.body.classList.add("app-open");
 
-    typeStartup({
-      typingSpeed: 50,      // slower typing
-      startDelay: 800,      // cinematic pause before speaking
-      fadeIn: true,
-      cursor: true
-    }); // 🔥 THIS WAS MISSING
+    // wait for layout to stabilize
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+
+        typeStartup({
+          typingSpeed: 50,
+          startDelay: 400,
+          fadeIn: true,
+          cursor: true
+        });
+
+      });
+    });
+
   }, 500);
 }
 
@@ -1058,7 +1070,8 @@ document.getElementById("return-home").onclick = async () => {
 function typeStartup(options = {}) {
   const el = document.getElementById("startup-text");
   const text = options.text || "Hi, my name is VERA. How can I help you?";
-
+  el.textContent = "";
+  el.offsetHeight; // force layout flush
   const config = {
     typingSpeed: options.typingSpeed ?? 45,   // ms per character
     startDelay: options.startDelay ?? 400,    // delay before typing

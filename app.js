@@ -16,6 +16,11 @@ let micStream = null;
 let audioCtx = null;
 let analyser = null;
 let mediaRecorder = null;
+
+let ttsSource = null;
+let ttsAnalyser = null;
+let ttsData = null;
+
 let interruptRecorder = null;
 let interruptChunks = [];
 let interruptRecording = false;
@@ -627,11 +632,22 @@ async function initMic() {
 
   audioCtx = new AudioContext({ sampleRate: 16000 });
   await audioCtx.resume();
-  resizeWaveCanvas();   
+  resizeWaveCanvas();
+
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 2048;
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
+
+  // 🔥 NEW — analyze VERA speaking audio
+  ttsAnalyser = audioCtx.createAnalyser();
+  ttsAnalyser.fftSize = 2048;
+
+  ttsSource = audioCtx.createMediaElementSource(audioEl);
+
+  ttsSource.connect(ttsAnalyser);      // for waveform
+  ttsSource.connect(audioCtx.destination); // for sound output
+
   detectInterrupt();
   startWaveAnimation();
 }
@@ -663,9 +679,17 @@ function startWaveAnimation() {
       buf = waveformData;
     }
 
+    if (waveState === "speaking" && ttsAnalyser) {
+      if (!ttsData) {
+        ttsData = new Float32Array(ttsAnalyser.fftSize);
+      }
+      ttsAnalyser.getFloatTimeDomainData(ttsData);
+      buf = ttsData;
+    }
+
     // 🔥 ENERGY FIX (speaking must not be zero)
     const targetEnergy =
-      waveState === "speaking" ? 0 :
+      waveState === "speaking" ? 0.9 :
       waveState === "listening" ? 0.8 :
       0;
 
