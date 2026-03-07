@@ -16,6 +16,11 @@ let micStream = null;
 let audioCtx = null;
 let analyser = null;
 let mediaRecorder = null;
+
+let ttsSource = null;
+let ttsAnalyser = null;
+let ttsData = null;
+
 let interruptRecorder = null;
 let interruptChunks = [];
 let interruptRecording = false;
@@ -137,6 +142,7 @@ const recordBtn = document.getElementById("record");
 const statusEl = document.getElementById("status");
 const convoEl = document.getElementById("conversation");
 const audioEl = document.getElementById("audio");
+audioEl.crossOrigin = "anonymous";
 const canvas = document.getElementById("waveform");
 const waveCtx = canvas?.getContext("2d");
 
@@ -627,11 +633,22 @@ async function initMic() {
 
   audioCtx = new AudioContext({ sampleRate: 16000 });
   await audioCtx.resume();
-  resizeWaveCanvas();   
+  resizeWaveCanvas();
+
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 2048;
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
+
+  // 🔥 NEW — analyze VERA speaking audio
+  ttsAnalyser = audioCtx.createAnalyser();
+  ttsAnalyser.fftSize = 2048;
+
+  ttsSource = audioCtx.createMediaElementSource(audioEl);
+
+  ttsSource.connect(ttsAnalyser);      // for waveform
+  ttsSource.connect(audioCtx.destination); // for sound output
+
   detectInterrupt();
   startWaveAnimation();
 }
@@ -663,9 +680,17 @@ function startWaveAnimation() {
       buf = waveformData;
     }
 
+    if (waveState === "speaking" && ttsAnalyser) {
+      if (!ttsData) {
+        ttsData = new Float32Array(ttsAnalyser.fftSize);
+      }
+      ttsAnalyser.getFloatTimeDomainData(ttsData);
+      buf = ttsData;
+    }
+
     // 🔥 ENERGY FIX (speaking must not be zero)
     const targetEnergy =
-      waveState === "speaking" ? 0 :
+      waveState === "speaking" ? 0.9 :
       waveState === "listening" ? 0.8 :
       0;
 
@@ -683,7 +708,7 @@ function startWaveAnimation() {
 
       let v = 0;
 
-      if (waveState === "listening" && buf) {
+      if (buf) {
         const idx = Math.floor((i / bars) * buf.length);
 
         // 🔥 average neighboring samples for smoother motion
