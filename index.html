@@ -498,7 +498,35 @@
 <section id="vera-app" hidden>
 
   <!-- Top Bar -->
+  <!-- =========================
+      VERA GUIDE OVERLAY
+  ========================= -->
+  <div id="vera-guide" class="vera-guide">
 
+    <div class="guide-item guide-vera">
+      <div class="guide-arrow arrow-left">←</div>
+      <div class="guide-text">
+        Click here to learn more about the system.
+      </div>
+    </div>
+
+    <div class="guide-item guide-headset">
+      <div class="guide-arrow arrow-up">↑</div>
+      <div class="guide-text">
+        <strong>Continuous Listening</strong><br>
+        Works best in quiet environments for productivity. Only works when wears headset/airpods.
+      </div>
+    </div>
+
+    <div class="guide-item guide-ptt">
+      <div class="guide-arrow arrow-left">←</div>
+      <div class="guide-text">
+        <strong>Push-to-Talk</strong><br>
+        Press to record. Press again to send.
+      </div>
+    </div>
+
+  </div>
 
   <!-- Chat Container -->
   <main class="chat-centered">
@@ -574,6 +602,8 @@
   const introVideo = document.getElementById("intro-video");
   const skipBtn = document.getElementById("skip-intro");
   const soundBtn = document.getElementById("enable-sound");
+  soundBtn?.addEventListener("click", unlockAudio);
+  skipBtn?.addEventListener("click", unlockAudio);
   const disclaimer = document.querySelector(".intro-disclaimer");
 
   const home = document.getElementById("home");
@@ -587,6 +617,21 @@
 
   const bgVideo = document.getElementById("bg-video");
 
+  const bgMusic = document.getElementById("bg-music");
+  let audioUnlocked = false;
+
+  function unlockAudio() {
+    if (audioUnlocked) return;
+
+    bgMusic.volume = 0;
+
+    bgMusic.play().then(() => {
+      bgMusic.pause();
+      bgMusic.currentTime = 0;
+      bgMusic.volume = BASE_MUSIC_VOLUME;
+      audioUnlocked = true;
+    }).catch(() => {});
+  }
   /* =========================
      GLOBAL CONFIG
   ========================= */
@@ -744,6 +789,7 @@ const heroParagraph = document.querySelector("#about-vera .hero-text");
 let headlineIndex = 0;
 let typingStarted = false; // 🔑 THIS WAS MISSING
 const heroLabel = document.getElementById("enter-vera");
+heroLabel?.addEventListener("click", unlockAudio);
 
 function startTyping() {
   if (typingStarted) return;
@@ -818,7 +864,6 @@ function startTyping() {
     BACKGROUND MUSIC
   ========================= */
 
-  const bgMusic = document.getElementById("bg-music");
   const musicToggle = document.getElementById("music-toggle");
 
   const BASE_MUSIC_VOLUME = 0.25;
@@ -828,7 +873,7 @@ function startTyping() {
   bgMusic.loop = true;
 
   /* restore preference (but DO NOT autoplay sound) */
-  const musicEnabled = localStorage.getItem(MUSIC_KEY) === "false";
+  const musicEnabled = localStorage.getItem(MUSIC_KEY) !== "false";
   if (musicEnabled) {
     musicToggle.classList.add("active");
   }
@@ -1010,6 +1055,7 @@ function revealApp() {
     veraApp.hidden = false;
     document.body.classList.add("app-open");
 
+    
     // wait for layout to stabilize
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -1119,14 +1165,34 @@ function typeStartup(options = {}) {
         i++;
         setTimeout(type, config.typingSpeed);
       } else {
+
         if (config.cursor) {
           el.classList.remove("typing-cursor");
         }
 
-        // 🔥 IMPORTANT — release inline control
         el.style.opacity = "";
         el.style.transform = "";
         el.style.transition = "";
+
+        // -----------------------
+        // SHOW GUIDE AFTER TYPING
+        // -----------------------
+
+        const guide = document.getElementById("vera-guide");
+
+        if (!sessionStorage.getItem("vera_seen_guide")) {
+
+          setTimeout(() => {
+            guide.classList.remove("hidden");
+            guide.classList.add("show");
+          }, 600);
+
+          setTimeout(() => {
+            guide.classList.remove("show");
+            sessionStorage.setItem("vera_seen_guide", "true");
+          }, 9000);
+        }
+
       }
     }
     type();
@@ -1150,6 +1216,21 @@ toggleBtn.addEventListener("click", () => {
   if (keyboardMode) {
     document.getElementById("text-input").focus();
   }
+});
+document.addEventListener("click", (e) => {
+  const guide = document.getElementById("vera-guide");
+  if (!guide) return;
+
+  // 🚫 Ignore clicks until guide is visible
+  if (!guide.classList.contains("show")) return;
+
+  guide.classList.remove("show");
+
+  setTimeout(() => {
+    guide.classList.add("hidden");
+  }, 350);
+
+  sessionStorage.setItem("vera_seen_guide", "true");
 });
 </script>
 
