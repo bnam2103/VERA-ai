@@ -2191,4 +2191,7 @@ body.app-open {
   .status {
     font-size: 12px;
   }
+  .vera-guide {
+    display: none !important;
+  }
 }
