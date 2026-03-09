@@ -202,11 +202,12 @@ body.vera-mode {
   opacity: 0.6;
 }
 .boot-note {
-  font-size: 0.85rem;
-  opacity: 0.65;
-  margin-top: 6px;
-  margin-bottom: 12px;
+  font-size: 0.8rem;
+  opacity: 0.6;
+  margin-top: 16px;
   text-align: center;
+  max-width: 340px;
+  line-height: 1.4;
 }
 /* =========================
    TOP NAV
