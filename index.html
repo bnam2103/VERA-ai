@@ -522,7 +522,7 @@
     </div>
 
     <div class="guide-item guide-ptt">
-      <div class="guide-arrow arrow-left">←</div>
+      <div class="guide-arrow arrow-up">↑</div>
       <div class="guide-text">
         <strong>Push-to-Talk</strong><br>
         Press to record. Press again to send.
@@ -538,7 +538,10 @@
         VERA
       </button>
     </div>
-      <div class="conversation" id="conversation"></div>
+      <div class="chat-main">
+        <div class="conversation" id="conversation"></div>
+        <aside id="side-pane" class="side-pane" hidden></aside>
+      </div>
       <div class="input-container">
         <div class="startup-text" id="startup-text"></div>
 
@@ -571,6 +574,17 @@
             🔴 Offline
           </span>
         </div>
+
+        <button
+          id="mute-input"
+          class="mute-input-btn hidden"
+          title="Mute input"
+          aria-label="Mute input"
+          aria-pressed="false"
+          type="button"
+        >
+          🔇
+        </button>
 
         <!-- 🔹 KEYBOARD BAR -->
         <div id="keyboard-bar" class="input-bar hidden">
@@ -1187,7 +1201,11 @@ function typeStartup(options = {}) {
 
           setTimeout(() => {
             guide.classList.remove("hidden");
-            guide.classList.add("show");
+            positionGuideTargets();
+            requestAnimationFrame(() => {
+              positionGuideTargets();
+              guide.classList.add("show");
+            });
           }, 600);
 
           setTimeout(() => {
@@ -1206,6 +1224,30 @@ const toggleBtn = document.getElementById("input-toggle");
 const voiceBar = document.getElementById("voice-bar");
 const keyboardBar = document.getElementById("keyboard-bar");
 
+function positionGuideNearTarget(itemSelector, targetSelector, gap = 18) {
+  const item = document.querySelector(itemSelector);
+  const target = document.querySelector(targetSelector);
+  if (!item || !target) return;
+
+  const targetRect = target.getBoundingClientRect();
+  const itemWidth = item.offsetWidth || 220;
+  const left = Math.max(
+    16,
+    Math.min(
+      window.innerWidth - itemWidth - 16,
+      targetRect.left + targetRect.width / 2 - itemWidth / 2
+    )
+  );
+
+  item.style.left = `${left}px`;
+  item.style.top = `${targetRect.bottom + gap}px`;
+}
+
+function positionGuideTargets() {
+  positionGuideNearTarget(".guide-headset", "#record");
+  positionGuideNearTarget(".guide-ptt", "#ptt");
+}
+
 let keyboardMode = false;
 
 toggleBtn.addEventListener("click", () => {
@@ -1220,6 +1262,13 @@ toggleBtn.addEventListener("click", () => {
     document.getElementById("text-input").focus();
   }
 });
+
+window.addEventListener("resize", () => {
+  const guide = document.getElementById("vera-guide");
+  if (!guide || !guide.classList.contains("show")) return;
+  positionGuideTargets();
+});
+
 document.addEventListener("click", (e) => {
   const guide = document.getElementById("vera-guide");
   if (!guide) return;
