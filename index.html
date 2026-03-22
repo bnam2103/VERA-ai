@@ -391,6 +391,49 @@
       </ul>
       </div>
       </details>
+      <hr />
+      <details class="patch-version">
+        <summary>VERSION BMO</summary>
+        <div class="patch-content">
+          <p class="vera-log-intro">
+            <strong>BMO</strong> adds a dedicated character page with an <strong>SVG-driven mouth</strong> that
+            reacts while TTS plays. The face isn’t tied to parsing the words on screen; it follows the
+            <strong>audio</strong> (loudness and short-term energy) so motion feels aligned with
+            <strong>prosody</strong> (syllables and pauses), not the literal phrase.
+          </p>
+
+          <h3>Emotion / mouth (SVG)</h3>
+          <ul>
+            <li>
+              <strong>Three discrete states</strong> (instant cuts, no smooth morph):
+              <strong>idle</strong> (stroke smile only),
+              <strong>surprised</strong> (rounded “O” mouth),
+              <strong>happy</strong> (open mouth: cavity, teeth band, tongue).
+            </li>
+            <li>
+              <strong>While <code>#bmo-audio</code> is playing,</strong> Web Audio analysis updates
+              <code>data-bmo-tts-emotion</code> on the smile SVG so CSS can show the right layer.
+            </li>
+            <li>
+              <strong>Styling tweaks:</strong> thicker outline on filled happy/surprised shapes vs the idle smile;
+              teeth nudged up to meet the cavity “roof.”
+            </li>
+          </ul>
+
+          <h3>Layout</h3>
+          <ul>
+            <li>
+              <strong>Phone / narrow screens:</strong> the side <strong>chat log column is hidden</strong> so the view
+              centers on the character and input dock (messages still attach in the DOM for the app).
+            </li>
+          </ul>
+
+          <h3>Reference</h3>
+          <ul>
+            <li><code>bmo-emotions-test.html</code> - standalone layout check for the three mouth slots.</li>
+          </ul>
+        </div>
+      </details>
 
     </details>
 
@@ -1591,7 +1634,8 @@ async function pollBootStatus() {
 
   if (state === "starting") {
     hitStarting = true;
-    setProgress(Math.min(Math.max(currentProgress, 0) + 10, 50));
+    /* +5 per tick @ 200ms ≈ same climb rate as old +10 @ 400ms */
+    setProgress(Math.min(Math.max(currentProgress, 0) + 5, 50));
     return;
   }
 
@@ -1616,7 +1660,7 @@ async function startBootSequence() {
 
   await pollBootStatus();
   if (!appRevealed) {
-    bootPollInterval = setInterval(pollBootStatus, 400);
+    bootPollInterval = setInterval(pollBootStatus, 200);
   }
 }
 
