@@ -1028,6 +1028,7 @@ async function handleInterruptUtterance(blob) {
   const formData = new FormData();
   formData.append("audio", blob);
   formData.append("session_id", getSessionId());
+  formData.append("client", appModePrefix());
   formData.append("mode", "interrupt"); // backend can branch if desired
 
   try {
@@ -1590,6 +1591,7 @@ async function handleUtterance() {
   const formData = new FormData();
   formData.append("audio", blob);
   formData.append("session_id", getSessionId());
+  formData.append("client", appModePrefix());
 
   // 🔑 ADD THIS
   if (listeningMode === "ptt") {
@@ -1731,7 +1733,8 @@ async function sendTextMessage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
-        session_id: getSessionId()
+        session_id: getSessionId(),
+        client: appModePrefix()
       })
     });
 
