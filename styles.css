@@ -26,6 +26,24 @@ body.app-open #bg-video {
   opacity: 0;
   pointer-events: none;
 }
+
+body.bmo-open::before {
+  /* Match mouth PNG fill (sampled ~#D6F2D1); tweak --bmo-screen-mint if your export differs */
+  background: var(--bmo-screen-mint, #d6f2d1) !important;
+}
+
+body.bmo-open #bg-video {
+  display: none !important;
+}
+
+body.bmo-open {
+  --bg-z: -1;
+  --bmo-screen-mint: #d6f2d1;
+  --bmo-screen-mint-rgb: 214, 242, 209;
+  overflow: hidden;
+  color: #183127;
+  background-color: var(--bmo-screen-mint);
+}
 /* =========================
    GRADIENT BACKGROUND
 ========================= */
@@ -241,6 +259,15 @@ body.vera-mode {
   padding: 0;
   appearance: none;
   -webkit-appearance: none;
+}
+
+.nav-logo-bmo {
+  color: rgba(216, 247, 214, 0.95);
+  opacity: 0.9;
+}
+
+.nav-logo-bmo:hover {
+  opacity: 1;
 }
 
 .nav-right {
@@ -1465,6 +1492,20 @@ body.vera-mode {
   transition: opacity 1.4s cubic-bezier(0.22, 0.8, 0.2, 1);
 }
 
+#bmo-page {
+  min-height: 100vh;
+  opacity: 1;
+  transition: opacity 0.55s ease;
+  background-color: var(--bmo-screen-mint, #d6f2d1);
+}
+
+#bmo-loading-screen {
+  min-height: 100vh;
+  opacity: 1;
+  transition: opacity 0.35s ease;
+  background-color: var(--bmo-screen-mint, #d6f2d1);
+}
+
 /* hidden state */
 .fade-out {
   opacity: 0;
@@ -1473,6 +1514,658 @@ body.vera-mode {
 
 .fade-in {
   opacity: 1;
+}
+
+/* =========================
+   BMO LOADING
+========================= */
+
+.bmo-loading-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.bmo-loading-card {
+  width: min(420px, calc(100vw - 40px));
+  padding: 28px 26px 24px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-family: "Courier New", monospace;
+  image-rendering: pixelated;
+}
+
+.bmo-loading-title {
+  color: #050505;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 18px;
+  text-align: center;
+  text-shadow: none;
+}
+
+.bmo-loading-dots {
+  display: inline-block;
+  vertical-align: baseline;
+  min-width: 3ch;
+  text-align: left;
+}
+
+.bmo-loading-track {
+  height: 18px;
+  background: #050505;
+  border: 3px solid #252525;
+  overflow: hidden;
+}
+
+.bmo-loading-bar {
+  width: 0%;
+  height: 100%;
+  background: var(--bmo-screen-mint, #d6f2d1);
+  box-shadow: inset 0 0 0 2px rgba(24, 49, 39, 0.16);
+  animation: bmoLoadingFill 4s linear forwards;
+}
+
+@keyframes bmoLoadingFill {
+  0% {
+    width: 0%;
+  }
+  100% {
+    width: 100%;
+  }
+}
+
+/* =========================
+   BMO PAGE
+========================= */
+
+.bmo-shell {
+  min-height: 100vh;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 0 24px;
+}
+
+/* Pipeline + face share one scroll column */
+.bmo-shell.chat-centered {
+  padding-top: 56px;
+  padding-bottom: 120px;
+}
+
+.bmo-header {
+  width: 100%;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.bmo-home-btn {
+  color: rgba(24, 49, 39, 0.9);
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+.bmo-stage {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 0;
+}
+
+.bmo-character-frame {
+  width: min(420px, 82vw);
+  aspect-ratio: 0.82;
+  border-radius: 34px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.bmo-screen-shell {
+  width: 100%;
+  height: 100%;
+  border-radius: 24px;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.bmo-screen {
+  width: 100%;
+  height: 100%;
+  border-radius: 18px;
+  background: transparent;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: #183127;
+  padding: 24px;
+}
+
+.bmo-face {
+  width: min(360px, 82%);
+  aspect-ratio: 1.45;
+  position: relative;
+}
+
+.bmo-eyes {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 18px;
+  margin-top: 14%;
+}
+
+.bmo-eye {
+  width: 34px;
+  height: 48px;
+  flex-shrink: 0;
+  display: block;
+  overflow: visible;
+  transform: scale(0.55);
+  transform-origin: center center;
+  filter: drop-shadow(0 0 0 1px rgba(29, 32, 53, 0.08));
+}
+
+.bmo-smile-wrap {
+  position: absolute;
+  left: 50%;
+  /* Lower — closer to chin / below eyes */
+  bottom: -7%;
+  transform: translateX(-50%);
+  width: 58%;
+  min-height: 72px;
+  height: auto;
+  max-height: 62%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: visible;
+}
+
+.bmo-smile {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  opacity: 0;
+}
+
+.bmo-smile-path {
+  stroke-width: 3.35;
+  vector-effect: non-scaling-stroke;
+  transition: opacity 0.22s ease;
+}
+
+/* TTS toggles smile vs filled mouth instantly (no opacity tween while speaking). */
+.bmo-page.bmo-tts-mouth .bmo-smile-path {
+  transition: none;
+}
+
+/* Stroke smile = idle; filled mouth layers for TTS / intro. Discrete layers — no scaleY morph. */
+.bmo-mouth-inner {
+  transform: none;
+  transform-origin: 0 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+
+.bmo-mouth-layer {
+  display: none;
+}
+
+/* Intro / legacy: show happy mouth only */
+.bmo-page.bmo-mouth-active .bmo-mouth-inner {
+  opacity: 1;
+}
+
+.bmo-page.bmo-mouth-active .bmo-smile-path {
+  opacity: 0;
+}
+
+.bmo-page.bmo-mouth-active .bmo-mouth-layer--happy {
+  display: block;
+}
+
+.bmo-page.bmo-mouth-active .bmo-mouth-layer--surprised {
+  display: none;
+}
+
+/* TTS: idle = stroke only; surprised / happy = one filled layer */
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-emotion="idle"] .bmo-mouth-inner {
+  opacity: 0;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-emotion="idle"] .bmo-smile-path {
+  opacity: 1;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-emotion="surprised"] .bmo-mouth-inner,
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-emotion="happy"] .bmo-mouth-inner {
+  opacity: 1;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-emotion="surprised"] .bmo-smile-path,
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-emotion="happy"] .bmo-smile-path {
+  opacity: 0;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-emotion="surprised"] .bmo-mouth-layer--surprised {
+  display: block;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-emotion="happy"] .bmo-mouth-layer--happy {
+  display: block;
+}
+
+.bmo-page.bmo-mouth-active .bmo-mouth-inner path,
+.bmo-page.bmo-mouth-active .bmo-mouth-inner ellipse,
+.bmo-page.bmo-tts-mouth .bmo-mouth-inner path,
+.bmo-page.bmo-tts-mouth .bmo-mouth-inner ellipse {
+  stroke: #0a0a0a;
+  stroke-width: 4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  paint-order: stroke fill;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Tongue: no outline (matches emotion test) */
+.bmo-page.bmo-mouth-active .bmo-mouth-inner .bmo-mouth-tongue,
+.bmo-page.bmo-tts-mouth .bmo-mouth-inner .bmo-mouth-tongue {
+  stroke: none;
+}
+
+.bmo-intro-caption {
+  width: min(640px, calc(100vw - 40px));
+  margin: 0 auto;
+  padding: 10px 20px 6px;
+  min-height: 2.75em;
+  text-align: center;
+  font-size: clamp(0.95rem, 2.6vw, 1.1rem);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(24, 49, 39, 0.88);
+  line-height: 1.35;
+}
+
+/* BMO: hide intro / startup lines; center face in the main viewport band */
+#bmo-page .bmo-intro-caption,
+#bmo-page #bmo-startup-text {
+  display: none !important;
+}
+
+#bmo-page .bmo-shell.chat-centered {
+  --bmo-chat-log-width: 280px;
+  --bmo-chat-log-gutter: 14px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding-top: 0;
+  /* Reserve space for fixed input dock; chat column fills area above it */
+  padding-bottom: 120px;
+  align-items: stretch;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+
+/* Left log + centered column; log opens after header/input (see animation delays). */
+#bmo-page .bmo-body-row {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  min-height: 0;
+  width: 100%;
+  position: relative;
+}
+
+/* Floated card: inset from edges, full column height, sharp (no backdrop blur). */
+#bmo-page .bmo-chat-log {
+  flex: 0 0 auto;
+  width: var(--bmo-chat-log-width);
+  max-width: 0;
+  min-height: 0;
+  align-self: stretch;
+  overflow: hidden;
+  opacity: 0;
+  margin: var(--bmo-chat-log-gutter) 0 var(--bmo-chat-log-gutter)
+    var(--bmo-chat-log-gutter);
+  border-radius: 18px;
+  border: 1px solid rgba(24, 49, 39, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow:
+    0 12px 36px rgba(24, 49, 39, 0.1),
+    0 2px 8px rgba(24, 49, 39, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  box-sizing: border-box;
+}
+
+#bmo-page .bmo-chat-log-inner {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 0 12px;
+  box-sizing: border-box;
+}
+
+#bmo-page .bmo-chat-log-head {
+  flex: 0 0 auto;
+  margin: 0 10px 0;
+  padding: 14px 14px 12px;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(24, 49, 39, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8) inset;
+}
+
+#bmo-page .bmo-chat-log-head-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(24, 49, 39, 0.45);
+  margin-bottom: 2px;
+}
+
+#bmo-page .bmo-chat-log-head-title {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(20, 40, 30, 0.95);
+}
+
+#bmo-page .bmo-chat-log-conversation {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  margin: 10px 0 0;
+  padding: 4px 10px 24px;
+  gap: 10px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(24, 49, 39, 0.22) transparent;
+}
+
+#bmo-page .bmo-chat-log-conversation::-webkit-scrollbar {
+  width: 6px;
+}
+
+#bmo-page .bmo-chat-log-conversation::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#bmo-page .bmo-chat-log-conversation::-webkit-scrollbar-thumb {
+  background: rgba(24, 49, 39, 0.2);
+  border-radius: 99px;
+}
+
+#bmo-page .bmo-chat-log-conversation::-webkit-scrollbar-thumb:hover {
+  background: rgba(24, 49, 39, 0.32);
+}
+
+/* Quiet empty state */
+#bmo-page .bmo-chat-log-conversation:empty::before {
+  content: "No messages yet — say hi to VERA.";
+  display: block;
+  padding: 20px 6px 28px;
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 500;
+  color: rgba(24, 49, 39, 0.42);
+  text-align: center;
+}
+
+#bmo-page .bmo-chat-log-conversation .bubble {
+  max-width: 100%;
+}
+
+#bmo-page .bmo-chat-log-conversation .message-row {
+  margin-bottom: 4px;
+}
+
+#bmo-page .bmo-center-column {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* BMO: keep VERA chip in the column flow so it shifts with the face when the log opens */
+#bmo-page .chat-header.bmo-chat-header {
+  position: relative;
+  top: auto;
+  left: auto;
+  right: auto;
+  width: 100%;
+  max-width: 100%;
+  padding: 18px 28px 0 24px;
+  box-sizing: border-box;
+  justify-content: flex-start;
+  z-index: 5;
+}
+
+#bmo-page .bmo-stage {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: min(520px, calc(100dvh - 220px));
+  max-height: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 16px 8px;
+  box-sizing: border-box;
+}
+
+/* 2.55s + 0.9s bmoUiFadeIn = 3.45s — chat log slides in after header + input bar */
+@keyframes bmoChatLogOpen {
+  from {
+    max-width: 0;
+    opacity: 0;
+  }
+  to {
+    max-width: var(--bmo-chat-log-width);
+    opacity: 1;
+  }
+}
+
+@keyframes bmoChatLogInnerIn {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes bmoBmoInputPadForLog {
+  from {
+    padding-left: 20px;
+  }
+  to {
+    padding-left: calc(
+      var(--bmo-chat-log-width) + var(--bmo-chat-log-gutter) + 20px
+    );
+  }
+}
+
+.bmo-page.bmo-animate-in .bmo-chat-log {
+  animation: bmoChatLogOpen 0.68s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation-delay: 3.45s;
+}
+
+.bmo-page.bmo-animate-in .bmo-chat-log-inner {
+  animation: bmoChatLogInnerIn 0.55s ease forwards;
+  animation-delay: 3.45s;
+  opacity: 0;
+}
+
+.bmo-page.bmo-animate-in .input-container {
+  opacity: 0;
+  transform: translateY(-8px);
+  padding-right: 20px;
+  padding-left: 20px;
+  box-sizing: border-box;
+  animation:
+    bmoUiFadeIn 0.9s ease forwards 2.55s,
+    bmoBmoInputPadForLog 0.68s cubic-bezier(0.22, 1, 0.36, 1) forwards 3.45s;
+}
+
+@media (max-width: 640px) {
+  #bmo-page .bmo-shell.chat-centered {
+    --bmo-chat-log-width: 220px;
+    --bmo-chat-log-gutter: 10px;
+  }
+}
+
+/* BMO: row stack — center with bar; undo global chat-started translateY on toggle. */
+body.bmo-open #bmo-input-toggle.input-toggle-btn {
+  transform: none !important;
+  margin: 0;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.bmo-input-dock {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.bmo-input-bar {
+  width: min(760px, calc(100vw - 40px));
+  min-height: 72px;
+  border-radius: 999px;
+  background: rgba(var(--bmo-screen-mint-rgb, 214, 242, 209), 0.9);
+  border: 1px solid rgba(24, 49, 39, 0.14);
+  box-shadow: 0 16px 40px rgba(56, 123, 84, 0.14);
+  backdrop-filter: blur(16px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 18px;
+  opacity: 0;
+  transform: translateY(18px);
+}
+
+.bmo-input-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid rgba(24, 49, 39, 0.12);
+  background: rgba(165, 220, 174, 0.65);
+  color: #183127;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.bmo-input-text {
+  flex: 1;
+  min-width: 0;
+  padding: 0 8px;
+  color: rgba(24, 49, 39, 0.72);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.bmo-page.bmo-animate-in .bmo-eye {
+  animation: bmoEyesOpen 1.9s cubic-bezier(0.2, 0.9, 0.25, 1) forwards;
+}
+
+/* Vector smile fades in after eyes (1.9s) */
+.bmo-page.bmo-animate-in .bmo-smile {
+  animation: bmoSmileRevealAfterEyes 0.65s ease forwards;
+  animation-delay: 1.9s;
+}
+
+/* After smile finishes (1.9s + 0.65s), header + bottom dock fade in together */
+.bmo-page.bmo-animate-in .bmo-home-btn {
+  animation: bmoUiFadeIn 0.9s ease forwards;
+  animation-delay: 2.55s;
+}
+
+/* Real pipeline: .input-container uses dual animation above; .input-bar fades with header */
+.bmo-page.bmo-animate-in .bmo-input-bar {
+  animation: bmoUiFadeIn 0.9s ease forwards;
+  animation-delay: 2.55s;
+}
+
+@keyframes bmoEyesOpen {
+  0% {
+    transform: scale(0.55);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes bmoSmileRevealAfterEyes {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes bmoUiFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  100% {
+    opacity: 0.88;
+    transform: translateY(0);
+  }
+}
+
+@keyframes bmoUiFadeInUp {
+  0% {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* =========================
@@ -1554,47 +2247,9 @@ body.chat-started .input-toggle-btn {
   background: rgba(255,255,255,0.15);
 }
 
-.mute-input-btn {
-  min-width: 76px;
-  height: 40px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: none;
-
-  background: rgba(255,255,255,0.08);
-  color: #eaeaea;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-
-  cursor: pointer;
-  opacity: 0.75;
-  pointer-events: auto;
-
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  transition: background 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
-}
-
-body.chat-started .mute-input-btn {
-  transform: translateY(-16px);
-}
-
-.mute-input-btn:hover {
-  opacity: 1;
-  background: rgba(255,255,255,0.15);
-}
-
-.mute-input-btn.muted {
-  opacity: 1;
-  background: rgba(255, 88, 88, 0.18);
-  color: #ffb3b3;
-}
-
-
-#text-input {
+#text-input,
+#vera-text-input,
+#bmo-text-input {
   flex: 1;
   min-width: 0;
 
@@ -1610,11 +2265,15 @@ body.chat-started .mute-input-btn {
   outline: none;
 }
 
-#text-input::placeholder {
+#text-input::placeholder,
+#vera-text-input::placeholder,
+#bmo-text-input::placeholder {
   color: rgba(255, 255, 255, 0.4);
 }
 
-#send-text {
+#send-text,
+#vera-send-text,
+#bmo-send-text {
   background: rgba(255, 255, 255, 0.1);
   border: none;
   border-radius: 10px;
@@ -1623,7 +2282,9 @@ body.chat-started .mute-input-btn {
   color: #eaeaea;
 }
 
-#send-text:hover {
+#send-text:hover,
+#vera-send-text:hover,
+#bmo-send-text:hover {
   background: rgba(255, 255, 255, 0.2);
 }
 
@@ -1791,8 +2452,31 @@ body.chat-started .input-bar {
   position: fixed;
   top: 20px;
   left: 24px;
+  right: 24px;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 
   z-index: 1000;
+}
+
+/* VERA app header: same treatment for both wordmarks; BMO is green (.nav-logo-bmo) */
+.vera-app-header .nav-logo {
+  pointer-events: auto;
+}
+
+.vera-app-header .nav-logo:hover {
+  opacity: 1;
+}
+
+/* Match VERA opacity; global .nav-logo-bmo defaults to 0.9 */
+.vera-app-header .nav-logo.nav-logo-bmo {
+  opacity: 0.6;
+}
+
+.vera-app-header .nav-logo.nav-logo-bmo:hover {
+  opacity: 1;
 }
 
 .chat-logo {
@@ -1852,7 +2536,9 @@ body.news-panel-open .chat-main {
   margin: 0 12px;
 }
 
-#waveform {
+#waveform,
+#vera-waveform,
+#bmo-waveform {
   width: 100%;
   height: 100%;
   display: block;
@@ -2134,7 +2820,7 @@ body.news-panel-open .conversation {
   background: #05080e;
 }
 
-/* 🔥 Only when chat has started */
+/* 🔥 Only when chat has started (VERA-style dark UI). BMO uses a flat mint screen — no bottom fade. */
 body.chat-started .chat-centered::after {
   content: "";
   position: fixed;
@@ -2153,6 +2839,12 @@ body.chat-started .chat-centered::after {
 
   pointer-events: none;
   z-index: 900; /* below input (1000), above messages */
+}
+
+body.bmo-open.chat-started .chat-centered::after,
+body.bmo-open .chat-centered::after {
+  content: none;
+  display: none;
 }
 .chat-centered::-webkit-scrollbar {
   width: 8px;
@@ -2249,7 +2941,9 @@ body.app-open {
 
 
 
-#record {
+#record,
+#vera-record,
+#bmo-record {
   width: 56px;
   height: 56px;
   border-radius: 50%;
@@ -2258,6 +2952,13 @@ body.app-open {
   color: white;
   font-size: 24px;
   cursor: pointer;
+}
+
+#record.muted,
+#vera-record.muted,
+#bmo-record.muted {
+  background: rgba(255, 88, 88, 0.18);
+  color: #ffb3b3;
 }
 
 .status {
@@ -2495,13 +3196,19 @@ body.chat-started .vera-guide {
     transform: none !important;
     filter: none !important;
   }
-  #server-status-inline {
+  #server-status-inline,
+  #vera-server-status-inline,
+  #bmo-server-status-inline {
     display: none;
   }
-  #server-status-inline.offline {
+  #server-status-inline.offline,
+  #vera-server-status-inline.offline,
+  #bmo-server-status-inline.offline {
     display: inline;
   }
-  #server-status-inline {
+  #server-status-inline,
+  #vera-server-status-inline,
+  #bmo-server-status-inline {
     position: static;
     margin-left: auto;
     font-size: 11px;
@@ -2509,16 +3216,24 @@ body.chat-started .vera-guide {
     pointer-events: none;
   }
   #text-input,
-  #send-text {
+  #vera-text-input,
+  #bmo-text-input,
+  #send-text,
+  #vera-send-text,
+  #bmo-send-text {
     display: none;
   }
-  #ptt {
+  #ptt,
+  #vera-ptt,
+  #bmo-ptt {
     display: flex;
     margin-left: auto;
   }
 
   /* show PTT ONLY when server is online */
-  body.server-online #ptt {
+  body.server-online #ptt,
+  body.server-online #vera-ptt,
+  body.server-online #bmo-ptt {
     display: flex;
   }
   .startup-text {
@@ -2538,25 +3253,34 @@ body.chat-started .vera-guide {
   }
 
   /* 🔹 Text input smaller */
-  #text-input {
+  #text-input,
+  #vera-text-input,
+  #bmo-text-input {
     font-size: 14px;
   }
 
   /* 🔹 Buttons smaller */
   #record,
+  #vera-record,
+  #bmo-record,
   #ptt,
-  #send-text {
+  #vera-ptt,
+  #bmo-ptt,
+  #send-text,
+  #vera-send-text,
+  #bmo-send-text {
     width: 34px;
     height: 34px;
     font-size: 16px;
   }
-  #keyboard-bar {
+  #keyboard-bar,
+  #vera-keyboard-bar,
+  #bmo-keyboard-bar {
     display: none !important;
   }
 
   /* 🔒 Hide toggle button */
-  .input-toggle-btn,
-  .mute-input-btn {
+  .input-toggle-btn {
     display: none !important;
   }
   /* 🔹 Mic status spacing tighter */
@@ -2577,4 +3301,224 @@ body.chat-started .vera-guide {
   .vera-guide {
     display: none !important;
   }
+}
+
+/* =========================
+   BMO + VERA pipeline (mint screen)
+========================= */
+
+body.bmo-open .input-bar {
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(24, 49, 39, 0.14);
+  backdrop-filter: blur(14px);
+}
+
+body.bmo-open .startup-text {
+  color: rgba(24, 49, 39, 0.88);
+}
+
+body.bmo-open .chat-logo,
+body.bmo-open .nav-logo.bmo-home-btn {
+  color: rgba(24, 49, 39, 0.92);
+}
+
+body.bmo-open .bubble.user {
+  background: rgba(255, 255, 255, 0.55);
+  color: #142822;
+  border: 1px solid rgba(24, 49, 39, 0.1);
+}
+
+body.bmo-open .bubble.vera {
+  background: rgba(32, 88, 62, 0.22);
+  color: #142822;
+  border: 1px solid rgba(24, 49, 39, 0.12);
+}
+
+body.bmo-open #bmo-record {
+  background: rgba(255, 255, 255, 0.5);
+  color: #142822;
+  border: 1px solid rgba(24, 49, 39, 0.12);
+}
+
+body.bmo-open #bmo-record.muted {
+  background: rgba(255, 120, 120, 0.2);
+  color: #6b1c1c;
+}
+
+body.bmo-open .status {
+  color: rgba(24, 49, 39, 0.82);
+}
+
+body.bmo-open .recording {
+  color: #8b2c2c;
+}
+body.bmo-open .thinking {
+  color: #6a4a0a;
+}
+body.bmo-open .speaking {
+  color: #1a6b4a;
+}
+body.bmo-open .idle {
+  color: rgba(24, 49, 39, 0.55);
+}
+
+body.bmo-open .side-pane {
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(24, 49, 39, 0.12);
+  color: #142822;
+  box-shadow: 0 14px 32px rgba(20, 40, 30, 0.12);
+}
+
+/* BMO mint UI: side pane children still used VERA’s light text — fix contrast (dark green). */
+body.bmo-open .side-pane-title {
+  color: #0f2e22;
+}
+
+body.bmo-open .side-pane-subtitle {
+  color: rgba(24, 49, 39, 0.62);
+}
+
+body.bmo-open .side-pane-tabs {
+  background: rgba(24, 49, 39, 0.08);
+  border-color: rgba(24, 49, 39, 0.14);
+}
+
+body.bmo-open .side-pane-tab {
+  color: rgba(24, 49, 39, 0.55);
+}
+
+body.bmo-open .side-pane-tab:hover {
+  color: #0f2e22;
+}
+
+body.bmo-open .side-pane-tab.active {
+  background: rgba(24, 49, 39, 0.14);
+  color: #0a261c;
+}
+
+body.bmo-open .side-pane-empty {
+  background: rgba(255, 255, 255, 0.45);
+  border-color: rgba(24, 49, 39, 0.12);
+  color: rgba(24, 49, 39, 0.82);
+}
+
+body.bmo-open .side-pane-close {
+  border-color: rgba(24, 49, 39, 0.22);
+  background: rgba(255, 255, 255, 0.55);
+  color: #142822;
+}
+
+body.bmo-open .side-pane-close:hover {
+  background: rgba(24, 49, 39, 0.1);
+  color: #0a1f16;
+  border-color: rgba(24, 49, 39, 0.32);
+}
+
+body.bmo-open .news-result-card {
+  background: rgba(255, 255, 255, 0.42);
+  border-color: rgba(24, 49, 39, 0.12);
+}
+
+body.bmo-open .news-result-title {
+  color: #0f2e22;
+}
+
+body.bmo-open .news-result-snippet {
+  color: rgba(18, 52, 36, 0.9);
+}
+
+body.bmo-open .news-result-meta {
+  color: rgba(24, 49, 39, 0.52);
+}
+
+body.bmo-open .news-result-link {
+  color: #0d6b42;
+}
+
+body.bmo-open .news-result-link:hover {
+  color: #095234;
+}
+
+body.bmo-open .media-card {
+  background: rgba(255, 255, 255, 0.42);
+  border-color: rgba(24, 49, 39, 0.12);
+}
+
+body.bmo-open .media-card-title {
+  color: #0f2e22;
+}
+
+body.bmo-open .media-card-meta {
+  color: rgba(24, 49, 39, 0.52);
+}
+
+body.bmo-open .wave-container {
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.28);
+  align-self: center;
+  flex-shrink: 0;
+}
+
+/* Sharp docked bars on BMO (no frosted blur on the pill). */
+body.bmo-open #bmo-page .input-bar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+body.bmo-open #bmo-text-input {
+  color: #142822;
+}
+
+body.bmo-open #bmo-text-input::placeholder {
+  color: rgba(24, 49, 39, 0.45);
+}
+
+body.bmo-open #bmo-send-text {
+  color: #0f3d2c;
+  background: rgba(24, 49, 39, 0.1);
+}
+
+body.bmo-open #bmo-send-text:hover {
+  color: #0a2a1f;
+  background: rgba(24, 49, 39, 0.16);
+}
+
+/* BMO: dock pinned to bottom, group centered horizontally; toggle + bar aligned in a row. */
+body.bmo-open #bmo-page .input-container {
+  flex-direction: column !important;
+  justify-content: flex-end !important;
+  align-items: center !important;
+  padding-bottom: 40px;
+  padding-right: 20px;
+  box-sizing: border-box;
+}
+
+body.bmo-open #bmo-page .bmo-input-dock-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  /* Wider pill: fixed row cap so the bar can grow (was max-content → bar stayed narrow). */
+  width: min(900px, calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+body.bmo-open #bmo-page .bmo-input-dock-row .input-bar {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  max-width: none;
+}
+
+body.bmo-open #bmo-page .bmo-input-dock-row > * {
+  pointer-events: auto;
+}
+
+body.bmo-open.news-panel-open #bmo-page .input-container {
+  justify-content: flex-end !important;
+  padding-right: 20px;
 }

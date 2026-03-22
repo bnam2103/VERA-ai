@@ -1,12 +1,56 @@
 /* =========================
-   SESSION SETUP (PERSISTENT)
+   SESSION — VERA vs BMO (separate conversation memory on the server)
 ========================= */
 
-let sessionId = localStorage.getItem("vera_session_id");
-if (!sessionId) {
-  sessionId = crypto.randomUUID();
-  localStorage.setItem("vera_session_id", sessionId);
+const VERA_SESSION_STORAGE_KEY = "vera_session_id";
+const BMO_SESSION_STORAGE_KEY = "bmo_session_id";
+
+function getSessionId() {
+  const bmo = document.body.classList.contains("bmo-open");
+  const key = bmo ? BMO_SESSION_STORAGE_KEY : VERA_SESSION_STORAGE_KEY;
+  let id = localStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+  }
+  return id;
 }
+
+/**
+ * Call when opening BMO: new backend session, empty log, voice input default, clear side panel.
+ * Exposed for index.html `openBmoPage`.
+ */
+function resetBmoSessionAndUi() {
+  const newId = crypto.randomUUID();
+  localStorage.setItem(BMO_SESSION_STORAGE_KEY, newId);
+
+  const convo = document.getElementById("bmo-conversation");
+  if (convo) convo.replaceChildren();
+
+  const textIn = document.getElementById("bmo-text-input");
+  if (textIn) textIn.value = "";
+
+  const voiceBar = document.getElementById("bmo-voice-bar");
+  const keyboardBar = document.getElementById("bmo-keyboard-bar");
+  const toggleBtn = document.getElementById("bmo-input-toggle");
+  if (voiceBar) voiceBar.classList.remove("hidden");
+  if (keyboardBar) keyboardBar.classList.add("hidden");
+  if (toggleBtn) toggleBtn.textContent = "⌨️";
+
+  const bmoAudio = document.getElementById("bmo-audio");
+  if (bmoAudio) {
+    bmoAudio.pause();
+    bmoAudio.removeAttribute("src");
+    bmoAudio.load?.();
+  }
+
+  document.getElementById("bmo-page")?.classList.remove("bmo-tts-mouth");
+  document.getElementById("bmo-smile-svg")?.removeAttribute("data-bmo-tts-emotion");
+
+  hideSidePanel();
+}
+
+window.resetBmoSessionAndUi = resetBmoSessionAndUi;
 
 /* =========================
    GLOBAL STATE
@@ -16,10 +60,6 @@ let micStream = null;
 let audioCtx = null;
 let analyser = null;
 let mediaRecorder = null;
-
-let ttsSource = null;
-let ttsAnalyser = null;
-let ttsData = null;
 
 let interruptRecorder = null;
 let interruptChunks = [];
@@ -31,7 +71,6 @@ let lastVoiceTime = 0;
 
 let listening = false;
 let processing = false;
-let paused = false;
 let rafId = null;
 let fillerTimer = null;
 let fillerPlayedThisTurn = false;
@@ -54,7 +93,6 @@ let waveEnergy = 0;
 
 const FILLER_DELAY_MS = 5300;  // feels natural
 const FILLER_GRACE_MS = 1000;  
-const pttBtn = document.getElementById("ptt");
 
 const FILLER_AUDIO_FILES = [
   "/static/fillers/moment.wav",
@@ -95,7 +133,6 @@ function startFillerTimer() {
   fillerTimer = setTimeout(() => {
     if (!requestInFlight) return;
     if (fillerPlaying) return;
-    if (paused) return; 
 
     const filler =
       FILLER_AUDIO_FILES[Math.floor(Math.random() * FILLER_AUDIO_FILES.length)];
@@ -106,22 +143,30 @@ function startFillerTimer() {
 
     const fillerSrc = `${API_URL}${filler}`;
     resetAudioHandlers();
-    audioEl.src = fillerSrc;
-    audioEl.addEventListener(
+    const fillerAudio = getAudioEl();
+    if (fillerAudio) fillerAudio.src = fillerSrc;
+    fillerAudio?.addEventListener(
       "play",
       () => {
-        if (audioEl.src === fillerSrc) {
+        if (fillerAudio?.src === fillerSrc) {
           logVoiceFirstAudio("filler");
         }
       },
       { once: true }
     );
-    audioEl.play().catch(console.warn);
+    void (async () => {
+      try {
+        await ensureMainAudioTtsGraph();
+        await getAudioEl()?.play();
+      } catch (e) {
+        console.warn(e);
+      }
+    })();
 
-    audioEl.addEventListener(
+    fillerAudio?.addEventListener(
       "ended",
       () => {
-        if (audioEl.src !== fillerSrc) return; // 🔑 guard
+        if (fillerAudio?.src !== fillerSrc) return; // 🔑 guard
         fillerPlaying = false;
 
         if (!requestInFlight && pendingMainAnswer) {
@@ -172,20 +217,43 @@ function stopKeepAlive() {
   }
 }
 /* =========================
-   DOM
+   DOM — VERA vs BMO (prefix ids: vera-* / bmo-*)
 ========================= */
 
-const recordBtn = document.getElementById("record");
-const statusEl = document.getElementById("status");
-const convoEl = document.getElementById("conversation");
-const sidePaneEl = document.getElementById("side-pane");
-const muteInputBtn = document.getElementById("mute-input");
-const inputToggleBtn = document.getElementById("input-toggle");
-const voiceBarEl = document.getElementById("voice-bar");
-const audioEl = document.getElementById("audio");
-audioEl.crossOrigin = "anonymous";
-const canvas = document.getElementById("waveform");
-const waveCtx = canvas?.getContext("2d");
+function appModePrefix() {
+  return document.body.classList.contains("bmo-open") ? "bmo" : "vera";
+}
+
+function uiEl(suffix) {
+  return document.getElementById(`${appModePrefix()}-${suffix}`);
+}
+
+function getAudioEl() {
+  return document.getElementById(`${appModePrefix()}-audio`);
+}
+
+function getWaveCanvas() {
+  return document.getElementById(`${appModePrefix()}-waveform`);
+}
+
+function getWaveCtx() {
+  const c = getWaveCanvas();
+  return c ? c.getContext("2d") : null;
+}
+
+const ttsByMode = {
+  vera: { source: null, analyser: null },
+  bmo: { source: null, analyser: null }
+};
+
+function getTtsAnalyser() {
+  return ttsByMode[appModePrefix()]?.analyser ?? null;
+}
+
+["vera-audio", "bmo-audio"].forEach((id) => {
+  const a = document.getElementById(id);
+  if (a) a.crossOrigin = "anonymous";
+});
 
 let waveformData = null;
 let frequencyData = null;    // Uint8Array for spectrum
@@ -196,18 +264,19 @@ const RIPPLE_SPAWN_INTERVAL_MS = 120;
 let waveformRaf = null;
 
 function resizeWaveCanvas() {
+  const canvas = getWaveCanvas();
+  const waveCtx = getWaveCtx();
   if (!canvas || !waveCtx) return;
 
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
+  /* Hidden / not laid out yet: don't shrink buffer to 0 (avoids blurry upscale when shown). */
+  if (rect.width < 4 || rect.height < 4) return;
 
   canvas.width = rect.width * dpr;
   canvas.height = rect.height * dpr;
 
-  // 🔥 RESET TRANSFORM FIRST
   waveCtx.setTransform(1, 0, 0, 1, 0, 0);
-
-  // 🔥 THEN SCALE
   waveCtx.scale(dpr, dpr);
 }
 
@@ -218,14 +287,11 @@ window.addEventListener("load", () => {
 window.addEventListener("resize", resizeWaveCanvas);
 
 const serverStatusEl = document.getElementById("server-status");
-const serverStatusInlineEl = document.getElementById("server-status-inline");
 
 const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
 const feedbackStatusEl = document.getElementById("feedback-status");
 
-const textInput = document.getElementById("text-input");
-const sendTextBtn = document.getElementById("send-text");
 const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
 
 /* =========================
@@ -257,8 +323,12 @@ async function checkServer() {
 
   const online = state === "ready";
 
-  recordBtn.disabled = !online;
-  recordBtn.style.opacity = online ? "1" : "0.5";
+  ["vera-record", "bmo-record"].forEach((id) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = !online;
+    btn.style.opacity = online ? "1" : "0.5";
+  });
 
   if (serverStatusEl) {
     serverStatusEl.textContent =
@@ -278,15 +348,17 @@ async function checkServer() {
       }`;
   }
 
-  if (serverStatusInlineEl) {
-    serverStatusInlineEl.textContent =
+  ["vera-server-status-inline", "bmo-server-status-inline"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent =
       state === "ready"
         ? "🟢 Online"
         : state === "starting"
         ? "🟡 Starting"
         : "🔴 Offline";
 
-    serverStatusInlineEl.className =
+    el.className =
       `server-status ${
         state === "ready"
           ? "online"
@@ -294,7 +366,7 @@ async function checkServer() {
           ? "starting"
           : "offline"
       } mobile-only`;
-  }
+  });
 
   return state; // 🔥 IMPORTANT
 }
@@ -307,6 +379,8 @@ startKeepAlive();
 ========================= */
 
 function setStatus(text, cls) {
+  const statusEl = uiEl("status");
+  if (!statusEl) return;
   if (cls === "thinking") {
     statusEl.innerHTML = `${text}<span class="thinking-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>`;
   } else {
@@ -316,24 +390,29 @@ function setStatus(text, cls) {
 }
 
 function updateMuteInputButton() {
-  if (!muteInputBtn) return;
+  const continuousMicReady = listeningMode === "continuous" && !!micStream;
+  const label = !continuousMicReady
+    ? "Start voice input"
+    : inputMuted
+    ? "Unmute input"
+    : "Mute input";
 
-  const voiceModeVisible = !voiceBarEl?.classList.contains("hidden");
-  const shouldShow = listeningMode === "continuous" && !!micStream && voiceModeVisible;
-  const label = inputMuted ? "Unmute input" : "Mute input";
-  const visibleText = inputMuted ? "Unmute" : "Mute";
-
-  muteInputBtn.classList.toggle("hidden", !shouldShow);
-  muteInputBtn.classList.toggle("muted", inputMuted);
-  muteInputBtn.textContent = visibleText;
-  muteInputBtn.title = label;
-  muteInputBtn.setAttribute("aria-label", label);
-  muteInputBtn.setAttribute("aria-pressed", inputMuted ? "true" : "false");
+  ["vera-record", "bmo-record"].forEach((id) => {
+    const recordBtn = document.getElementById(id);
+    if (!recordBtn) return;
+    recordBtn.classList.toggle("muted", continuousMicReady && inputMuted);
+    recordBtn.title = label;
+    recordBtn.setAttribute("aria-label", label);
+    recordBtn.setAttribute(
+      "aria-pressed",
+      continuousMicReady && inputMuted ? "true" : "false"
+    );
+  });
 }
 
 function showMutedStatusIfIdle() {
   if (listeningMode !== "continuous" || !inputMuted) return;
-  if (processing || !audioEl.paused) return;
+  if (processing || !getAudioEl()?.paused) return;
 
   waveState = "idle";
   setStatus("Input muted", "idle");
@@ -357,24 +436,23 @@ function setContinuousInputMuted(nextMuted) {
     hasSpoken = false;
     lastVoiceTime = 0;
     showMutedStatusIfIdle();
-  } else if (listeningMode === "continuous") {
-    if (paused) {
-      setStatus("Paused — say “unpause” or press mic", "paused");
-    } else if (!requestInFlight && audioEl.paused) {
-      listening = true;
-      startListening();
-    }
+  } else if (listeningMode === "continuous" && !requestInFlight && getAudioEl()?.paused) {
+    listening = true;
+    startListening();
   }
 
   updateMuteInputButton();
 }
 
 function dismissGuide() {
-  const guide = document.getElementById("vera-guide");
+  const prefix = appModePrefix();
+  const guideId = prefix === "bmo" ? "bmo-guide" : "vera-guide";
+  const seenKey = prefix === "bmo" ? "bmo_seen_guide" : "vera_seen_guide";
+  const guide = document.getElementById(guideId);
   if (!guide) return;
 
   guide.classList.remove("show");
-  sessionStorage.setItem("vera_seen_guide", "true");
+  sessionStorage.setItem(seenKey, "true");
 
   window.setTimeout(() => {
     if (!guide.classList.contains("show")) {
@@ -384,6 +462,8 @@ function dismissGuide() {
 }
 
 function addBubble(text, who) {
+  const convoEl = uiEl("conversation");
+  if (!convoEl) return;
   const row = document.createElement("div");
   row.className = `message-row ${who}`;
 
@@ -406,6 +486,7 @@ function escapeHtml(text) {
 }
 
 function hideSidePanel() {
+  const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
   sidePaneEl.classList.remove("visible");
   document.body.classList.remove("news-panel-open");
@@ -551,6 +632,7 @@ function renderVideoResultsMarkup(videos) {
 }
 
 function setActiveSidePaneTab(tabName) {
+  const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
 
   sidePaneEl.querySelectorAll(".side-pane-tab").forEach((button) => {
@@ -565,6 +647,7 @@ function setActiveSidePaneTab(tabName) {
 }
 
 function renderMediaTabsPanel(payload) {
+  const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
 
   const results = Array.isArray(payload?.news_results)
@@ -613,6 +696,7 @@ function renderMediaTabsPanel(payload) {
 }
 
 function renderFinanceChartPanel(payload) {
+  const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
   const frameSrc = payload?.chart_url
     ? (payload.chart_url.startsWith("/") ? `${API_URL}${payload.chart_url}` : payload.chart_url)
@@ -658,7 +742,7 @@ function renderFinanceChartPanel(payload) {
   });
 }
 
-sidePaneEl?.addEventListener("click", (event) => {
+function onSidePaneClick(event) {
   const target = event.target;
   if (target instanceof HTMLElement && target.closest(".side-pane-close")) {
     hideSidePanel();
@@ -671,6 +755,10 @@ sidePaneEl?.addEventListener("click", (event) => {
       setActiveSidePaneTab(tabButton.dataset.tab || "news");
     }
   }
+}
+
+["vera-side-pane", "bmo-side-pane"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("click", onSidePaneClick);
 });
 
 function applyActionPayload(data) {
@@ -686,32 +774,6 @@ function applyActionPayload(data) {
   }
 
   hideSidePanel();
-}
-
-async function sendCommand(action) {
-  const formData = new FormData();
-  formData.append("session_id", sessionId);
-  formData.append("action", action);
-
-  await fetch(`${API_URL}/command`, {
-    method: "POST",
-    body: formData
-  });
-}
-
-async function sendUnpauseCommand() {
-  const formData = new FormData();
-
-  // send a tiny silent blob (backend already ignores noise safely)
-  const silentBlob = new Blob([new Uint8Array(2000)], { type: "audio/webm" });
-
-  formData.append("audio", silentBlob);
-  formData.append("session_id", sessionId);
-
-  await fetch(`${API_URL}/infer`, {
-    method: "POST",
-    body: formData
-  });
 }
 
 let fillerAuthInterval = null;
@@ -734,7 +796,7 @@ function waitForFillerAuthorization() {
 
     try {
       const res = await fetch(
-        `${API_URL}/thinking_allowed?session_id=${sessionId}`,
+        `${API_URL}/thinking_allowed?session_id=${getSessionId()}`,
         { cache: "no-store" }
       );
       const data = await res.json();
@@ -750,12 +812,13 @@ function waitForFillerAuthorization() {
 }
 
 function interruptSpeech() {
-  if (audioEl.paused || !interruptRecording) return;
+  const a = getAudioEl();
+  if (!a || a.paused || !interruptRecording) return;
   setStatus("Listening… (interrupted)", "recording");
   resetAudioHandlers();
 
-  audioEl.pause();
-  audioEl.currentTime = 0;
+  a.pause();
+  a.currentTime = 0;
 
   clearTimeout(fillerTimer);
   stopWaitingForFillerAuthorization();
@@ -793,9 +856,11 @@ function detectInterrupt() {
   const now = performance.now();
 
   // Only interrupt while VERA is speaking (not filler)
+  const outAudio = getAudioEl();
   if (
   listeningMode === "continuous" &&
-  !audioEl.paused &&
+  outAudio &&
+  !outAudio.paused &&
   !fillerPlaying 
 ) {
     // grace period to avoid clicks
@@ -856,8 +921,11 @@ function detectInterrupt() {
 }
 
 function resetAudioHandlers() {
-  audioEl.onplay = null;
-  audioEl.onended = null;
+  const a = getAudioEl();
+  if (a) {
+    a.onplay = null;
+    a.onended = null;
+  }
 }
 
 let interruptLastVoiceTime = 0;
@@ -959,7 +1027,7 @@ async function handleInterruptUtterance(blob) {
 
   const formData = new FormData();
   formData.append("audio", blob);
-  formData.append("session_id", sessionId);
+  formData.append("session_id", getSessionId());
   formData.append("mode", "interrupt"); // backend can branch if desired
 
   try {
@@ -987,45 +1055,13 @@ async function handleInterruptUtterance(blob) {
       return;
     }
 
-    if (listeningMode === "continuous" && data.command === "pause") {
-      hideSidePanel();
-      paused = true;
-      processing = false;
-      setStatus("Paused — say “unpause” or press mic", "paused");
-      listening = true;
-      startListening();
-      return;
-    }
-
-    if (listeningMode === "continuous" && data.command === "unpause") {
-      hideSidePanel();
-      paused = false;
-      processing = false;
-      setStatus("Listening…", "recording");
-      listening = true;
-      startListening();
-      return;
-    }
-
-    if (listeningMode === "continuous" && data.paused) {
-      hideSidePanel();
-      paused = true;
-      processing = false;
-      setStatus("Paused — say “unpause” or press mic", "paused");
-      listening = true;
-      startListening();
-      return;
-    }
-
-    paused = false;
-
     /* =========================
        NORMAL INTERRUPT REPLY
     ========================= */
 
     addBubble(data.transcript, "user");
 
-    playInterruptAnswer(data);
+    await playInterruptAnswer(data);
 
   } catch {
     hideSidePanel();
@@ -1038,14 +1074,17 @@ async function handleInterruptUtterance(blob) {
   }
 }
 
-function playInterruptAnswer(data) {
+async function playInterruptAnswer(data) {
   applyActionPayload(data);
   addBubble(data.reply, "vera");
   resetAudioHandlers();
-  audioEl.src = `${API_URL}${data.audio_url}`;
-  audioEl.play();
+  const replyAudio = getAudioEl();
+  if (replyAudio) replyAudio.src = `${API_URL}${data.audio_url}`;
+  await ensureMainAudioTtsGraph();
+  getAudioEl()?.play().catch(console.warn);
 
-  audioEl.onplay = () => {
+  if (replyAudio) {
+    replyAudio.onplay = () => {
     logVoiceFirstAudio("main-reply");
     logVoiceMainReplyAudio();
     waveState = "speaking";
@@ -1054,7 +1093,7 @@ function playInterruptAnswer(data) {
     processing = false;
   };
 
-  audioEl.onended = () => {
+    replyAudio.onended = () => {
     listening = true;
     if (inputMuted) {
       showMutedStatusIfIdle();
@@ -1062,10 +1101,29 @@ function playInterruptAnswer(data) {
     }
     startListening();
   };
+  }
 }
 /* =========================
    MIC INIT
 ========================= */
+
+/** Per-mode TTS <audio> through Web Audio (vera-audio / bmo-audio). */
+async function ensureMainAudioTtsGraph() {
+  const m = appModePrefix();
+  const el = getAudioEl();
+  if (!el || ttsByMode[m].source) return;
+  if (!audioCtx) {
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+  }
+  await audioCtx.resume();
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  const source = audioCtx.createMediaElementSource(el);
+  source.connect(analyser);
+  source.connect(audioCtx.destination);
+  ttsByMode[m].source = source;
+  ttsByMode[m].analyser = analyser;
+}
 
 async function initMic() {
   if (micStream) return;
@@ -1078,7 +1136,9 @@ async function initMic() {
     }
   });
 
-  audioCtx = new AudioContext({ sampleRate: 16000 });
+  if (!audioCtx) {
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+  }
   await audioCtx.resume();
   resizeWaveCanvas();
 
@@ -1087,14 +1147,7 @@ async function initMic() {
 
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
 
-  // 🔥 NEW — analyze VERA speaking audio
-  ttsAnalyser = audioCtx.createAnalyser();
-  ttsAnalyser.fftSize = 2048;
-
-  ttsSource = audioCtx.createMediaElementSource(audioEl);
-
-  ttsSource.connect(ttsAnalyser);      // for waveform
-  ttsSource.connect(audioCtx.destination); // for sound output
+  await ensureMainAudioTtsGraph();
 
   detectInterrupt();
   startWaveAnimation();
@@ -1132,10 +1185,14 @@ function freqDataToBands(analyserRef, freqBuf, barValues) {
 }
 
 function startWaveAnimation() {
-  if (!canvas || !waveCtx || waveformRaf) return;
+  if (waveformRaf) return;
 
   function draw() {
     waveformRaf = requestAnimationFrame(draw);
+
+    const canvas = getWaveCanvas();
+    const waveCtx = getWaveCtx();
+    if (!canvas || !waveCtx) return;
 
     const dpr = window.devicePixelRatio || 1;
     const width = canvas.width / dpr;
@@ -1145,9 +1202,16 @@ function startWaveAnimation() {
 
     waveCtx.clearRect(0, 0, width, height);
 
+    const bmoOpen = document.body.classList.contains("bmo-open");
+    /* BMO: waveform only while user is speaking (listening); TTS uses SVG mouth */
+    if (bmoOpen && waveState === "speaking") {
+      return;
+    }
+
+    const ttsA = getTtsAnalyser();
     let activeAnalyser = null;
     if (waveState === "listening" && analyser) activeAnalyser = analyser;
-    if (waveState === "speaking" && ttsAnalyser) activeAnalyser = ttsAnalyser;
+    if (waveState === "speaking" && ttsA) activeAnalyser = ttsA;
 
     if (!frequencyData || !activeAnalyser || frequencyData.length !== activeAnalyser.frequencyBinCount) {
       if (activeAnalyser) {
@@ -1190,7 +1254,11 @@ function startWaveAnimation() {
         rippleRings.splice(r, 1);
         continue;
       }
-      waveCtx.strokeStyle = `rgba(255,255,255,${ring.opacity * 0.35})`;
+      const rippleAlpha = bmoOpen ? ring.opacity * 0.42 : ring.opacity * 0.35;
+      const rr = bmoOpen ? 8 : 255;
+      const rg = bmoOpen ? 72 : 255;
+      const rb = bmoOpen ? 46 : 255;
+      waveCtx.strokeStyle = `rgba(${rr},${rg},${rb},${rippleAlpha})`;
       waveCtx.lineWidth = 1.5;
       waveCtx.beginPath();
       waveCtx.arc(centerX, centerY, ring.radius, 0, Math.PI * 2);
@@ -1198,16 +1266,25 @@ function startWaveAnimation() {
     }
 
     const boost = waveState === "speaking" ? 2.8 : waveState === "listening" ? 2.8 : 0;
+    const minimumBarScale = waveState === "listening" ? 0.05 : 0.03;
     const mid = BARS / 2;
-    waveCtx.fillStyle = "rgba(255,255,255,0.95)";
-    waveCtx.shadowBlur = 14;
-    waveCtx.shadowColor = "rgba(255,255,255,0.7)";
+    if (bmoOpen) {
+      waveCtx.fillStyle = "rgba(10, 68, 42, 0.98)";
+      /* Lighter shadow than VERA: mint bar + heavy blur reads as muddy / soft. */
+      waveCtx.shadowBlur = 3;
+      waveCtx.shadowColor = "rgba(4, 42, 26, 0.35)";
+    } else {
+      waveCtx.fillStyle = "rgba(255,255,255,0.95)";
+      waveCtx.shadowBlur = 14;
+      waveCtx.shadowColor = "rgba(255,255,255,0.7)";
+    }
 
     for (let i = 0; i < BARS; i++) {
       const raw = (smoothedBars && waveEnergy > 0) ? smoothedBars[i] : barValues[i];
       const distance = Math.abs(i - mid) / mid;
       const envelope = Math.pow(1 - distance, 2.0);
-      const barHeight = Math.max(0.03, raw) * height * boost * envelope * waveEnergy;
+      const barHeight =
+        Math.max(minimumBarScale, raw) * height * boost * envelope * waveEnergy;
 
       const x = i * barSpacing + (barSpacing - barWidth) / 2;
       waveCtx.beginPath();
@@ -1218,6 +1295,180 @@ function startWaveAnimation() {
 
   draw();
 }
+
+/* =========================
+   BMO — TTS drives SVG mouth (same shaping as intro in index.html)
+========================= */
+
+/**
+ * BMO TTS mouth: idle (stroke) / surprised (O) / happy (open).
+ *
+ * What drives it:
+ * - **Instant level** ≈ waveform RMS + a little **FFT peak** (tallest bin in the voice band).
+ *   We deliberately use almost no **band average**: that stays high for all vowels and was
+ *   keeping you stuck on "happy".
+ * - **Happy** when **loudness spikes above a slow baseline** (syllable edges), not when level
+ *   sits flat high — flat TTS used to keep `instant ≈ peakHold` forever → stuck on happy.
+ * - **Surprised** during steady voiced segments (baseline catches up, “excess” drops).
+ * - **Idle** when instant + speech body are low (tiny pauses).
+ */
+const BMO_TTS_MOUTH_ENERGY_GAIN = 4.35;
+/** Voice-ish bins for ~48 kHz / 2048 FFT: bin ~4 → ~94 Hz, cap ~3 kHz. */
+const BMO_TTS_FREQ_BIN_START = 4;
+const BMO_TTS_FREQ_BIN_END = 128;
+/** Slow baseline under instant; higher = baseline lags more → more happy vs mostly surprised. */
+const BMO_TTS_BASELINE_EMA = 0.946;
+/** Decay on the spike memory of (instant − baseline); lower = snappier surprised between hits. */
+const BMO_TTS_EXCESS_PEAK_DECAY = 0.73;
+/** Excess must be this close to its decaying peak to count as a hit (higher = shorter happy). */
+const BMO_TTS_EXCESS_NEAR_PEAK_FRAC = 0.75;
+/** Minimum “bump” above baseline to open happy (noise gate on spikes). */
+const BMO_TTS_MIN_EXCESS_HAPPY = 0.022;
+/** Slow envelope mix: speech present vs gap (surprised vs idle). */
+const BMO_TTS_SPEECH_BODY_EMA = 0.86;
+
+const bmoPageForTts = document.getElementById("bmo-page");
+
+let bmoTtsMouthRaf = null;
+let bmoTtsMouthTime = null;
+let bmoTtsMouthFreq = null;
+let bmoTtsBaseline = 0;
+let bmoTtsExcessPeak = 0;
+let bmoTtsSpeechBody = 0;
+let bmoTtsEmotion = "idle";
+
+function bmoComputeTtsInstant01(ttsA, timeBuf, freqBuf) {
+  ttsA.getByteTimeDomainData(timeBuf);
+  let rms = 0;
+  for (let i = 0; i < timeBuf.length; i++) {
+    const v = (timeBuf[i] - 128) / 128;
+    rms += v * v;
+  }
+  rms = Math.sqrt(rms / timeBuf.length);
+  const rms01 = Math.min(1, rms * BMO_TTS_MOUTH_ENERGY_GAIN);
+
+  ttsA.getByteFrequencyData(freqBuf);
+  const i0 = Math.min(BMO_TTS_FREQ_BIN_START, freqBuf.length);
+  const i1 = Math.min(BMO_TTS_FREQ_BIN_END, freqBuf.length);
+  let peak = 0;
+  for (let i = i0; i < i1; i++) {
+    const b = freqBuf[i];
+    if (b > peak) peak = b;
+  }
+  const bandPeak = peak / 255;
+
+  /* RMS + FFT peak: tiny bit more peak helps happy fire on spectral hits without flattening prosody. */
+  return Math.min(1, rms01 * 0.9 + bandPeak * 0.3);
+}
+
+/**
+ * nearPeak: true when loudness is spiking above the slow baseline (not sustained flat).
+ * speechBody: slow level for "still talking" vs tiny gaps → surprised vs idle.
+ */
+function bmoStepTtsEmotion(nearPeak, speechBody, instant, prev) {
+  const idleCut = 0.052;
+  const idleCutHyst = 0.062;
+
+  if (prev === "happy") {
+    if (speechBody < idleCut && instant < 0.06) return "idle";
+    if (!nearPeak) return "surprised";
+    return "happy";
+  }
+  if (prev === "surprised") {
+    if (speechBody < idleCut && instant < 0.055) return "idle";
+    if (nearPeak) return "happy";
+    return "surprised";
+  }
+  if (speechBody > idleCutHyst || instant > 0.085) return "surprised";
+  if (nearPeak) return "happy";
+  return "idle";
+}
+
+function stopBmoTtsMouthAnimation() {
+  if (bmoTtsMouthRaf) {
+    cancelAnimationFrame(bmoTtsMouthRaf);
+    bmoTtsMouthRaf = null;
+  }
+  bmoPageForTts?.classList.remove("bmo-tts-mouth");
+  document.getElementById("bmo-smile-svg")?.removeAttribute("data-bmo-tts-emotion");
+  bmoTtsBaseline = 0;
+  bmoTtsExcessPeak = 0;
+  bmoTtsSpeechBody = 0;
+  bmoTtsEmotion = "idle";
+}
+
+function tickBmoTtsMouth() {
+  if (!bmoPageForTts?.classList.contains("bmo-tts-mouth")) {
+    stopBmoTtsMouthAnimation();
+    return;
+  }
+  if (!document.body.classList.contains("bmo-open")) {
+    stopBmoTtsMouthAnimation();
+    return;
+  }
+  const smileSvg = document.getElementById("bmo-smile-svg");
+  const ttsA = ttsByMode.bmo.analyser;
+  const bmoOut = document.getElementById("bmo-audio");
+  if (!smileSvg || !ttsA) {
+    stopBmoTtsMouthAnimation();
+    return;
+  }
+  if (!bmoOut || bmoOut.paused || bmoOut.ended) {
+    stopBmoTtsMouthAnimation();
+    return;
+  }
+  if (!bmoTtsMouthTime || bmoTtsMouthTime.length !== ttsA.fftSize) {
+    bmoTtsMouthTime = new Uint8Array(ttsA.fftSize);
+  }
+  if (!bmoTtsMouthFreq || bmoTtsMouthFreq.length !== ttsA.frequencyBinCount) {
+    bmoTtsMouthFreq = new Uint8Array(ttsA.frequencyBinCount);
+  }
+
+  const instant = bmoComputeTtsInstant01(ttsA, bmoTtsMouthTime, bmoTtsMouthFreq);
+  bmoTtsBaseline =
+    bmoTtsBaseline * BMO_TTS_BASELINE_EMA + instant * (1 - BMO_TTS_BASELINE_EMA);
+  const excess = Math.max(0, instant - bmoTtsBaseline);
+  bmoTtsExcessPeak = Math.max(excess, bmoTtsExcessPeak * BMO_TTS_EXCESS_PEAK_DECAY);
+  const nearPeak =
+    excess >= bmoTtsExcessPeak * BMO_TTS_EXCESS_NEAR_PEAK_FRAC &&
+    excess >= BMO_TTS_MIN_EXCESS_HAPPY;
+  bmoTtsSpeechBody =
+    bmoTtsSpeechBody * BMO_TTS_SPEECH_BODY_EMA + instant * (1 - BMO_TTS_SPEECH_BODY_EMA);
+  bmoTtsEmotion = bmoStepTtsEmotion(nearPeak, bmoTtsSpeechBody, instant, bmoTtsEmotion);
+  smileSvg.setAttribute("data-bmo-tts-emotion", bmoTtsEmotion);
+
+  bmoTtsMouthRaf = requestAnimationFrame(tickBmoTtsMouth);
+}
+
+async function startBmoTtsMouthAnimation() {
+  if (!document.body.classList.contains("bmo-open") || !bmoPageForTts) return;
+  try {
+    await ensureMainAudioTtsGraph();
+  } catch (e) {
+    console.warn("BMO TTS graph", e);
+    return;
+  }
+  if (!ttsByMode.bmo.analyser) return;
+  bmoPageForTts.classList.add("bmo-tts-mouth");
+  document.getElementById("bmo-smile-svg")?.setAttribute("data-bmo-tts-emotion", "idle");
+  bmoTtsBaseline = 0;
+  bmoTtsExcessPeak = 0;
+  bmoTtsSpeechBody = 0;
+  bmoTtsEmotion = "idle";
+  if (bmoTtsMouthRaf) return;
+  bmoTtsMouthRaf = requestAnimationFrame(tickBmoTtsMouth);
+}
+
+document.getElementById("bmo-audio")?.addEventListener("playing", () => {
+  void startBmoTtsMouthAnimation();
+});
+document.getElementById("bmo-audio")?.addEventListener("pause", () => {
+  stopBmoTtsMouthAnimation();
+});
+document.getElementById("bmo-audio")?.addEventListener("ended", () => {
+  stopBmoTtsMouthAnimation();
+});
+
 /* =========================
    SPEECH DETECTION
 ========================= */
@@ -1242,7 +1493,7 @@ function detectSpeech() {
   if (
     hasSpoken &&
     now - lastVoiceTime > SILENCE_MS + TRAILING_MS &&
-    audioEl.paused // 🔑 only stop when not speaking
+    (getAudioEl()?.paused ?? true) // 🔑 only stop when not speaking
   ) {
     beginVoiceUxTurn();
     mediaRecorder.stop();
@@ -1281,10 +1532,8 @@ function startListening() {
     }
   }, MAX_WAIT_FOR_SPEECH_MS);
 
-  setStatus(
-    paused ? "Paused — say “unpause” or press mic" : "Listening…",
-    paused ? "paused" : "recording"
-  );
+  updateMuteInputButton();
+  setStatus("Listening…", "recording");
 }
 
 /* =========================
@@ -1340,7 +1589,7 @@ async function handleUtterance() {
 
   const formData = new FormData();
   formData.append("audio", blob);
-  formData.append("session_id", sessionId);
+  formData.append("session_id", getSessionId());
 
   // 🔑 ADD THIS
   if (listeningMode === "ptt") {
@@ -1372,37 +1621,6 @@ async function handleUtterance() {
       return;
     }
 
-    if (listeningMode === "continuous" && data.command === "pause") {
-      hideSidePanel();
-      paused = true;
-      processing = false;
-      setStatus("Paused — say “unpause” or press mic", "paused");
-      listening = true;
-      startListening();
-      return;
-    }
-
-    if (listeningMode === "continuous" && data.command === "unpause") {
-      hideSidePanel();
-      paused = false;
-      processing = false;
-      setStatus("Listening…", "recording");
-      listening = true;
-      startListening();
-      return;
-    }
-
-    if (listeningMode === "continuous" && data.paused) {
-      hideSidePanel();
-      paused = true;
-      processing = false;
-      setStatus("Paused — say “unpause” or press mic", "paused");
-      listening = true;
-      startListening();
-      return;
-    }
-
-    paused = false;
     applyActionPayload(data);
 
     addBubble(data.transcript, "user");
@@ -1419,10 +1637,19 @@ async function handleUtterance() {
         addBubble(data.reply, "vera");
       }
       resetAudioHandlers();
-      audioEl.src = `${API_URL}${data.audio_url}`;
-      audioEl.play();
+      const mainAudio = getAudioEl();
+      if (mainAudio) mainAudio.src = `${API_URL}${data.audio_url}`;
+      void (async () => {
+        await ensureMainAudioTtsGraph();
+        try {
+          await getAudioEl()?.play();
+        } catch (e) {
+          console.warn(e);
+        }
+      })();
 
-      audioEl.onplay = () => {
+      if (mainAudio) {
+        mainAudio.onplay = () => {
         logVoiceFirstAudio("main-reply");
         logVoiceMainReplyAudio();
         waveState = "speaking";
@@ -1431,7 +1658,7 @@ async function handleUtterance() {
         startInterruptCapture();
       };
 
-      audioEl.onended = () => {
+        mainAudio.onended = () => {
         waveState = "listening";
         processing = false;
 
@@ -1444,6 +1671,7 @@ async function handleUtterance() {
           startListening();
         }
       };
+      }
     };
 
     if (fillerPlaying) {
@@ -1466,43 +1694,23 @@ async function handleUtterance() {
 /* =========================
    TEXT INPUT PIPELINE
 ========================= */
-function micIsReady() {
-  return !!micStream;
-}
-
 async function sendTextMessage() {
-  const text = textInput.value.trim();
-
-  // 🔑 EARLY GUARD — before requestInFlight / thinking
-  if (/pause/i.test(text) && !micIsReady()) {
-    addBubble(text, "user");
-    setStatus("Can’t pause — microphone isn’t active", "idle");
-
-    // HARD RESET
-    requestInFlight = false;
-    stopWaitingForFillerAuthorization();
-    clearTimeout(fillerTimer);
-    processing = false;
-    paused = false;
-    listening = false;
-
-    textInput.value = "";
-    return;
-  }
+  const textInput = uiEl("text-input");
+  const statusLine = uiEl("status");
+  const text = textInput?.value.trim() ?? "";
 
   // 🔑 recover from offline
-  if (statusEl.classList.contains("offline")) {
+  if (statusLine?.classList.contains("offline")) {
     requestInFlight = false;
     stopWaitingForFillerAuthorization();
     clearTimeout(fillerTimer);
     processing = false;
-    paused = false;
     listening = false;
     setStatus("Ready", "idle");
   }
 
   if (!text || requestInFlight) return;
-  textInput.value = "";
+  if (textInput) textInput.value = "";
 
   listening = false;
   processing = true;
@@ -1523,7 +1731,7 @@ async function sendTextMessage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
-        session_id: sessionId
+        session_id: getSessionId()
       })
     });
 
@@ -1533,67 +1741,32 @@ async function sendTextMessage() {
     stopWaitingForFillerAuthorization();
     clearTimeout(fillerTimer);
 
-    if (data.command === "pause") {
-      hideSidePanel();
-      processing = false;
-      requestInFlight = false;
-
-      if (!micIsReady()) {
-        // 🔑 graceful rejection
-        setStatus("Can’t pause — microphone isn’t active", "idle");
-        paused = false;
-        listening = false;
-        return;
-      }
-
-      paused = true;
-      setStatus("Paused — say “unpause” or press mic", "paused");
-
-      listening = true;
-      startListening();
-      return;
-    }
-
-    if (listeningMode === "continuous" && data.command === "unpause") {
-      hideSidePanel();
-      paused = false;
-      processing = false;
-
-      setStatus("Listening…", "recording");
-
-      listening = true;
-      startListening();
-      return;
-    }
-
-    if (data.paused) {
-      hideSidePanel();
-      paused = true;
-      processing = false;
-
-      setStatus("Paused — say “unpause” or press mic", "paused");
-
-      listening = true;
-      startListening();
-      return;
-    }
     applyActionPayload(data);
     const playReply = () => {
       addBubble(data.reply, "vera");
 
-      if (data.audio_url) {
-        audioEl.src = `${API_URL}${data.audio_url}`;
-        audioEl.play();
+      const ta = getAudioEl();
+      if (data.audio_url && ta) {
+        ta.src = `${API_URL}${data.audio_url}`;
+        void (async () => {
+          await ensureMainAudioTtsGraph();
+          try {
+            await getAudioEl()?.play();
+          } catch (e) {
+            console.warn(e);
+          }
+        })();
       }
 
-      audioEl.onplay = () => {
+      if (ta) {
+        ta.onplay = () => {
         logVoiceFirstAudio("text-reply");
         waveState = "speaking";
         audioStartedAt = performance.now();
         setStatus("Speaking…", "speaking");
       };
 
-      audioEl.onended = () => {
+        ta.onended = () => {
         waveState = "listening";
         processing = false;
         listening = true;
@@ -1603,6 +1776,7 @@ async function sendTextMessage() {
         }
         startListening();
       };
+      }
     };
 
     playReply();
@@ -1622,105 +1796,88 @@ async function sendTextMessage() {
 /* =========================
    MIC BUTTON
 ========================= */
-if (pttBtn) {
-  pttBtn.onclick = async () => {
-    // prevent double firing while request is running
-    if (requestInFlight) return;
+async function onPttClick() {
+  if (requestInFlight) return;
 
-    // ---------- START PTT ----------
-    if (!pttRecording) {
-      listeningMode = "ptt";
-      updateMuteInputButton();
-      pttRecording = true;
+  if (!pttRecording) {
+    listeningMode = "ptt";
+    updateMuteInputButton();
+    pttRecording = true;
 
-      await initMic();
-      micStream?.getAudioTracks().forEach((track) => {
-        track.enabled = true;
-      });
+    await initMic();
+    micStream?.getAudioTracks().forEach((track) => {
+      track.enabled = true;
+    });
 
-      listening = true;
-      processing = false;
-      waveState = "listening"; 
+    listening = true;
+    processing = false;
+    waveState = "listening";
 
-      audioChunks = [];
-      hasSpoken = false;
-      lastVoiceTime = 0;
+    audioChunks = [];
+    hasSpoken = false;
+    lastVoiceTime = 0;
 
-      mediaRecorder = new MediaRecorder(micStream);
-      mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-      mediaRecorder.onstop = handleUtterance;
+    mediaRecorder = new MediaRecorder(micStream);
+    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+    mediaRecorder.onstop = handleUtterance;
 
-      mediaRecorder.start();
+    mediaRecorder.start();
 
-      setStatus("Listening (PTT)", "recording");
-      return;
+    setStatus("Listening (PTT)", "recording");
+    return;
+  }
+
+  if (pttRecording) {
+    pttRecording = false;
+    listening = false;
+    waveState = "idle";
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      beginVoiceUxTurn();
+      mediaRecorder.stop();
     }
-
-    // ---------- STOP PTT ----------
-    if (pttRecording) {
-      pttRecording = false;
-      listening = false;
-      waveState = "idle"; 
-      if (mediaRecorder && mediaRecorder.state === "recording") {
-        beginVoiceUxTurn();
-        mediaRecorder.stop(); // triggers handleUtterance()
-      }
-    }
-  };
+  }
 }
 
-recordBtn.onclick = async () => {
-  listeningMode = "continuous";   // 🔑 CRITICAL FIX
-  micStream?.getAudioTracks().forEach((track) => {
-    track.enabled = !inputMuted;
-  });
+["vera-ptt", "bmo-ptt"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("click", onPttClick);
+});
+
+async function onRecordClick() {
+  listeningMode = "continuous";
   updateMuteInputButton();
 
   if (!listening) {
+    inputMuted = false;
     await initMic();
     micStream?.getAudioTracks().forEach((track) => {
-      track.enabled = !inputMuted;
+      track.enabled = true;
     });
     listening = true;
-    paused = false;
+    updateMuteInputButton();
     startListening();
     return;
   }
 
-  if (paused) {
-  paused = false;
-  await sendCommand("unpause");
-} else {
-  paused = true;
-  await sendCommand("pause");
+  if (listeningMode !== "continuous" || !micStream) return;
+  setContinuousInputMuted(!inputMuted);
 }
 
-processing = false;
-startListening();
-}
-
-if (muteInputBtn) {
-  muteInputBtn.onclick = () => {
-    if (listeningMode !== "continuous" || !micStream) return;
-    setContinuousInputMuted(!inputMuted);
-  };
-}
-
-if (inputToggleBtn) {
-  inputToggleBtn.addEventListener("click", () => {
-    window.setTimeout(updateMuteInputButton, 0);
-  });
-}
+["vera-record", "bmo-record"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("click", onRecordClick);
+});
 
 updateMuteInputButton();
 
-if (!IS_MOBILE && sendTextBtn && textInput) {
-  sendTextBtn.onclick = sendTextMessage;
-
-  textInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      sendTextMessage();
-    }
+if (!IS_MOBILE) {
+  ["vera", "bmo"].forEach((prefix) => {
+    const sendTextBtn = document.getElementById(`${prefix}-send-text`);
+    const textInput = document.getElementById(`${prefix}-text-input`);
+    sendTextBtn?.addEventListener("click", sendTextMessage);
+    textInput?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        sendTextMessage();
+      }
+    });
   });
 }
 
@@ -1741,7 +1898,7 @@ if (sendFeedbackBtn) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          session_id: sessionId,
+          session_id: getSessionId(),
           feedback: text,
           userAgent: navigator.userAgent,
           timestamp: new Date().toISOString()

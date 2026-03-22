@@ -350,6 +350,47 @@
       </ul>
       </div>
       </details>
+      <hr />
+      <details class="patch-version">
+        <summary>VERSION 3.0</summary>
+        <div class="patch-content">
+      <p class="vera-log-intro">
+        Version 3.0 is a major upgrade focused on deeper conversational awareness and
+        stronger action handling.
+        This release improves multi-turn reasoning, ambiguity handling, and side-panel support.
+      </p>
+
+      <h3>Core Intelligence Upgrades</h3>
+      <ul>
+        <li><strong>Improved instruction tuning and model routing:</strong> expanded instructions and updated LLM model usage for stronger response quality</li>
+        <li><strong>Multi-turn awareness and ambiguity handling:</strong> VERA now tracks follow-up intent more reliably and responds better when user requests are underspecified</li>
+        <li><strong>Deeper follow-up structure:</strong> follow-up requests were added and the request pipeline was reworked to support more natural continuation across turns</li>
+        <li><strong>Intent and action refactor:</strong> `intent_router` and system action handling were restructured for cleaner routing and more reliable execution</li>
+      </ul>
+
+      <h3>Admin, User, and Query Features</h3>
+      <ul>
+        <li><strong>Admin and user implementation:</strong> added clearer separation for privileged and standard interaction paths</li>
+        <li><strong>News system expansion:</strong> introduced two news modes, <strong>BBC</strong> and <strong>SERPER</strong>, with broader support for general and breaking-news requests</li>
+        <li><strong>Financial information support:</strong> added quote retrieval and finance-context handling for market-related requests</li>
+      </ul>
+
+      <h3>UI and Interaction Enhancements</h3>
+      <ul>
+        <li><strong>Side panel upgrade:</strong> supports images, video links, and stock-price charts for richer response presentation</li>
+        <li><strong>News split-screen view:</strong> introduced a dedicated split-screen experience for news-related results</li>
+        <li><strong>Waveform improvement:</strong> changed the visualizer to use frequency bins for more accurate motion</li>
+        <li><strong>Mute control update:</strong> added mute support as part of the voice interaction workflow</li>
+        <li><strong>General UI fixes:</strong> resolved several interface issues and smoothed interaction behavior</li>
+      </ul>
+
+      <h3>Latency and Conversation Flow</h3>
+      <ul>
+        <li><strong>Filler system refinement:</strong> adjusted the filler-response behavior to feel more natural during thinking time</li>
+        <li><strong>Faster interruption response:</strong> reduced the interruption window to 500ms for quicker turn-taking</li>
+      </ul>
+      </div>
+      </details>
 
     </details>
 
@@ -496,115 +537,313 @@
 </section>
 
 <!-- =========================
-     VERA APP (ORIGINAL UI)
+     VERA APP (classic mode)
 ========================= -->
-<section id="vera-app" hidden>
-
-  <!-- Top Bar -->
-  <!-- =========================
-      VERA GUIDE OVERLAY
-  ========================= -->
-  <div id="vera-guide" class="vera-guide">
-
-    <div class="guide-item guide-vera">
-      <div class="guide-arrow arrow-left">←</div>
-      <div class="guide-text">
-        Click here to learn more about the system.
-      </div>
-    </div>
-
-    <div class="guide-item guide-headset">
-      <div class="guide-arrow arrow-up">↑</div>
-      <div class="guide-text">
-        <strong>Continuous Listening</strong><br>
-        Works best in quiet environments for productivity. Only works when wears headset/airpods.
-      </div>
-    </div>
-
-    <div class="guide-item guide-ptt">
-      <div class="guide-arrow arrow-up">↑</div>
-      <div class="guide-text">
-        <strong>Push-to-Talk</strong><br>
-        Press to record. Press again to send.
-      </div>
-    </div>
-
-  </div>
-
-  <!-- Chat Container -->
+<section id="vera-app" class="vera-app-shell" hidden>
   <main class="chat-centered">
-    <div class="chat-header">
-      <button id="return-home" class="nav-logo">
-        VERA
+    <div id="vera-guide" class="vera-guide">
+      <div class="guide-item guide-vera">
+        <div class="guide-arrow arrow-left">←</div>
+        <div class="guide-text">
+          Click here to learn more about the system.
+        </div>
+      </div>
+      <div class="guide-item guide-headset">
+        <div class="guide-arrow arrow-up">↑</div>
+        <div class="guide-text">
+          <strong>Continuous Listening</strong><br>
+          Works best in quiet environments for productivity. Only works when wears headset/airpods.
+        </div>
+      </div>
+      <div class="guide-item guide-ptt">
+        <div class="guide-arrow arrow-up">↑</div>
+        <div class="guide-text">
+          <strong>Push-to-Talk</strong><br>
+          Press to record. Press again to send.
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-header vera-app-header">
+      <button id="return-home-vera" class="nav-logo" type="button">VERA</button>
+      <button type="button" id="open-bmo-from-vera" class="nav-logo nav-logo-bmo">
+        BMO
       </button>
     </div>
-      <div class="chat-main">
-        <div class="conversation" id="conversation"></div>
-        <aside id="side-pane" class="side-pane" hidden></aside>
-      </div>
-      <div class="input-container">
-        <div class="startup-text" id="startup-text"></div>
 
-        <!-- 🔹 TOGGLE OUTSIDE -->
+    <div class="chat-main">
+      <div class="conversation" id="vera-conversation"></div>
+      <aside id="vera-side-pane" class="side-pane" hidden></aside>
+    </div>
+
+    <div class="input-container">
+      <div class="startup-text" id="vera-startup-text"></div>
+      <button
+        id="vera-input-toggle"
+        class="input-toggle-btn"
+        title="Switch input mode"
+        type="button"
+      >
+        ⌨️
+      </button>
+      <div id="vera-voice-bar" class="input-bar">
+        <div class="mic-status">
+          <button id="vera-record" type="button" title="Voice input">🎧</button>
+          <span id="vera-status" class="status idle">Idle</span>
+        </div>
+        <div class="wave-container">
+          <canvas id="vera-waveform"></canvas>
+        </div>
+        <button id="vera-ptt" class="ptt-btn" type="button">🎙️</button>
+        <span
+          id="vera-server-status-inline"
+          class="server-status offline mobile-only"
+        >
+          🔴 Offline
+        </span>
+      </div>
+      <div id="vera-keyboard-bar" class="input-bar hidden">
+        <input
+          id="vera-text-input"
+          type="text"
+          placeholder="Type a message…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button id="vera-send-text" type="button" title="Send message">➤</button>
+      </div>
+    </div>
+
+    <audio id="vera-audio" preload="auto" crossorigin="anonymous"></audio>
+    <audio id="vera-startup-audio" preload="auto">
+      <source src="startup-typing.wav" type="audio/wav">
+    </audio>
+  </main>
+</section>
+
+<section id="bmo-loading-screen" hidden>
+  <div class="bmo-loading-shell">
+    <div class="bmo-loading-card">
+      <div class="bmo-loading-title">
+        LOADING<span class="bmo-loading-dots" aria-hidden="true"></span>
+      </div>
+      <div class="bmo-loading-track">
+        <div class="bmo-loading-bar"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="bmo-page" class="bmo-page" hidden>
+  <main class="bmo-shell chat-centered">
+    <div id="bmo-guide" class="vera-guide">
+      <div class="guide-item guide-vera">
+        <div class="guide-arrow arrow-left">←</div>
+        <div class="guide-text">
+          Click here to learn more about the system.
+        </div>
+      </div>
+      <div class="guide-item guide-headset">
+        <div class="guide-arrow arrow-up">↑</div>
+        <div class="guide-text">
+          <strong>Continuous Listening</strong><br>
+          Works best in quiet environments for productivity. Only works when wears headset/airpods.
+        </div>
+      </div>
+      <div class="guide-item guide-ptt">
+        <div class="guide-arrow arrow-up">↑</div>
+        <div class="guide-text">
+          <strong>Push-to-Talk</strong><br>
+          Press to record. Press again to send.
+        </div>
+      </div>
+    </div>
+
+    <div class="bmo-body-row">
+      <aside class="bmo-chat-log" aria-label="Chat log">
+        <div class="bmo-chat-log-inner">
+          <div class="bmo-chat-log-head">
+            <span class="bmo-chat-log-head-label">Session</span>
+            <span class="bmo-chat-log-head-title">Chat log</span>
+          </div>
+          <div
+            class="conversation bmo-chat-log-conversation"
+            id="bmo-conversation"
+          ></div>
+        </div>
+      </aside>
+      <div class="bmo-center-column">
+        <div class="chat-header bmo-chat-header">
+          <button id="return-home" class="nav-logo bmo-home-btn" type="button">
+            VERA
+          </button>
+        </div>
+
+        <div class="bmo-stage">
+          <div class="bmo-character-frame">
+            <div class="bmo-screen-shell">
+              <div class="bmo-screen">
+                <div class="bmo-face" aria-hidden="true">
+                  <div class="bmo-eyes">
+                    <svg
+                      class="bmo-eye"
+                      viewBox="-11 -16 22 32"
+                      width="34"
+                      height="48"
+                      xmlns="http://www.w3.org/2000/svg"
+                      aria-hidden="true"
+                    >
+                      <ellipse cx="0" cy="0" rx="11" ry="16" fill="#1d2035">
+                        <animate
+                          attributeName="ry"
+                          values="16;16;0.9;16;16"
+                          dur="4s"
+                          repeatCount="indefinite"
+                          keyTimes="0;0.1;0.16;0.22;1"
+                          keySplines="0 0 1 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0 0 1 1"
+                          calcMode="spline"
+                        />
+                      </ellipse>
+                    </svg>
+                    <svg
+                      class="bmo-eye"
+                      viewBox="-11 -16 22 32"
+                      width="34"
+                      height="48"
+                      xmlns="http://www.w3.org/2000/svg"
+                      aria-hidden="true"
+                    >
+                      <ellipse cx="0" cy="0" rx="11" ry="16" fill="#1d2035">
+                        <animate
+                          attributeName="ry"
+                          values="16;16;0.9;16;16"
+                          dur="4s"
+                          repeatCount="indefinite"
+                          keyTimes="0;0.1;0.16;0.22;1"
+                          keySplines="0 0 1 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0 0 1 1"
+                          calcMode="spline"
+                        />
+                      </ellipse>
+                    </svg>
+                  </div>
+                  <div class="bmo-smile-wrap">
+                <!--
+                  Idle = stroke smile below. Filled mouth (TTS only) — saved coords for later:
+                  cavity: M 20.5 21.5 C 20.5 13.8 37 11.2 64 11.2 C 91 11.2 107.5 13.8 107.5 21.5
+                    C 107.5 33.8 95.5 46.2 64 47.2 C 32.5 46.2 20.5 33.8 20.5 21.5 Z (#1a5f46)
+                  teeth: upper curve ~y11.35 at center (touches cavity roof); band to 23.4 (#f7fffb)
+                  tongue: ellipse cx=64 cy=38.8 rx=12.5 ry=6.8 (#5fbf7e)
+                -->
+                <svg
+                  class="bmo-smile"
+                  id="bmo-smile-svg"
+                  viewBox="0 0 128 56"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
+                >
+                  <g transform="translate(64 15)">
+                    <g class="bmo-mouth-inner" id="bmo-mouth-vis">
+                      <g transform="translate(-64 -15)">
+                        <g class="bmo-mouth-layer bmo-mouth-layer--happy">
+                          <path
+                            fill="#1a5f46"
+                            d="M 20.5 21.5 C 20.5 13.8 37 11.2 64 11.2 C 91 11.2 107.5 13.8 107.5 21.5 C 107.5 33.8 95.5 46.2 64 47.2 C 32.5 46.2 20.5 33.8 20.5 21.5 Z"
+                          />
+                          <path
+                            fill="#f7fffb"
+                            d="M 25.5 16.2 C 25.5 12.5 40 11.35 64 11.35 C 88 11.35 102.5 12.5 102.5 16.2 L 102.5 23.4 L 25.5 23.4 Z"
+                          />
+                          <ellipse
+                            class="bmo-mouth-tongue"
+                            cx="64"
+                            cy="38.8"
+                            rx="12.5"
+                            ry="6.8"
+                            fill="#5fbf7e"
+                          />
+                        </g>
+                        <g class="bmo-mouth-layer bmo-mouth-layer--surprised">
+                          <ellipse
+                            cx="64"
+                            cy="29"
+                            rx="14"
+                            ry="17"
+                            fill="#1a5f46"
+                          />
+                        </g>
+                      </g>
+                    </g>
+                  </g>
+                  <path
+                    class="bmo-smile-path"
+                    d="M 11 13.5 C 44 26.5 78 25.8 117 13.6"
+                    stroke="#232750"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+        <p class="bmo-intro-caption" id="bmo-intro-caption" aria-live="polite"></p>
+
+        <aside id="bmo-side-pane" class="side-pane" hidden></aside>
+      </div>
+    </div>
+
+    <div class="input-container">
+      <div class="startup-text" id="bmo-startup-text"></div>
+      <div class="bmo-input-dock-row">
         <button
-          id="input-toggle"
+          id="bmo-input-toggle"
           class="input-toggle-btn"
           title="Switch input mode"
+          type="button"
         >
           ⌨️
         </button>
-
-        <!-- 🔹 VOICE BAR -->
-        <div id="voice-bar" class="input-bar">
+        <div id="bmo-voice-bar" class="input-bar">
           <div class="mic-status">
-            <button id="record" title="Voice input">🎧</button>
-            <span id="status" class="status idle">Idle</span>
+            <button id="bmo-record" type="button" title="Voice input">🎧</button>
+            <span id="bmo-status" class="status idle">Idle</span>
           </div>
-
           <div class="wave-container">
-            <canvas id="waveform"></canvas>
+            <canvas id="bmo-waveform"></canvas>
           </div>
-
-          <button id="ptt" class="ptt-btn">🎙️</button>
-
+          <button id="bmo-ptt" class="ptt-btn" type="button">🎙️</button>
           <span
-            id="server-status-inline"
+            id="bmo-server-status-inline"
             class="server-status offline mobile-only"
           >
             🔴 Offline
           </span>
         </div>
-
-        <button
-          id="mute-input"
-          class="mute-input-btn hidden"
-          title="Mute input"
-          aria-label="Mute input"
-          aria-pressed="false"
-          type="button"
-        >
-          🔇
-        </button>
-
-        <!-- 🔹 KEYBOARD BAR -->
-        <div id="keyboard-bar" class="input-bar hidden">
+        <div id="bmo-keyboard-bar" class="input-bar hidden">
           <input
-            id="text-input"
+            id="bmo-text-input"
             type="text"
             placeholder="Type a message…"
             autocomplete="off"
             spellcheck="false"
           />
-          <button id="send-text" title="Send message">➤</button>
+          <button id="bmo-send-text" type="button" title="Send message">➤</button>
         </div>
       </div>
-      <audio id="audio" preload="auto"></audio>
-      <audio id="startup-audio" preload="auto">
-        <source src="startup-typing.wav" type="audio/wav">
-      </audio>
+    </div>
 
-
-</main>
+    <audio id="bmo-audio" preload="auto" crossorigin="anonymous"></audio>
+    <audio id="bmo-typing-audio" preload="auto">
+      <source src="startup-typing.wav" type="audio/wav">
+    </audio>
+    <audio id="bmo-startup-audio" preload="auto">
+      <source src="startup-typing.wav" type="audio/wav">
+    </audio>
+  </main>
 </section>
 
 <!-- =========================
@@ -624,7 +863,10 @@
   const disclaimer = document.querySelector(".intro-disclaimer");
 
   const home = document.getElementById("home");
+  const bmoLoadingScreen = document.getElementById("bmo-loading-screen");
+  const bmoPage = document.getElementById("bmo-page");
   const veraApp = document.getElementById("vera-app");
+  const bmoLoadingDotsEl = document.querySelector(".bmo-loading-dots");
 
   const navHome = document.getElementById("nav-home");
   const navAboutVera = document.getElementById("nav-about-vera");
@@ -635,29 +877,185 @@
   const bgVideo = document.getElementById("bg-video");
 
   const bgMusic = document.getElementById("bg-music");
-  let audioUnlocked = false;
-
-  function unlockAudio() {
-    if (audioUnlocked) return;
-
-    bgMusic.volume = 0;
-
-    bgMusic.play().then(() => {
-      bgMusic.pause();
-      bgMusic.currentTime = 0;
-      bgMusic.volume = BASE_MUSIC_VOLUME;
-      audioUnlocked = true;
-    }).catch(() => {});
-  }
   /* =========================
      GLOBAL CONFIG
   ========================= */
 
   const INTRO_SEEN_KEY = "vera_intro_seen_session";
-  const STARTUP_AUDIO_KEY = "vera_startup_audio_played";
+  /* startup-typing.wav: once per tab session (set after successful play). */
+  const STARTUP_TYPING_WAV_SESSION_KEY = "vera_startup_typing_wav_session";
+  const AUDIO_UNLOCKED_KEY = "vera_audio_unlocked_session";
   const MAX_SCROLL = 700;
   const BASE_BRIGHTNESS = 0.3;
   const DARK_RANGE = 0.25;
+  let audioUnlocked = sessionStorage.getItem(AUDIO_UNLOCKED_KEY) === "true";
+  let bmoLoadingDotsInterval = null;
+  let bmoIntroTimeout = null;
+  let bmoMouthRaf = null;
+  let bmoIntroAudioCtx = null;
+  let bmoIntroMediaSource = null;
+  let bmoIntroAnalyser = null;
+
+  function stopBmoIntro() {
+    if (bmoIntroTimeout) {
+      clearTimeout(bmoIntroTimeout);
+      bmoIntroTimeout = null;
+    }
+    if (bmoMouthRaf) {
+      cancelAnimationFrame(bmoMouthRaf);
+      bmoMouthRaf = null;
+    }
+    const bmoStartupAudio = document.getElementById("bmo-startup-audio");
+    if (bmoStartupAudio) {
+      bmoStartupAudio.pause();
+      bmoStartupAudio.currentTime = 0;
+      bmoStartupAudio.onended = null;
+    }
+    bmoPage?.classList.remove("bmo-mouth-active");
+    document.getElementById("bmo-smile-svg")?.removeAttribute("data-bmo-tts-emotion");
+    const cap = document.getElementById("bmo-intro-caption");
+    if (cap) {
+      cap.textContent = "";
+    }
+  }
+
+  function ensureBmoIntroAudioGraph() {
+    if (!bmoIntroAudioCtx) {
+      bmoIntroAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    const audioEl = document.getElementById("bmo-startup-audio");
+    if (!audioEl) {
+      return null;
+    }
+    if (!bmoIntroMediaSource) {
+      bmoIntroMediaSource = bmoIntroAudioCtx.createMediaElementSource(audioEl);
+    }
+    if (!bmoIntroAnalyser) {
+      bmoIntroAnalyser = bmoIntroAudioCtx.createAnalyser();
+      bmoIntroAnalyser.fftSize = 512;
+      bmoIntroAnalyser.smoothingTimeConstant = 0.48;
+    }
+    try {
+      bmoIntroMediaSource.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      bmoIntroAnalyser.disconnect();
+    } catch {
+      /* ignore */
+    }
+    bmoIntroMediaSource.connect(bmoIntroAnalyser);
+    bmoIntroAnalyser.connect(bmoIntroAudioCtx.destination);
+    return bmoIntroAnalyser;
+  }
+
+  /** Optional startup clip after idle — no SVG mouth (mouth only for real TTS). */
+  function startBmoIntroAfterIdle() {
+    if (!bmoPage || bmoPage.hidden) {
+      return;
+    }
+    const audioEl = document.getElementById("bmo-startup-audio");
+    const captionEl = document.getElementById("bmo-intro-caption");
+    if (!audioEl) {
+      return;
+    }
+
+    stopBmoIntro();
+
+    if (!ensureBmoIntroAudioGraph() || !bmoIntroAudioCtx) {
+      return;
+    }
+
+    if (captionEl) {
+      captionEl.textContent = "";
+    }
+
+    audioEl.onended = () => {
+      audioEl.onended = null;
+      if (captionEl) captionEl.textContent = "";
+    };
+    audioEl.volume = 0.72;
+    audioEl.currentTime = 0;
+
+    bmoIntroAudioCtx.resume().then(() => {
+      audioEl.play().catch(() => {
+        /* autoplay / routing blocked */
+      });
+    });
+  }
+
+  function primeBmoIntroOnUserGesture() {
+    try {
+      if (!bmoIntroAudioCtx) {
+        bmoIntroAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      void bmoIntroAudioCtx.resume();
+      const el = document.getElementById("bmo-startup-audio");
+      if (!el) {
+        return;
+      }
+      const restoreVol = el.volume > 0 ? el.volume : 0.72;
+      el.volume = 0;
+      const pr = el.play();
+      if (pr) {
+        pr
+          .then(() => {
+            el.pause();
+            el.currentTime = 0;
+            el.volume = restoreVol;
+          })
+          .catch(() => {
+            el.volume = restoreVol;
+          });
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function startBmoLoadingDots() {
+    if (!bmoLoadingDotsEl) return;
+    const frames = ["", ".", "..", "..."];
+    let frameIndex = 0;
+
+    if (bmoLoadingDotsInterval) {
+      clearInterval(bmoLoadingDotsInterval);
+    }
+
+    bmoLoadingDotsEl.textContent = frames[0];
+    bmoLoadingDotsInterval = setInterval(() => {
+      frameIndex = (frameIndex + 1) % frames.length;
+      bmoLoadingDotsEl.textContent = frames[frameIndex];
+    }, 400);
+  }
+
+  function stopBmoLoadingDots() {
+    if (bmoLoadingDotsInterval) {
+      clearInterval(bmoLoadingDotsInterval);
+      bmoLoadingDotsInterval = null;
+    }
+    if (bmoLoadingDotsEl) {
+      bmoLoadingDotsEl.textContent = "";
+    }
+  }
+
+  async function unlockAudio() {
+    if (audioUnlocked) return true;
+
+    try {
+      bgMusic.volume = 0;
+      await bgMusic.play();
+      bgMusic.pause();
+      bgMusic.currentTime = 0;
+      bgMusic.volume = BASE_MUSIC_VOLUME;
+      audioUnlocked = true;
+      sessionStorage.setItem(AUDIO_UNLOCKED_KEY, "true");
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   /* Disable browser scroll restore */
   if ("scrollRestoration" in history) {
@@ -886,32 +1284,163 @@ function startTyping() {
   const BASE_MUSIC_VOLUME = 0.25;
   const MUSIC_KEY = "vera_music_enabled";
 
+  function shouldPlayHomeMusic() {
+    return localStorage.getItem(MUSIC_KEY) === "true";
+  }
+
+  function syncMusicToggleState() {
+    const isAudible =
+      !bgMusic.paused &&
+      !bgMusic.ended &&
+      bgMusic.volume > 0.001;
+    musicToggle.classList.toggle("active", isAudible);
+  }
+
+  async function resumeHomeMusic() {
+    if (!shouldPlayHomeMusic()) {
+      syncMusicToggleState();
+      return false;
+    }
+
+    const unlocked = await unlockAudio();
+    if (!unlocked) {
+      syncMusicToggleState();
+      return false;
+    }
+
+    try {
+      bgMusic.volume = BASE_MUSIC_VOLUME;
+      if (bgMusic.paused) {
+        await bgMusic.play();
+      }
+      syncMusicToggleState();
+      return true;
+    } catch (err) {
+      console.warn("Home music resume blocked:", err);
+      syncMusicToggleState();
+      return false;
+    }
+  }
+
   bgMusic.volume = BASE_MUSIC_VOLUME;
   bgMusic.loop = true;
+  bgMusic.addEventListener("play", syncMusicToggleState);
+  bgMusic.addEventListener("pause", syncMusicToggleState);
+  bgMusic.addEventListener("volumechange", syncMusicToggleState);
 
   /* restore preference (but DO NOT autoplay sound) */
-  const musicEnabled = localStorage.getItem(MUSIC_KEY) !== "false";
-  if (musicEnabled) {
-    musicToggle.classList.add("active");
-  }
+  syncMusicToggleState();
+
+  const unlockOnFirstGesture = async () => {
+    const unlocked = await unlockAudio();
+    if (!unlocked) return;
+    syncMusicToggleState();
+  };
+
+  window.addEventListener("pointerdown", unlockOnFirstGesture, { once: true, passive: true });
+  window.addEventListener("keydown", unlockOnFirstGesture, { once: true });
 
   /* user gesture REQUIRED */
   musicToggle.onclick = async () => {
     if (bgMusic.paused) {
-      try {
-        await bgMusic.play(); // 🔑 this unlocks audio
-        bgMusic.volume = BASE_MUSIC_VOLUME;
-        musicToggle.classList.add("active");
-        localStorage.setItem(MUSIC_KEY, "true");
-      } catch (e) {
-        console.warn("Music play blocked:", e);
-      }
+      localStorage.setItem(MUSIC_KEY, "true");
+      await resumeHomeMusic();
     } else {
       bgMusic.pause();
-      musicToggle.classList.remove("active");
       localStorage.setItem(MUSIC_KEY, "false");
+      syncMusicToggleState();
     }
   };
+
+  function openBmoPage() {
+    primeBmoIntroOnUserGesture();
+    if (!bmoPage.hidden) {
+      return;
+    }
+    veraApp.hidden = true;
+    home.hidden = true;
+    document.body.classList.add("app-open", "bmo-open");
+    if (typeof window.resetBmoSessionAndUi === "function") {
+      window.resetBmoSessionAndUi();
+    }
+    bmoLoadingScreen.hidden = false;
+    bmoLoadingScreen.classList.remove("fade-in");
+    bmoLoadingScreen.classList.add("fade-out");
+
+    requestAnimationFrame(() => {
+      bmoLoadingScreen.classList.remove("fade-out");
+      bmoLoadingScreen.classList.add("fade-in");
+    });
+    startBmoLoadingDots();
+
+    const bmoLoadingBar = bmoLoadingScreen.querySelector(".bmo-loading-bar");
+    if (bmoLoadingBar) {
+      bmoLoadingBar.style.animation = "none";
+      void bmoLoadingBar.offsetWidth;
+      bmoLoadingBar.style.animation = "";
+    }
+
+    setTimeout(() => {
+      bmoLoadingScreen.classList.add("fade-out");
+
+      setTimeout(() => {
+        bmoLoadingScreen.hidden = true;
+        bmoLoadingScreen.classList.remove("fade-in", "fade-out");
+        stopBmoLoadingDots();
+
+        bmoPage.hidden = false;
+        bmoPage.classList.add("fade-out");
+        bmoPage.classList.remove("bmo-animate-in");
+        stopBmoIntro();
+
+        requestAnimationFrame(() => {
+          bmoPage.classList.remove("fade-out");
+          bmoPage.classList.add("fade-in");
+          requestAnimationFrame(() => {
+            bmoPage.classList.add("bmo-animate-in");
+            /* BMO canvas was hidden while on VERA — buffer was never sized; CSS stretch = blurry. */
+            requestAnimationFrame(() => {
+              window.dispatchEvent(new Event("resize"));
+            });
+            setTimeout(() => window.dispatchEvent(new Event("resize")), 80);
+            setTimeout(() => window.dispatchEvent(new Event("resize")), 400);
+            if (bmoIntroTimeout) {
+              clearTimeout(bmoIntroTimeout);
+            }
+            bmoIntroTimeout = setTimeout(() => {
+              bmoIntroTimeout = null;
+              startBmoIntroAfterIdle();
+            }, 3200);
+          });
+        });
+      }, 260);
+    }, 4000);
+  }
+
+  function closeBmoPage() {
+    stopBmoIntro();
+    bmoPage.classList.add("fade-out");
+
+    setTimeout(() => {
+      bmoPage.hidden = true;
+      bmoPage.classList.remove("fade-in", "fade-out", "bmo-animate-in");
+
+      bmoLoadingScreen.hidden = true;
+      bmoLoadingScreen.classList.remove("fade-in", "fade-out");
+      stopBmoLoadingDots();
+
+      document.body.classList.remove("app-open", "bmo-open");
+
+      home.hidden = false;
+      home.classList.add("fade-out");
+      requestAnimationFrame(() => {
+        home.classList.remove("fade-out");
+        home.classList.add("fade-in");
+      });
+    }, 450);
+  }
+
+  document.getElementById("open-bmo-from-vera")?.addEventListener("click", openBmoPage);
   /* =========================
     MOBILE NAV LOGIC
   ========================= */
@@ -1018,49 +1547,77 @@ const bootBar = document.getElementById("boot-bar");
 const bootPercent = document.getElementById("boot-percent");
 
 let currentProgress = 0;
+let bootPollInterval = null;
+let bootRevealTimer = null;
 
 function setProgress(value) {
-  currentProgress = value;
-  bootBar.style.width = value + "%";
-  bootPercent.textContent = value + "%";
+  const clamped = Math.max(0, Math.min(100, Math.round(value)));
+  currentProgress = clamped;
+  bootBar.style.width = clamped + "%";
+  bootPercent.textContent = clamped + "%";
 }
 
 let hitStarting = false;
 let appRevealed = false;
 
+function stopBootPolling() {
+  if (bootPollInterval) {
+    clearInterval(bootPollInterval);
+    bootPollInterval = null;
+  }
+}
+
+function scheduleBootReveal() {
+  if (appRevealed || bootRevealTimer) return;
+
+  stopBootPolling();
+  bootRevealTimer = setTimeout(() => {
+    setProgress(100);
+    bootRevealTimer = setTimeout(() => {
+      revealApp();
+      bootRevealTimer = null;
+    }, 500);
+  }, 500);
+}
+
+async function pollBootStatus() {
+  const state = await checkServer();
+
+  if (state === "offline") {
+    hitStarting = false;
+    setProgress(0);
+    return;
+  }
+
+  if (state === "starting") {
+    hitStarting = true;
+    setProgress(Math.min(Math.max(currentProgress, 0) + 10, 50));
+    return;
+  }
+
+  if (state === "ready" && !appRevealed) {
+    if (bootRevealTimer) return;
+    setProgress(Math.max(currentProgress, 50));
+    scheduleBootReveal();
+  }
+}
+
 async function startBootSequence() {
+  appRevealed = false;
+  stopBootPolling();
   home.hidden = true;
   bootLoader.classList.add("active");
   setProgress(0);
+  hitStarting = false;
+  if (bootRevealTimer) {
+    clearTimeout(bootRevealTimer);
+    bootRevealTimer = null;
+  }
 
-  const interval = setInterval(async () => {
-    const state = await checkServer();
-
-    if (state === "offline") {
-      setProgress(0);
-    }
-
-    if (state === "starting") {
-      if (!hitStarting) {
-        hitStarting = true;
-        setProgress(50);
-      }
-    }
-
-    if (state === "ready" && !appRevealed) {
-      if (hitStarting && currentProgress < 100) {
-        setTimeout(() => {
-          setProgress(100);
-          clearInterval(interval);
-          revealApp();
-        }, 400); // small dwell at 50%
-      } else {
-        setProgress(100);
-        clearInterval(interval);
-        revealApp();
-      }
-    }
-  }, 400);
+  await pollBootStatus();
+  if (!appRevealed) {
+    bootPollInterval = setInterval(pollBootStatus, 400);
+  }
 }
 
 function revealApp() {
@@ -1069,69 +1626,82 @@ function revealApp() {
 
   setTimeout(() => {
     bootLoader.classList.remove("active");
+    bmoPage.hidden = true;
     veraApp.hidden = false;
+    veraApp.classList.remove("fade-out");
     document.body.classList.add("app-open");
+    document.body.classList.remove("bmo-open");
 
-    
-    // wait for layout to stabilize
     requestAnimationFrame(() => {
+      veraApp.classList.add("fade-in");
       requestAnimationFrame(() => {
-
-        typeStartup({
-          typingSpeed: 50,
-          startDelay: 400,
-          fadeIn: true,
-          cursor: true
+        window.dispatchEvent(new Event("resize"));
+        requestAnimationFrame(() => {
+          typeStartup({
+            typingSpeed: 50,
+            startDelay: 400,
+            fadeIn: true,
+            cursor: true
+          });
         });
-
       });
     });
-
   }, 500);
 }
 
+function goHomeFromApp() {
+  home.hidden = false;
+  home.classList.add("fade-out");
+  requestAnimationFrame(() => {
+    home.classList.remove("fade-out");
+    home.classList.add("fade-in");
+  });
+  window.scrollTo({ top: 0 });
+  setTimeout(() => {
+    triggerTitleFlash();
+  }, 150);
+  syncMusicToggleState();
+}
+
 document.getElementById("return-home").onclick = async () => {
-  // Fade out VERA app
+  stopBmoIntro();
+  bmoPage.classList.add("fade-out");
+
+  setTimeout(() => {
+    bmoPage.hidden = true;
+    bmoPage.classList.remove("fade-out", "fade-in", "bmo-animate-in");
+
+    document.body.classList.remove("bmo-open");
+    document.body.classList.add("app-open");
+
+    veraApp.hidden = false;
+    veraApp.classList.remove("fade-out");
+    veraApp.classList.add("fade-in");
+
+    window.dispatchEvent(new Event("resize"));
+  }, 600);
+};
+
+document.getElementById("return-home-vera").onclick = async () => {
+  await resumeHomeMusic();
+
   veraApp.classList.add("fade-out");
 
-  setTimeout(async () => {
+  setTimeout(() => {
     veraApp.hidden = true;
-    veraApp.classList.remove("fade-out");
+    veraApp.classList.remove("fade-out", "fade-in");
 
     document.body.classList.remove("app-open");
-
-    // Show home
-    home.hidden = false;
-    home.classList.add("fade-out"); // start transparent
-
-    requestAnimationFrame(() => {
-      home.classList.remove("fade-out");
-      home.classList.add("fade-in");
-    });
-
-    window.scrollTo({ top: 0 });
-
-    setTimeout(() => {
-      triggerTitleFlash();
-    }, 150);
-
-    // Restore music if enabled
-    const musicEnabled =
-      localStorage.getItem("vera_music_enabled") === "true";
-
-    if (musicEnabled && bgMusic.paused) {
-      try {
-        await bgMusic.play();
-        bgMusic.volume = BASE_MUSIC_VOLUME;
-        musicToggle.classList.add("active");
-      } catch (err) {
-        console.warn("Autoplay blocked:", err);
-      }
-    }
-  }, 600); // matches CSS duration
+    document.body.classList.remove("bmo-open");
+    goHomeFromApp();
+  }, 600);
 };
 function typeStartup(options = {}) {
-  const el = document.getElementById("startup-text");
+  const bmo = document.body.classList.contains("bmo-open");
+  const el = document.getElementById(bmo ? "bmo-startup-text" : "vera-startup-text");
+  if (!el) return;
+  const guideSeenKey = bmo ? "bmo_seen_guide" : "vera_seen_guide";
+  const guideId = bmo ? "bmo-guide" : "vera-guide";
   const text = options.text || "Hi, my name is VERA. How can I help you?";
   el.textContent = "";
   el.offsetHeight; // force layout flush
@@ -1144,22 +1714,28 @@ function typeStartup(options = {}) {
 
   let i = 0;
   el.textContent = "";
-  const startupAudio = document.getElementById("startup-audio");
+  const startupAudio = document.getElementById(
+    bmo ? "bmo-typing-audio" : "vera-startup-audio"
+  );
 
-  if (!sessionStorage.getItem(STARTUP_AUDIO_KEY)) {
-    if (startupAudio) {
+  if (startupAudio) {
+    if (sessionStorage.getItem(STARTUP_TYPING_WAV_SESSION_KEY) === "true") {
+      /* already played startup-typing.wav this session */
+    } else {
       startupAudio.currentTime = 0;
       startupAudio.volume = 0.6;
 
-      // 🔥 Pause before audio starts
       setTimeout(() => {
-        startupAudio.play().catch(err => {
-          console.warn("Startup audio blocked:", err);
-        });
-      }, 800); // ← adjust pause here (ms)
+        startupAudio
+          .play()
+          .then(() => {
+            sessionStorage.setItem(STARTUP_TYPING_WAV_SESSION_KEY, "true");
+          })
+          .catch((err) => {
+            console.warn("Startup audio blocked:", err);
+          });
+      }, 800);
     }
-
-    sessionStorage.setItem(STARTUP_AUDIO_KEY, "true");
   }
   if (config.cursor) {
     el.classList.add("typing-cursor");
@@ -1195,9 +1771,9 @@ function typeStartup(options = {}) {
         // SHOW GUIDE AFTER TYPING
         // -----------------------
 
-        const guide = document.getElementById("vera-guide");
+        const guide = document.getElementById(guideId);
 
-        if (!sessionStorage.getItem("vera_seen_guide")) {
+        if (guide && !sessionStorage.getItem(guideSeenKey)) {
 
           setTimeout(() => {
             guide.classList.remove("hidden");
@@ -1210,7 +1786,7 @@ function typeStartup(options = {}) {
 
           setTimeout(() => {
             guide.classList.remove("show");
-            sessionStorage.setItem("vera_seen_guide", "true");
+            sessionStorage.setItem(guideSeenKey, "true");
           }, 9000);
         }
 
@@ -1220,9 +1796,26 @@ function typeStartup(options = {}) {
   }, config.startDelay);
 }
 
-const toggleBtn = document.getElementById("input-toggle");
-const voiceBar = document.getElementById("voice-bar");
-const keyboardBar = document.getElementById("keyboard-bar");
+function wireInputModeToggles() {
+  ["vera", "bmo"].forEach((prefix) => {
+    const toggleBtn = document.getElementById(`${prefix}-input-toggle`);
+    const voiceBar = document.getElementById(`${prefix}-voice-bar`);
+    const keyboardBar = document.getElementById(`${prefix}-keyboard-bar`);
+    if (!toggleBtn || !voiceBar || !keyboardBar) return;
+    toggleBtn.addEventListener("click", () => {
+      const keyboardVisible = !keyboardBar.classList.contains("hidden");
+      const showKeyboard = !keyboardVisible;
+      voiceBar.classList.toggle("hidden", showKeyboard);
+      keyboardBar.classList.toggle("hidden", !showKeyboard);
+      toggleBtn.textContent = showKeyboard ? "🎙️" : "⌨️";
+      if (showKeyboard) {
+        document.getElementById(`${prefix}-text-input`)?.focus();
+      }
+    });
+  });
+}
+
+wireInputModeToggles();
 
 function positionGuideNearTarget(itemSelector, targetSelector, gap = 18) {
   const item = document.querySelector(itemSelector);
@@ -1244,36 +1837,28 @@ function positionGuideNearTarget(itemSelector, targetSelector, gap = 18) {
 }
 
 function positionGuideTargets() {
-  positionGuideNearTarget(".guide-headset", "#record");
-  positionGuideNearTarget(".guide-ptt", "#ptt");
+  if (document.body.classList.contains("bmo-open")) {
+    positionGuideNearTarget(".guide-headset", "#bmo-record");
+    positionGuideNearTarget(".guide-ptt", "#bmo-ptt");
+  } else {
+    positionGuideNearTarget(".guide-headset", "#vera-record");
+    positionGuideNearTarget(".guide-ptt", "#vera-ptt");
+  }
 }
 
-let keyboardMode = false;
-
-toggleBtn.addEventListener("click", () => {
-  keyboardMode = !keyboardMode;
-
-  voiceBar.classList.toggle("hidden", keyboardMode);
-  keyboardBar.classList.toggle("hidden", !keyboardMode);
-
-  toggleBtn.textContent = keyboardMode ? "🎙️" : "⌨️";
-
-  if (keyboardMode) {
-    document.getElementById("text-input").focus();
-  }
-});
-
 window.addEventListener("resize", () => {
-  const guide = document.getElementById("vera-guide");
-  if (!guide || !guide.classList.contains("show")) return;
-  positionGuideTargets();
+  ["vera-guide", "bmo-guide"].forEach((id) => {
+    const guide = document.getElementById(id);
+    if (guide?.classList.contains("show")) positionGuideTargets();
+  });
 });
 
-document.addEventListener("click", (e) => {
-  const guide = document.getElementById("vera-guide");
+document.addEventListener("click", () => {
+  const bmo = document.body.classList.contains("bmo-open");
+  const guide = document.getElementById(bmo ? "bmo-guide" : "vera-guide");
+  const seenKey = bmo ? "bmo_seen_guide" : "vera_seen_guide";
   if (!guide) return;
 
-  // 🚫 Ignore clicks until guide is visible
   if (!guide.classList.contains("show")) return;
 
   guide.classList.remove("show");
@@ -1282,7 +1867,7 @@ document.addEventListener("click", (e) => {
     guide.classList.add("hidden");
   }, 350);
 
-  sessionStorage.setItem("vera_seen_guide", "true");
+  sessionStorage.setItem(seenKey, "true");
 });
 </script>
 
