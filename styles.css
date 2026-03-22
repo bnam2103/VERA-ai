@@ -2052,6 +2052,24 @@ body.vera-mode {
   }
 }
 
+/* BMO: no side chat log on phone — face + input only (#bmo-conversation still exists for JS). */
+@media (max-width: 768px) {
+  #bmo-page .bmo-chat-log {
+    display: none !important;
+  }
+
+  .bmo-page.bmo-animate-in .bmo-chat-log,
+  .bmo-page.bmo-animate-in .bmo-chat-log-inner {
+    animation: none !important;
+  }
+
+  /* Skip left padding animation that made room for the log */
+  .bmo-page.bmo-animate-in .input-container {
+    animation: bmoUiFadeIn 0.9s ease forwards 2.55s !important;
+    padding-left: 20px !important;
+  }
+}
+
 /* BMO: row stack — center with bar; undo global chat-started translateY on toggle. */
 body.bmo-open #bmo-input-toggle.input-toggle-btn {
   transform: none !important;
