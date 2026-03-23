@@ -928,6 +928,11 @@
   /* startup-typing.wav: once per tab session (set after successful play). */
   const STARTUP_TYPING_WAV_SESSION_KEY = "vera_startup_typing_wav_session";
   const AUDIO_UNLOCKED_KEY = "vera_audio_unlocked_session";
+
+  /** Match styles.css: hide BMO side log on phone — also skip startup-typing.wav on BMO here. */
+  function isNarrowPhoneLayout() {
+    return window.matchMedia("(max-width: 768px)").matches;
+  }
   const MAX_SCROLL = 700;
   const BASE_BRIGHTNESS = 0.3;
   const DARK_RANGE = 0.25;
@@ -998,6 +1003,9 @@
     if (!bmoPage || bmoPage.hidden) {
       return;
     }
+    if (isNarrowPhoneLayout()) {
+      return;
+    }
     const audioEl = document.getElementById("bmo-startup-audio");
     const captionEl = document.getElementById("bmo-intro-caption");
     if (!audioEl) {
@@ -1029,6 +1037,9 @@
   }
 
   function primeBmoIntroOnUserGesture() {
+    if (isNarrowPhoneLayout()) {
+      return;
+    }
     try {
       if (!bmoIntroAudioCtx) {
         bmoIntroAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1761,8 +1772,9 @@ function typeStartup(options = {}) {
   const startupAudio = document.getElementById(
     bmo ? "bmo-typing-audio" : "vera-startup-audio"
   );
+  const skipTypingWav = bmo && isNarrowPhoneLayout();
 
-  if (startupAudio) {
+  if (startupAudio && !skipTypingWav) {
     if (sessionStorage.getItem(STARTUP_TYPING_WAV_SESSION_KEY) === "true") {
       /* already played startup-typing.wav this session */
     } else {

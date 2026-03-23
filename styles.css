@@ -2068,6 +2068,16 @@ body.vera-mode {
     animation: bmoUiFadeIn 0.9s ease forwards 2.55s !important;
     padding-left: 20px !important;
   }
+
+  /* Phone: nudge eyes up, mouth a bit lower (desktop layout unchanged). */
+  #bmo-page .bmo-eyes {
+    margin-top: 6%;
+    transform: translateY(-10px);
+  }
+
+  #bmo-page .bmo-smile-wrap {
+    bottom: -13%;
+  }
 }
 
 /* BMO: row stack — center with bar; undo global chat-started translateY on toggle. */
