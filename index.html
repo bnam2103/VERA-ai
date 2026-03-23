@@ -880,12 +880,6 @@
     </div>
 
     <audio id="bmo-audio" preload="auto" crossorigin="anonymous"></audio>
-    <audio id="bmo-typing-audio" preload="auto">
-      <source src="startup-typing.wav" type="audio/wav">
-    </audio>
-    <audio id="bmo-startup-audio" preload="auto">
-      <source src="startup-typing.wav" type="audio/wav">
-    </audio>
   </main>
 </section>
 
@@ -929,142 +923,18 @@
   const STARTUP_TYPING_WAV_SESSION_KEY = "vera_startup_typing_wav_session";
   const AUDIO_UNLOCKED_KEY = "vera_audio_unlocked_session";
 
-  /** Match styles.css: hide BMO side log on phone — also skip startup-typing.wav on BMO here. */
-  function isNarrowPhoneLayout() {
-    return window.matchMedia("(max-width: 768px)").matches;
-  }
   const MAX_SCROLL = 700;
   const BASE_BRIGHTNESS = 0.3;
   const DARK_RANGE = 0.25;
   let audioUnlocked = sessionStorage.getItem(AUDIO_UNLOCKED_KEY) === "true";
   let bmoLoadingDotsInterval = null;
-  let bmoIntroTimeout = null;
-  let bmoMouthRaf = null;
-  let bmoIntroAudioCtx = null;
-  let bmoIntroMediaSource = null;
-  let bmoIntroAnalyser = null;
 
   function stopBmoIntro() {
-    if (bmoIntroTimeout) {
-      clearTimeout(bmoIntroTimeout);
-      bmoIntroTimeout = null;
-    }
-    if (bmoMouthRaf) {
-      cancelAnimationFrame(bmoMouthRaf);
-      bmoMouthRaf = null;
-    }
-    const bmoStartupAudio = document.getElementById("bmo-startup-audio");
-    if (bmoStartupAudio) {
-      bmoStartupAudio.pause();
-      bmoStartupAudio.currentTime = 0;
-      bmoStartupAudio.onended = null;
-    }
     bmoPage?.classList.remove("bmo-mouth-active");
     document.getElementById("bmo-smile-svg")?.removeAttribute("data-bmo-tts-emotion");
     const cap = document.getElementById("bmo-intro-caption");
     if (cap) {
       cap.textContent = "";
-    }
-  }
-
-  function ensureBmoIntroAudioGraph() {
-    if (!bmoIntroAudioCtx) {
-      bmoIntroAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    const audioEl = document.getElementById("bmo-startup-audio");
-    if (!audioEl) {
-      return null;
-    }
-    if (!bmoIntroMediaSource) {
-      bmoIntroMediaSource = bmoIntroAudioCtx.createMediaElementSource(audioEl);
-    }
-    if (!bmoIntroAnalyser) {
-      bmoIntroAnalyser = bmoIntroAudioCtx.createAnalyser();
-      bmoIntroAnalyser.fftSize = 512;
-      bmoIntroAnalyser.smoothingTimeConstant = 0.48;
-    }
-    try {
-      bmoIntroMediaSource.disconnect();
-    } catch {
-      /* ignore */
-    }
-    try {
-      bmoIntroAnalyser.disconnect();
-    } catch {
-      /* ignore */
-    }
-    bmoIntroMediaSource.connect(bmoIntroAnalyser);
-    bmoIntroAnalyser.connect(bmoIntroAudioCtx.destination);
-    return bmoIntroAnalyser;
-  }
-
-  /** Optional startup clip after idle — no SVG mouth (mouth only for real TTS). */
-  function startBmoIntroAfterIdle() {
-    if (!bmoPage || bmoPage.hidden) {
-      return;
-    }
-    if (isNarrowPhoneLayout()) {
-      return;
-    }
-    const audioEl = document.getElementById("bmo-startup-audio");
-    const captionEl = document.getElementById("bmo-intro-caption");
-    if (!audioEl) {
-      return;
-    }
-
-    stopBmoIntro();
-
-    if (!ensureBmoIntroAudioGraph() || !bmoIntroAudioCtx) {
-      return;
-    }
-
-    if (captionEl) {
-      captionEl.textContent = "";
-    }
-
-    audioEl.onended = () => {
-      audioEl.onended = null;
-      if (captionEl) captionEl.textContent = "";
-    };
-    audioEl.volume = 0.72;
-    audioEl.currentTime = 0;
-
-    bmoIntroAudioCtx.resume().then(() => {
-      audioEl.play().catch(() => {
-        /* autoplay / routing blocked */
-      });
-    });
-  }
-
-  function primeBmoIntroOnUserGesture() {
-    if (isNarrowPhoneLayout()) {
-      return;
-    }
-    try {
-      if (!bmoIntroAudioCtx) {
-        bmoIntroAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      }
-      void bmoIntroAudioCtx.resume();
-      const el = document.getElementById("bmo-startup-audio");
-      if (!el) {
-        return;
-      }
-      const restoreVol = el.volume > 0 ? el.volume : 0.72;
-      el.volume = 0;
-      const pr = el.play();
-      if (pr) {
-        pr
-          .then(() => {
-            el.pause();
-            el.currentTime = 0;
-            el.volume = restoreVol;
-          })
-          .catch(() => {
-            el.volume = restoreVol;
-          });
-      }
-    } catch {
-      /* ignore */
     }
   }
 
@@ -1407,7 +1277,6 @@ function startTyping() {
   };
 
   function openBmoPage() {
-    primeBmoIntroOnUserGesture();
     if (!bmoPage.hidden) {
       return;
     }
@@ -1458,13 +1327,6 @@ function startTyping() {
             });
             setTimeout(() => window.dispatchEvent(new Event("resize")), 80);
             setTimeout(() => window.dispatchEvent(new Event("resize")), 400);
-            if (bmoIntroTimeout) {
-              clearTimeout(bmoIntroTimeout);
-            }
-            bmoIntroTimeout = setTimeout(() => {
-              bmoIntroTimeout = null;
-              startBmoIntroAfterIdle();
-            }, 3200);
           });
         });
       }, 260);
@@ -1769,12 +1631,12 @@ function typeStartup(options = {}) {
 
   let i = 0;
   el.textContent = "";
-  const startupAudio = document.getElementById(
-    bmo ? "bmo-typing-audio" : "vera-startup-audio"
-  );
-  const skipTypingWav = bmo && isNarrowPhoneLayout();
+  /* BMO: no startup-typing.wav — VERA only. */
+  const startupAudio = bmo
+    ? null
+    : document.getElementById("vera-startup-audio");
 
-  if (startupAudio && !skipTypingWav) {
+  if (startupAudio) {
     if (sessionStorage.getItem(STARTUP_TYPING_WAV_SESSION_KEY) === "true") {
       /* already played startup-typing.wav this session */
     } else {

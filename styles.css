@@ -2624,6 +2624,26 @@ body.news-panel-open .conversation {
   pointer-events: auto;
 }
 
+/* Laptops / smaller desktops: slightly narrower news & action side panel (phone keeps 768px rules). */
+@media (max-width: 1680px) and (min-width: 769px) {
+  .side-pane {
+    width: 360px;
+    right: 16px;
+    top: 80px;
+    padding: 15px;
+    max-height: calc(100vh - 112px);
+  }
+}
+
+@media (max-width: 1280px) and (min-width: 769px) {
+  .side-pane {
+    width: 320px;
+    right: 12px;
+    padding: 13px;
+    max-height: calc(100vh - 108px);
+  }
+}
+
 .side-pane-title {
   margin: 0 0 16px;
   font-size: 16px;
