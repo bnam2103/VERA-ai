@@ -77,6 +77,8 @@ let fillerPlayedThisTurn = false;
 let interruptSpeechFrames = 0;
 let interruptSpeechStart = 0;
 let interruptLastSpeechLikeTime = 0;
+/** Snapshot from detectInterrupt when interruptSpeech() fires (for server interrupt_debug). */
+let lastInterruptProbe = null;
 let pttRecording = false;
 let inputMuted = false;
 let suppressNextUtterance = false;
@@ -86,21 +88,40 @@ let fillerStartedAt = 0;
 let pendingMainAnswer = null;
 let audioStartedAt = 0;
 let voiceUxTurn = null;
+/** "voice" | "text" — which UX timers filler first-audio should attribute to. */
+let fillerUxSource = "voice";
+let textUxTurn = null;
 // let interruptStart = 0;
 let listeningMode = "continuous"; 
 let waveState = "idle";   
 let waveEnergy = 0;     
 
-const FILLER_DELAY_MS = 5300;  // feels natural
-const FILLER_GRACE_MS = 1000;  
+/** After this delay from the start of a request, play a “thinking” clip if still waiting (no backend signal). */
+const FILLER_DELAY_MS = 8000;
 
-const FILLER_AUDIO_FILES = [
+const FILLER_GRACE_MS = 600;  
+
+const VERA_FILLER_AUDIO_FILES = [
   "/static/fillers/moment.wav",
   "/static/fillers/one_second.wav",
   "/static/fillers/give_me_a_second.wav",
   "/static/fillers/one_moment.wav"
 ];
+
+const BMO_FILLER_AUDIO_FILES = [
+  "/static/fillers/one_moment_bmo.mp3",
+  "/static/fillers/one_second_bmo.mp3",
+  "/static/fillers/give_me_a_second_bmo.mp3",
+  "/static/fillers/give_me_a_moment_bmo.mp3"
+];
+
+function fillerAudioFilesForMode() {
+  return appModePrefix() === "bmo" ? BMO_FILLER_AUDIO_FILES : VERA_FILLER_AUDIO_FILES;
+}
+
 let requestInFlight = false; // 🔑 NEW
+/** True until main reply TTS is about to play (not when /infer JSON returns). Used so filler can fire at FILLER_DELAY_MS while waiting on server TTS, not tied to `requestInFlight`. */
+let mainReplyTtsPending = false;
 
 function beginVoiceUxTurn() {
   voiceUxTurn = {
@@ -124,18 +145,62 @@ function logVoiceMainReplyAudio() {
   console.log(`[UX][VOICE] SpeechEnd→MainReplyAudio=${(elapsedMs / 1000).toFixed(3)}s`);
 }
 
+function beginTextUxTurn() {
+  textUxTurn = {
+    sendAt: performance.now(),
+    firstAudioLogged: false,
+    mainReplyLogged: false
+  };
+}
+
+function logTextFirstAudio(kind) {
+  if (!textUxTurn || textUxTurn.firstAudioLogged) return;
+  const elapsedMs = performance.now() - textUxTurn.sendAt;
+  textUxTurn.firstAudioLogged = true;
+  console.log(`[UX][TEXT] Send→FirstAudio=${(elapsedMs / 1000).toFixed(3)}s (${kind})`);
+}
+
+function logTextMainReplyAudio() {
+  if (!textUxTurn || textUxTurn.mainReplyLogged) return;
+  const elapsedMs = performance.now() - textUxTurn.sendAt;
+  textUxTurn.mainReplyLogged = true;
+  console.log(`[UX][TEXT] Send→MainReplyAudio=${(elapsedMs / 1000).toFixed(3)}s`);
+}
+
+/** Mirrors server `latency` when present on `/infer` or `/text` JSON. */
+function logInferLatency(data, label) {
+  const L = data?.latency;
+  if (!L || typeof L !== "object") return;
+  const parts = [];
+  if (L.short_circuit) parts.push(`short_circuit=${L.short_circuit}`);
+  if (L.pre_asr_s != null) parts.push(`PreASR=${L.pre_asr_s}s`);
+  if (L.asr_lock_s != null) parts.push(`ASR_lock=${L.asr_lock_s}s`);
+  if (L.asr_transcribe_s != null) parts.push(`ASR_transcribe=${L.asr_transcribe_s}s`);
+  if (L.bridge_s != null) parts.push(`Bridge=${L.bridge_s}s`);
+  if (L.llm_s != null) parts.push(`LLM=${L.llm_s}s`);
+  if (L.post_llm_s != null) parts.push(`PostLLM=${L.post_llm_s}s`);
+  if (L.tts_s != null) parts.push(`TTS=${L.tts_s}s`);
+  if (L.total_s != null) parts.push(`TOTAL=${L.total_s}s`);
+  if (L.sum_segments_s != null) parts.push(`Σ=${L.sum_segments_s}s`);
+  if (L.drift_s != null) parts.push(`drift=${L.drift_s}s`);
+  if (L.llm_internal_reported_s != null) parts.push(`llm_internal=${L.llm_internal_reported_s}s`);
+  const line = parts.length ? parts.join(" | ") : JSON.stringify(L);
+  console.log(`[UX][LATENCY][${label}] ${line}`, L);
+}
+
 function startFillerTimer() {
   clearTimeout(fillerTimer);
 
   fillerPlaying = false;
   fillerStartedAt = 0;
+  mainReplyTtsPending = true;
 
   fillerTimer = setTimeout(() => {
-    if (!requestInFlight) return;
+    if (!mainReplyTtsPending) return;
     if (fillerPlaying) return;
 
-    const filler =
-      FILLER_AUDIO_FILES[Math.floor(Math.random() * FILLER_AUDIO_FILES.length)];
+    const files = fillerAudioFilesForMode();
+    const filler = files[Math.floor(Math.random() * files.length)];
 
     fillerPlaying = true;
     fillerPlayedThisTurn = true;
@@ -149,7 +214,11 @@ function startFillerTimer() {
       "play",
       () => {
         if (fillerAudio?.src === fillerSrc) {
-          logVoiceFirstAudio("filler");
+          if (fillerUxSource === "text") {
+            logTextFirstAudio("filler");
+          } else {
+            logVoiceFirstAudio("filler");
+          }
         }
       },
       { once: true }
@@ -181,6 +250,11 @@ function startFillerTimer() {
   }, FILLER_DELAY_MS);
 }
 
+/** Schedule filler when entering “thinking”; 8s gate uses `mainReplyTtsPending`, not HTTP completion. */
+function scheduleThinkingFiller() {
+  startFillerTimer();
+}
+
 /* =========================
    CONFIG
 ========================= */
@@ -190,32 +264,21 @@ const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
 const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
-const INTERRUPT_MIN_FRAMES = 1; 
+const INTERRUPT_MIN_FRAMES = 1;
 
-const INTERRUPT_ZCR_MIN = 0.015;
-const INTERRUPT_ZCR_MAX = 0.25; 
-const MAX_SPEECH_RMS = 0.080;
-const INTERRUPT_RMS = 0.0085;  // slightly lower so softer interruptions register
-const INTERRUPT_SUSTAIN_MS = 500;
-const INTERRUPT_GAP_RESET_MS = 140;
+/* Voiced-speech band for ZCR (zero-crossings / sample). Outside this → rustle/AC/fan/clicks. */
+const INTERRUPT_ZCR_MIN = 0.028;
+const INTERRUPT_ZCR_MAX = 0.165;
+const MAX_SPEECH_RMS = 0.078;
+const INTERRUPT_RMS = 0.0105;
+/** Need this long of mostly “speech-like” frames before cutting TTS (blocks short noise bursts). */
+const INTERRUPT_SUSTAIN_MS = 350;
+/** Max ms without a speech-like frame before resetting the sustain counter. */
+const INTERRUPT_GAP_RESET_MS = 110;
+/** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
+const INTERRUPT_MAX_CREST = 38;
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
-let keepAliveInterval = null;
-
-function startKeepAlive() {
-  if (keepAliveInterval) return;
-
-  keepAliveInterval = setInterval(() => {
-    fetch(`${API_URL}/status`, { cache: "no-store" }).catch(() => {});
-  }, 25000); // every 25s
-}
-
-function stopKeepAlive() {
-  if (keepAliveInterval) {
-    clearInterval(keepAliveInterval);
-    keepAliveInterval = null;
-  }
-}
 /* =========================
    DOM — VERA vs BMO (prefix ids: vera-* / bmo-*)
 ========================= */
@@ -372,8 +435,7 @@ async function checkServer() {
 }
 
 checkServer();
-setInterval(checkServer, 15_000);
-startKeepAlive();
+setInterval(checkServer, 30_000);
 /* =========================
    UI HELPERS
 ========================= */
@@ -776,41 +838,6 @@ function applyActionPayload(data) {
   hideSidePanel();
 }
 
-let fillerAuthInterval = null;
-
-function stopWaitingForFillerAuthorization() {
-  if (fillerAuthInterval) {
-    clearInterval(fillerAuthInterval);
-    fillerAuthInterval = null;
-  }
-}
-
-function waitForFillerAuthorization() {
-  if (fillerAuthInterval) return;
-
-  fillerAuthInterval = setInterval(async () => {
-    if (!requestInFlight) {
-      stopWaitingForFillerAuthorization();
-      return;
-    }
-
-    try {
-      const res = await fetch(
-        `${API_URL}/thinking_allowed?session_id=${getSessionId()}`,
-        { cache: "no-store" }
-      );
-      const data = await res.json();
-
-      if (data.allow_filler) {
-        stopWaitingForFillerAuthorization();
-        startFillerTimer();
-      }
-    } catch {
-      stopWaitingForFillerAuthorization();
-    }
-  }, 150);
-}
-
 function interruptSpeech() {
   const a = getAudioEl();
   if (!a || a.paused || !interruptRecording) return;
@@ -821,7 +848,7 @@ function interruptSpeech() {
   a.currentTime = 0;
 
   clearTimeout(fillerTimer);
-  stopWaitingForFillerAuthorization();
+  mainReplyTtsPending = false;
   fillerPlaying = false;
   pendingMainAnswer = null;
 
@@ -850,8 +877,14 @@ function detectInterrupt() {
   for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
   const rms = Math.sqrt(sum / buf.length);
 
-  // ZCR
+  // ZCR (voicing) + crest (reject single sharp transients from bumps/clicks)
   const zcr = computeZCR(buf);
+  let peak = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const a = Math.abs(buf[i]);
+    if (a > peak) peak = a;
+  }
+  const crest = peak / (rms + 1e-8);
 
   const now = performance.now();
 
@@ -868,9 +901,10 @@ function detectInterrupt() {
 
       const speechLike =
         rms > INTERRUPT_RMS &&
-        rms < MAX_SPEECH_RMS;
-        // zcr > INTERRUPT_ZCR_MIN &&
-        // zcr < INTERRUPT_ZCR_MAX;
+        rms < MAX_SPEECH_RMS &&
+        zcr >= INTERRUPT_ZCR_MIN &&
+        zcr <= INTERRUPT_ZCR_MAX &&
+        crest <= INTERRUPT_MAX_CREST;
 
       if (speechLike) {
         if (interruptSpeechFrames === 0) {
@@ -894,6 +928,13 @@ function detectInterrupt() {
         interruptSpeechStart &&
         now - interruptSpeechStart >= INTERRUPT_SUSTAIN_MS
       ) {
+        lastInterruptProbe = {
+          rms,
+          zcr,
+          crest,
+          sustainMs: now - interruptSpeechStart,
+          frames: interruptSpeechFrames,
+        };
         interruptSpeech();
         interruptSpeechFrames = 0;
         interruptSpeechStart = 0;
@@ -908,10 +949,12 @@ function detectInterrupt() {
 
   if (Math.random() < 0.02) {
     console.log(
-      "rms:",
+      "interrupt probe rms:",
       rms.toFixed(4),
       "zcr:",
       zcr.toFixed(3),
+      "crest:",
+      crest.toFixed(1),
       "frames:",
       interruptSpeechFrames
     );
@@ -1017,19 +1060,33 @@ async function handleInterruptUtterance(blob) {
   }
 
   requestInFlight = true;
-  waitForFillerAuthorization();
   processing = true;
   fillerPlayedThisTurn = false;
+  fillerUxSource = "voice";
+  scheduleThinkingFiller();
   waveState = "idle";
   setStatus("Thinking", "thinking");
-
-  // ✅ start filler exactly like normal flow
 
   const formData = new FormData();
   formData.append("audio", blob);
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
   formData.append("mode", "interrupt"); // backend can branch if desired
+  formData.append(
+    "interrupt_debug",
+    JSON.stringify({
+      probe: lastInterruptProbe,
+      thresholds: {
+        INTERRUPT_RMS,
+        INTERRUPT_ZCR_MIN,
+        INTERRUPT_ZCR_MAX,
+        INTERRUPT_SUSTAIN_MS,
+        INTERRUPT_GAP_RESET_MS,
+        INTERRUPT_MAX_CREST,
+        MAX_SPEECH_RMS,
+      },
+    })
+  );
 
   try {
     const res = await fetch(`${API_URL}/infer`, {
@@ -1038,11 +1095,9 @@ async function handleInterruptUtterance(blob) {
     });
 
     const data = await res.json();
+    logInferLatency(data, "interrupt");
 
     requestInFlight = false;
-    stopWaitingForFillerAuthorization();
-    clearTimeout(fillerTimer);
-    fillerPlaying = false;
 
     /* =========================
        CONTROL FLOW (FIRST)
@@ -1052,7 +1107,25 @@ async function handleInterruptUtterance(blob) {
       hideSidePanel();
       processing = false;
       listening = true;
+      getAudioEl()?.pause();
+      fillerPlaying = false;
+      pendingMainAnswer = null;
+      mainReplyTtsPending = false;
+      clearTimeout(fillerTimer);
       startListening();
+      return;
+    }
+
+    if (data.client_action === "mute_input") {
+      hideSidePanel();
+      pendingMainAnswer = null;
+      getAudioEl()?.pause();
+      fillerPlaying = false;
+      processing = false;
+      listening = true;
+      mainReplyTtsPending = false;
+      clearTimeout(fillerTimer);
+      setContinuousInputMuted(true);
       return;
     }
 
@@ -1067,7 +1140,7 @@ async function handleInterruptUtterance(blob) {
   } catch {
     hideSidePanel();
     requestInFlight = false;
-    stopWaitingForFillerAuthorization();
+    mainReplyTtsPending = false;
     clearTimeout(fillerTimer);
     fillerPlaying = false;
     setStatus("Server error", "offline");
@@ -1076,32 +1149,50 @@ async function handleInterruptUtterance(blob) {
 }
 
 async function playInterruptAnswer(data) {
-  applyActionPayload(data);
-  addBubble(data.reply, "vera");
-  resetAudioHandlers();
-  const replyAudio = getAudioEl();
-  if (replyAudio) replyAudio.src = `${API_URL}${data.audio_url}`;
-  await ensureMainAudioTtsGraph();
-  getAudioEl()?.play().catch(console.warn);
-
-  if (replyAudio) {
-    replyAudio.onplay = () => {
-    logVoiceFirstAudio("main-reply");
-    logVoiceMainReplyAudio();
-    waveState = "speaking";
-    audioStartedAt = performance.now();
-    setStatus("Speaking… (can only be interrupted once)", "speaking");
-    processing = false;
-  };
-
-    replyAudio.onended = () => {
-    listening = true;
-    if (inputMuted) {
-      showMutedStatusIfIdle();
-      return;
+  const run = async () => {
+    mainReplyTtsPending = false;
+    clearTimeout(fillerTimer);
+    applyActionPayload(data);
+    if (fillerPlayedThisTurn) {
+      setTimeout(() => {
+        addBubble(data.reply, "vera");
+      }, FILLER_GRACE_MS);
+    } else {
+      addBubble(data.reply, "vera");
     }
-    startListening();
+    resetAudioHandlers();
+    const replyAudio = getAudioEl();
+    if (replyAudio) replyAudio.src = `${API_URL}${data.audio_url}`;
+    await ensureMainAudioTtsGraph();
+    getAudioEl()?.play().catch(console.warn);
+
+    if (replyAudio) {
+      replyAudio.onplay = () => {
+        logVoiceFirstAudio("main-reply");
+        logVoiceMainReplyAudio();
+        waveState = "speaking";
+        audioStartedAt = performance.now();
+        setStatus("Speaking… (can only be interrupted once)", "speaking");
+        processing = false;
+      };
+
+      replyAudio.onended = () => {
+        listening = true;
+        if (inputMuted) {
+          showMutedStatusIfIdle();
+          return;
+        }
+        startListening();
+      };
+    }
   };
+
+  if (fillerPlaying) {
+    pendingMainAnswer = () => {
+      void run();
+    };
+  } else {
+    await run();
   }
 }
 /* =========================
@@ -1581,9 +1672,10 @@ async function handleUtterance() {
     return;
   }
   requestInFlight = true;
-  waitForFillerAuthorization();
   processing = true;
   fillerPlayedThisTurn = false;
+  fillerUxSource = "voice";
+  scheduleThinkingFiller();
   waveState = "idle";
 
   setStatus("Thinking", "thinking");
@@ -1605,14 +1697,18 @@ async function handleUtterance() {
     });
 
     const data = await res.json();
+    logInferLatency(data, "main");
     requestInFlight = false;
-    stopWaitingForFillerAuthorization();
-    clearTimeout(fillerTimer);
 
     // 🔑 HANDLE CONTROL FLOW FIRST (NO AUDIO YET)
     if (data.skip) {
       hideSidePanel();
       processing = false;
+      getAudioEl()?.pause();
+      fillerPlaying = false;
+      pendingMainAnswer = null;
+      mainReplyTtsPending = false;
+      clearTimeout(fillerTimer);
 
       if (listeningMode === "ptt") {
         setStatus("No voice detected", "idle");
@@ -1620,6 +1716,19 @@ async function handleUtterance() {
         startListening();
       }
 
+      return;
+    }
+
+    if (data.client_action === "mute_input") {
+      hideSidePanel();
+      voiceUxTurn = null;
+      pendingMainAnswer = null;
+      getAudioEl()?.pause();
+      fillerPlaying = false;
+      processing = false;
+      mainReplyTtsPending = false;
+      clearTimeout(fillerTimer);
+      setContinuousInputMuted(true);
       return;
     }
 
@@ -1631,6 +1740,8 @@ async function handleUtterance() {
       dismissGuide();
     }
     const playMainAnswer = () => {
+      mainReplyTtsPending = false;
+      clearTimeout(fillerTimer);
       if (fillerPlayedThisTurn) {
         setTimeout(() => {
           addBubble(data.reply, "vera");
@@ -1687,7 +1798,7 @@ async function handleUtterance() {
     hideSidePanel();
     processing = false;
     requestInFlight = false;
-    stopWaitingForFillerAuthorization();
+    mainReplyTtsPending = false;
     clearTimeout(fillerTimer);
     setStatus("Server error", "offline");
   }
@@ -1704,7 +1815,7 @@ async function sendTextMessage() {
   // 🔑 recover from offline
   if (statusLine?.classList.contains("offline")) {
     requestInFlight = false;
-    stopWaitingForFillerAuthorization();
+    mainReplyTtsPending = false;
     clearTimeout(fillerTimer);
     processing = false;
     listening = false;
@@ -1714,13 +1825,17 @@ async function sendTextMessage() {
   if (!text || requestInFlight) return;
   if (textInput) textInput.value = "";
 
+  beginTextUxTurn();
   listening = false;
   processing = true;
   requestInFlight = true;
-  setStatus("Thinking", "thinking");
-  waitForFillerAuthorization();
-  fillerPlaying = false;
+  fillerPlayedThisTurn = false;
   pendingMainAnswer = null;
+  fillerUxSource = "text";
+  scheduleThinkingFiller();
+  waveState = "idle";
+
+  setStatus("Thinking", "thinking");
 
   addBubble(text, "user");
   if (!document.body.classList.contains("chat-started")) {
@@ -1739,15 +1854,23 @@ async function sendTextMessage() {
     });
 
     const data = await res.json();
+    logInferLatency(data, "text");
 
     requestInFlight = false;
-    stopWaitingForFillerAuthorization();
-    clearTimeout(fillerTimer);
 
     applyActionPayload(data);
     const playReply = () => {
-      addBubble(data.reply, "vera");
+      mainReplyTtsPending = false;
+      clearTimeout(fillerTimer);
+      if (fillerPlayedThisTurn) {
+        setTimeout(() => {
+          addBubble(data.reply, "vera");
+        }, FILLER_GRACE_MS);
+      } else {
+        addBubble(data.reply, "vera");
+      }
 
+      resetAudioHandlers();
       const ta = getAudioEl();
       if (data.audio_url && ta) {
         ta.src = `${API_URL}${data.audio_url}`;
@@ -1763,7 +1886,8 @@ async function sendTextMessage() {
 
       if (ta) {
         ta.onplay = () => {
-        logVoiceFirstAudio("text-reply");
+        logTextFirstAudio("main-reply");
+        logTextMainReplyAudio();
         waveState = "speaking";
         audioStartedAt = performance.now();
         setStatus("Speaking…", "speaking");
@@ -1782,16 +1906,21 @@ async function sendTextMessage() {
       }
     };
 
-    playReply();
+    if (fillerPlaying) {
+      pendingMainAnswer = playReply;
+    } else {
+      playReply();
+    }
 
   } catch (err) {
     console.error(err);
     hideSidePanel();
     requestInFlight = false;
-    stopWaitingForFillerAuthorization();
+    mainReplyTtsPending = false;
     clearTimeout(fillerTimer);
     fillerPlaying = false;
     processing = false;
+    textUxTurn = null;
     setStatus("Server error", "offline");
   }
 }
@@ -1919,7 +2048,3 @@ if (sendFeedbackBtn) {
     }
   };
 }
-
-window.addEventListener("beforeunload", () => {
-  stopKeepAlive();
-});

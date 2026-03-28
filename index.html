@@ -1507,8 +1507,8 @@ async function pollBootStatus() {
 
   if (state === "starting") {
     hitStarting = true;
-    /* +5 per tick @ 200ms ≈ same climb rate as old +10 @ 400ms */
-    setProgress(Math.min(Math.max(currentProgress, 0) + 5, 50));
+    /* +15 per tick @ 600ms ≈ same climb as +5 @ 200ms */
+    setProgress(Math.min(Math.max(currentProgress, 0) + 15, 50));
     return;
   }
 
@@ -1533,7 +1533,7 @@ async function startBootSequence() {
 
   await pollBootStatus();
   if (!appRevealed) {
-    bootPollInterval = setInterval(pollBootStatus, 200);
+    bootPollInterval = setInterval(pollBootStatus, 600);
   }
 }
 
