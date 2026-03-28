@@ -180,6 +180,7 @@ function logInferLatency(data, label) {
   if (L.llm_s != null) parts.push(`LLM=${L.llm_s}s`);
   if (L.post_llm_s != null) parts.push(`PostLLM=${L.post_llm_s}s`);
   if (L.tts_s != null) parts.push(`TTS=${L.tts_s}s`);
+  if (L.tts_first_chunk_s != null) parts.push(`TTS_first_chunk=${L.tts_first_chunk_s}s`);
   if (L.total_s != null) parts.push(`TOTAL=${L.total_s}s`);
   if (L.sum_segments_s != null) parts.push(`Σ=${L.sum_segments_s}s`);
   if (L.drift_s != null) parts.push(`drift=${L.drift_s}s`);
@@ -278,6 +279,14 @@ const INTERRUPT_GAP_RESET_MS = 110;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
 const INTERRUPT_MAX_CREST = 38;
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
+
+/** Request NDJSON streaming TTS from /infer and /text so the first /audio URL arrives as soon as it is synthesized. */
+const STREAM_TTS = true;
+
+function isNdjsonTtsResponse(res) {
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("ndjson") || ct.includes("x-ndjson");
+}
 
 /* =========================
    DOM — VERA vs BMO (prefix ids: vera-* / bmo-*)
@@ -838,6 +847,32 @@ function applyActionPayload(data) {
   hideSidePanel();
 }
 
+/** News/finance side panel + assistant bubble — call when main reply audio actually starts (not when LLM JSON/meta arrives). */
+function applyAssistantReplyAndPanels(data) {
+  if (!data) return;
+  applyActionPayload(data);
+  if (data.reply == null || data.reply === "") return;
+  if (fillerPlayedThisTurn) {
+    setTimeout(() => addBubble(data.reply, "vera"), FILLER_GRACE_MS);
+  } else {
+    addBubble(data.reply, "vera");
+  }
+}
+
+/** Stop thinking filler and reset flags so main TTS (including Web Audio) does not fight `<audio>` filler state. */
+function clearFillerForMainTts() {
+  clearTimeout(fillerTimer);
+  mainReplyTtsPending = false;
+  if (fillerPlaying) {
+    const a = getAudioEl();
+    if (a) {
+      a.pause();
+      a.currentTime = 0;
+    }
+    fillerPlaying = false;
+  }
+}
+
 function interruptSpeech() {
   const a = getAudioEl();
   if (!a || a.paused || !interruptRecording) return;
@@ -1087,12 +1122,61 @@ async function handleInterruptUtterance(blob) {
       },
     })
   );
+  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
 
   try {
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData
     });
+
+    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
+      requestInFlight = false;
+
+      const runStream = async () => {
+        let ndjsonMeta = null;
+        clearFillerForMainTts();
+        resetAudioHandlers();
+        try {
+          console.log("[UX][TTS] NDJSON streaming (interrupt)");
+          await runNdjsonTtsPlayback(res, {
+            onMeta: (meta) => {
+              ndjsonMeta = meta;
+              addBubble(meta.transcript, "user");
+            },
+            onDone: (done) => logInferLatency(done, "interrupt"),
+            onPlayStart: () => {
+              logVoiceFirstAudio("main-reply");
+              logVoiceMainReplyAudio();
+              applyAssistantReplyAndPanels(ndjsonMeta);
+              waveState = "speaking";
+              audioStartedAt = performance.now();
+              setStatus("Speaking… (can only be interrupted once)", "speaking");
+              processing = false;
+            },
+            onPlayEnd: () => {
+              listening = true;
+              if (inputMuted) {
+                showMutedStatusIfIdle();
+                return;
+              }
+              startListening();
+            }
+          });
+        } catch (e) {
+          console.warn(e);
+        }
+      };
+
+      if (fillerPlaying) {
+        pendingMainAnswer = () => {
+          void runStream();
+        };
+      } else {
+        await runStream();
+      }
+      return;
+    }
 
     const data = await res.json();
     logInferLatency(data, "interrupt");
@@ -1150,40 +1234,30 @@ async function handleInterruptUtterance(blob) {
 
 async function playInterruptAnswer(data) {
   const run = async () => {
-    mainReplyTtsPending = false;
-    clearTimeout(fillerTimer);
-    applyActionPayload(data);
-    if (fillerPlayedThisTurn) {
-      setTimeout(() => {
-        addBubble(data.reply, "vera");
-      }, FILLER_GRACE_MS);
-    } else {
-      addBubble(data.reply, "vera");
-    }
+    clearFillerForMainTts();
     resetAudioHandlers();
-    const replyAudio = getAudioEl();
-    if (replyAudio) replyAudio.src = `${API_URL}${data.audio_url}`;
-    await ensureMainAudioTtsGraph();
-    getAudioEl()?.play().catch(console.warn);
-
-    if (replyAudio) {
-      replyAudio.onplay = () => {
-        logVoiceFirstAudio("main-reply");
-        logVoiceMainReplyAudio();
-        waveState = "speaking";
-        audioStartedAt = performance.now();
-        setStatus("Speaking… (can only be interrupted once)", "speaking");
-        processing = false;
-      };
-
-      replyAudio.onended = () => {
-        listening = true;
-        if (inputMuted) {
-          showMutedStatusIfIdle();
-          return;
+    try {
+      await playTtsFromApi(data, {
+        onPlayStart: () => {
+          logVoiceFirstAudio("main-reply");
+          logVoiceMainReplyAudio();
+          applyAssistantReplyAndPanels(data);
+          waveState = "speaking";
+          audioStartedAt = performance.now();
+          setStatus("Speaking… (can only be interrupted once)", "speaking");
+          processing = false;
+        },
+        onPlayEnd: () => {
+          listening = true;
+          if (inputMuted) {
+            showMutedStatusIfIdle();
+            return;
+          }
+          startListening();
         }
-        startListening();
-      };
+      });
+    } catch (e) {
+      console.warn(e);
     }
   };
 
@@ -1215,6 +1289,224 @@ async function ensureMainAudioTtsGraph() {
   source.connect(audioCtx.destination);
   ttsByMode[m].source = source;
   ttsByMode[m].analyser = analyser;
+}
+
+/** Prefer `audio_urls` when present (sentence-chunked TTS); else single `audio_url`. */
+function resolveAudioUrls(data) {
+  if (Array.isArray(data.audio_urls) && data.audio_urls.length) return data.audio_urls;
+  if (data.audio_url) return [data.audio_url];
+  return [];
+}
+
+/**
+ * Schedule decoded buffers back-to-back on one AudioContext (minimal gaps vs chained <audio>).
+ * Prefetches the next HTTP response while decoding/playing the current chunk.
+ */
+async function playTtsUrlSequenceGapless(baseUrl, relativeUrls, { onFirstStart, onLastEnd } = {}) {
+  if (!relativeUrls?.length) return;
+  if (!audioCtx) {
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+  }
+  await audioCtx.resume();
+  getAudioEl()?.pause();
+  let t = audioCtx.currentTime + 0.08;
+  let firstDone = false;
+
+  let nextPromise = fetch(`${baseUrl}${relativeUrls[0]}`).then((r) => {
+    if (!r.ok) throw new Error(`TTS chunk 0 HTTP ${r.status}`);
+    return r.arrayBuffer();
+  });
+
+  for (let i = 0; i < relativeUrls.length; i++) {
+    const ab = await nextPromise;
+    nextPromise =
+      i + 1 < relativeUrls.length
+        ? fetch(`${baseUrl}${relativeUrls[i + 1]}`).then((r) => {
+            if (!r.ok) throw new Error(`TTS chunk ${i + 1} HTTP ${r.status}`);
+            return r.arrayBuffer();
+          })
+        : null;
+
+    const audBuf = await audioCtx.decodeAudioData(ab.slice(0));
+    const src = audioCtx.createBufferSource();
+    src.buffer = audBuf;
+    src.connect(audioCtx.destination);
+    const startAt = Math.max(t, audioCtx.currentTime + 0.02);
+    src.start(startAt);
+    if (!firstDone && onFirstStart) {
+      onFirstStart();
+      firstDone = true;
+    }
+    if (i === relativeUrls.length - 1 && onLastEnd) {
+      src.onended = () => onLastEnd();
+    }
+    t = startAt + audBuf.duration;
+  }
+}
+
+/** Single <audio> for one file; Web Audio queue when multiple sentence chunks. */
+async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
+  const urls = resolveAudioUrls(data);
+  if (!urls.length) return;
+
+  if (urls.length > 1) {
+    console.log(
+      `[UX][TTS] ${urls.length} segments — one /text or /infer response; next: ${urls.length} GETs to /audio/...`,
+      urls
+    );
+  }
+
+  if (urls.length === 1) {
+    const el = getAudioEl();
+    if (!el) return;
+    el.src = `${API_URL}${urls[0]}`;
+    await ensureMainAudioTtsGraph();
+    if (onPlayStart) el.addEventListener("play", () => onPlayStart(), { once: true });
+    if (onPlayEnd) el.addEventListener("ended", () => onPlayEnd(), { once: true });
+    await el.play();
+    return;
+  }
+
+  await playTtsUrlSequenceGapless(API_URL, urls, {
+    onFirstStart: onPlayStart,
+    onLastEnd: onPlayEnd
+  });
+}
+
+function createTtsUrlQueue() {
+  const q = [];
+  const waiters = [];
+  let ended = false;
+  return {
+    push(url) {
+      q.push(url);
+      const w = waiters.shift();
+      if (w) w();
+    },
+    end() {
+      ended = true;
+      waiters.splice(0).forEach((w) => w());
+    },
+    async next() {
+      for (;;) {
+        if (q.length) return q.shift();
+        if (ended) return null;
+        await new Promise((r) => waiters.push(r));
+      }
+    }
+  };
+}
+
+/** Gapless Web Audio playback when URLs arrive incrementally (streaming NDJSON chunks). */
+async function playTtsUrlSequenceIncremental(baseUrl, nextRelFn, { onFirstStart, onLastEnd } = {}) {
+  if (!audioCtx) {
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+  }
+  await audioCtx.resume();
+  getAudioEl()?.pause();
+  let t = audioCtx.currentTime + 0.08;
+  let firstDone = false;
+
+  let curRel = await nextRelFn();
+  if (!curRel) return;
+  let nextPromise = fetch(`${baseUrl}${curRel}`).then((r) => {
+    if (!r.ok) throw new Error(`TTS HTTP ${r.status}`);
+    return r.arrayBuffer();
+  });
+
+  for (;;) {
+    const ab = await nextPromise;
+    const nextRel = await nextRelFn();
+    nextPromise = nextRel
+      ? fetch(`${baseUrl}${nextRel}`).then((r) => {
+          if (!r.ok) throw new Error(`TTS HTTP ${r.status}`);
+          return r.arrayBuffer();
+        })
+      : null;
+
+    const audBuf = await audioCtx.decodeAudioData(ab.slice(0));
+    const src = audioCtx.createBufferSource();
+    src.buffer = audBuf;
+    src.connect(audioCtx.destination);
+    const startAt = Math.max(t, audioCtx.currentTime + 0.02);
+    src.start(startAt);
+    if (!firstDone && onFirstStart) {
+      onFirstStart();
+      firstDone = true;
+    }
+    const isLast = !nextRel;
+    if (isLast && onLastEnd) {
+      src.onended = () => onLastEnd();
+    }
+    t = startAt + audBuf.duration;
+    if (!nextRel) break;
+  }
+}
+
+/**
+ * Consume application/x-ndjson: meta → chunk → … → done. Prefetches the next URL while decoding/playing.
+ */
+async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEnd }) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const queue = createTtsUrlQueue();
+  let resolveMeta;
+  let metaResolved = false;
+  const metaPromise = new Promise((r) => {
+    resolveMeta = () => {
+      if (metaResolved) return;
+      metaResolved = true;
+      r();
+    };
+  });
+
+  async function readAll() {
+    try {
+      while (true) {
+        const { value, done: rdone } = await reader.read();
+        if (rdone) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        const objs = [];
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            objs.push(JSON.parse(line));
+          } catch (e) {
+            console.warn("[TTS][NDJSON] skip line", e);
+          }
+        }
+        // Enqueue audio URLs before onMeta: same TCP chunk often has meta+chunk1; heavy UI
+        // work would otherwise delay queue.push and first fetch until after bubbles render.
+        for (const obj of objs) {
+          if (obj.type === "chunk" && obj.url) queue.push(obj.url);
+        }
+        for (const obj of objs) {
+          if (obj.type === "meta") {
+            onMeta(obj);
+            resolveMeta();
+          } else if (obj.type === "done") {
+            if (onDone) onDone(obj);
+            queue.end();
+          }
+        }
+      }
+    } finally {
+      queue.end();
+    }
+  }
+
+  const readTask = readAll();
+  await metaPromise;
+  await Promise.all([
+    playTtsUrlSequenceIncremental(API_URL, () => queue.next(), {
+      onFirstStart: onPlayStart,
+      onLastEnd: onPlayEnd
+    }),
+    readTask
+  ]);
 }
 
 async function initMic() {
@@ -1689,12 +1981,70 @@ async function handleUtterance() {
   if (listeningMode === "ptt") {
     formData.append("mode", "ptt");
   }
+  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
 
   try {
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData
     });
+
+    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
+      requestInFlight = false;
+
+      const playMainAnswer = () => {
+        let ndjsonMeta = null;
+        clearFillerForMainTts();
+        void (async () => {
+          try {
+            console.log("[UX][TTS] NDJSON streaming (main)");
+            resetAudioHandlers();
+            await runNdjsonTtsPlayback(res, {
+              onMeta: (meta) => {
+                ndjsonMeta = meta;
+                addBubble(meta.transcript, "user");
+                if (!document.body.classList.contains("chat-started")) {
+                  document.body.classList.add("chat-started");
+                  dismissGuide();
+                }
+              },
+              onDone: (done) => logInferLatency(done, "main"),
+              onPlayStart: () => {
+                logVoiceFirstAudio("main-reply");
+                logVoiceMainReplyAudio();
+                applyAssistantReplyAndPanels(ndjsonMeta);
+                waveState = "speaking";
+                audioStartedAt = performance.now();
+                setStatus("Speaking… (Interruptible)", "speaking");
+                startInterruptCapture();
+              },
+              onPlayEnd: () => {
+                waveState = "listening";
+                processing = false;
+
+                if (listeningMode === "continuous") {
+                  listening = true;
+                  if (inputMuted) {
+                    showMutedStatusIfIdle();
+                    return;
+                  }
+                  startListening();
+                }
+              }
+            });
+          } catch (e) {
+            console.warn(e);
+          }
+        })();
+      };
+
+      if (fillerPlaying) {
+        pendingMainAnswer = playMainAnswer;
+      } else {
+        playMainAnswer();
+      }
+      return;
+    }
 
     const data = await res.json();
     logInferLatency(data, "main");
@@ -1732,59 +2082,44 @@ async function handleUtterance() {
       return;
     }
 
-    applyActionPayload(data);
-
     addBubble(data.transcript, "user");
     if (!document.body.classList.contains("chat-started")) {
       document.body.classList.add("chat-started");
       dismissGuide();
     }
     const playMainAnswer = () => {
-      mainReplyTtsPending = false;
-      clearTimeout(fillerTimer);
-      if (fillerPlayedThisTurn) {
-        setTimeout(() => {
-          addBubble(data.reply, "vera");
-        }, FILLER_GRACE_MS);
-      } else {
-        addBubble(data.reply, "vera");
-      }
+      clearFillerForMainTts();
       resetAudioHandlers();
-      const mainAudio = getAudioEl();
-      if (mainAudio) mainAudio.src = `${API_URL}${data.audio_url}`;
       void (async () => {
-        await ensureMainAudioTtsGraph();
         try {
-          await getAudioEl()?.play();
+          await playTtsFromApi(data, {
+            onPlayStart: () => {
+              logVoiceFirstAudio("main-reply");
+              logVoiceMainReplyAudio();
+              applyAssistantReplyAndPanels(data);
+              waveState = "speaking";
+              audioStartedAt = performance.now();
+              setStatus("Speaking… (Interruptible)", "speaking");
+              startInterruptCapture();
+            },
+            onPlayEnd: () => {
+              waveState = "listening";
+              processing = false;
+
+              if (listeningMode === "continuous") {
+                listening = true;
+                if (inputMuted) {
+                  showMutedStatusIfIdle();
+                  return;
+                }
+                startListening();
+              }
+            }
+          });
         } catch (e) {
           console.warn(e);
         }
       })();
-
-      if (mainAudio) {
-        mainAudio.onplay = () => {
-        logVoiceFirstAudio("main-reply");
-        logVoiceMainReplyAudio();
-        waveState = "speaking";
-        audioStartedAt = performance.now();
-        setStatus("Speaking… (Interruptible)", "speaking");
-        startInterruptCapture();
-      };
-
-        mainAudio.onended = () => {
-        waveState = "listening";
-        processing = false;
-
-        if (listeningMode === "continuous") {
-          listening = true;
-          if (inputMuted) {
-            showMutedStatusIfIdle();
-            return;
-          }
-          startListening();
-        }
-      };
-      }
     };
 
     if (fillerPlaying) {
@@ -1849,61 +2184,93 @@ async function sendTextMessage() {
       body: JSON.stringify({
         text,
         session_id: getSessionId(),
-        client: appModePrefix()
+        client: appModePrefix(),
+        stream_tts: STREAM_TTS
       })
     });
+
+    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
+      requestInFlight = false;
+
+      const playReply = () => {
+        let ndjsonMeta = null;
+        clearFillerForMainTts();
+        void (async () => {
+          try {
+            console.log("[UX][TTS] NDJSON streaming (text)");
+            resetAudioHandlers();
+            await runNdjsonTtsPlayback(res, {
+              onMeta: (meta) => {
+                ndjsonMeta = meta;
+              },
+              onDone: (done) => logInferLatency(done, "text"),
+              onPlayStart: () => {
+                logTextFirstAudio("main-reply");
+                logTextMainReplyAudio();
+                applyAssistantReplyAndPanels(ndjsonMeta);
+                waveState = "speaking";
+                audioStartedAt = performance.now();
+                setStatus("Speaking…", "speaking");
+              },
+              onPlayEnd: () => {
+                waveState = "listening";
+                processing = false;
+                listening = true;
+                if (inputMuted) {
+                  showMutedStatusIfIdle();
+                  return;
+                }
+                startListening();
+              }
+            });
+          } catch (e) {
+            console.warn(e);
+          }
+        })();
+      };
+
+      if (fillerPlaying) {
+        pendingMainAnswer = playReply;
+      } else {
+        playReply();
+      }
+      return;
+    }
 
     const data = await res.json();
     logInferLatency(data, "text");
 
     requestInFlight = false;
 
-    applyActionPayload(data);
     const playReply = () => {
-      mainReplyTtsPending = false;
-      clearTimeout(fillerTimer);
-      if (fillerPlayedThisTurn) {
-        setTimeout(() => {
-          addBubble(data.reply, "vera");
-        }, FILLER_GRACE_MS);
-      } else {
-        addBubble(data.reply, "vera");
-      }
-
+      clearFillerForMainTts();
       resetAudioHandlers();
-      const ta = getAudioEl();
-      if (data.audio_url && ta) {
-        ta.src = `${API_URL}${data.audio_url}`;
-        void (async () => {
-          await ensureMainAudioTtsGraph();
-          try {
-            await getAudioEl()?.play();
-          } catch (e) {
-            console.warn(e);
-          }
-        })();
-      }
-
-      if (ta) {
-        ta.onplay = () => {
-        logTextFirstAudio("main-reply");
-        logTextMainReplyAudio();
-        waveState = "speaking";
-        audioStartedAt = performance.now();
-        setStatus("Speaking…", "speaking");
-      };
-
-        ta.onended = () => {
-        waveState = "listening";
-        processing = false;
-        listening = true;
-        if (inputMuted) {
-          showMutedStatusIfIdle();
-          return;
+      void (async () => {
+        try {
+          await playTtsFromApi(data, {
+            onPlayStart: () => {
+              logTextFirstAudio("main-reply");
+              logTextMainReplyAudio();
+              applyAssistantReplyAndPanels(data);
+              waveState = "speaking";
+              audioStartedAt = performance.now();
+              setStatus("Speaking…", "speaking");
+            },
+            onPlayEnd: () => {
+              waveState = "listening";
+              processing = false;
+              listening = true;
+              if (inputMuted) {
+                showMutedStatusIfIdle();
+                return;
+              }
+              startListening();
+            }
+          });
+        } catch (e) {
+          console.warn(e);
         }
-        startListening();
-      };
-      }
+      })();
     };
 
     if (fillerPlaying) {
