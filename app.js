@@ -145,6 +145,13 @@ function logVoiceMainReplyAudio() {
   console.log(`[UX][VOICE] SpeechEnd→MainReplyAudio=${(elapsedMs / 1000).toFixed(3)}s`);
 }
 
+/** Debug: seconds from speech end — use to see upload vs TTFB vs first chunk vs decode (server TOTAL is a different clock). */
+function logVoicePipe(label) {
+  if (!voiceUxTurn?.speechEndAt) return;
+  const s = ((performance.now() - voiceUxTurn.speechEndAt) / 1000).toFixed(3);
+  console.log(`[UX][VOICE][PIPE] ${label}  +${s}s from SpeechEnd`);
+}
+
 function beginTextUxTurn() {
   textUxTurn = {
     sendAt: performance.now(),
@@ -1134,17 +1141,18 @@ async function handleInterruptUtterance(blob) {
   formData.append("stream_tts", STREAM_TTS ? "1" : "0");
 
   try {
+    logVoicePipe("POST /infer starting (interrupt, upload in flight)");
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData
     });
+    logVoicePipe("POST /infer response headers (interrupt)");
 
     if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
 
       const runStream = async () => {
         let ndjsonMeta = null;
-        clearFillerForMainTts();
         resetAudioHandlers();
         try {
           console.log("[UX][TTS] NDJSON streaming (interrupt)");
@@ -1155,6 +1163,7 @@ async function handleInterruptUtterance(blob) {
             },
             onDone: (done) => logInferLatency(done, "interrupt"),
             onPlayStart: () => {
+              clearFillerForMainTts();
               logVoiceFirstAudio("main-reply");
               logVoiceMainReplyAudio();
               applyAssistantReplyAndPanels(ndjsonMeta);
@@ -1174,6 +1183,7 @@ async function handleInterruptUtterance(blob) {
           });
         } catch (e) {
           console.warn(e);
+          clearFillerForMainTts();
         }
       };
 
@@ -1548,21 +1558,15 @@ async function playTtsUrlSequenceIncremental(baseUrl, nextRelFn, { onFirstStart,
 
 /**
  * Consume application/x-ndjson: meta → chunk → … → done. Prefetches the next URL while decoding/playing.
+ * Within each parsed batch, enqueue chunk URLs before onMeta so GET /audio/ can start while bubbles render.
+ * (Do not await meta before starting playback — that added ~UI work to the critical path.)
  */
 async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEnd }) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   const queue = createTtsUrlQueue();
-  let resolveMeta;
-  let metaResolved = false;
-  const metaPromise = new Promise((r) => {
-    resolveMeta = () => {
-      if (metaResolved) return;
-      metaResolved = true;
-      r();
-    };
-  });
+  let loggedFirstChunk = false;
 
   async function readAll() {
     try {
@@ -1581,15 +1585,19 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
             console.warn("[TTS][NDJSON] skip line", e);
           }
         }
-        // Enqueue audio URLs before onMeta: same TCP chunk often has meta+chunk1; heavy UI
-        // work would otherwise delay queue.push and first fetch until after bubbles render.
         for (const obj of objs) {
-          if (obj.type === "chunk" && obj.url) queue.push(obj.url);
+          if (obj.type === "chunk" && obj.url) {
+            if (!loggedFirstChunk) {
+              loggedFirstChunk = true;
+              logVoicePipe("NDJSON first chunk URL queued (GET /audio/... next)");
+            }
+            queue.push(obj.url);
+          }
         }
         for (const obj of objs) {
           if (obj.type === "meta") {
             onMeta(obj);
-            resolveMeta();
+            logVoicePipe("NDJSON meta line (UI can attach transcript)");
           } else if (obj.type === "done") {
             if (onDone) onDone(obj);
             queue.end();
@@ -1602,7 +1610,6 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
   }
 
   const readTask = readAll();
-  await metaPromise;
   await Promise.all([
     playTtsUrlSequenceIncremental(API_URL, () => queue.next(), {
       onFirstStart: onPlayStart,
@@ -2095,17 +2102,18 @@ async function handleUtterance() {
   formData.append("stream_tts", STREAM_TTS ? "1" : "0");
 
   try {
+    logVoicePipe("POST /infer starting (main, upload in flight)");
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData
     });
+    logVoicePipe("POST /infer response headers (main — TTFB)");
 
     if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
 
       const playMainAnswer = () => {
         let ndjsonMeta = null;
-        clearFillerForMainTts();
         void (async () => {
           try {
             console.log("[UX][TTS] NDJSON streaming (main)");
@@ -2121,6 +2129,7 @@ async function handleUtterance() {
               },
               onDone: (done) => logInferLatency(done, "main"),
               onPlayStart: () => {
+                clearFillerForMainTts();
                 logVoiceFirstAudio("main-reply");
                 logVoiceMainReplyAudio();
                 applyAssistantReplyAndPanels(ndjsonMeta);
@@ -2145,6 +2154,7 @@ async function handleUtterance() {
             });
           } catch (e) {
             console.warn(e);
+            clearFillerForMainTts();
           }
         })();
       };
@@ -2305,7 +2315,6 @@ async function sendTextMessage() {
 
       const playReply = () => {
         let ndjsonMeta = null;
-        clearFillerForMainTts();
         void (async () => {
           try {
             console.log("[UX][TTS] NDJSON streaming (text)");
@@ -2316,6 +2325,7 @@ async function sendTextMessage() {
               },
               onDone: (done) => logInferLatency(done, "text"),
               onPlayStart: () => {
+                clearFillerForMainTts();
                 logTextFirstAudio("main-reply");
                 logTextMainReplyAudio();
                 applyAssistantReplyAndPanels(ndjsonMeta);
@@ -2336,6 +2346,7 @@ async function sendTextMessage() {
             });
           } catch (e) {
             console.warn(e);
+            clearFillerForMainTts();
           }
         })();
       };
