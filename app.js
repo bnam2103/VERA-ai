@@ -99,7 +99,45 @@ let waveEnergy = 0;
 /** After this delay from the start of a request, play a “thinking” clip if still waiting (no backend signal). */
 const FILLER_DELAY_MS = 8000;
 
-const FILLER_GRACE_MS = 600;  
+const FILLER_GRACE_MS = 600;
+
+/** If thinking filler is playing on &lt;audio&gt;, main TTS waits at most this long for it to finish (safety). */
+const FILLER_MAIN_MAX_WAIT_MS = 15000;
+
+/**
+ * Resolve when filler is not playing: either immediately, or after filler `ended` / interrupt clears it.
+ * Call before starting main TTS so the reply does not talk over the thinking clip.
+ */
+function waitForFillerIfPlaying() {
+  if (!fillerPlaying) return Promise.resolve();
+  const el = getAudioEl();
+  if (!el) {
+    fillerPlaying = false;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      clearInterval(tick);
+      clearTimeout(timeoutId);
+      el.removeEventListener("ended", onEnded);
+      resolve();
+    };
+    const onEnded = () => done();
+    /* Do not use el.paused here: filler is paused while loading/before play(), so we'd resolve early and main would talk over the clip. */
+    if (el.ended && !fillerPlaying) {
+      done();
+      return;
+    }
+    el.addEventListener("ended", onEnded, { once: true });
+    const tick = setInterval(() => {
+      if (!fillerPlaying) done();
+    }, 80);
+    const timeoutId = setTimeout(done, FILLER_MAIN_MAX_WAIT_MS);
+  });
+}
 
 const VERA_FILLER_AUDIO_FILES = [
   "/static/fillers/moment.wav",
@@ -123,6 +161,7 @@ let requestInFlight = false; // 🔑 NEW
 /** True until main reply TTS is about to play (not when /infer JSON returns). Used so filler can fire at FILLER_DELAY_MS while waiting on server TTS, not tied to `requestInFlight`. */
 let mainReplyTtsPending = false;
 
+/** Start of a voice UX turn: t0 for perceived latency (end of user speech in the browser). */
 function beginVoiceUxTurn() {
   voiceUxTurn = {
     speechEndAt: performance.now(),
@@ -131,6 +170,7 @@ function beginVoiceUxTurn() {
   };
 }
 
+/** First *any* audio in this turn (often filler `(filler)` or main `(main-reply)`). */
 function logVoiceFirstAudio(kind) {
   if (!voiceUxTurn || voiceUxTurn.firstAudioLogged) return;
   const elapsedMs = performance.now() - voiceUxTurn.speechEndAt;
@@ -138,6 +178,10 @@ function logVoiceFirstAudio(kind) {
   console.log(`[UX][VOICE] SpeechEnd→FirstAudio=${(elapsedMs / 1000).toFixed(3)}s (${kind})`);
 }
 
+/**
+ * Primary perceived voice metric: end of user speech → first main reply TTS playback.
+ * (Not server `latency.total_s`, not `[UX][PIPE]` — those are diagnostics only.)
+ */
 function logVoiceMainReplyAudio() {
   if (!voiceUxTurn || voiceUxTurn.mainReplyLogged) return;
   const elapsedMs = performance.now() - voiceUxTurn.speechEndAt;
@@ -174,8 +218,8 @@ function logTextMainReplyAudio() {
   console.log(`[UX][TEXT] Send→MainReplyAudio=${(elapsedMs / 1000).toFixed(3)}s`);
 }
 
-/** Mirrors server `latency` when present on `/infer` or `/text` JSON. */
-function logInferLatency(data, label) {
+/** Server-side breakdown + optional client TTFB split — for attribution, not end-user perceived time (see SpeechEnd→MainReplyAudio). */
+function logInferLatency(data, label, clientTtfbMs) {
   const L = data?.latency;
   if (!L || typeof L !== "object") return;
   const parts = [];
@@ -194,6 +238,16 @@ function logInferLatency(data, label) {
   if (L.llm_internal_reported_s != null) parts.push(`llm_internal=${L.llm_internal_reported_s}s`);
   const line = parts.length ? parts.join(" | ") : JSON.stringify(L);
   console.log(`[UX][LATENCY][${label}] ${line}`, L);
+  if (L.total_s != null && clientTtfbMs != null && Number.isFinite(clientTtfbMs)) {
+    console.log(
+      `[UX][LATENCY][split][${label}] backend total_s=${L.total_s} (server clock: infer start→end of full NDJSON stream on Python) | ` +
+        `client_ttfb_ms=${Math.round(clientTtfbMs)} (browser: fetch() start→first response headers; includes body upload + Worker/proxy + network + server until it can stream)`
+    );
+    console.log(
+      `[UX][LATENCY][hint] Backend work = ASR / LLM / TTS columns above (Python). ` +
+        `Upload/proxy/internet vs backend: compare client_ttfb_ms to how “heavy” those segments are; TOTAL is not the same moment as TTFB (TOTAL waits for the whole stream to finish on the server).`
+    );
+  }
 }
 
 function startFillerTimer() {
@@ -885,13 +939,14 @@ function interruptSpeech() {
   if (!interruptRecording) return;
   const a = getAudioEl();
   const htmlPlaying = a && !a.paused;
-  const webTtsPlaying = activeMainTtsBufferSources.length > 0;
+  const webTtsPlaying =
+    activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
   if (!htmlPlaying && !webTtsPlaying) return;
 
   setStatus("Listening… (interrupted)", "recording");
   resetAudioHandlers();
 
-  stopAllMainTtsWebAudio();
+  cancelMainTtsPlayback();
   if (a) {
     a.pause();
     a.currentTime = 0;
@@ -941,7 +996,8 @@ function detectInterrupt() {
   // Only interrupt while main TTS is playing: single-file uses <audio>; chunked/streaming uses Web Audio BufferSources.
   const outAudio = getAudioEl();
   const htmlAudioPlaying = outAudio && !outAudio.paused;
-  const webAudioMainTtsPlaying = activeMainTtsBufferSources.length > 0;
+  const webAudioMainTtsPlaying =
+    activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
   if (
   listeningMode === "continuous" &&
   !fillerPlaying &&
@@ -996,19 +1052,6 @@ function detectInterrupt() {
     interruptSpeechFrames = 0;
     interruptSpeechStart = 0;
     interruptLastSpeechLikeTime = 0;
-  }
-
-  if (Math.random() < 0.02) {
-    console.log(
-      "interrupt probe rms:",
-      rms.toFixed(4),
-      "zcr:",
-      zcr.toFixed(3),
-      "crest:",
-      crest.toFixed(1),
-      "frames:",
-      interruptSpeechFrames
-    );
   }
 
   requestAnimationFrame(detectInterrupt);
@@ -1142,10 +1185,12 @@ async function handleInterruptUtterance(blob) {
 
   try {
     logVoicePipe("POST /infer starting (interrupt, upload in flight)");
+    const inferFetchStart = performance.now();
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData
     });
+    const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (interrupt)");
 
     if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
@@ -1155,13 +1200,12 @@ async function handleInterruptUtterance(blob) {
         let ndjsonMeta = null;
         resetAudioHandlers();
         try {
-          console.log("[UX][TTS] NDJSON streaming (interrupt)");
           await runNdjsonTtsPlayback(res, {
             onMeta: (meta) => {
               ndjsonMeta = meta;
               addBubble(meta.transcript, "user");
             },
-            onDone: (done) => logInferLatency(done, "interrupt"),
+            onDone: (done) => logInferLatency(done, "interrupt", inferTtfbMs),
             onPlayStart: () => {
               clearFillerForMainTts();
               logVoiceFirstAudio("main-reply");
@@ -1198,7 +1242,7 @@ async function handleInterruptUtterance(blob) {
     }
 
     const data = await res.json();
-    logInferLatency(data, "interrupt");
+    logInferLatency(data, "interrupt", inferTtfbMs);
 
     requestInFlight = false;
 
@@ -1253,7 +1297,6 @@ async function handleInterruptUtterance(blob) {
 
 async function playInterruptAnswer(data) {
   const run = async () => {
-    clearFillerForMainTts();
     resetAudioHandlers();
     try {
       await playTtsFromApi(data, {
@@ -1321,6 +1364,10 @@ function resolveAudioUrls(data) {
 let activeMainTtsBufferSources = [];
 /** True from first main TTS chunk until last chunk ends — gaps between BufferSources have 0 active sources but TTS is still "playing". */
 let mainTtsPlaybackActive = false;
+/** Incremented on interrupt so NDJSON read + incremental Web Audio loops exit and stop scheduling further chunks. */
+let mainTtsPlaybackToken = 0;
+/** Active NDJSON `res.body.getReader()`; cancelled on interrupt so the stream stops feeding the URL queue. */
+let activeNdjsonBodyReader = null;
 
 function registerMainTtsBufferSource(src, onEndedExtra) {
   activeMainTtsBufferSources.push(src);
@@ -1345,6 +1392,20 @@ function stopAllMainTtsWebAudio() {
   }
   if (document.body.classList.contains("bmo-open")) {
     stopBmoTtsMouthAnimation();
+  }
+}
+
+function cancelMainTtsPlayback() {
+  mainTtsPlaybackToken++;
+  stopAllMainTtsWebAudio();
+  const r = activeNdjsonBodyReader;
+  activeNdjsonBodyReader = null;
+  if (r) {
+    try {
+      r.cancel();
+    } catch (_) {
+      /* ignore */
+    }
   }
 }
 
@@ -1373,13 +1434,18 @@ function wrapLastChunkForBmoMouth(onLastEnd) {
  * Schedule decoded buffers back-to-back on one AudioContext (minimal gaps vs chained <audio>).
  * Prefetches the next HTTP response while decoding/playing the current chunk.
  */
-async function playTtsUrlSequenceGapless(baseUrl, relativeUrls, { onFirstStart, onLastEnd } = {}) {
+async function playTtsUrlSequenceGapless(
+  baseUrl,
+  relativeUrls,
+  { onFirstStart, onLastEnd, sessionToken } = {}
+) {
   if (!relativeUrls?.length) return;
   if (!audioCtx) {
     audioCtx = new AudioContext({ sampleRate: 16000 });
   }
   await audioCtx.resume();
   await ensureMainAudioTtsGraph();
+  await waitForFillerIfPlaying();
   mainTtsPlaybackActive = true;
   getAudioEl()?.pause();
   let t = audioCtx.currentTime + 0.08;
@@ -1392,7 +1458,15 @@ async function playTtsUrlSequenceGapless(baseUrl, relativeUrls, { onFirstStart, 
 
   try {
   for (let i = 0; i < relativeUrls.length; i++) {
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      mainTtsPlaybackActive = false;
+      return;
+    }
     const ab = await nextPromise;
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      mainTtsPlaybackActive = false;
+      return;
+    }
     nextPromise =
       i + 1 < relativeUrls.length
         ? fetch(`${baseUrl}${relativeUrls[i + 1]}`).then((r) => {
@@ -1402,6 +1476,10 @@ async function playTtsUrlSequenceGapless(baseUrl, relativeUrls, { onFirstStart, 
         : null;
 
     const audBuf = await audioCtx.decodeAudioData(ab.slice(0));
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      mainTtsPlaybackActive = false;
+      return;
+    }
     const src = audioCtx.createBufferSource();
     src.buffer = audBuf;
     connectBufferSourceToTtsGraph(src);
@@ -1440,9 +1518,16 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
     );
   }
 
+  const sessionToken = mainTtsPlaybackToken;
+  const runPlayStart = () => {
+    clearFillerForMainTts();
+    if (onPlayStart) onPlayStart();
+  };
+
   if (urls.length === 1) {
     const el = getAudioEl();
     if (!el) return;
+    await waitForFillerIfPlaying();
     el.src = `${API_URL}${urls[0]}`;
     await ensureMainAudioTtsGraph();
     el.addEventListener(
@@ -1452,7 +1537,7 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
         if (document.body.classList.contains("bmo-open")) {
           void startBmoTtsMouthAnimation();
         }
-        if (onPlayStart) onPlayStart();
+        runPlayStart();
       },
       { once: true }
     );
@@ -1469,8 +1554,9 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
   }
 
   await playTtsUrlSequenceGapless(API_URL, urls, {
-    onFirstStart: onPlayStart,
-    onLastEnd: onPlayEnd
+    onFirstStart: runPlayStart,
+    onLastEnd: onPlayEnd,
+    sessionToken
   });
 }
 
@@ -1499,16 +1585,25 @@ function createTtsUrlQueue() {
 }
 
 /** Gapless Web Audio playback when URLs arrive incrementally (streaming NDJSON chunks). */
-async function playTtsUrlSequenceIncremental(baseUrl, nextRelFn, { onFirstStart, onLastEnd } = {}) {
+async function playTtsUrlSequenceIncremental(
+  baseUrl,
+  nextRelFn,
+  { onFirstStart, onLastEnd, sessionToken } = {}
+) {
   if (!audioCtx) {
     audioCtx = new AudioContext({ sampleRate: 16000 });
   }
   await audioCtx.resume();
   await ensureMainAudioTtsGraph();
+  await waitForFillerIfPlaying();
   let t = audioCtx.currentTime + 0.08;
   let firstDone = false;
 
   let curRel = await nextRelFn();
+  if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+    mainTtsPlaybackActive = false;
+    return;
+  }
   if (!curRel) return;
   mainTtsPlaybackActive = true;
   getAudioEl()?.pause();
@@ -1519,8 +1614,20 @@ async function playTtsUrlSequenceIncremental(baseUrl, nextRelFn, { onFirstStart,
 
   try {
   for (;;) {
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      mainTtsPlaybackActive = false;
+      return;
+    }
     const ab = await nextPromise;
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      mainTtsPlaybackActive = false;
+      return;
+    }
     const nextRel = await nextRelFn();
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      mainTtsPlaybackActive = false;
+      return;
+    }
     nextPromise = nextRel
       ? fetch(`${baseUrl}${nextRel}`).then((r) => {
           if (!r.ok) throw new Error(`TTS HTTP ${r.status}`);
@@ -1529,6 +1636,10 @@ async function playTtsUrlSequenceIncremental(baseUrl, nextRelFn, { onFirstStart,
       : null;
 
     const audBuf = await audioCtx.decodeAudioData(ab.slice(0));
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      mainTtsPlaybackActive = false;
+      return;
+    }
     const src = audioCtx.createBufferSource();
     src.buffer = audBuf;
     connectBufferSourceToTtsGraph(src);
@@ -1563,6 +1674,8 @@ async function playTtsUrlSequenceIncremental(baseUrl, nextRelFn, { onFirstStart,
  */
 async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEnd }) {
   const reader = res.body.getReader();
+  activeNdjsonBodyReader = reader;
+  const sessionToken = mainTtsPlaybackToken;
   const decoder = new TextDecoder();
   let buf = "";
   const queue = createTtsUrlQueue();
@@ -1571,7 +1684,18 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
   async function readAll() {
     try {
       while (true) {
-        const { value, done: rdone } = await reader.read();
+        if (mainTtsPlaybackToken !== sessionToken) {
+          queue.end();
+          return;
+        }
+        let readResult;
+        try {
+          readResult = await reader.read();
+        } catch {
+          queue.end();
+          return;
+        }
+        const { value, done: rdone } = readResult;
         if (rdone) break;
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
@@ -1587,6 +1711,10 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
         }
         for (const obj of objs) {
           if (obj.type === "chunk" && obj.url) {
+            if (mainTtsPlaybackToken !== sessionToken) {
+              queue.end();
+              return;
+            }
             if (!loggedFirstChunk) {
               loggedFirstChunk = true;
               logVoicePipe("NDJSON first chunk URL queued (GET /audio/... next)");
@@ -1606,17 +1734,23 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
       }
     } finally {
       queue.end();
+      if (activeNdjsonBodyReader === reader) activeNdjsonBodyReader = null;
     }
   }
 
   const readTask = readAll();
-  await Promise.all([
-    playTtsUrlSequenceIncremental(API_URL, () => queue.next(), {
-      onFirstStart: onPlayStart,
-      onLastEnd: onPlayEnd
-    }),
-    readTask
-  ]);
+  try {
+    await Promise.all([
+      playTtsUrlSequenceIncremental(API_URL, () => queue.next(), {
+        onFirstStart: onPlayStart,
+        onLastEnd: onPlayEnd,
+        sessionToken
+      }),
+      readTask
+    ]);
+  } finally {
+    if (activeNdjsonBodyReader === reader) activeNdjsonBodyReader = null;
+  }
 }
 
 async function initMic() {
@@ -2103,10 +2237,12 @@ async function handleUtterance() {
 
   try {
     logVoicePipe("POST /infer starting (main, upload in flight)");
+    const inferFetchStart = performance.now();
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData
     });
+    const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (main — TTFB)");
 
     if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
@@ -2127,7 +2263,7 @@ async function handleUtterance() {
                   dismissGuide();
                 }
               },
-              onDone: (done) => logInferLatency(done, "main"),
+              onDone: (done) => logInferLatency(done, "main", inferTtfbMs),
               onPlayStart: () => {
                 clearFillerForMainTts();
                 logVoiceFirstAudio("main-reply");
@@ -2168,7 +2304,7 @@ async function handleUtterance() {
     }
 
     const data = await res.json();
-    logInferLatency(data, "main");
+    logInferLatency(data, "main", inferTtfbMs);
     requestInFlight = false;
 
     // 🔑 HANDLE CONTROL FLOW FIRST (NO AUDIO YET)
@@ -2209,7 +2345,6 @@ async function handleUtterance() {
       dismissGuide();
     }
     const playMainAnswer = () => {
-      clearFillerForMainTts();
       resetAudioHandlers();
       void (async () => {
         try {
@@ -2299,6 +2434,7 @@ async function sendTextMessage() {
     dismissGuide();
   }
   try {
+    const textFetchStart = performance.now();
     const res = await fetch(`${API_URL}/text`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2309,6 +2445,7 @@ async function sendTextMessage() {
         stream_tts: STREAM_TTS
       })
     });
+    const textTtfbMs = performance.now() - textFetchStart;
 
     if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
@@ -2323,7 +2460,7 @@ async function sendTextMessage() {
               onMeta: (meta) => {
                 ndjsonMeta = meta;
               },
-              onDone: (done) => logInferLatency(done, "text"),
+              onDone: (done) => logInferLatency(done, "text", textTtfbMs),
               onPlayStart: () => {
                 clearFillerForMainTts();
                 logTextFirstAudio("main-reply");
@@ -2360,12 +2497,11 @@ async function sendTextMessage() {
     }
 
     const data = await res.json();
-    logInferLatency(data, "text");
+    logInferLatency(data, "text", textTtfbMs);
 
     requestInFlight = false;
 
     const playReply = () => {
-      clearFillerForMainTts();
       resetAudioHandlers();
       void (async () => {
         try {
