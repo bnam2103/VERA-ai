@@ -835,7 +835,8 @@ function onSidePaneClick(event) {
 function applyActionPayload(data) {
   const payload = data?.action_payload;
   if (payload?.panel_type === "media_tabs" || payload?.panel_type === "news_results") {
-    renderMediaTabsPanel(payload);
+    /* Large innerHTML (news + images + video embeds) can block the main thread; defer so BMO mouth RAF keeps up. */
+    requestAnimationFrame(() => renderMediaTabsPanel(payload));
     return;
   }
 
@@ -874,13 +875,20 @@ function clearFillerForMainTts() {
 }
 
 function interruptSpeech() {
+  if (!interruptRecording) return;
   const a = getAudioEl();
-  if (!a || a.paused || !interruptRecording) return;
+  const htmlPlaying = a && !a.paused;
+  const webTtsPlaying = activeMainTtsBufferSources.length > 0;
+  if (!htmlPlaying && !webTtsPlaying) return;
+
   setStatus("Listening… (interrupted)", "recording");
   resetAudioHandlers();
 
-  a.pause();
-  a.currentTime = 0;
+  stopAllMainTtsWebAudio();
+  if (a) {
+    a.pause();
+    a.currentTime = 0;
+  }
 
   clearTimeout(fillerTimer);
   mainReplyTtsPending = false;
@@ -923,13 +931,14 @@ function detectInterrupt() {
 
   const now = performance.now();
 
-  // Only interrupt while VERA is speaking (not filler)
+  // Only interrupt while main TTS is playing: single-file uses <audio>; chunked/streaming uses Web Audio BufferSources.
   const outAudio = getAudioEl();
+  const htmlAudioPlaying = outAudio && !outAudio.paused;
+  const webAudioMainTtsPlaying = activeMainTtsBufferSources.length > 0;
   if (
   listeningMode === "continuous" &&
-  outAudio &&
-  !outAudio.paused &&
-  !fillerPlaying 
+  !fillerPlaying &&
+  (htmlAudioPlaying || webAudioMainTtsPlaying)
 ) {
     // grace period to avoid clicks
     if (now - audioStartedAt > 200) {
@@ -1298,6 +1307,58 @@ function resolveAudioUrls(data) {
   return [];
 }
 
+/** Sentence-chunk / streaming TTS uses BufferSource → destination; `<audio>` stays paused, so interrupt must track these. */
+let activeMainTtsBufferSources = [];
+/** True from first main TTS chunk until last chunk ends — gaps between BufferSources have 0 active sources but TTS is still "playing". */
+let mainTtsPlaybackActive = false;
+
+function registerMainTtsBufferSource(src, onEndedExtra) {
+  activeMainTtsBufferSources.push(src);
+  src.onended = () => {
+    const i = activeMainTtsBufferSources.indexOf(src);
+    if (i >= 0) activeMainTtsBufferSources.splice(i, 1);
+    if (onEndedExtra) onEndedExtra();
+  };
+}
+
+function stopAllMainTtsWebAudio() {
+  mainTtsPlaybackActive = false;
+  const copy = activeMainTtsBufferSources.slice();
+  activeMainTtsBufferSources = [];
+  for (const src of copy) {
+    try {
+      src.onended = null;
+      src.stop(0);
+    } catch (_) {
+      /* already stopped */
+    }
+  }
+  if (document.body.classList.contains("bmo-open")) {
+    stopBmoTtsMouthAnimation();
+  }
+}
+
+/** Same wiring as MediaElementSource → analyser + destination: chunked TTS must feed the TTS analyser or BMO mouth / VERA wave stay flat. */
+function connectBufferSourceToTtsGraph(src) {
+  const m = appModePrefix();
+  const t = ttsByMode[m];
+  if (t?.analyser) {
+    src.connect(t.analyser);
+  }
+  src.connect(audioCtx.destination);
+}
+
+function wrapLastChunkForBmoMouth(onLastEnd) {
+  if (!onLastEnd) return undefined;
+  return () => {
+    mainTtsPlaybackActive = false;
+    if (document.body.classList.contains("bmo-open")) {
+      stopBmoTtsMouthAnimation();
+    }
+    onLastEnd();
+  };
+}
+
 /**
  * Schedule decoded buffers back-to-back on one AudioContext (minimal gaps vs chained <audio>).
  * Prefetches the next HTTP response while decoding/playing the current chunk.
@@ -1308,6 +1369,8 @@ async function playTtsUrlSequenceGapless(baseUrl, relativeUrls, { onFirstStart, 
     audioCtx = new AudioContext({ sampleRate: 16000 });
   }
   await audioCtx.resume();
+  await ensureMainAudioTtsGraph();
+  mainTtsPlaybackActive = true;
   getAudioEl()?.pause();
   let t = audioCtx.currentTime + 0.08;
   let firstDone = false;
@@ -1317,6 +1380,7 @@ async function playTtsUrlSequenceGapless(baseUrl, relativeUrls, { onFirstStart, 
     return r.arrayBuffer();
   });
 
+  try {
   for (let i = 0; i < relativeUrls.length; i++) {
     const ab = await nextPromise;
     nextPromise =
@@ -1330,17 +1394,27 @@ async function playTtsUrlSequenceGapless(baseUrl, relativeUrls, { onFirstStart, 
     const audBuf = await audioCtx.decodeAudioData(ab.slice(0));
     const src = audioCtx.createBufferSource();
     src.buffer = audBuf;
-    src.connect(audioCtx.destination);
+    connectBufferSourceToTtsGraph(src);
     const startAt = Math.max(t, audioCtx.currentTime + 0.02);
     src.start(startAt);
+    /* BMO mouth before onFirstStart: onPlayStart applies news side panel (heavy innerHTML); blocking first would let TTS chunks finish before RAF starts — generic headlines path is slower than “breaking news”. */
+    if (document.body.classList.contains("bmo-open")) {
+      void startBmoTtsMouthAnimation();
+    }
     if (!firstDone && onFirstStart) {
       onFirstStart();
       firstDone = true;
     }
-    if (i === relativeUrls.length - 1 && onLastEnd) {
-      src.onended = () => onLastEnd();
-    }
+    const isLast = i === relativeUrls.length - 1;
+    registerMainTtsBufferSource(
+      src,
+      isLast && onLastEnd ? wrapLastChunkForBmoMouth(onLastEnd) : undefined
+    );
     t = startAt + audBuf.duration;
+  }
+  } catch (e) {
+    mainTtsPlaybackActive = false;
+    throw e;
   }
 }
 
@@ -1361,8 +1435,25 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
     if (!el) return;
     el.src = `${API_URL}${urls[0]}`;
     await ensureMainAudioTtsGraph();
-    if (onPlayStart) el.addEventListener("play", () => onPlayStart(), { once: true });
-    if (onPlayEnd) el.addEventListener("ended", () => onPlayEnd(), { once: true });
+    el.addEventListener(
+      "play",
+      () => {
+        mainTtsPlaybackActive = true;
+        if (document.body.classList.contains("bmo-open")) {
+          void startBmoTtsMouthAnimation();
+        }
+        if (onPlayStart) onPlayStart();
+      },
+      { once: true }
+    );
+    el.addEventListener(
+      "ended",
+      () => {
+        mainTtsPlaybackActive = false;
+        if (onPlayEnd) onPlayEnd();
+      },
+      { once: true }
+    );
     await el.play();
     return;
   }
@@ -1403,17 +1494,20 @@ async function playTtsUrlSequenceIncremental(baseUrl, nextRelFn, { onFirstStart,
     audioCtx = new AudioContext({ sampleRate: 16000 });
   }
   await audioCtx.resume();
-  getAudioEl()?.pause();
+  await ensureMainAudioTtsGraph();
   let t = audioCtx.currentTime + 0.08;
   let firstDone = false;
 
   let curRel = await nextRelFn();
   if (!curRel) return;
+  mainTtsPlaybackActive = true;
+  getAudioEl()?.pause();
   let nextPromise = fetch(`${baseUrl}${curRel}`).then((r) => {
     if (!r.ok) throw new Error(`TTS HTTP ${r.status}`);
     return r.arrayBuffer();
   });
 
+  try {
   for (;;) {
     const ab = await nextPromise;
     const nextRel = await nextRelFn();
@@ -1427,19 +1521,28 @@ async function playTtsUrlSequenceIncremental(baseUrl, nextRelFn, { onFirstStart,
     const audBuf = await audioCtx.decodeAudioData(ab.slice(0));
     const src = audioCtx.createBufferSource();
     src.buffer = audBuf;
-    src.connect(audioCtx.destination);
+    connectBufferSourceToTtsGraph(src);
     const startAt = Math.max(t, audioCtx.currentTime + 0.02);
     src.start(startAt);
+    /* Same order as gapless: mouth before onPlayStart so heavy news panel does not block first tick. */
+    if (document.body.classList.contains("bmo-open")) {
+      void startBmoTtsMouthAnimation();
+    }
     if (!firstDone && onFirstStart) {
       onFirstStart();
       firstDone = true;
     }
     const isLast = !nextRel;
-    if (isLast && onLastEnd) {
-      src.onended = () => onLastEnd();
-    }
+    registerMainTtsBufferSource(
+      src,
+      isLast && onLastEnd ? wrapLastChunkForBmoMouth(onLastEnd) : undefined
+    );
     t = startAt + audBuf.duration;
     if (!nextRel) break;
+  }
+  } catch (e) {
+    mainTtsPlaybackActive = false;
+    throw e;
   }
 }
 
@@ -1797,7 +1900,13 @@ function tickBmoTtsMouth() {
     stopBmoTtsMouthAnimation();
     return;
   }
-  if (!bmoOut || bmoOut.paused || bmoOut.ended) {
+  const webAudioTtsPlaying = activeMainTtsBufferSources.length > 0;
+  if (
+    !bmoOut ||
+    (!webAudioTtsPlaying &&
+      !mainTtsPlaybackActive &&
+      (bmoOut.paused || bmoOut.ended))
+  ) {
     stopBmoTtsMouthAnimation();
     return;
   }
@@ -1847,6 +1956,8 @@ document.getElementById("bmo-audio")?.addEventListener("playing", () => {
   void startBmoTtsMouthAnimation();
 });
 document.getElementById("bmo-audio")?.addEventListener("pause", () => {
+  /* Chunked TTS keeps <audio> paused while BufferSources play; do not kill the mouth on that pause. */
+  if (activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive) return;
   stopBmoTtsMouthAnimation();
 });
 document.getElementById("bmo-audio")?.addEventListener("ended", () => {
