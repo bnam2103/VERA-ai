@@ -76,10 +76,13 @@ let fillerTimer = null;
 let fillerPlayedThisTurn = false;
 let interruptSpeechFrames = 0;
 let interruptSpeechStart = 0;
+/** Ms of speechLike time accumulated from RAF deltas (gaps do not add). */
+let interruptSpeechAccumMs = 0;
+let lastInterruptDetectTime = 0;
 let interruptLastSpeechLikeTime = 0;
 /** Snapshot from detectInterrupt when interruptSpeech() fires (for server interrupt_debug). */
 let lastInterruptProbe = null;
-/** Last frame where speechLike was true (sustain can fire on a later “gap” frame with low RMS). */
+/** Last frame where speechLike was true (same as trigger frame when interrupt fires). */
 let lastInterruptSpeechLikeSnapshot = null;
 /** libfvad instance for interrupt path; null = not ready yet, false = load failed (heuristic only). */
 let interruptVad = null;
@@ -340,7 +343,10 @@ const INTERRUPT_ZCR_MIN = 0.028;
 const INTERRUPT_ZCR_MAX = 0.165;
 const MAX_SPEECH_RMS = 0.078;
 const INTERRUPT_RMS = 0.0105;
-/** Need this long of mostly “speech-like” frames before cutting TTS (blocks short noise bursts). */
+/**
+ * Min accumulated ms where speechLike is true (wall-clock gaps and quiet frames do not count).
+ * Interrupt fires only on a speechLike frame after this threshold.
+ */
 const INTERRUPT_SUSTAIN_MS = 350;
 /** Max ms without a speech-like frame before resetting the sustain counter. */
 const INTERRUPT_GAP_RESET_MS = 110;
@@ -976,6 +982,8 @@ function interruptSpeech() {
   waveState = "listening";
   interruptSpeechFrames = 0;
   interruptSpeechStart = 0;
+  interruptSpeechAccumMs = 0;
+  lastInterruptDetectTime = 0;
   interruptLastSpeechLikeTime = 0;
   lastInterruptSpeechLikeSnapshot = null;
 
@@ -1020,6 +1028,9 @@ function detectInterrupt() {
 ) {
     // grace period to avoid clicks
     if (now - audioStartedAt > 200) {
+      const dtRaw = lastInterruptDetectTime ? now - lastInterruptDetectTime : 0;
+      const dt = Math.min(Math.max(dtRaw, 0), 80);
+      lastInterruptDetectTime = now;
 
       const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
       const heuristicSpeech = heuristicChecks.passes;
@@ -1041,6 +1052,7 @@ function detectInterrupt() {
         : heuristicSpeech;
 
       if (speechLike) {
+        interruptSpeechAccumMs += dt;
         if (interruptSpeechFrames === 0) {
           interruptSpeechStart = now;
         }
@@ -1058,18 +1070,19 @@ function detectInterrupt() {
         interruptLastSpeechLikeTime &&
         now - interruptLastSpeechLikeTime <= INTERRUPT_GAP_RESET_MS
       ) {
-        // Allow tiny gaps so normal speech doesn't need a perfect uninterrupted stream.
+        // Allow tiny gaps so normal speech doesn't need a perfect uninterrupted stream (time here does not add to interruptSpeechAccumMs).
       } else {
         interruptSpeechFrames = 0;
         interruptSpeechStart = 0;
+        interruptSpeechAccumMs = 0;
         interruptLastSpeechLikeTime = 0;
         lastInterruptSpeechLikeSnapshot = null;
       }
 
       if (
+        speechLike &&
         interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
-        interruptSpeechStart &&
-        now - interruptSpeechStart >= INTERRUPT_SUSTAIN_MS
+        interruptSpeechAccumMs >= INTERRUPT_SUSTAIN_MS
       ) {
         const gate = interruptVad ? "vad_only" : "heuristic_fallback";
         const snap = lastInterruptSpeechLikeSnapshot;
@@ -1078,7 +1091,10 @@ function detectInterrupt() {
           triggerFrame: { rms, zcr, crest, speechLike },
           lastSpeechLike: snap,
           vadProbe,
-          sustainMs: now - interruptSpeechStart,
+          speechAccumMs: interruptSpeechAccumMs,
+          wallMsSinceFirstSpeech: interruptSpeechStart
+            ? now - interruptSpeechStart
+            : 0,
           rafFrames: interruptSpeechFrames,
         });
         lastInterruptProbe = {
@@ -1088,12 +1104,16 @@ function detectInterrupt() {
           interruptGate: gate,
           interruptReason: interruptVad ? "vad" : "heuristic",
           heuristicChecks: interruptVad ? null : snap?.heuristicChecks ?? heuristicChecks,
-          sustainMs: now - interruptSpeechStart,
+          speechAccumMs: interruptSpeechAccumMs,
+          wallMsSinceFirstSpeech: interruptSpeechStart
+            ? now - interruptSpeechStart
+            : 0,
           frames: interruptSpeechFrames,
         };
         interruptSpeech();
         interruptSpeechFrames = 0;
         interruptSpeechStart = 0;
+        interruptSpeechAccumMs = 0;
         interruptLastSpeechLikeTime = 0;
         lastInterruptSpeechLikeSnapshot = null;
       }
@@ -1101,6 +1121,8 @@ function detectInterrupt() {
   } else {
     interruptSpeechFrames = 0;
     interruptSpeechStart = 0;
+    interruptSpeechAccumMs = 0;
+    lastInterruptDetectTime = 0;
     interruptLastSpeechLikeTime = 0;
     lastInterruptSpeechLikeSnapshot = null;
   }
@@ -1178,17 +1200,16 @@ function logInterruptTriggerReason({
   triggerFrame,
   lastSpeechLike,
   vadProbe,
-  sustainMs,
+  speechAccumMs,
+  wallMsSinceFirstSpeech,
   rafFrames,
 }) {
-  const triggerKind = triggerFrame.speechLike
-    ? "speech_frame"
-    : "gap_frame (sustain timer met during INTERRUPT_GAP_RESET_MS quiet window; trigger RMS is misleading)";
   const base = {
     gate,
-    sustainMs,
+    speechAccumMs: Number(speechAccumMs.toFixed(1)),
+    wallMsSinceFirstSpeech: Number(wallMsSinceFirstSpeech.toFixed(1)),
     rafFrames,
-    triggerKind,
+    triggerKind: "speech_frame (accumulated speechLike time ≥ INTERRUPT_SUSTAIN_MS)",
     triggerFrame: {
       rms: Number(triggerFrame.rms.toFixed(5)),
       zcr: Number(triggerFrame.zcr.toFixed(5)),
@@ -1230,7 +1251,6 @@ function logInterruptTriggerReason({
     if (h.crestOk) checks.push("crest");
     console.log("[INTERRUPT] trigger — reason: heuristic (all must pass on speech frames)", {
       ...base,
-      /** What actually passed the gate — use this, not triggerFrame, when triggerKind is gap_frame. */
       lastSpeechLike: lastSpeechLike
         ? {
             rms: Number(lastSpeechLike.rms.toFixed(5)),
@@ -1245,8 +1265,6 @@ function logInterruptTriggerReason({
             },
           }
         : null,
-      note:
-        "If triggerFrame.rms looks too low to pass rms_min, you likely fired on a gap_frame; see lastSpeechLike.",
     });
   }
 }
@@ -1359,6 +1377,8 @@ function startInterruptCapture() {
   interruptChunks = [];
   interruptSpeechFrames = 0;
   interruptSpeechStart = 0;
+  interruptSpeechAccumMs = 0;
+  lastInterruptDetectTime = 0;
   interruptLastSpeechLikeTime = 0;
   lastInterruptSpeechLikeSnapshot = null;
 
