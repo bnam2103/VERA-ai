@@ -84,10 +84,6 @@ let interruptLastSpeechLikeTime = 0;
 let lastInterruptProbe = null;
 /** Last frame where speechLike was true (same as trigger frame when interrupt fires). */
 let lastInterruptSpeechLikeSnapshot = null;
-/** libfvad instance for interrupt path; null = not ready yet, false = load failed (heuristic only). */
-let interruptVad = null;
-let interruptVadLoadFailed = false;
-let interruptVadPromise = null;
 let pttRecording = false;
 let inputMuted = false;
 let suppressNextUtterance = false;
@@ -337,7 +333,6 @@ const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
 const INTERRUPT_MIN_FRAMES = 1;
 
-/* Heuristic interrupt path — used only when WebRTC VAD is unavailable (load failed or still loading). */
 /* Voiced-speech band for ZCR (zero-crossings / sample). Outside this → rustle/AC/fan/clicks. */
 const INTERRUPT_ZCR_MIN = 0.028;
 const INTERRUPT_ZCR_MAX = 0.165;
@@ -352,13 +347,6 @@ const INTERRUPT_SUSTAIN_MS = 350;
 const INTERRUPT_GAP_RESET_MS = 110;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
 const INTERRUPT_MAX_CREST = 38;
-/**
- * WebRTC VAD (libfvad WASM @ static/vad): 10 ms frames @ 16 kHz must classify as speech.
- * Mode 3 = most aggressive filtering (fewer false “speech” from noise vs mode 0).
- */
-const INTERRUPT_VAD_MODE = 3;
-/** Min fraction of 10 ms frames in one analyser buffer that must be voiced (see runWebrtcVadOnBuffer). */
-const INTERRUPT_VAD_MIN_FRAC = 0.55;
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /** Request NDJSON streaming TTS from /infer and /text so the first /audio URL arrives as soon as it is synthesized. */
@@ -1033,23 +1021,7 @@ function detectInterrupt() {
       lastInterruptDetectTime = now;
 
       const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
-      const heuristicSpeech = heuristicChecks.passes;
-
-      ensureInterruptVad();
-      let vadProbe = null;
-      if (interruptVad) {
-        vadProbe = runWebrtcVadOnBuffer(interruptVad, buf);
-      } else if (interruptVadLoadFailed) {
-        vadProbe = { skipped: true, reason: "vad_unavailable" };
-      } else {
-        vadProbe = { skipped: true, reason: "vad_loading" };
-      }
-
-      // Primary: WebRTC VAD + sustain/gap (INTERRUPT_SUSTAIN_MS / INTERRUPT_GAP_RESET_MS) only.
-      // Fallback: RMS/ZCR/crest while VAD is loading or if WASM failed (no VAD-only path).
-      const speechLike = interruptVad
-        ? vadProbe.ok
-        : heuristicSpeech;
+      const speechLike = heuristicChecks.passes;
 
       if (speechLike) {
         interruptSpeechAccumMs += dt;
@@ -1062,7 +1034,6 @@ function detectInterrupt() {
           rms,
           zcr,
           crest,
-          vadProbe,
           heuristicChecks,
           at: now,
         };
@@ -1084,13 +1055,10 @@ function detectInterrupt() {
         interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
         interruptSpeechAccumMs >= INTERRUPT_SUSTAIN_MS
       ) {
-        const gate = interruptVad ? "vad_only" : "heuristic_fallback";
         const snap = lastInterruptSpeechLikeSnapshot;
         logInterruptTriggerReason({
-          gate,
           triggerFrame: { rms, zcr, crest, speechLike },
           lastSpeechLike: snap,
-          vadProbe,
           speechAccumMs: interruptSpeechAccumMs,
           wallMsSinceFirstSpeech: interruptSpeechStart
             ? now - interruptSpeechStart
@@ -1100,10 +1068,7 @@ function detectInterrupt() {
         lastInterruptProbe = {
           atTrigger: { rms, zcr, crest, speechLike },
           lastSpeechLike: snap,
-          vad: vadProbe,
-          interruptGate: gate,
-          interruptReason: interruptVad ? "vad" : "heuristic",
-          heuristicChecks: interruptVad ? null : snap?.heuristicChecks ?? heuristicChecks,
+          heuristicChecks: snap?.heuristicChecks ?? heuristicChecks,
           speechAccumMs: interruptSpeechAccumMs,
           wallMsSinceFirstSpeech: interruptSpeechStart
             ? now - interruptSpeechStart
@@ -1179,7 +1144,7 @@ function computeZCR(buf) {
   return crossings / buf.length;
 }
 
-/** Per-threshold flags for interrupt fallback (when WebRTC VAD is not used). */
+/** Per-threshold flags for interrupt (RMS, ZCR, crest). */
 function computeHeuristicInterruptChecks(rms, zcr, crest) {
   const rmsAboveMin = rms > INTERRUPT_RMS;
   const rmsBelowMax = rms < MAX_SPEECH_RMS;
@@ -1196,16 +1161,13 @@ function computeHeuristicInterruptChecks(rms, zcr, crest) {
 }
 
 function logInterruptTriggerReason({
-  gate,
   triggerFrame,
   lastSpeechLike,
-  vadProbe,
   speechAccumMs,
   wallMsSinceFirstSpeech,
   rafFrames,
 }) {
   const base = {
-    gate,
     speechAccumMs: Number(speechAccumMs.toFixed(1)),
     wallMsSinceFirstSpeech: Number(wallMsSinceFirstSpeech.toFixed(1)),
     rafFrames,
@@ -1217,158 +1179,35 @@ function logInterruptTriggerReason({
       speechLike: triggerFrame.speechLike,
     },
   };
-  if (gate === "vad_only") {
-    const vp =
-      lastSpeechLike?.vadProbe && !lastSpeechLike.vadProbe.skipped
-        ? lastSpeechLike.vadProbe
-        : vadProbe && !vadProbe.skipped
-          ? vadProbe
-          : null;
-    console.log("[INTERRUPT] trigger — reason: vad", {
-      ...base,
-      lastSpeechLikeVad: vp
-        ? {
-            frac: vp.frac,
-            voiced: vp.voiced,
-            frames: vp.frames,
-            minFrac: INTERRUPT_VAD_MIN_FRAC,
-            mode: INTERRUPT_VAD_MODE,
-          }
-        : lastSpeechLike?.vadProbe ?? vadProbe,
-    });
-  } else {
-    const h =
-      lastSpeechLike?.heuristicChecks ??
-      computeHeuristicInterruptChecks(
-        lastSpeechLike?.rms ?? triggerFrame.rms,
-        lastSpeechLike?.zcr ?? triggerFrame.zcr,
-        lastSpeechLike?.crest ?? triggerFrame.crest
-      );
-    const checks = [];
-    if (h.rmsAboveMin) checks.push("rms_min");
-    if (h.rmsBelowMax) checks.push("rms_max");
-    if (h.zcrInRange) checks.push("zcr");
-    if (h.crestOk) checks.push("crest");
-    console.log("[INTERRUPT] trigger — reason: heuristic (all must pass on speech frames)", {
-      ...base,
-      lastSpeechLike: lastSpeechLike
-        ? {
-            rms: Number(lastSpeechLike.rms.toFixed(5)),
-            zcr: Number(lastSpeechLike.zcr.toFixed(5)),
-            crest: Number(lastSpeechLike.crest.toFixed(4)),
-            heuristicChecks: checks.join("+"),
-            flags: {
-              rmsAboveMin: h.rmsAboveMin,
-              rmsBelowMax: h.rmsBelowMax,
-              zcrInRange: h.zcrInRange,
-              crestOk: h.crestOk,
-            },
-          }
-        : null,
-    });
-  }
-}
-
-function floatToI16Sample(f) {
-  const s = Math.max(-1, Math.min(1, f));
-  return Math.round(s * 32767);
-}
-
-/**
- * WebRTC VAD (libfvad): 10 ms frames @ 16 kHz. Requires enough frames in the buffer to vote
- * (analyser fftSize 2048 → 12 frames; remainder is ignored).
- */
-function runWebrtcVadOnBuffer(vad, float32Buf) {
-  const frameLen = 160;
-  let voiced = 0;
-  let total = 0;
-  const { Module, handle, ptr, fvad_process } = vad;
-  const heap16 = Module.HEAP16;
-  const base = ptr >> 1;
-  for (let i = 0; i + frameLen <= float32Buf.length; i += frameLen) {
-    for (let j = 0; j < frameLen; j++) {
-      heap16[base + j] = floatToI16Sample(float32Buf[i + j]);
-    }
-    const r = fvad_process(handle, ptr, frameLen);
-    if (r === 1) voiced++;
-    total++;
-  }
-  const frac = total > 0 ? voiced / total : 0;
-  return { ok: frac >= INTERRUPT_VAD_MIN_FRAC, frac, voiced, frames: total };
-}
-
-/**
- * Resolve next to the current page (not site origin). Root-absolute `/static/...` breaks on
- * GitHub Pages and other subpath hosts (e.g. `user.github.io/repo/` → need `.../repo/static/...`).
- */
-function resolveInterruptVadModuleUrl() {
-  return new URL("static/vad/fvad.js", window.location.href).href;
-}
-
-async function loadInterruptVadModule() {
-  if (window.location.protocol === "file:") {
-    throw new Error(
-      "WebRTC VAD (ES module + WASM) cannot load from file:// — browsers block dynamic import(). " +
-        "Serve this folder over http(s) and open http://localhost:... (e.g. run your FastAPI app or: python -m http.server)."
+  const h =
+    lastSpeechLike?.heuristicChecks ??
+    computeHeuristicInterruptChecks(
+      lastSpeechLike?.rms ?? triggerFrame.rms,
+      lastSpeechLike?.zcr ?? triggerFrame.zcr,
+      lastSpeechLike?.crest ?? triggerFrame.crest
     );
-  }
-  const url = resolveInterruptVadModuleUrl();
-  const { default: factory } = await import(url);
-  const Module = await factory();
-  const fvad_new = Module.cwrap("fvad_new", "number", []);
-  const fvad_set_sample_rate = Module.cwrap("fvad_set_sample_rate", "number", [
-    "number",
-    "number"
-  ]);
-  const fvad_set_mode = Module.cwrap("fvad_set_mode", "number", ["number", "number"]);
-  const fvad_process = Module.cwrap("fvad_process", "number", [
-    "number",
-    "number",
-    "number"
-  ]);
-  const fvad_free = Module.cwrap("fvad_free", null, ["number"]);
-  const handle = fvad_new();
-  if (!handle) throw new Error("fvad_new failed");
-  if (fvad_set_sample_rate(handle, 16000) !== 0) {
-    fvad_free(handle);
-    throw new Error("fvad_set_sample_rate");
-  }
-  if (fvad_set_mode(handle, INTERRUPT_VAD_MODE) !== 0) {
-    fvad_free(handle);
-    throw new Error("fvad_set_mode");
-  }
-  const ptr = Module._malloc(160 * 2);
-  if (!ptr) {
-    fvad_free(handle);
-    throw new Error("malloc");
-  }
-  interruptVad = { Module, handle, ptr, fvad_process };
-}
-
-function ensureInterruptVad() {
-  if (interruptVadLoadFailed || interruptVad) return;
-  if (!interruptVadPromise) {
-    interruptVadPromise = loadInterruptVadModule().catch((e) => {
-      console.warn(
-        "[interrupt] WebRTC VAD failed to load from",
-        resolveInterruptVadModuleUrl(),
-        "— using RMS/ZCR/crest only. If you used file://, use http://localhost instead. Otherwise deploy static/vad/fvad.js + fvad.wasm (check Network for 404).",
-        e
-      );
-      interruptVadLoadFailed = true;
-    });
-  }
-}
-
-/** Wait for the first VAD load attempt so interrupt gating is not stuck on heuristic-only during startup. */
-async function waitForInterruptVadIfLoading() {
-  ensureInterruptVad();
-  if (interruptVadPromise) {
-    await interruptVadPromise;
-  }
-  if (interruptVad) {
-    console.log("[interrupt] WebRTC VAD ready (libfvad)");
-  }
+  const checks = [];
+  if (h.rmsAboveMin) checks.push("rms_min");
+  if (h.rmsBelowMax) checks.push("rms_max");
+  if (h.zcrInRange) checks.push("zcr");
+  if (h.crestOk) checks.push("crest");
+  console.log("[INTERRUPT] trigger — heuristic (rms+zcr+crest)", {
+    ...base,
+    lastSpeechLike: lastSpeechLike
+      ? {
+          rms: Number(lastSpeechLike.rms.toFixed(5)),
+          zcr: Number(lastSpeechLike.zcr.toFixed(5)),
+          crest: Number(lastSpeechLike.crest.toFixed(4)),
+          heuristicChecks: checks.join("+"),
+          flags: {
+            rmsAboveMin: h.rmsAboveMin,
+            rmsBelowMax: h.rmsBelowMax,
+            zcrInRange: h.zcrInRange,
+            crestOk: h.crestOk,
+          },
+        }
+      : null,
+  });
 }
 
 function startInterruptCapture() {
@@ -1446,8 +1285,6 @@ async function handleInterruptUtterance(blob) {
         INTERRUPT_GAP_RESET_MS,
         INTERRUPT_MAX_CREST,
         MAX_SPEECH_RMS,
-        INTERRUPT_VAD_MODE,
-        INTERRUPT_VAD_MIN_FRAC,
       },
     })
   );
@@ -2046,8 +1883,6 @@ async function initMic() {
   audioCtx.createMediaStreamSource(micStream).connect(analyser);
 
   await ensureMainAudioTtsGraph();
-
-  await waitForInterruptVadIfLoading();
 
   detectInterrupt();
   startWaveAnimation();
