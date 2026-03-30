@@ -1297,14 +1297,21 @@ function runWebrtcVadOnBuffer(vad, float32Buf) {
   return { ok: frac >= INTERRUPT_VAD_MIN_FRAC, frac, voiced, frames: total };
 }
 
+/**
+ * Resolve next to the current page (not site origin). Root-absolute `/static/...` breaks on
+ * GitHub Pages and other subpath hosts (e.g. `user.github.io/repo/` → need `.../repo/static/...`).
+ */
 function resolveInterruptVadModuleUrl() {
-  if (window.location.protocol === "file:") {
-    return new URL("static/vad/fvad.js", window.location.href).href;
-  }
-  return new URL("/static/vad/fvad.js", window.location.origin).href;
+  return new URL("static/vad/fvad.js", window.location.href).href;
 }
 
 async function loadInterruptVadModule() {
+  if (window.location.protocol === "file:") {
+    throw new Error(
+      "WebRTC VAD (ES module + WASM) cannot load from file:// — browsers block dynamic import(). " +
+        "Serve this folder over http(s) and open http://localhost:... (e.g. run your FastAPI app or: python -m http.server)."
+    );
+  }
   const url = resolveInterruptVadModuleUrl();
   const { default: factory } = await import(url);
   const Module = await factory();
@@ -1343,7 +1350,9 @@ function ensureInterruptVad() {
   if (!interruptVadPromise) {
     interruptVadPromise = loadInterruptVadModule().catch((e) => {
       console.warn(
-        "[interrupt] WebRTC VAD failed to load; using RMS/ZCR/crest only",
+        "[interrupt] WebRTC VAD failed to load from",
+        resolveInterruptVadModuleUrl(),
+        "— using RMS/ZCR/crest only. If you used file://, use http://localhost instead. Otherwise deploy static/vad/fvad.js + fvad.wasm (check Network for 404).",
         e
       );
       interruptVadLoadFailed = true;
