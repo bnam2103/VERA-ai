@@ -72,8 +72,6 @@ let lastVoiceTime = 0;
 let listening = false;
 let processing = false;
 let rafId = null;
-let fillerTimer = null;
-let fillerPlayedThisTurn = false;
 let interruptSpeechFrames = 0;
 let interruptSpeechStart = 0;
 /** Ms of speechLike time accumulated from RAF deltas (gaps do not add). */
@@ -88,83 +86,15 @@ let pttRecording = false;
 let inputMuted = false;
 let suppressNextUtterance = false;
 
-let fillerPlaying = false;
-let fillerStartedAt = 0;
-let pendingMainAnswer = null;
 let audioStartedAt = 0;
 let voiceUxTurn = null;
-/** "voice" | "text" — which UX timers filler first-audio should attribute to. */
-let fillerUxSource = "voice";
 let textUxTurn = null;
 // let interruptStart = 0;
 let listeningMode = "continuous"; 
 let waveState = "idle";   
 let waveEnergy = 0;     
 
-/** After this delay from the start of a request, play a “thinking” clip if still waiting (no backend signal). */
-const FILLER_DELAY_MS = 8000;
-
-const FILLER_GRACE_MS = 600;
-
-/** If thinking filler is playing on &lt;audio&gt;, main TTS waits at most this long for it to finish (safety). */
-const FILLER_MAIN_MAX_WAIT_MS = 15000;
-
-/**
- * Resolve when filler is not playing: either immediately, or after filler `ended` / interrupt clears it.
- * Call before starting main TTS so the reply does not talk over the thinking clip.
- */
-function waitForFillerIfPlaying() {
-  if (!fillerPlaying) return Promise.resolve();
-  const el = getAudioEl();
-  if (!el) {
-    fillerPlaying = false;
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    let finished = false;
-    const done = () => {
-      if (finished) return;
-      finished = true;
-      clearInterval(tick);
-      clearTimeout(timeoutId);
-      el.removeEventListener("ended", onEnded);
-      resolve();
-    };
-    const onEnded = () => done();
-    /* Do not use el.paused here: filler is paused while loading/before play(), so we'd resolve early and main would talk over the clip. */
-    if (el.ended && !fillerPlaying) {
-      done();
-      return;
-    }
-    el.addEventListener("ended", onEnded, { once: true });
-    const tick = setInterval(() => {
-      if (!fillerPlaying) done();
-    }, 80);
-    const timeoutId = setTimeout(done, FILLER_MAIN_MAX_WAIT_MS);
-  });
-}
-
-const VERA_FILLER_AUDIO_FILES = [
-  "/static/fillers/moment.wav",
-  "/static/fillers/one_second.wav",
-  "/static/fillers/give_me_a_second.wav",
-  "/static/fillers/one_moment.wav"
-];
-
-const BMO_FILLER_AUDIO_FILES = [
-  "/static/fillers/one_moment_bmo.mp3",
-  "/static/fillers/one_second_bmo.mp3",
-  "/static/fillers/give_me_a_second_bmo.mp3",
-  "/static/fillers/give_me_a_moment_bmo.mp3"
-];
-
-function fillerAudioFilesForMode() {
-  return appModePrefix() === "bmo" ? BMO_FILLER_AUDIO_FILES : VERA_FILLER_AUDIO_FILES;
-}
-
 let requestInFlight = false; // 🔑 NEW
-/** True until main reply TTS is about to play (not when /infer JSON returns). Used so filler can fire at FILLER_DELAY_MS while waiting on server TTS, not tied to `requestInFlight`. */
-let mainReplyTtsPending = false;
 
 /** Start of a voice UX turn: t0 for perceived latency (end of user speech in the browser). */
 function beginVoiceUxTurn() {
@@ -175,7 +105,7 @@ function beginVoiceUxTurn() {
   };
 }
 
-/** First *any* audio in this turn (often filler `(filler)` or main `(main-reply)`). */
+/** First *any* audio in this turn (typically main `(main-reply)`). */
 function logVoiceFirstAudio(kind) {
   if (!voiceUxTurn || voiceUxTurn.firstAudioLogged) return;
   const elapsedMs = performance.now() - voiceUxTurn.speechEndAt;
@@ -199,6 +129,24 @@ function logVoicePipe(label) {
   if (!voiceUxTurn?.speechEndAt) return;
   const s = ((performance.now() - voiceUxTurn.speechEndAt) / 1000).toFixed(3);
   console.log(`[UX][VOICE][PIPE] ${label}  +${s}s from SpeechEnd`);
+}
+
+/** Set localStorage VERA_DEBUG_TRANSCRIPTS to "0" to silence [VOICE][TRANSCRIPT] logs. */
+function voiceTranscriptDebugEnabled() {
+  try {
+    return localStorage.getItem("VERA_DEBUG_TRANSCRIPTS") !== "0";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * @param {"final"} phase — committed user line (bubble) from `/infer`.
+ * @param {Record<string, unknown>} [meta] — e.g. { path: "main-ndjson" }
+ */
+function logVoiceTranscript(phase, text, meta = {}) {
+  if (!voiceTranscriptDebugEnabled()) return;
+  console.log("[VOICE][TRANSCRIPT]", { phase, ...meta, text: text ?? "" });
 }
 
 function beginTextUxTurn() {
@@ -234,9 +182,18 @@ function logInferLatency(data, label, clientTtfbMs) {
   if (L.asr_transcribe_s != null) parts.push(`ASR_transcribe=${L.asr_transcribe_s}s`);
   if (L.bridge_s != null) parts.push(`Bridge=${L.bridge_s}s`);
   if (L.llm_s != null) parts.push(`LLM=${L.llm_s}s`);
+  if (L.llm_first_token_s != null) parts.push(`LLM_first_token=${L.llm_first_token_s}s`);
+  if (L.llm_first_sentence_ready_s != null)
+    parts.push(`LLM_first_sentence_ready=${L.llm_first_sentence_ready_s}s`);
   if (L.post_llm_s != null) parts.push(`PostLLM=${L.post_llm_s}s`);
   if (L.tts_s != null) parts.push(`TTS=${L.tts_s}s`);
   if (L.tts_first_chunk_s != null) parts.push(`TTS_first_chunk=${L.tts_first_chunk_s}s`);
+  if (L.first_tts_audio_ready_total_s != null)
+    parts.push(`first_TTS_file_ready_total=${L.first_tts_audio_ready_total_s}s`);
+  if (L.first_tts_audio_ready_after_pre_asr_s != null)
+    parts.push(`first_TTS_file_ready_after_PreASR=${L.first_tts_audio_ready_after_pre_asr_s}s`);
+  if (L.first_tts_audio_ready_after_asr_end_s != null)
+    parts.push(`first_TTS_file_ready_after_ASR_end=${L.first_tts_audio_ready_after_asr_end_s}s`);
   if (L.total_s != null) parts.push(`TOTAL=${L.total_s}s`);
   if (L.sum_segments_s != null) parts.push(`Σ=${L.sum_segments_s}s`);
   if (L.drift_s != null) parts.push(`drift=${L.drift_s}s`);
@@ -255,73 +212,6 @@ function logInferLatency(data, label, clientTtfbMs) {
   }
 }
 
-function startFillerTimer() {
-  clearTimeout(fillerTimer);
-
-  fillerPlaying = false;
-  fillerStartedAt = 0;
-  mainReplyTtsPending = true;
-
-  fillerTimer = setTimeout(() => {
-    if (!mainReplyTtsPending) return;
-    if (fillerPlaying) return;
-
-    const files = fillerAudioFilesForMode();
-    const filler = files[Math.floor(Math.random() * files.length)];
-
-    fillerPlaying = true;
-    fillerPlayedThisTurn = true;
-    fillerStartedAt = performance.now();
-
-    const fillerSrc = `${API_URL}${filler}`;
-    resetAudioHandlers();
-    const fillerAudio = getAudioEl();
-    if (fillerAudio) fillerAudio.src = fillerSrc;
-    fillerAudio?.addEventListener(
-      "play",
-      () => {
-        if (fillerAudio?.src === fillerSrc) {
-          if (fillerUxSource === "text") {
-            logTextFirstAudio("filler");
-          } else {
-            logVoiceFirstAudio("filler");
-          }
-        }
-      },
-      { once: true }
-    );
-    void (async () => {
-      try {
-        await ensureMainAudioTtsGraph();
-        await getAudioEl()?.play();
-      } catch (e) {
-        console.warn(e);
-      }
-    })();
-
-    fillerAudio?.addEventListener(
-      "ended",
-      () => {
-        if (fillerAudio?.src !== fillerSrc) return; // 🔑 guard
-        fillerPlaying = false;
-
-        if (!requestInFlight && pendingMainAnswer) {
-          setTimeout(() => {
-            pendingMainAnswer?.();
-            pendingMainAnswer = null;
-          }, FILLER_GRACE_MS);
-        }
-      },
-      { once: true }
-    );
-  }, FILLER_DELAY_MS);
-}
-
-/** Schedule filler when entering “thinking”; 8s gate uses `mainReplyTtsPending`, not HTTP completion. */
-function scheduleThinkingFiller() {
-  startFillerTimer();
-}
-
 /* =========================
    CONFIG
 ========================= */
@@ -333,6 +223,7 @@ const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
 const INTERRUPT_MIN_FRAMES = 1;
 
+/* Interrupt while TTS plays: RMS / ZCR / crest heuristics + sustain/gap timing (no WASM VAD). */
 /* Voiced-speech band for ZCR (zero-crossings / sample). Outside this → rustle/AC/fan/clicks. */
 const INTERRUPT_ZCR_MIN = 0.028;
 const INTERRUPT_ZCR_MAX = 0.165;
@@ -601,9 +492,12 @@ function dismissGuide() {
   }, 350);
 }
 
-function addBubble(text, who) {
+function addBubble(text, who, meta) {
   const convoEl = uiEl("conversation");
   if (!convoEl) return;
+  if (who === "user" && voiceTranscriptDebugEnabled()) {
+    logVoiceTranscript("final", text, { ...meta, via: "addBubble" });
+  }
   const row = document.createElement("div");
   row.className = `message-row ${who}`;
 
@@ -614,6 +508,7 @@ function addBubble(text, who) {
   row.appendChild(bubble);
   convoEl.appendChild(row);
   convoEl.scrollTop = convoEl.scrollHeight;
+  return bubble;
 }
 
 function escapeHtml(text) {
@@ -922,25 +817,45 @@ function applyAssistantReplyAndPanels(data) {
   if (!data) return;
   applyActionPayload(data);
   if (data.reply == null || data.reply === "") return;
-  if (fillerPlayedThisTurn) {
-    setTimeout(() => addBubble(data.reply, "vera"), FILLER_GRACE_MS);
-  } else {
-    addBubble(data.reply, "vera");
-  }
+  addBubble(data.reply, "vera");
 }
 
-/** Stop thinking filler and reset flags so main TTS (including Web Audio) does not fight `<audio>` filler state. */
-function clearFillerForMainTts() {
-  clearTimeout(fillerTimer);
-  mainReplyTtsPending = false;
-  if (fillerPlaying) {
-    const a = getAudioEl();
-    if (a) {
-      a.pause();
-      a.currentTime = 0;
+function createNdjsonStreamingReplyState() {
+  return { bubble: null, latest: "" };
+}
+
+/**
+ * Grow one assistant bubble as each NDJSON chunk includes reply_so_far (sentence-cumulative text).
+ */
+function applyNdjsonStreamingReplySoFar(replySoFar, state) {
+  if (replySoFar == null || replySoFar === "") return;
+  state.latest = String(replySoFar);
+  const convoEl = uiEl("conversation");
+  if (!convoEl) return;
+  const text = state.latest;
+  if (state.bubble?.isConnected) {
+    const cur = state.bubble.textContent || "";
+    /* Done line can arrive before deferred first play; finalize may have filled the full reply — don't overwrite with a shorter cumulative partial. */
+    if (text.length >= cur.length) {
+      state.bubble.textContent = text;
     }
-    fillerPlaying = false;
+  } else {
+    state.bubble = addBubble(text, "vera", { path: "ndjson-reply-so-far" });
   }
+  convoEl.scrollTop = convoEl.scrollHeight;
+}
+
+/** After NDJSON done: sync bubble to final reply, or add bubble if no streaming partials. */
+function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
+  if (!done?.reply) return;
+  if (ndjsonMeta?.reply) return;
+  if (state.bubble?.isConnected) {
+    state.bubble.textContent = done.reply;
+    return;
+  }
+  /* Must assign state.bubble so applyNdjsonStreamingReplySoFar doesn't add a second bubble if done arrives before first audio (defer path). */
+  applyActionPayload({ ...ndjsonMeta, reply: done.reply });
+  state.bubble = addBubble(done.reply, "vera", { path: "ndjson-final" });
 }
 
 function interruptSpeech() {
@@ -959,11 +874,6 @@ function interruptSpeech() {
     a.pause();
     a.currentTime = 0;
   }
-
-  clearTimeout(fillerTimer);
-  mainReplyTtsPending = false;
-  fillerPlaying = false;
-  pendingMainAnswer = null;
 
   listening = true;
   processing = false;
@@ -1011,7 +921,6 @@ function detectInterrupt() {
     activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
   if (
   listeningMode === "continuous" &&
-  !fillerPlaying &&
   (htmlAudioPlaying || webAudioMainTtsPlaying)
 ) {
     // grace period to avoid clicks
@@ -1055,8 +964,10 @@ function detectInterrupt() {
         interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
         interruptSpeechAccumMs >= INTERRUPT_SUSTAIN_MS
       ) {
+        const gate = "heuristic";
         const snap = lastInterruptSpeechLikeSnapshot;
         logInterruptTriggerReason({
+          gate,
           triggerFrame: { rms, zcr, crest, speechLike },
           lastSpeechLike: snap,
           speechAccumMs: interruptSpeechAccumMs,
@@ -1068,6 +979,8 @@ function detectInterrupt() {
         lastInterruptProbe = {
           atTrigger: { rms, zcr, crest, speechLike },
           lastSpeechLike: snap,
+          interruptGate: gate,
+          interruptReason: "heuristic",
           heuristicChecks: snap?.heuristicChecks ?? heuristicChecks,
           speechAccumMs: interruptSpeechAccumMs,
           wallMsSinceFirstSpeech: interruptSpeechStart
@@ -1144,7 +1057,7 @@ function computeZCR(buf) {
   return crossings / buf.length;
 }
 
-/** Per-threshold flags for interrupt (RMS, ZCR, crest). */
+/** Per-threshold flags for interrupt (RMS/ZCR/crest); all must pass for a frame to count as speech-like. */
 function computeHeuristicInterruptChecks(rms, zcr, crest) {
   const rmsAboveMin = rms > INTERRUPT_RMS;
   const rmsBelowMax = rms < MAX_SPEECH_RMS;
@@ -1161,6 +1074,7 @@ function computeHeuristicInterruptChecks(rms, zcr, crest) {
 }
 
 function logInterruptTriggerReason({
+  gate,
   triggerFrame,
   lastSpeechLike,
   speechAccumMs,
@@ -1168,6 +1082,7 @@ function logInterruptTriggerReason({
   rafFrames,
 }) {
   const base = {
+    gate,
     speechAccumMs: Number(speechAccumMs.toFixed(1)),
     wallMsSinceFirstSpeech: Number(wallMsSinceFirstSpeech.toFixed(1)),
     rafFrames,
@@ -1191,23 +1106,26 @@ function logInterruptTriggerReason({
   if (h.rmsBelowMax) checks.push("rms_max");
   if (h.zcrInRange) checks.push("zcr");
   if (h.crestOk) checks.push("crest");
-  console.log("[INTERRUPT] trigger — heuristic (rms+zcr+crest)", {
-    ...base,
-    lastSpeechLike: lastSpeechLike
-      ? {
-          rms: Number(lastSpeechLike.rms.toFixed(5)),
-          zcr: Number(lastSpeechLike.zcr.toFixed(5)),
-          crest: Number(lastSpeechLike.crest.toFixed(4)),
-          heuristicChecks: checks.join("+"),
-          flags: {
-            rmsAboveMin: h.rmsAboveMin,
-            rmsBelowMax: h.rmsBelowMax,
-            zcrInRange: h.zcrInRange,
-            crestOk: h.crestOk,
-          },
-        }
-      : null,
-  });
+  console.log(
+    "[INTERRUPT] trigger — heuristic (RMS/ZCR/crest + sustain; all must pass on speech frames)",
+    {
+      ...base,
+      lastSpeechLike: lastSpeechLike
+        ? {
+            rms: Number(lastSpeechLike.rms.toFixed(5)),
+            zcr: Number(lastSpeechLike.zcr.toFixed(5)),
+            crest: Number(lastSpeechLike.crest.toFixed(4)),
+            heuristicChecks: checks.join("+"),
+            flags: {
+              rmsAboveMin: h.rmsAboveMin,
+              rmsBelowMax: h.rmsBelowMax,
+              zcrInRange: h.zcrInRange,
+              crestOk: h.crestOk,
+            },
+          }
+        : null,
+    }
+  );
 }
 
 function startInterruptCapture() {
@@ -1254,7 +1172,6 @@ function startInterruptCapture() {
 }
 
 async function handleInterruptUtterance(blob) {
-  pendingMainAnswer = null; 
   if (blob.size < MIN_AUDIO_BYTES) {
     listening = true;
     return;
@@ -1262,9 +1179,6 @@ async function handleInterruptUtterance(blob) {
 
   requestInFlight = true;
   processing = true;
-  fillerPlayedThisTurn = false;
-  fillerUxSource = "voice";
-  scheduleThinkingFiller();
   waveState = "idle";
   setStatus("Thinking", "thinking");
 
@@ -1305,19 +1219,29 @@ async function handleInterruptUtterance(blob) {
 
       const runStream = async () => {
         let ndjsonMeta = null;
+        const streamReplyState = createNdjsonStreamingReplyState();
         resetAudioHandlers();
         try {
           await runNdjsonTtsPlayback(res, {
             onMeta: (meta) => {
-              ndjsonMeta = meta;
-              addBubble(meta.transcript, "user");
+              ndjsonMeta = { ...ndjsonMeta, ...meta };
+              if (meta.transcript) {
+                addBubble(meta.transcript, "user", { path: "interrupt-ndjson" });
+              }
             },
-            onDone: (done) => logInferLatency(done, "interrupt", inferTtfbMs),
+            onReplyProgress: (replySoFar) => {
+              if (ndjsonMeta?.reply) return;
+              applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
+            },
+            onDone: (done) => {
+              logInferLatency(done, "interrupt", inferTtfbMs);
+              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+            },
             onPlayStart: () => {
-              clearFillerForMainTts();
               logVoiceFirstAudio("main-reply");
               logVoiceMainReplyAudio();
-              applyAssistantReplyAndPanels(ndjsonMeta);
+              /* NDJSON: reply bubble comes from reply_so_far + finalizeNdjsonStreamingReply — not addBubble here (duplicate). */
+              applyActionPayload(ndjsonMeta);
               waveState = "speaking";
               audioStartedAt = performance.now();
               setStatus("Speaking… (can only be interrupted once)", "speaking");
@@ -1334,17 +1258,10 @@ async function handleInterruptUtterance(blob) {
           });
         } catch (e) {
           console.warn(e);
-          clearFillerForMainTts();
         }
       };
 
-      if (fillerPlaying) {
-        pendingMainAnswer = () => {
-          void runStream();
-        };
-      } else {
-        await runStream();
-      }
+      await runStream();
       return;
     }
 
@@ -1362,23 +1279,15 @@ async function handleInterruptUtterance(blob) {
       processing = false;
       listening = true;
       getAudioEl()?.pause();
-      fillerPlaying = false;
-      pendingMainAnswer = null;
-      mainReplyTtsPending = false;
-      clearTimeout(fillerTimer);
       startListening();
       return;
     }
 
     if (data.client_action === "mute_input") {
       hideSidePanel();
-      pendingMainAnswer = null;
       getAudioEl()?.pause();
-      fillerPlaying = false;
       processing = false;
       listening = true;
-      mainReplyTtsPending = false;
-      clearTimeout(fillerTimer);
       setContinuousInputMuted(true);
       return;
     }
@@ -1387,16 +1296,13 @@ async function handleInterruptUtterance(blob) {
        NORMAL INTERRUPT REPLY
     ========================= */
 
-    addBubble(data.transcript, "user");
+    addBubble(data.transcript, "user", { path: "interrupt-json" });
 
     await playInterruptAnswer(data);
 
   } catch {
     hideSidePanel();
     requestInFlight = false;
-    mainReplyTtsPending = false;
-    clearTimeout(fillerTimer);
-    fillerPlaying = false;
     setStatus("Server error", "offline");
     listening = true;
   }
@@ -1430,13 +1336,7 @@ async function playInterruptAnswer(data) {
     }
   };
 
-  if (fillerPlaying) {
-    pendingMainAnswer = () => {
-      void run();
-    };
-  } else {
-    await run();
-  }
+  await run();
 }
 /* =========================
    MIC INIT
@@ -1552,7 +1452,6 @@ async function playTtsUrlSequenceGapless(
   }
   await audioCtx.resume();
   await ensureMainAudioTtsGraph();
-  await waitForFillerIfPlaying();
   mainTtsPlaybackActive = true;
   getAudioEl()?.pause();
   let t = audioCtx.currentTime + 0.08;
@@ -1627,14 +1526,12 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
 
   const sessionToken = mainTtsPlaybackToken;
   const runPlayStart = () => {
-    clearFillerForMainTts();
     if (onPlayStart) onPlayStart();
   };
 
   if (urls.length === 1) {
     const el = getAudioEl();
     if (!el) return;
-    await waitForFillerIfPlaying();
     el.src = `${API_URL}${urls[0]}`;
     await ensureMainAudioTtsGraph();
     el.addEventListener(
@@ -1695,14 +1592,13 @@ function createTtsUrlQueue() {
 async function playTtsUrlSequenceIncremental(
   baseUrl,
   nextRelFn,
-  { onFirstStart, onLastEnd, sessionToken } = {}
+  { onBeforeFirstPlay, onFirstStart, onLastEnd, sessionToken } = {}
 ) {
   if (!audioCtx) {
     audioCtx = new AudioContext({ sampleRate: 16000 });
   }
   await audioCtx.resume();
   await ensureMainAudioTtsGraph();
-  await waitForFillerIfPlaying();
   let t = audioCtx.currentTime + 0.08;
   let firstDone = false;
 
@@ -1747,6 +1643,9 @@ async function playTtsUrlSequenceIncremental(
       mainTtsPlaybackActive = false;
       return;
     }
+    if (!firstDone && onBeforeFirstPlay) {
+      onBeforeFirstPlay();
+    }
     const src = audioCtx.createBufferSource();
     src.buffer = audBuf;
     connectBufferSourceToTtsGraph(src);
@@ -1777,9 +1676,9 @@ async function playTtsUrlSequenceIncremental(
 /**
  * Consume application/x-ndjson: meta → chunk → … → done. Prefetches the next URL while decoding/playing.
  * Within each parsed batch, enqueue chunk URLs before onMeta so GET /audio/ can start while bubbles render.
- * (Do not await meta before starting playback — that added ~UI work to the critical path.)
+ * First-sentence assistant text is applied in onBeforeFirstPlay (after decode, before src.start) so it aligns with audio.
  */
-async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEnd }) {
+async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEnd, onReplyProgress }) {
   const reader = res.body.getReader();
   activeNdjsonBodyReader = reader;
   const sessionToken = mainTtsPlaybackToken;
@@ -1787,6 +1686,11 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
   let buf = "";
   const queue = createTtsUrlQueue();
   let loggedFirstChunk = false;
+  /** First-sentence text is deferred until first audio buffer is decoded (sync with playback start). */
+  let pendingFirstReplySoFar = null;
+  let deferFirstReply = true;
+  /** Latest reply_so_far already applied via onReplyProgress (avoids onBeforeFirstPlay overwriting with shorter pending). */
+  let lastEmittedReplySoFar = null;
 
   async function readAll() {
     try {
@@ -1827,6 +1731,15 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
               logVoicePipe("NDJSON first chunk URL queued (GET /audio/... next)");
             }
             queue.push(obj.url);
+            if (obj.reply_so_far != null && onReplyProgress) {
+              if (deferFirstReply) {
+                pendingFirstReplySoFar = String(obj.reply_so_far);
+                deferFirstReply = false;
+              } else {
+                onReplyProgress(obj.reply_so_far);
+                lastEmittedReplySoFar = String(obj.reply_so_far);
+              }
+            }
           }
         }
         for (const obj of objs) {
@@ -1849,6 +1762,19 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
   try {
     await Promise.all([
       playTtsUrlSequenceIncremental(API_URL, () => queue.next(), {
+        onBeforeFirstPlay: () => {
+          if (pendingFirstReplySoFar != null && onReplyProgress) {
+            const pending = pendingFirstReplySoFar;
+            pendingFirstReplySoFar = null;
+            const alreadyAhead =
+              lastEmittedReplySoFar != null &&
+              lastEmittedReplySoFar.length >= pending.length;
+            if (!alreadyAhead) {
+              onReplyProgress(pending);
+              lastEmittedReplySoFar = pending;
+            }
+          }
+        },
         onFirstStart: onPlayStart,
         onLastEnd: onPlayEnd,
         sessionToken
@@ -2324,9 +2250,6 @@ async function handleUtterance() {
   }
   requestInFlight = true;
   processing = true;
-  fillerPlayedThisTurn = false;
-  fillerUxSource = "voice";
-  scheduleThinkingFiller();
   waveState = "idle";
 
   setStatus("Thinking", "thinking");
@@ -2355,58 +2278,59 @@ async function handleUtterance() {
     if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
 
-      const playMainAnswer = () => {
-        let ndjsonMeta = null;
-        void (async () => {
-          try {
-            console.log("[UX][TTS] NDJSON streaming (main)");
-            resetAudioHandlers();
-            await runNdjsonTtsPlayback(res, {
-              onMeta: (meta) => {
-                ndjsonMeta = meta;
-                addBubble(meta.transcript, "user");
+      let ndjsonMeta = null;
+      const streamReplyState = createNdjsonStreamingReplyState();
+      void (async () => {
+        try {
+          console.log("[UX][TTS] NDJSON streaming (main)");
+          resetAudioHandlers();
+          await runNdjsonTtsPlayback(res, {
+            onMeta: (meta) => {
+              ndjsonMeta = { ...ndjsonMeta, ...meta };
+              if (meta.transcript) {
+                addBubble(meta.transcript, "user", { path: "main-ndjson" });
                 if (!document.body.classList.contains("chat-started")) {
                   document.body.classList.add("chat-started");
                   dismissGuide();
                 }
-              },
-              onDone: (done) => logInferLatency(done, "main", inferTtfbMs),
-              onPlayStart: () => {
-                clearFillerForMainTts();
-                logVoiceFirstAudio("main-reply");
-                logVoiceMainReplyAudio();
-                applyAssistantReplyAndPanels(ndjsonMeta);
-                waveState = "speaking";
-                audioStartedAt = performance.now();
-                setStatus("Speaking… (Interruptible)", "speaking");
-                startInterruptCapture();
-              },
-              onPlayEnd: () => {
-                waveState = "listening";
-                processing = false;
-
-                if (listeningMode === "continuous") {
-                  listening = true;
-                  if (inputMuted) {
-                    showMutedStatusIfIdle();
-                    return;
-                  }
-                  startListening();
-                }
               }
-            });
-          } catch (e) {
-            console.warn(e);
-            clearFillerForMainTts();
-          }
-        })();
-      };
+            },
+            onReplyProgress: (replySoFar) => {
+              if (ndjsonMeta?.reply) return;
+              applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
+            },
+            onDone: (done) => {
+              logInferLatency(done, "main", inferTtfbMs);
+              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+            },
+            onPlayStart: () => {
+              logVoiceFirstAudio("main-reply");
+              logVoiceMainReplyAudio();
+              /* NDJSON: assistant bubble already from streaming + finalize — only side panels here. */
+              applyActionPayload(ndjsonMeta);
+              waveState = "speaking";
+              audioStartedAt = performance.now();
+              setStatus("Speaking… (Interruptible)", "speaking");
+              startInterruptCapture();
+            },
+            onPlayEnd: () => {
+              waveState = "listening";
+              processing = false;
 
-      if (fillerPlaying) {
-        pendingMainAnswer = playMainAnswer;
-      } else {
-        playMainAnswer();
-      }
+              if (listeningMode === "continuous") {
+                listening = true;
+                if (inputMuted) {
+                  showMutedStatusIfIdle();
+                  return;
+                }
+                startListening();
+              }
+            }
+          });
+        } catch (e) {
+          console.warn(e);
+        }
+      })();
       return;
     }
 
@@ -2419,10 +2343,6 @@ async function handleUtterance() {
       hideSidePanel();
       processing = false;
       getAudioEl()?.pause();
-      fillerPlaying = false;
-      pendingMainAnswer = null;
-      mainReplyTtsPending = false;
-      clearTimeout(fillerTimer);
 
       if (listeningMode === "ptt") {
         setStatus("No voice detected", "idle");
@@ -2436,17 +2356,13 @@ async function handleUtterance() {
     if (data.client_action === "mute_input") {
       hideSidePanel();
       voiceUxTurn = null;
-      pendingMainAnswer = null;
       getAudioEl()?.pause();
-      fillerPlaying = false;
       processing = false;
-      mainReplyTtsPending = false;
-      clearTimeout(fillerTimer);
       setContinuousInputMuted(true);
       return;
     }
 
-    addBubble(data.transcript, "user");
+    addBubble(data.transcript, "user", { path: "main-json" });
     if (!document.body.classList.contains("chat-started")) {
       document.body.classList.add("chat-started");
       dismissGuide();
@@ -2485,19 +2401,12 @@ async function handleUtterance() {
       })();
     };
 
-    if (fillerPlaying) {
-      // Store callback until filler ends
-      pendingMainAnswer = playMainAnswer;
-    } else {
-      playMainAnswer();
-    }
+    playMainAnswer();
 
   } catch {
     hideSidePanel();
     processing = false;
     requestInFlight = false;
-    mainReplyTtsPending = false;
-    clearTimeout(fillerTimer);
     setStatus("Server error", "offline");
   }
 }
@@ -2513,8 +2422,6 @@ async function sendTextMessage() {
   // 🔑 recover from offline
   if (statusLine?.classList.contains("offline")) {
     requestInFlight = false;
-    mainReplyTtsPending = false;
-    clearTimeout(fillerTimer);
     processing = false;
     listening = false;
     setStatus("Ready", "idle");
@@ -2527,15 +2434,11 @@ async function sendTextMessage() {
   listening = false;
   processing = true;
   requestInFlight = true;
-  fillerPlayedThisTurn = false;
-  pendingMainAnswer = null;
-  fillerUxSource = "text";
-  scheduleThinkingFiller();
   waveState = "idle";
 
   setStatus("Thinking", "thinking");
 
-  addBubble(text, "user");
+  addBubble(text, "user", { path: "typed-text" });
   if (!document.body.classList.contains("chat-started")) {
     document.body.classList.add("chat-started");
     dismissGuide();
@@ -2557,49 +2460,47 @@ async function sendTextMessage() {
     if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
 
-      const playReply = () => {
-        let ndjsonMeta = null;
-        void (async () => {
-          try {
-            console.log("[UX][TTS] NDJSON streaming (text)");
-            resetAudioHandlers();
-            await runNdjsonTtsPlayback(res, {
-              onMeta: (meta) => {
-                ndjsonMeta = meta;
-              },
-              onDone: (done) => logInferLatency(done, "text", textTtfbMs),
-              onPlayStart: () => {
-                clearFillerForMainTts();
-                logTextFirstAudio("main-reply");
-                logTextMainReplyAudio();
-                applyAssistantReplyAndPanels(ndjsonMeta);
-                waveState = "speaking";
-                audioStartedAt = performance.now();
-                setStatus("Speaking…", "speaking");
-              },
-              onPlayEnd: () => {
-                waveState = "listening";
-                processing = false;
-                listening = true;
-                if (inputMuted) {
-                  showMutedStatusIfIdle();
-                  return;
-                }
-                startListening();
+      let ndjsonMeta = null;
+      const streamReplyState = createNdjsonStreamingReplyState();
+      void (async () => {
+        try {
+          console.log("[UX][TTS] NDJSON streaming (text)");
+          resetAudioHandlers();
+          await runNdjsonTtsPlayback(res, {
+            onMeta: (meta) => {
+              ndjsonMeta = { ...ndjsonMeta, ...meta };
+            },
+            onReplyProgress: (replySoFar) => {
+              if (ndjsonMeta?.reply) return;
+              applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
+            },
+            onDone: (done) => {
+              logInferLatency(done, "text", textTtfbMs);
+              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+            },
+            onPlayStart: () => {
+              logTextFirstAudio("main-reply");
+              logTextMainReplyAudio();
+              applyActionPayload(ndjsonMeta);
+              waveState = "speaking";
+              audioStartedAt = performance.now();
+              setStatus("Speaking…", "speaking");
+            },
+            onPlayEnd: () => {
+              waveState = "listening";
+              processing = false;
+              listening = true;
+              if (inputMuted) {
+                showMutedStatusIfIdle();
+                return;
               }
-            });
-          } catch (e) {
-            console.warn(e);
-            clearFillerForMainTts();
-          }
-        })();
-      };
-
-      if (fillerPlaying) {
-        pendingMainAnswer = playReply;
-      } else {
-        playReply();
-      }
+              startListening();
+            }
+          });
+        } catch (e) {
+          console.warn(e);
+        }
+      })();
       return;
     }
 
@@ -2638,19 +2539,12 @@ async function sendTextMessage() {
       })();
     };
 
-    if (fillerPlaying) {
-      pendingMainAnswer = playReply;
-    } else {
-      playReply();
-    }
+    playReply();
 
   } catch (err) {
     console.error(err);
     hideSidePanel();
     requestInFlight = false;
-    mainReplyTtsPending = false;
-    clearTimeout(fillerTimer);
-    fillerPlaying = false;
     processing = false;
     textUxTurn = null;
     setStatus("Server error", "offline");
