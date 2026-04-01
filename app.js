@@ -223,6 +223,15 @@ const MAX_WAIT_FOR_SPEECH_MS = 2000;
 const MIN_AUDIO_BYTES = 1500;
 const INTERRUPT_MIN_FRAMES = 1;
 
+/**
+ * End-of-utterance (continuous listen + interrupt capture): a frame only resets the
+ * silence timer if RMS and ZCR both look like voiced speech. Room tone / fan / AC often
+ * stays above VOLUME_THRESHOLD but has ZCR outside this band, so the clip can still end
+ * after SILENCE_MS once the user stops talking.
+ */
+const LISTEN_END_ZCR_MIN = 0.022;
+const LISTEN_END_ZCR_MAX = 0.19;
+
 /* Interrupt while TTS plays: RMS / ZCR / crest heuristics + sustain/gap timing (no WASM VAD). */
 /* Voiced-speech band for ZCR (zero-crossings / sample). Outside this → rustle/AC/fan/clicks. */
 const INTERRUPT_ZCR_MIN = 0.028;
@@ -1030,7 +1039,7 @@ function detectInterruptSpeechEnd() {
 
   const now = performance.now();
 
-  if (rms > VOLUME_THRESHOLD) {
+  if (listeningFrameIsSpeechLike(buf, rms)) {
     interruptLastVoiceTime = now;
   }
 
@@ -1055,6 +1064,13 @@ function computeZCR(buf) {
     }
   }
   return crossings / buf.length;
+}
+
+/** RMS + ZCR voiced band — used so background noise alone does not stall end-of-speech. */
+function listeningFrameIsSpeechLike(buf, rms) {
+  if (rms <= VOLUME_THRESHOLD) return false;
+  const zcr = computeZCR(buf);
+  return zcr >= LISTEN_END_ZCR_MIN && zcr <= LISTEN_END_ZCR_MAX;
 }
 
 /** Per-threshold flags for interrupt (RMS/ZCR/crest); all must pass for a frame to count as speech-like. */
@@ -2154,7 +2170,7 @@ function detectSpeech() {
 
   const now = performance.now();
 
-  if (rms > VOLUME_THRESHOLD) {
+  if (listeningFrameIsSpeechLike(buf, rms)) {
     hasSpoken = true;
     lastVoiceTime = now;
   }
