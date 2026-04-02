@@ -233,16 +233,22 @@ const LISTEN_END_ZCR_MIN = 0.022;
 const LISTEN_END_ZCR_MAX = 0.19;
 
 /* Interrupt while TTS plays: RMS / ZCR / crest heuristics + sustain/gap timing (no WASM VAD). */
-/* Voiced-speech band for ZCR (zero-crossings / sample). Outside this → rustle/AC/fan/clicks. */
-const INTERRUPT_ZCR_MIN = 0.028;
-const INTERRUPT_ZCR_MAX = 0.165;
-const MAX_SPEECH_RMS = 0.078;
-const INTERRUPT_RMS = 0.0105;
+/* ZCR band: keep max in line with app.py ZCR_MAX (0.40); a tight max (~0.16) rejects normal speech
+   on many mics (aggregate ZCR often ~0.25–0.35), so interrupt rarely fires. */
+const INTERRUPT_ZCR_MIN = 0.022;
+const INTERRUPT_ZCR_MAX = 0.4;
+/** Upper RMS bound (reject clipping / shout); quiet talk stays well below this. */
+const MAX_SPEECH_RMS = 0.055;
+/**
+ * Lower bound vs silence/noise. Match app.py MIN_AUDIO_RMS (0.003) order of magnitude —
+ * quiet speech fails when this is too high; there is no separate "max" that fixes quietness.
+ */
+const INTERRUPT_RMS = 0.003;
 /**
  * Min accumulated ms where speechLike is true (wall-clock gaps and quiet frames do not count).
  * Interrupt fires only on a speechLike frame after this threshold.
  */
-const INTERRUPT_SUSTAIN_MS = 350;
+const INTERRUPT_SUSTAIN_MS = 100;
 /** Max ms without a speech-like frame before resetting the sustain counter. */
 const INTERRUPT_GAP_RESET_MS = 110;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
@@ -465,6 +471,7 @@ function setContinuousInputMuted(nextMuted) {
   });
 
   if (inputMuted) {
+    stopAllAssistantPlayback();
     if (mediaRecorder && mediaRecorder.state === "recording") {
       suppressNextUtterance = true;
       mediaRecorder.stop();
@@ -876,13 +883,7 @@ function interruptSpeech() {
   if (!htmlPlaying && !webTtsPlaying) return;
 
   setStatus("Listening… (interrupted)", "recording");
-  resetAudioHandlers();
-
-  cancelMainTtsPlayback();
-  if (a) {
-    a.pause();
-    a.currentTime = 0;
-  }
+  stopAllAssistantPlayback();
 
   listening = true;
   processing = false;
@@ -1429,6 +1430,17 @@ function cancelMainTtsPlayback() {
     } catch (_) {
       /* ignore */
     }
+  }
+}
+
+/** Stop assistant TTS: Web Audio BufferSources, NDJSON prefetch, and `<audio>` (same as interrupt teardown). */
+function stopAllAssistantPlayback() {
+  resetAudioHandlers();
+  cancelMainTtsPlayback();
+  const a = getAudioEl();
+  if (a) {
+    a.pause();
+    a.currentTime = 0;
   }
 }
 
