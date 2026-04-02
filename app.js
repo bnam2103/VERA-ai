@@ -1237,6 +1237,23 @@ function renderMobileInterruptVadLogs() {
   if (p2) p2.textContent = text;
 }
 
+function toggleInterruptDebugPanel(prefix) {
+  const panel = document.getElementById(`${prefix}-interrupt-debug-panel`);
+  const btn = document.getElementById(`${prefix}-interrupt-debug-toggle`);
+  const headerBtn = document.getElementById(`${prefix}-interrupt-debug-header`);
+  if (!panel) return;
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  const expanded = opening ? "true" : "false";
+  btn?.setAttribute("aria-expanded", expanded);
+  headerBtn?.setAttribute("aria-expanded", expanded);
+  if (opening) {
+    requestAnimationFrame(() => {
+      panel.scrollIntoView({ block: "end", behavior: "smooth" });
+    });
+  }
+}
+
 function wireMobileInterruptDebugUi() {
   if (!IS_MOBILE) return;
   pushMobileInterruptVadLog(
@@ -1244,14 +1261,13 @@ function wireMobileInterruptDebugUi() {
   );
   ["vera", "bmo"].forEach((prefix) => {
     const btn = document.getElementById(`${prefix}-interrupt-debug-toggle`);
+    const headerBtn = document.getElementById(`${prefix}-interrupt-debug-header`);
     const panel = document.getElementById(`${prefix}-interrupt-debug-panel`);
     const clearBtn = document.getElementById(`${prefix}-interrupt-debug-clear`);
-    if (!btn || !panel) return;
-    btn.addEventListener("click", () => {
-      const open = panel.hidden;
-      panel.hidden = !open;
-      btn.setAttribute("aria-expanded", open ? "true" : "false");
-    });
+    if (!panel) return;
+    const toggle = () => toggleInterruptDebugPanel(prefix);
+    btn?.addEventListener("click", toggle);
+    headerBtn?.addEventListener("click", toggle);
     clearBtn?.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();

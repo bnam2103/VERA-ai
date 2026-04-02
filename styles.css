@@ -2404,6 +2404,11 @@ body.chat-started .input-toggle-btn {
   pointer-events: none;
 }
 
+/* Interrupt / VAD debug (sibling of .input-bar): parent has pointer-events: none */
+.interrupt-debug-extender {
+  pointer-events: auto;
+}
+
 .input-toggle-btn {
   pointer-events: auto;
 }
@@ -2505,6 +2510,12 @@ body.chat-started .input-bar {
 
 .vera-app-header .nav-logo.nav-logo-bmo:hover {
   opacity: 1;
+}
+
+.vera-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .chat-logo {
@@ -3228,6 +3239,73 @@ body.chat-started .vera-guide {
     transform: none !important;
     filter: none !important;
   }
+
+  body.chat-started .input-container {
+    flex-wrap: wrap;
+    align-content: flex-end;
+    align-items: flex-end;
+    row-gap: 6px;
+  }
+  .interrupt-debug-extender.mobile-only {
+    display: block;
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: min(760px, 100%);
+    margin-top: 0;
+    padding: 0 8px;
+    box-sizing: border-box;
+    text-align: center;
+  }
+  .interrupt-debug-header-btn {
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(0, 0, 0, 0.35);
+    color: rgba(255, 255, 255, 0.85);
+    cursor: pointer;
+    pointer-events: auto;
+  }
+  .interrupt-debug-toggle {
+    display: inline-block;
+    padding: 6px 10px;
+    font-size: 11px;
+    opacity: 0.85;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: inherit;
+    cursor: pointer;
+  }
+  .interrupt-debug-panel {
+    margin-top: 6px;
+  }
+  .interrupt-debug-pre {
+    display: block;
+    max-height: 38vh;
+    overflow: auto;
+    font-size: 10px;
+    line-height: 1.35;
+    margin: 0;
+    padding: 8px;
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: ui-monospace, monospace;
+  }
+  .interrupt-debug-clear {
+    margin-top: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    opacity: 0.9;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
   #server-status-inline,
   #vera-server-status-inline,
   #bmo-server-status-inline {
