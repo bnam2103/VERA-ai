@@ -607,19 +607,9 @@
 
     <div class="chat-header vera-app-header">
       <button id="return-home-vera" class="nav-logo" type="button">VERA</button>
-      <div class="vera-header-actions">
-        <button
-          type="button"
-          id="vera-interrupt-debug-header"
-          class="interrupt-debug-header-btn mobile-only"
-          aria-controls="vera-interrupt-debug-panel"
-        >
-          VAD log
-        </button>
-        <button type="button" id="open-bmo-from-vera" class="nav-logo nav-logo-bmo">
-          BMO
-        </button>
-      </div>
+      <button type="button" id="open-bmo-from-vera" class="nav-logo nav-logo-bmo">
+        BMO
+      </button>
     </div>
 
     <div class="chat-main">
@@ -662,23 +652,6 @@
           spellcheck="false"
         />
         <button id="vera-send-text" type="button" title="Send message">➤</button>
-      </div>
-      <div class="interrupt-debug-extender mobile-only">
-        <button
-          type="button"
-          id="vera-interrupt-debug-toggle"
-          class="interrupt-debug-toggle"
-          aria-expanded="false"
-          aria-controls="vera-interrupt-debug-panel"
-        >
-          Interrupt / VAD log
-        </button>
-        <div id="vera-interrupt-debug-panel" class="interrupt-debug-panel" hidden>
-          <pre id="vera-interrupt-debug-pre" class="interrupt-debug-pre" aria-live="polite"></pre>
-          <button type="button" id="vera-interrupt-debug-clear" class="interrupt-debug-clear">
-            Clear
-          </button>
-        </div>
       </div>
     </div>
 
@@ -744,14 +717,6 @@
         <div class="chat-header bmo-chat-header">
           <button id="return-home" class="nav-logo bmo-home-btn" type="button">
             VERA
-          </button>
-          <button
-            type="button"
-            id="bmo-interrupt-debug-header"
-            class="interrupt-debug-header-btn mobile-only"
-            aria-controls="bmo-interrupt-debug-panel"
-          >
-            VAD log
           </button>
         </div>
 
@@ -908,23 +873,6 @@
             spellcheck="false"
           />
           <button id="bmo-send-text" type="button" title="Send message">➤</button>
-        </div>
-      </div>
-      <div class="interrupt-debug-extender mobile-only">
-        <button
-          type="button"
-          id="bmo-interrupt-debug-toggle"
-          class="interrupt-debug-toggle"
-          aria-expanded="false"
-          aria-controls="bmo-interrupt-debug-panel"
-        >
-          Interrupt / VAD log
-        </button>
-        <div id="bmo-interrupt-debug-panel" class="interrupt-debug-panel" hidden>
-          <pre id="bmo-interrupt-debug-pre" class="interrupt-debug-pre" aria-live="polite"></pre>
-          <button type="button" id="bmo-interrupt-debug-clear" class="interrupt-debug-clear">
-            Clear
-          </button>
         </div>
       </div>
     </div>

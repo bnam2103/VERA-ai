@@ -3240,13 +3240,13 @@ body.chat-started .vera-guide {
     filter: none !important;
   }
 
-  body.chat-started .input-container {
+  body.vad-log-mode.chat-started .input-container {
     flex-wrap: wrap;
     align-content: flex-end;
     align-items: flex-end;
     row-gap: 6px;
   }
-  .interrupt-debug-extender.mobile-only {
+  body.vad-log-mode .interrupt-debug-extender {
     display: block;
     flex: 1 1 100%;
     width: 100%;
@@ -3256,7 +3256,7 @@ body.chat-started .vera-guide {
     box-sizing: border-box;
     text-align: center;
   }
-  .interrupt-debug-header-btn {
+  body.vad-log-mode .interrupt-debug-header-btn {
     padding: 6px 10px;
     font-size: 11px;
     font-weight: 500;
@@ -3269,7 +3269,7 @@ body.chat-started .vera-guide {
     cursor: pointer;
     pointer-events: auto;
   }
-  .interrupt-debug-toggle {
+  body.vad-log-mode .interrupt-debug-toggle {
     display: inline-block;
     padding: 6px 10px;
     font-size: 11px;
@@ -3280,10 +3280,10 @@ body.chat-started .vera-guide {
     color: inherit;
     cursor: pointer;
   }
-  .interrupt-debug-panel {
+  body.vad-log-mode .interrupt-debug-panel {
     margin-top: 6px;
   }
-  .interrupt-debug-pre {
+  body.vad-log-mode .interrupt-debug-pre {
     display: block;
     max-height: 38vh;
     overflow: auto;
@@ -3297,7 +3297,7 @@ body.chat-started .vera-guide {
     word-break: break-word;
     font-family: ui-monospace, monospace;
   }
-  .interrupt-debug-clear {
+  body.vad-log-mode .interrupt-debug-clear {
     margin-top: 6px;
     padding: 4px 10px;
     font-size: 11px;

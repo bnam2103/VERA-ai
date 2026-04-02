@@ -121,10 +121,6 @@ let lastMobileVadSampleLogAt = 0;
 const MOBILE_VAD_SAMPLE_INTERVAL_MS = 220;
 const INTERRUPT_VAD_LOG_MAX = 200;
 let interruptVadLogLines = [];
-/** Start time of current continuous `MediaRecorder` segment (for max-duration cap). */
-let continuousListenStartAt = 0;
-/** Reused FFT buffer for continuous-listen spectral gating. */
-let listeningFreqBuf = null;
 let pttRecording = false;
 let inputMuted = false;
 let suppressNextUtterance = false;
@@ -261,6 +257,17 @@ function logInferLatency(data, label, clientTtfbMs) {
 
 const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
 
+function hasMobileVadLogQuery() {
+  try {
+    return new URLSearchParams(window.location.search).get("vadlog") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Mobile viewport + `?vadlog=1` — inject VAD/interrupt debug UI and capture log lines. */
+const MOBILE_VAD_DEBUG = IS_MOBILE && hasMobileVadLogQuery();
+
 const VOLUME_THRESHOLD = 0.0078; // slightly lower so quieter speech starts more reliably
 const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
@@ -276,17 +283,6 @@ const INTERRUPT_MIN_FRAMES = 1;
  */
 const LISTEN_END_ZCR_MIN = 0.022;
 const LISTEN_END_ZCR_MAX = 0.19;
-
-/**
- * Continuous listen end-of-utterance: music and non-voice noise often match RMS+ZCR like speech.
- * Extra gates (FFT band ratios + crest) reduce false "still speaking" refreshes; not perfect vs dense vocals.
- */
-const LISTEN_CONTINUOUS_MAX_CREST = 58;
-const CONTINUOUS_SPEECH_MID_RATIO_MIN = 0.12;
-const CONTINUOUS_MAX_LOW_RATIO = 0.82;
-const CONTINUOUS_MAX_HIGH_RATIO = 0.48;
-/** Hard cap so loud ambient never records forever. */
-const MAX_CONTINUOUS_UTTERANCE_MS = 45000;
 
 /* Interrupt while TTS plays: RMS / ZCR / crest heuristics + sustain/gap timing (no WASM VAD). */
 /* Voiced-speech band for ZCR (zero-crossings / sample). Outside this → rustle/AC/fan/clicks. */
@@ -1083,7 +1079,7 @@ function detectInterrupt() {
       }
 
       if (
-        IS_MOBILE &&
+        MOBILE_VAD_DEBUG &&
         now - lastMobileVadSampleLogAt >= MOBILE_VAD_SAMPLE_INTERVAL_MS
       ) {
         lastMobileVadSampleLogAt = now;
@@ -1153,71 +1149,11 @@ function computeZCR(buf) {
   return crossings / buf.length;
 }
 
-/** RMS + ZCR voiced band — interrupt capture after TTS; keep lighter than continuous listen. */
+/** RMS + ZCR voiced band — used so background noise alone does not stall end-of-speech. */
 function listeningFrameIsSpeechLike(buf, rms) {
   if (rms <= VOLUME_THRESHOLD) return false;
   const zcr = computeZCR(buf);
   return zcr >= LISTEN_END_ZCR_MIN && zcr <= LISTEN_END_ZCR_MAX;
-}
-
-function computePeakAbs(buf) {
-  let peak = 0;
-  for (let i = 0; i < buf.length; i++) {
-    const a = Math.abs(buf[i]);
-    if (a > peak) peak = a;
-  }
-  return peak;
-}
-
-/** Energy ratios from mic analyser: low rumble / speech band / high air vs total. */
-function getContinuousListenSpectralRatios() {
-  if (!analyser || !audioCtx) return null;
-  const nBins = analyser.frequencyBinCount;
-  if (!listeningFreqBuf || listeningFreqBuf.length !== nBins) {
-    listeningFreqBuf = new Uint8Array(nBins);
-  }
-  analyser.getByteFrequencyData(listeningFreqBuf);
-  const nyquist = audioCtx.sampleRate / 2;
-  let low = 0;
-  let mid = 0;
-  let high = 0;
-  let total = 0;
-  for (let i = 0; i < nBins; i++) {
-    const hz = (i / nBins) * nyquist;
-    const e = listeningFreqBuf[i] * listeningFreqBuf[i];
-    total += e;
-    if (hz < 280) low += e;
-    else if (hz <= 3800) mid += e;
-    else high += e;
-  }
-  if (total < 1e-9) {
-    return { ok: false, lowRatio: 0, midRatio: 0, highRatio: 0 };
-  }
-  return {
-    ok: true,
-    lowRatio: low / total,
-    midRatio: mid / total,
-    highRatio: high / total,
-  };
-}
-
-/**
- * Stricter than `listeningFrameIsSpeechLike`: same RMS+ZCR base, plus crest + spectral bands
- * so loud music (often bass-heavy or crash-heavy) stops refreshing the silence clock as often.
- */
-function continuousSpeechFrameIsLikelyUserVoice(buf, rms) {
-  if (rms <= VOLUME_THRESHOLD) return false;
-  const zcr = computeZCR(buf);
-  if (zcr < LISTEN_END_ZCR_MIN || zcr > LISTEN_END_ZCR_MAX) return false;
-  const peak = computePeakAbs(buf);
-  const crest = peak / (rms + 1e-8);
-  if (crest > LISTEN_CONTINUOUS_MAX_CREST) return false;
-  const spec = getContinuousListenSpectralRatios();
-  if (!spec || !spec.ok) return false;
-  if (spec.midRatio < CONTINUOUS_SPEECH_MID_RATIO_MIN) return false;
-  if (spec.lowRatio > CONTINUOUS_MAX_LOW_RATIO) return false;
-  if (spec.highRatio > CONTINUOUS_MAX_HIGH_RATIO) return false;
-  return true;
 }
 
 /** Per-threshold flags for interrupt (RMS/ZCR/crest); all must pass for a frame to count as speech-like. */
@@ -1295,7 +1231,7 @@ function logInterruptTriggerReason({
 }
 
 function pushMobileInterruptVadLog(msg) {
-  if (!IS_MOBILE) return;
+  if (!MOBILE_VAD_DEBUG) return;
   const t = new Date().toISOString().slice(11, 23);
   interruptVadLogLines.push(`[${t}] ${msg}`);
   if (interruptVadLogLines.length > INTERRUPT_VAD_LOG_MAX) {
@@ -1329,8 +1265,81 @@ function toggleInterruptDebugPanel(prefix) {
   }
 }
 
+function injectMobileVadLogUiIfNeeded() {
+  if (!MOBILE_VAD_DEBUG) return;
+  document.body.classList.add("vad-log-mode");
+
+  const veraHeader = document.querySelector("#vera-app .vera-app-header");
+  const veraOpenBmo = document.getElementById("open-bmo-from-vera");
+  if (veraHeader && veraOpenBmo && !document.getElementById("vera-interrupt-debug-header")) {
+    const wrap = document.createElement("div");
+    wrap.className = "vera-header-actions";
+    const vadBtn = document.createElement("button");
+    vadBtn.type = "button";
+    vadBtn.id = "vera-interrupt-debug-header";
+    vadBtn.className = "interrupt-debug-header-btn";
+    vadBtn.setAttribute("aria-controls", "vera-interrupt-debug-panel");
+    vadBtn.textContent = "VAD log";
+    veraOpenBmo.parentNode.insertBefore(wrap, veraOpenBmo);
+    wrap.appendChild(vadBtn);
+    wrap.appendChild(veraOpenBmo);
+  }
+
+  const bmoHeader = document.querySelector("#bmo-page .bmo-chat-header");
+  if (bmoHeader && !document.getElementById("bmo-interrupt-debug-header")) {
+    const vadBtn = document.createElement("button");
+    vadBtn.type = "button";
+    vadBtn.id = "bmo-interrupt-debug-header";
+    vadBtn.className = "interrupt-debug-header-btn";
+    vadBtn.setAttribute("aria-controls", "bmo-interrupt-debug-panel");
+    vadBtn.textContent = "VAD log";
+    bmoHeader.appendChild(vadBtn);
+  }
+
+  function buildExtender(prefix) {
+    const wrap = document.createElement("div");
+    wrap.className = "interrupt-debug-extender";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.id = `${prefix}-interrupt-debug-toggle`;
+    toggle.className = "interrupt-debug-toggle";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", `${prefix}-interrupt-debug-panel`);
+    toggle.textContent = "Interrupt / VAD log";
+    const panel = document.createElement("div");
+    panel.id = `${prefix}-interrupt-debug-panel`;
+    panel.className = "interrupt-debug-panel";
+    panel.hidden = true;
+    const pre = document.createElement("pre");
+    pre.id = `${prefix}-interrupt-debug-pre`;
+    pre.className = "interrupt-debug-pre";
+    pre.setAttribute("aria-live", "polite");
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.id = `${prefix}-interrupt-debug-clear`;
+    clearBtn.className = "interrupt-debug-clear";
+    clearBtn.textContent = "Clear";
+    panel.appendChild(pre);
+    panel.appendChild(clearBtn);
+    wrap.appendChild(toggle);
+    wrap.appendChild(panel);
+    return wrap;
+  }
+
+  const veraIc = document.querySelector("#vera-app .input-container");
+  if (veraIc && !document.getElementById("vera-interrupt-debug-panel")) {
+    veraIc.appendChild(buildExtender("vera"));
+  }
+
+  const bmoIc = document.querySelector("#bmo-page .input-container");
+  if (bmoIc && !document.getElementById("bmo-interrupt-debug-panel")) {
+    bmoIc.appendChild(buildExtender("bmo"));
+  }
+}
+
 function wireMobileInterruptDebugUi() {
-  if (!IS_MOBILE) return;
+  if (!MOBILE_VAD_DEBUG) return;
+  injectMobileVadLogUiIfNeeded();
   pushMobileInterruptVadLog(
     `sustain=${getInterruptSustainMs()}ms (${INTERRUPT_SUSTAIN_MS_PHONE}ms phone / ${INTERRUPT_SUSTAIN_MS_DESKTOP}ms desktop viewport)`
   );
@@ -2505,19 +2514,9 @@ function detectSpeech() {
 
   const now = performance.now();
 
-  if (continuousSpeechFrameIsLikelyUserVoice(buf, rms)) {
+  if (listeningFrameIsSpeechLike(buf, rms)) {
     hasSpoken = true;
     lastVoiceTime = now;
-  }
-
-  if (
-    hasSpoken &&
-    now - continuousListenStartAt > MAX_CONTINUOUS_UTTERANCE_MS &&
-    (getAudioEl()?.paused ?? true)
-  ) {
-    beginVoiceUxTurn();
-    mediaRecorder.stop();
-    return;
   }
 
   if (
@@ -2572,7 +2571,6 @@ function startListening() {
   audioChunks = [];
   hasSpoken = false;
   lastVoiceTime = 0;
-  continuousListenStartAt = performance.now();
 
   mediaRecorder = new MediaRecorder(micStream);
   mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
