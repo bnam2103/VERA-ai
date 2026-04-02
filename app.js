@@ -1697,8 +1697,9 @@ async function playTtsUrlSequenceIncremental(
 }
 
 /**
- * Consume application/x-ndjson: meta → chunk → … → done. Prefetches the next URL while decoding/playing.
- * Within each parsed batch, enqueue chunk URLs before onMeta so GET /audio/ can start while bubbles render.
+ * Consume application/x-ndjson: asr (optional) → meta → chunk → … → done. Prefetches the next URL while decoding/playing.
+ * Each parsed line batch must be handled in stream order: meta before chunks, or the user transcript bubble
+ * can appear after the assistant (same bug for main infer and interrupt NDJSON).
  * First-sentence assistant text is applied in onBeforeFirstPlay (after decode, before src.start) so it aligns with audio.
  */
 async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEnd, onReplyProgress }) {
@@ -1709,6 +1710,20 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
   let buf = "";
   const queue = createTtsUrlQueue();
   let loggedFirstChunk = false;
+  /** User bubble from transcript: once from early `asr` line or from `meta` (older servers). */
+  let userTranscriptBubbleSeen = false;
+  function wrapOnMeta(meta) {
+    if (!onMeta || !meta) return;
+    const m = { ...meta };
+    if (m.transcript) {
+      if (userTranscriptBubbleSeen) {
+        delete m.transcript;
+      } else {
+        userTranscriptBubbleSeen = true;
+      }
+    }
+    onMeta(m);
+  }
   /** First-sentence text is deferred until first audio buffer is decoded (sync with playback start). */
   let pendingFirstReplySoFar = null;
   let deferFirstReply = true;
@@ -1744,7 +1759,13 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
           }
         }
         for (const obj of objs) {
-          if (obj.type === "chunk" && obj.url) {
+          if (obj.type === "asr" && obj.transcript != null) {
+            wrapOnMeta({ transcript: String(obj.transcript) });
+            logVoicePipe("NDJSON asr line (user transcript early)");
+          } else if (obj.type === "meta") {
+            wrapOnMeta(obj);
+            logVoicePipe("NDJSON meta line (UI can attach transcript)");
+          } else if (obj.type === "chunk" && obj.url) {
             if (mainTtsPlaybackToken !== sessionToken) {
               queue.end();
               return;
@@ -1763,12 +1784,6 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
                 lastEmittedReplySoFar = String(obj.reply_so_far);
               }
             }
-          }
-        }
-        for (const obj of objs) {
-          if (obj.type === "meta") {
-            onMeta(obj);
-            logVoicePipe("NDJSON meta line (UI can attach transcript)");
           } else if (obj.type === "done") {
             if (onDone) onDone(obj);
             queue.end();
