@@ -140,58 +140,6 @@ function voiceTranscriptDebugEnabled() {
   }
 }
 
-/** On-screen interrupt telemetry (no console). Enable: `?interrupt_hud=1` or `localStorage VERA_INTERRUPT_HUD="1"`. */
-function interruptHudEnabled() {
-  try {
-    if (typeof window === "undefined") return false;
-    if (localStorage.getItem("VERA_INTERRUPT_HUD") === "1") return true;
-    if (sessionStorage.getItem("VERA_INTERRUPT_HUD") === "1") return true;
-  } catch (_) {
-    /* private mode */
-  }
-  try {
-    return new URLSearchParams(window.location.search).get("interrupt_hud") === "1";
-  } catch (_) {
-    return false;
-  }
-}
-
-let interruptHudEl = null;
-
-function updateInterruptHudText(lines) {
-  if (!interruptHudEnabled()) {
-    if (interruptHudEl) interruptHudEl.hidden = true;
-    return;
-  }
-  if (!interruptHudEl) {
-    interruptHudEl = document.createElement("div");
-    interruptHudEl.id = "vera-interrupt-hud";
-    interruptHudEl.setAttribute("aria-hidden", "true");
-    interruptHudEl.title =
-      "Interrupt HUD: add ?interrupt_hud=1 to URL or set localStorage VERA_INTERRUPT_HUD=1";
-    interruptHudEl.style.cssText = [
-      "position:fixed",
-      "bottom:0",
-      "left:0",
-      "right:0",
-      "z-index:99999",
-      "pointer-events:none",
-      "font:11px/1.35 ui-monospace,monospace",
-      "color:#cfefd7",
-      "background:rgba(0,0,0,.88)",
-      "padding:6px 8px 8px",
-      "border-top:1px solid #3a5",
-      "margin:0",
-      "max-height:32vh",
-      "overflow:auto",
-      "-webkit-overflow-scrolling:touch"
-    ].join(";");
-    document.body.appendChild(interruptHudEl);
-  }
-  interruptHudEl.hidden = false;
-  interruptHudEl.textContent = lines.join("\n");
-}
-
 /**
  * @param {"final"} phase — committed user line (bubble) from `/infer`.
  * @param {Record<string, unknown>} [meta] — e.g. { path: "main-ndjson" }
@@ -268,9 +216,6 @@ function logInferLatency(data, label, clientTtfbMs) {
    CONFIG
 ========================= */
 
-/** Narrow viewport ≈ phone layout; used for interrupt sustain (RAF is sparser on many phones). */
-const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
-
 const VOLUME_THRESHOLD = 0.0078; // slightly lower so quieter speech starts more reliably
 const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
@@ -288,22 +233,16 @@ const LISTEN_END_ZCR_MIN = 0.022;
 const LISTEN_END_ZCR_MAX = 0.19;
 
 /* Interrupt while TTS plays: RMS / ZCR / crest heuristics + sustain/gap timing (no WASM VAD). */
-/* ZCR band: keep max in line with app.py ZCR_MAX (0.40); a tight max (~0.16) rejects normal speech
-   on many mics (aggregate ZCR often ~0.25–0.35), so interrupt rarely fires. */
-const INTERRUPT_ZCR_MIN = 0.022;
-const INTERRUPT_ZCR_MAX = 0.4;
-/** Upper RMS bound (reject clipping / shout); quiet talk stays well below this. */
-const MAX_SPEECH_RMS = 0.055;
-/**
- * Lower bound vs silence/noise. Match app.py MIN_AUDIO_RMS (0.003) order of magnitude —
- * quiet speech fails when this is too high; there is no separate "max" that fixes quietness.
- */
-const INTERRUPT_RMS = 0.003;
+/* Voiced-speech band for ZCR (zero-crossings / sample). Outside this → rustle/AC/fan/clicks. */
+const INTERRUPT_ZCR_MIN = 0.028;
+const INTERRUPT_ZCR_MAX = 0.165;
+const MAX_SPEECH_RMS = 0.078;
+const INTERRUPT_RMS = 0.0105;
 /**
  * Min accumulated ms where speechLike is true (wall-clock gaps and quiet frames do not count).
- * Narrow viewport: 100 ms (desktop 350 ms) — mobile often accumulates “good” frames more slowly per wall second.
+ * Interrupt fires only on a speechLike frame after this threshold.
  */
-const INTERRUPT_SUSTAIN_MS = IS_MOBILE ? 100 : 350;
+const INTERRUPT_SUSTAIN_MS = 350;
 /** Max ms without a speech-like frame before resetting the sustain counter. */
 const INTERRUPT_GAP_RESET_MS = 110;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
@@ -393,6 +332,8 @@ const serverStatusEl = document.getElementById("server-status");
 const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
 const feedbackStatusEl = document.getElementById("feedback-status");
+
+const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
 
 /* =========================
    SERVER HEALTH
@@ -524,10 +465,18 @@ function setContinuousInputMuted(nextMuted) {
   });
 
   if (inputMuted) {
-    stopAllAssistantPlayback();
     if (mediaRecorder && mediaRecorder.state === "recording") {
       suppressNextUtterance = true;
       mediaRecorder.stop();
+    }
+
+    /* Same as interrupt: stop <audio>, Web Audio chunk queue, and NDJSON TTS stream. */
+    resetAudioHandlers();
+    cancelMainTtsPlayback();
+    const a = getAudioEl();
+    if (a) {
+      a.pause();
+      a.currentTime = 0;
     }
 
     processing = false;
@@ -936,7 +885,13 @@ function interruptSpeech() {
   if (!htmlPlaying && !webTtsPlaying) return;
 
   setStatus("Listening… (interrupted)", "recording");
-  stopAllAssistantPlayback();
+  resetAudioHandlers();
+
+  cancelMainTtsPlayback();
+  if (a) {
+    a.pause();
+    a.currentTime = 0;
+  }
 
   listening = true;
   processing = false;
@@ -977,9 +932,6 @@ function detectInterrupt() {
 
   const now = performance.now();
 
-  const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
-  const speechLike = heuristicChecks.passes;
-
   // Only interrupt while main TTS is playing: single-file uses <audio>; chunked/streaming uses Web Audio BufferSources.
   const outAudio = getAudioEl();
   const htmlAudioPlaying = outAudio && !outAudio.paused;
@@ -994,6 +946,9 @@ function detectInterrupt() {
       const dtRaw = lastInterruptDetectTime ? now - lastInterruptDetectTime : 0;
       const dt = Math.min(Math.max(dtRaw, 0), 80);
       lastInterruptDetectTime = now;
+
+      const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
+      const speechLike = heuristicChecks.passes;
 
       if (speechLike) {
         interruptSpeechAccumMs += dt;
@@ -1066,26 +1021,6 @@ function detectInterrupt() {
     lastInterruptDetectTime = 0;
     interruptLastSpeechLikeTime = 0;
     lastInterruptSpeechLikeSnapshot = null;
-  }
-
-  if (interruptHudEnabled()) {
-    const cont = listeningMode === "continuous";
-    const graceOk = now - audioStartedAt > 200;
-    const ttsOn = cont && (htmlAudioPlaying || webAudioMainTtsPlaying);
-    const fail = [];
-    if (!heuristicChecks.rmsAboveMin) fail.push("rms_lo");
-    if (!heuristicChecks.rmsBelowMax) fail.push("rms_hi");
-    if (!heuristicChecks.zcrInRange) fail.push("zcr");
-    if (!heuristicChecks.crestOk) fail.push("crest");
-    updateInterruptHudText([
-      `interrupt HUD | tts=${ttsOn ? "on" : "off"} html=${!!htmlAudioPlaying} web=${!!webAudioMainTtsPlaying} cont=${cont} grace=${graceOk}`,
-      `rms=${rms.toFixed(4)} zcr=${zcr.toFixed(3)} crest=${crest.toFixed(1)} | pass=${speechLike} fail=${fail[0] ?? "—"}`,
-      `accum=${interruptSpeechAccumMs.toFixed(0)}/${INTERRUPT_SUSTAIN_MS}ms`,
-      `thresh rms>${INTERRUPT_RMS} rms<${MAX_SPEECH_RMS} zcr[${INTERRUPT_ZCR_MIN},${INTERRUPT_ZCR_MAX}]`,
-      "?interrupt_hud=1 or localStorage VERA_INTERRUPT_HUD=1"
-    ]);
-  } else if (interruptHudEl) {
-    interruptHudEl.hidden = true;
   }
 
   requestAnimationFrame(detectInterrupt);
@@ -1503,17 +1438,6 @@ function cancelMainTtsPlayback() {
     } catch (_) {
       /* ignore */
     }
-  }
-}
-
-/** Stop assistant TTS: Web Audio BufferSources, NDJSON prefetch, and `<audio>` (same as interrupt teardown). */
-function stopAllAssistantPlayback() {
-  resetAudioHandlers();
-  cancelMainTtsPlayback();
-  const a = getAudioEl();
-  if (a) {
-    a.pause();
-    a.currentTime = 0;
   }
 }
 
