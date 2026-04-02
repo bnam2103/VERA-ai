@@ -301,9 +301,9 @@ const MAX_SPEECH_RMS = 0.055;
 const INTERRUPT_RMS = 0.003;
 /**
  * Min accumulated ms where speechLike is true (wall-clock gaps and quiet frames do not count).
- * Shorter on narrow viewports — mobile often accumulates “good” frames more slowly per wall second.
+ * Narrow viewport: 66 ms (desktop 350 ms) — mobile often accumulates “good” frames more slowly per wall second.
  */
-const INTERRUPT_SUSTAIN_MS = IS_MOBILE ? 100 : 350;
+const INTERRUPT_SUSTAIN_MS = IS_MOBILE ? 66 : 350;
 /** Max ms without a speech-like frame before resetting the sustain counter. */
 const INTERRUPT_GAP_RESET_MS = 110;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
