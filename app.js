@@ -866,7 +866,6 @@ function applyNdjsonStreamingReplySoFar(replySoFar, state) {
 /** After NDJSON done: sync bubble to final reply, or add bubble if no streaming partials. */
 function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   if (!done?.reply) return;
-  if (ndjsonMeta?.reply) return;
   if (state.bubble?.isConnected) {
     state.bubble.textContent = done.reply;
     return;
@@ -1255,7 +1254,6 @@ async function handleInterruptUtterance(blob) {
               }
             },
             onReplyProgress: (replySoFar) => {
-              if (ndjsonMeta?.reply) return;
               applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
             },
             onDone: (done) => {
@@ -2321,7 +2319,6 @@ async function handleUtterance() {
               }
             },
             onReplyProgress: (replySoFar) => {
-              if (ndjsonMeta?.reply) return;
               applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
             },
             onDone: (done) => {
@@ -2496,7 +2493,6 @@ async function sendTextMessage() {
               ndjsonMeta = { ...ndjsonMeta, ...meta };
             },
             onReplyProgress: (replySoFar) => {
-              if (ndjsonMeta?.reply) return;
               applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
             },
             onDone: (done) => {
