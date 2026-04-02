@@ -248,7 +248,7 @@ const INTERRUPT_RMS = 0.003;
  * Min accumulated ms where speechLike is true (wall-clock gaps and quiet frames do not count).
  * Interrupt fires only on a speechLike frame after this threshold.
  */
-const INTERRUPT_SUSTAIN_MS = 200;
+const INTERRUPT_SUSTAIN_MS = 350;
 /** Max ms without a speech-like frame before resetting the sustain counter. */
 const INTERRUPT_GAP_RESET_MS = 110;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
