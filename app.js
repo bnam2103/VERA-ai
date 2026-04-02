@@ -268,6 +268,9 @@ function logInferLatency(data, label, clientTtfbMs) {
    CONFIG
 ========================= */
 
+/** Narrow viewport ≈ phone layout; used for interrupt sustain (RAF is sparser on many phones). */
+const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
+
 const VOLUME_THRESHOLD = 0.0078; // slightly lower so quieter speech starts more reliably
 const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
@@ -298,9 +301,9 @@ const MAX_SPEECH_RMS = 0.055;
 const INTERRUPT_RMS = 0.003;
 /**
  * Min accumulated ms where speechLike is true (wall-clock gaps and quiet frames do not count).
- * Interrupt fires only on a speechLike frame after this threshold.
+ * Shorter on narrow viewports — mobile often accumulates “good” frames more slowly per wall second.
  */
-const INTERRUPT_SUSTAIN_MS = 350;
+const INTERRUPT_SUSTAIN_MS = IS_MOBILE ? 100 : 350;
 /** Max ms without a speech-like frame before resetting the sustain counter. */
 const INTERRUPT_GAP_RESET_MS = 110;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
@@ -390,8 +393,6 @@ const serverStatusEl = document.getElementById("server-status");
 const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
 const feedbackStatusEl = document.getElementById("feedback-status");
-
-const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
 
 /* =========================
    SERVER HEALTH
