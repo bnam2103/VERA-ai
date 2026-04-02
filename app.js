@@ -121,6 +121,10 @@ let lastMobileVadSampleLogAt = 0;
 const MOBILE_VAD_SAMPLE_INTERVAL_MS = 220;
 const INTERRUPT_VAD_LOG_MAX = 200;
 let interruptVadLogLines = [];
+/** Start time of current continuous `MediaRecorder` segment (for max-duration cap). */
+let continuousListenStartAt = 0;
+/** Reused FFT buffer for continuous-listen spectral gating. */
+let listeningFreqBuf = null;
 let pttRecording = false;
 let inputMuted = false;
 let suppressNextUtterance = false;
@@ -272,6 +276,17 @@ const INTERRUPT_MIN_FRAMES = 1;
  */
 const LISTEN_END_ZCR_MIN = 0.022;
 const LISTEN_END_ZCR_MAX = 0.19;
+
+/**
+ * Continuous listen end-of-utterance: music and non-voice noise often match RMS+ZCR like speech.
+ * Extra gates (FFT band ratios + crest) reduce false "still speaking" refreshes; not perfect vs dense vocals.
+ */
+const LISTEN_CONTINUOUS_MAX_CREST = 58;
+const CONTINUOUS_SPEECH_MID_RATIO_MIN = 0.12;
+const CONTINUOUS_MAX_LOW_RATIO = 0.82;
+const CONTINUOUS_MAX_HIGH_RATIO = 0.48;
+/** Hard cap so loud ambient never records forever. */
+const MAX_CONTINUOUS_UTTERANCE_MS = 45000;
 
 /* Interrupt while TTS plays: RMS / ZCR / crest heuristics + sustain/gap timing (no WASM VAD). */
 /* Voiced-speech band for ZCR (zero-crossings / sample). Outside this → rustle/AC/fan/clicks. */
@@ -1138,11 +1153,71 @@ function computeZCR(buf) {
   return crossings / buf.length;
 }
 
-/** RMS + ZCR voiced band — used so background noise alone does not stall end-of-speech. */
+/** RMS + ZCR voiced band — interrupt capture after TTS; keep lighter than continuous listen. */
 function listeningFrameIsSpeechLike(buf, rms) {
   if (rms <= VOLUME_THRESHOLD) return false;
   const zcr = computeZCR(buf);
   return zcr >= LISTEN_END_ZCR_MIN && zcr <= LISTEN_END_ZCR_MAX;
+}
+
+function computePeakAbs(buf) {
+  let peak = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const a = Math.abs(buf[i]);
+    if (a > peak) peak = a;
+  }
+  return peak;
+}
+
+/** Energy ratios from mic analyser: low rumble / speech band / high air vs total. */
+function getContinuousListenSpectralRatios() {
+  if (!analyser || !audioCtx) return null;
+  const nBins = analyser.frequencyBinCount;
+  if (!listeningFreqBuf || listeningFreqBuf.length !== nBins) {
+    listeningFreqBuf = new Uint8Array(nBins);
+  }
+  analyser.getByteFrequencyData(listeningFreqBuf);
+  const nyquist = audioCtx.sampleRate / 2;
+  let low = 0;
+  let mid = 0;
+  let high = 0;
+  let total = 0;
+  for (let i = 0; i < nBins; i++) {
+    const hz = (i / nBins) * nyquist;
+    const e = listeningFreqBuf[i] * listeningFreqBuf[i];
+    total += e;
+    if (hz < 280) low += e;
+    else if (hz <= 3800) mid += e;
+    else high += e;
+  }
+  if (total < 1e-9) {
+    return { ok: false, lowRatio: 0, midRatio: 0, highRatio: 0 };
+  }
+  return {
+    ok: true,
+    lowRatio: low / total,
+    midRatio: mid / total,
+    highRatio: high / total,
+  };
+}
+
+/**
+ * Stricter than `listeningFrameIsSpeechLike`: same RMS+ZCR base, plus crest + spectral bands
+ * so loud music (often bass-heavy or crash-heavy) stops refreshing the silence clock as often.
+ */
+function continuousSpeechFrameIsLikelyUserVoice(buf, rms) {
+  if (rms <= VOLUME_THRESHOLD) return false;
+  const zcr = computeZCR(buf);
+  if (zcr < LISTEN_END_ZCR_MIN || zcr > LISTEN_END_ZCR_MAX) return false;
+  const peak = computePeakAbs(buf);
+  const crest = peak / (rms + 1e-8);
+  if (crest > LISTEN_CONTINUOUS_MAX_CREST) return false;
+  const spec = getContinuousListenSpectralRatios();
+  if (!spec || !spec.ok) return false;
+  if (spec.midRatio < CONTINUOUS_SPEECH_MID_RATIO_MIN) return false;
+  if (spec.lowRatio > CONTINUOUS_MAX_LOW_RATIO) return false;
+  if (spec.highRatio > CONTINUOUS_MAX_HIGH_RATIO) return false;
+  return true;
 }
 
 /** Per-threshold flags for interrupt (RMS/ZCR/crest); all must pass for a frame to count as speech-like. */
@@ -2430,9 +2505,19 @@ function detectSpeech() {
 
   const now = performance.now();
 
-  if (listeningFrameIsSpeechLike(buf, rms)) {
+  if (continuousSpeechFrameIsLikelyUserVoice(buf, rms)) {
     hasSpoken = true;
     lastVoiceTime = now;
+  }
+
+  if (
+    hasSpoken &&
+    now - continuousListenStartAt > MAX_CONTINUOUS_UTTERANCE_MS &&
+    (getAudioEl()?.paused ?? true)
+  ) {
+    beginVoiceUxTurn();
+    mediaRecorder.stop();
+    return;
   }
 
   if (
@@ -2487,6 +2572,7 @@ function startListening() {
   audioChunks = [];
   hasSpoken = false;
   lastVoiceTime = 0;
+  continuousListenStartAt = performance.now();
 
   mediaRecorder = new MediaRecorder(micStream);
   mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
