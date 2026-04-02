@@ -50,7 +50,39 @@ function resetBmoSessionAndUi() {
   hideSidePanel();
 }
 
+/**
+ * Call when (re)entering the VERA app: new backend session, empty log, voice UI default, clear side panel.
+ * Used on boot/reveal and when returning from BMO via the VERA nav control.
+ */
+function resetVeraSessionAndUi() {
+  const newId = crypto.randomUUID();
+  localStorage.setItem(VERA_SESSION_STORAGE_KEY, newId);
+
+  const convo = document.getElementById("vera-conversation");
+  if (convo) convo.replaceChildren();
+
+  const textIn = document.getElementById("vera-text-input");
+  if (textIn) textIn.value = "";
+
+  const voiceBar = document.getElementById("vera-voice-bar");
+  const keyboardBar = document.getElementById("vera-keyboard-bar");
+  const toggleBtn = document.getElementById("vera-input-toggle");
+  if (voiceBar) voiceBar.classList.remove("hidden");
+  if (keyboardBar) keyboardBar.classList.add("hidden");
+  if (toggleBtn) toggleBtn.textContent = "⌨️";
+
+  const veraAudio = document.getElementById("vera-audio");
+  if (veraAudio) {
+    veraAudio.pause();
+    veraAudio.removeAttribute("src");
+    veraAudio.load?.();
+  }
+
+  hideSidePanel();
+}
+
 window.resetBmoSessionAndUi = resetBmoSessionAndUi;
+window.resetVeraSessionAndUi = resetVeraSessionAndUi;
 
 /* =========================
    GLOBAL STATE
@@ -72,6 +104,8 @@ let lastVoiceTime = 0;
 let listening = false;
 let processing = false;
 let rafId = null;
+/** `startListening` no-speech watchdog; must be cleared when switching to PTT or the new recorder gets stopped. */
+let speechWaitTimeoutId = null;
 let interruptSpeechFrames = 0;
 let interruptSpeechStart = 0;
 /** Ms of speechLike time accumulated from RAF deltas (gaps do not add). */
@@ -82,6 +116,11 @@ let interruptLastSpeechLikeTime = 0;
 let lastInterruptProbe = null;
 /** Last frame where speechLike was true (same as trigger frame when interrupt fires). */
 let lastInterruptSpeechLikeSnapshot = null;
+/** Throttled VAD samples for mobile interrupt debug panel. */
+let lastMobileVadSampleLogAt = 0;
+const MOBILE_VAD_SAMPLE_INTERVAL_MS = 220;
+const INTERRUPT_VAD_LOG_MAX = 200;
+let interruptVadLogLines = [];
 let pttRecording = false;
 let inputMuted = false;
 let suppressNextUtterance = false;
@@ -216,6 +255,8 @@ function logInferLatency(data, label, clientTtfbMs) {
    CONFIG
 ========================= */
 
+const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
+
 const VOLUME_THRESHOLD = 0.0078; // slightly lower so quieter speech starts more reliably
 const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
@@ -241,8 +282,15 @@ const INTERRUPT_RMS = 0.0105;
 /**
  * Min accumulated ms where speechLike is true (wall-clock gaps and quiet frames do not count).
  * Interrupt fires only on a speechLike frame after this threshold.
+ * Phone viewports use a shorter window for faster interrupt.
  */
-const INTERRUPT_SUSTAIN_MS = 350;
+const INTERRUPT_SUSTAIN_MS_DESKTOP = 350;
+const INTERRUPT_SUSTAIN_MS_PHONE = 100;
+
+function getInterruptSustainMs() {
+  return IS_MOBILE ? INTERRUPT_SUSTAIN_MS_PHONE : INTERRUPT_SUSTAIN_MS_DESKTOP;
+}
+
 /** Max ms without a speech-like frame before resetting the sustain counter. */
 const INTERRUPT_GAP_RESET_MS = 110;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
@@ -332,8 +380,6 @@ const serverStatusEl = document.getElementById("server-status");
 const feedbackInput = document.getElementById("feedback-input");
 const sendFeedbackBtn = document.getElementById("send-feedback");
 const feedbackStatusEl = document.getElementById("feedback-status");
-
-const IS_MOBILE = window.matchMedia("(max-width: 768px)").matches;
 
 /* =========================
    SERVER HEALTH
@@ -465,6 +511,14 @@ function setContinuousInputMuted(nextMuted) {
   });
 
   if (inputMuted) {
+    if (speechWaitTimeoutId != null) {
+      clearTimeout(speechWaitTimeoutId);
+      speechWaitTimeoutId = null;
+    }
+    if (rafId != null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
     if (mediaRecorder && mediaRecorder.state === "recording") {
       suppressNextUtterance = true;
       mediaRecorder.stop();
@@ -979,7 +1033,7 @@ function detectInterrupt() {
       if (
         speechLike &&
         interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
-        interruptSpeechAccumMs >= INTERRUPT_SUSTAIN_MS
+        interruptSpeechAccumMs >= getInterruptSustainMs()
       ) {
         const gate = "heuristic";
         const snap = lastInterruptSpeechLikeSnapshot;
@@ -1011,6 +1065,16 @@ function detectInterrupt() {
         interruptSpeechAccumMs = 0;
         interruptLastSpeechLikeTime = 0;
         lastInterruptSpeechLikeSnapshot = null;
+      }
+
+      if (
+        IS_MOBILE &&
+        now - lastMobileVadSampleLogAt >= MOBILE_VAD_SAMPLE_INTERVAL_MS
+      ) {
+        lastMobileVadSampleLogAt = now;
+        pushMobileInterruptVadLog(
+          `vad rms=${rms.toFixed(4)} zcr=${zcr.toFixed(4)} crest=${crest.toFixed(2)} like=${speechLike} acc=${interruptSpeechAccumMs.toFixed(0)}ms thr=${getInterruptSustainMs()}ms`
+        );
       }
     }
   } else {
@@ -1110,7 +1174,7 @@ function logInterruptTriggerReason({
     speechAccumMs: Number(speechAccumMs.toFixed(1)),
     wallMsSinceFirstSpeech: Number(wallMsSinceFirstSpeech.toFixed(1)),
     rafFrames,
-    triggerKind: "speech_frame (accumulated speechLike time ≥ INTERRUPT_SUSTAIN_MS)",
+    triggerKind: `speech_frame (accumulated speechLike time ≥ ${getInterruptSustainMs()}ms)`,
     triggerFrame: {
       rms: Number(triggerFrame.rms.toFixed(5)),
       zcr: Number(triggerFrame.zcr.toFixed(5)),
@@ -1150,6 +1214,51 @@ function logInterruptTriggerReason({
         : null,
     }
   );
+  pushMobileInterruptVadLog(
+    `[INTERRUPT] gate=${gate} accumMs=${speechAccumMs.toFixed(1)} rms=${triggerFrame.rms.toFixed(5)} zcr=${triggerFrame.zcr.toFixed(5)} crest=${triggerFrame.crest.toFixed(4)} checks=${checks.join("+")}`
+  );
+}
+
+function pushMobileInterruptVadLog(msg) {
+  if (!IS_MOBILE) return;
+  const t = new Date().toISOString().slice(11, 23);
+  interruptVadLogLines.push(`[${t}] ${msg}`);
+  if (interruptVadLogLines.length > INTERRUPT_VAD_LOG_MAX) {
+    interruptVadLogLines.splice(0, interruptVadLogLines.length - INTERRUPT_VAD_LOG_MAX);
+  }
+  renderMobileInterruptVadLogs();
+}
+
+function renderMobileInterruptVadLogs() {
+  const text = interruptVadLogLines.join("\n");
+  const p1 = document.getElementById("vera-interrupt-debug-pre");
+  const p2 = document.getElementById("bmo-interrupt-debug-pre");
+  if (p1) p1.textContent = text;
+  if (p2) p2.textContent = text;
+}
+
+function wireMobileInterruptDebugUi() {
+  if (!IS_MOBILE) return;
+  pushMobileInterruptVadLog(
+    `sustain=${getInterruptSustainMs()}ms (${INTERRUPT_SUSTAIN_MS_PHONE}ms phone / ${INTERRUPT_SUSTAIN_MS_DESKTOP}ms desktop viewport)`
+  );
+  ["vera", "bmo"].forEach((prefix) => {
+    const btn = document.getElementById(`${prefix}-interrupt-debug-toggle`);
+    const panel = document.getElementById(`${prefix}-interrupt-debug-panel`);
+    const clearBtn = document.getElementById(`${prefix}-interrupt-debug-clear`);
+    if (!btn || !panel) return;
+    btn.addEventListener("click", () => {
+      const open = panel.hidden;
+      panel.hidden = !open;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    clearBtn?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      interruptVadLogLines.length = 0;
+      renderMobileInterruptVadLogs();
+    });
+  });
 }
 
 function startInterruptCapture() {
@@ -1219,7 +1328,7 @@ async function handleInterruptUtterance(blob) {
         INTERRUPT_RMS,
         INTERRUPT_ZCR_MIN,
         INTERRUPT_ZCR_MAX,
-        INTERRUPT_SUSTAIN_MS,
+        INTERRUPT_SUSTAIN_MS: getInterruptSustainMs(),
         INTERRUPT_GAP_RESET_MS,
         INTERRUPT_MAX_CREST,
         MAX_SPEECH_RMS,
@@ -1233,7 +1342,8 @@ async function handleInterruptUtterance(blob) {
     const inferFetchStart = performance.now();
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
-      body: formData
+      body: formData,
+      signal: attachPipelineAbortSignal()
     });
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (interrupt)");
@@ -1271,16 +1381,11 @@ async function handleInterruptUtterance(blob) {
               processing = false;
             },
             onPlayEnd: () => {
-              listening = true;
-              if (inputMuted) {
-                showMutedStatusIfIdle();
-                return;
-              }
-              startListening();
+              resumeListeningAfterInterruptPlayback();
             }
           });
         } catch (e) {
-          console.warn(e);
+          if (e?.name !== "AbortError") console.warn(e);
         }
       };
 
@@ -1300,8 +1405,15 @@ async function handleInterruptUtterance(blob) {
     if (data.skip) {
       hideSidePanel();
       processing = false;
-      listening = true;
       getAudioEl()?.pause();
+      if (listeningMode === "ptt") {
+        listening = false;
+        waveState = "idle";
+        setStatus("Ready", "idle");
+        updateMuteInputButton();
+        return;
+      }
+      listening = true;
       startListening();
       return;
     }
@@ -1323,7 +1435,13 @@ async function handleInterruptUtterance(blob) {
 
     await playInterruptAnswer(data);
 
-  } catch {
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      hideSidePanel();
+      requestInFlight = false;
+      processing = false;
+      return;
+    }
     hideSidePanel();
     requestInFlight = false;
     setStatus("Server error", "offline");
@@ -1346,12 +1464,7 @@ async function playInterruptAnswer(data) {
           processing = false;
         },
         onPlayEnd: () => {
-          listening = true;
-          if (inputMuted) {
-            showMutedStatusIfIdle();
-            return;
-          }
-          startListening();
+          resumeListeningAfterInterruptPlayback();
         }
       });
     } catch (e) {
@@ -1437,6 +1550,115 @@ function cancelMainTtsPlayback() {
       /* ignore */
     }
   }
+}
+
+let activePipelineAbort = null;
+
+function attachPipelineAbortSignal() {
+  activePipelineAbort?.abort();
+  activePipelineAbort = new AbortController();
+  return activePipelineAbort.signal;
+}
+
+function isMainTtsOrHtmlAudioPlaying() {
+  const a = getAudioEl();
+  const htmlPlaying = a && !a.paused;
+  const webTts =
+    activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
+  return htmlPlaying || webTts;
+}
+
+function isServerPipelineBusy() {
+  return (
+    requestInFlight ||
+    processing ||
+    isMainTtsOrHtmlAudioPlaying()
+  );
+}
+
+function cancelVoicePipelineAndResetState() {
+  activePipelineAbort?.abort();
+  activePipelineAbort = null;
+  cancelMainTtsPlayback();
+  resetAudioHandlers();
+  const a = getAudioEl();
+  if (a) {
+    a.pause();
+    a.removeAttribute("src");
+    a.load?.();
+  }
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  if (speechWaitTimeoutId != null) {
+    clearTimeout(speechWaitTimeoutId);
+    speechWaitTimeoutId = null;
+  }
+  if (interruptRecorder && interruptRecorder.state !== "inactive") {
+    try {
+      interruptRecorder.ondataavailable = null;
+      interruptRecorder.onstop = null;
+      interruptRecorder.stop();
+    } catch {}
+  }
+  interruptRecorder = null;
+  interruptRecording = false;
+  interruptChunks = [];
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    suppressNextUtterance = true;
+    mediaRecorder.stop();
+  }
+  processing = false;
+  requestInFlight = false;
+  voiceUxTurn = null;
+  textUxTurn = null;
+  pttRecording = false;
+  listening = false;
+  audioChunks = [];
+  hasSpoken = false;
+  lastVoiceTime = 0;
+  waveState = "idle";
+  setStatus("Ready", "idle");
+  updateMuteInputButton();
+}
+
+function resumeAfterAssistantReplyPlayback() {
+  processing = false;
+  if (listeningMode === "ptt") {
+    listening = false;
+    pttRecording = false;
+    waveState = "idle";
+    setStatus("Ready", "idle");
+    updateMuteInputButton();
+    return;
+  }
+  waveState = "listening";
+  if (listeningMode === "continuous") {
+    listening = true;
+    if (inputMuted) {
+      showMutedStatusIfIdle();
+      return;
+    }
+    startListening();
+  }
+}
+
+function resumeListeningAfterInterruptPlayback() {
+  if (listeningMode === "ptt") {
+    listening = false;
+    pttRecording = false;
+    waveState = "idle";
+    setStatus("Ready", "idle");
+    updateMuteInputButton();
+    return;
+  }
+  listening = true;
+  if (inputMuted) {
+    showMutedStatusIfIdle();
+    return;
+  }
+  startListening();
 }
 
 /** Same wiring as MediaElementSource → analyser + destination: chunked TTS must feed the TTS analyser or BMO mouth / VERA wave stay flat. */
@@ -2210,6 +2432,29 @@ function detectSpeech() {
   rafId = requestAnimationFrame(detectSpeech);
 }
 
+function clearSpeechWaitTimerAndDetectRaf() {
+  if (speechWaitTimeoutId != null) {
+    clearTimeout(speechWaitTimeoutId);
+    speechWaitTimeoutId = null;
+  }
+  if (rafId != null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+/**
+ * End continuous capture without uploading (e.g. switching to PTT). Clears the no-speech
+ * timer so it cannot fire on the next `mediaRecorder` instance.
+ */
+function stopActiveMicCaptureSilently() {
+  clearSpeechWaitTimerAndDetectRaf();
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    suppressNextUtterance = true;
+    mediaRecorder.stop();
+  }
+}
+
 /* =========================
    START LISTENING
 ========================= */
@@ -2221,6 +2466,7 @@ function startListening() {
     updateMuteInputButton();
     return;
   }
+  clearSpeechWaitTimerAndDetectRaf();
   waveState = "listening";
   audioChunks = [];
   hasSpoken = false;
@@ -2233,7 +2479,8 @@ function startListening() {
   mediaRecorder.start();
   detectSpeech();
 
-  setTimeout(() => {
+  speechWaitTimeoutId = setTimeout(() => {
+    speechWaitTimeoutId = null;
     if (!hasSpoken && mediaRecorder.state === "recording") {
       mediaRecorder.stop();
     }
@@ -2308,7 +2555,8 @@ async function handleUtterance() {
     const inferFetchStart = performance.now();
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
-      body: formData
+      body: formData,
+      signal: attachPipelineAbortSignal()
     });
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (main — TTFB)");
@@ -2347,25 +2595,20 @@ async function handleUtterance() {
               applyActionPayload(ndjsonMeta);
               waveState = "speaking";
               audioStartedAt = performance.now();
-              setStatus("Speaking… (Interruptible)", "speaking");
+              setStatus(
+                listeningMode === "ptt"
+                  ? "Speaking"
+                  : "Speaking… (Interruptible)",
+                "speaking"
+              );
               startInterruptCapture();
             },
             onPlayEnd: () => {
-              waveState = "listening";
-              processing = false;
-
-              if (listeningMode === "continuous") {
-                listening = true;
-                if (inputMuted) {
-                  showMutedStatusIfIdle();
-                  return;
-                }
-                startListening();
-              }
+              resumeAfterAssistantReplyPlayback();
             }
           });
         } catch (e) {
-          console.warn(e);
+          if (e?.name !== "AbortError") console.warn(e);
         }
       })();
       return;
@@ -2415,21 +2658,16 @@ async function handleUtterance() {
               applyAssistantReplyAndPanels(data);
               waveState = "speaking";
               audioStartedAt = performance.now();
-              setStatus("Speaking… (Interruptible)", "speaking");
+              setStatus(
+                listeningMode === "ptt"
+                  ? "Speaking"
+                  : "Speaking… (Interruptible)",
+                "speaking"
+              );
               startInterruptCapture();
             },
             onPlayEnd: () => {
-              waveState = "listening";
-              processing = false;
-
-              if (listeningMode === "continuous") {
-                listening = true;
-                if (inputMuted) {
-                  showMutedStatusIfIdle();
-                  return;
-                }
-                startListening();
-              }
+              resumeAfterAssistantReplyPlayback();
             }
           });
         } catch (e) {
@@ -2440,7 +2678,13 @@ async function handleUtterance() {
 
     playMainAnswer();
 
-  } catch {
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      hideSidePanel();
+      processing = false;
+      requestInFlight = false;
+      return;
+    }
     hideSidePanel();
     processing = false;
     requestInFlight = false;
@@ -2464,7 +2708,7 @@ async function sendTextMessage() {
     setStatus("Ready", "idle");
   }
 
-  if (!text || requestInFlight) return;
+  if (!text || isServerPipelineBusy()) return;
   if (textInput) textInput.value = "";
 
   beginTextUxTurn();
@@ -2490,7 +2734,8 @@ async function sendTextMessage() {
         session_id: getSessionId(),
         client: appModePrefix(),
         stream_tts: STREAM_TTS
-      })
+      }),
+      signal: attachPipelineAbortSignal()
     });
     const textTtfbMs = performance.now() - textFetchStart;
 
@@ -2520,21 +2765,17 @@ async function sendTextMessage() {
               applyActionPayload(ndjsonMeta);
               waveState = "speaking";
               audioStartedAt = performance.now();
-              setStatus("Speaking…", "speaking");
+              setStatus(
+                listeningMode === "ptt" ? "Speaking" : "Speaking…",
+                "speaking"
+              );
             },
             onPlayEnd: () => {
-              waveState = "listening";
-              processing = false;
-              listening = true;
-              if (inputMuted) {
-                showMutedStatusIfIdle();
-                return;
-              }
-              startListening();
+              resumeAfterAssistantReplyPlayback();
             }
           });
         } catch (e) {
-          console.warn(e);
+          if (e?.name !== "AbortError") console.warn(e);
         }
       })();
       return;
@@ -2556,17 +2797,13 @@ async function sendTextMessage() {
               applyAssistantReplyAndPanels(data);
               waveState = "speaking";
               audioStartedAt = performance.now();
-              setStatus("Speaking…", "speaking");
+              setStatus(
+                listeningMode === "ptt" ? "Speaking" : "Speaking…",
+                "speaking"
+              );
             },
             onPlayEnd: () => {
-              waveState = "listening";
-              processing = false;
-              listening = true;
-              if (inputMuted) {
-                showMutedStatusIfIdle();
-                return;
-              }
-              startListening();
+              resumeAfterAssistantReplyPlayback();
             }
           });
         } catch (e) {
@@ -2578,6 +2815,12 @@ async function sendTextMessage() {
     playReply();
 
   } catch (err) {
+    if (err?.name === "AbortError") {
+      requestInFlight = false;
+      processing = false;
+      textUxTurn = null;
+      return;
+    }
     console.error(err);
     hideSidePanel();
     requestInFlight = false;
@@ -2590,45 +2833,44 @@ async function sendTextMessage() {
 /* =========================
    MIC BUTTON
 ========================= */
+async function beginPttRecordingNow() {
+  stopActiveMicCaptureSilently();
+  listeningMode = "ptt";
+  updateMuteInputButton();
+  pttRecording = true;
+  await initMic();
+  micStream?.getAudioTracks().forEach((track) => {
+    track.enabled = true;
+  });
+  listening = true;
+  processing = false;
+  waveState = "listening";
+  audioChunks = [];
+  hasSpoken = false;
+  lastVoiceTime = 0;
+  mediaRecorder = new MediaRecorder(micStream);
+  mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+  mediaRecorder.onstop = handleUtterance;
+  mediaRecorder.start();
+  setStatus("Listening (PTT)", "recording");
+}
+
 async function onPttClick() {
-  if (requestInFlight) return;
-
-  if (!pttRecording) {
-    listeningMode = "ptt";
-    updateMuteInputButton();
-    pttRecording = true;
-
-    await initMic();
-    micStream?.getAudioTracks().forEach((track) => {
-      track.enabled = true;
-    });
-
-    listening = true;
-    processing = false;
-    waveState = "listening";
-
-    audioChunks = [];
-    hasSpoken = false;
-    lastVoiceTime = 0;
-
-    mediaRecorder = new MediaRecorder(micStream);
-    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
-    mediaRecorder.onstop = handleUtterance;
-
-    mediaRecorder.start();
-
-    setStatus("Listening (PTT)", "recording");
+  if (isServerPipelineBusy()) {
+    cancelVoicePipelineAndResetState();
+    await beginPttRecordingNow();
     return;
   }
-
-  if (pttRecording) {
-    pttRecording = false;
-    listening = false;
-    waveState = "idle";
-    if (mediaRecorder && mediaRecorder.state === "recording") {
-      beginVoiceUxTurn();
-      mediaRecorder.stop();
-    }
+  if (!pttRecording) {
+    await beginPttRecordingNow();
+    return;
+  }
+  pttRecording = false;
+  listening = false;
+  waveState = "idle";
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    beginVoiceUxTurn();
+    mediaRecorder.stop();
   }
 }
 
@@ -2639,6 +2881,19 @@ async function onPttClick() {
 async function onRecordClick() {
   listeningMode = "continuous";
   updateMuteInputButton();
+
+  if (isServerPipelineBusy() || pttRecording) {
+    cancelVoicePipelineAndResetState();
+    inputMuted = false;
+    await initMic();
+    micStream?.getAudioTracks().forEach((track) => {
+      track.enabled = true;
+    });
+    listening = true;
+    updateMuteInputButton();
+    startListening();
+    return;
+  }
 
   if (!listening) {
     inputMuted = false;
@@ -2661,6 +2916,7 @@ async function onRecordClick() {
 });
 
 updateMuteInputButton();
+wireMobileInterruptDebugUi();
 
 if (!IS_MOBILE) {
   ["vera", "bmo"].forEach((prefix) => {
@@ -2710,3 +2966,5 @@ if (sendFeedbackBtn) {
     }
   };
 }
+
+window.resetVoiceUiToIdle = cancelVoicePipelineAndResetState;
