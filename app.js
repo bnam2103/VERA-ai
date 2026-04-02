@@ -140,6 +140,58 @@ function voiceTranscriptDebugEnabled() {
   }
 }
 
+/** On-screen interrupt telemetry (no console). Enable: `?interrupt_hud=1` or `localStorage VERA_INTERRUPT_HUD="1"`. */
+function interruptHudEnabled() {
+  try {
+    if (typeof window === "undefined") return false;
+    if (localStorage.getItem("VERA_INTERRUPT_HUD") === "1") return true;
+    if (sessionStorage.getItem("VERA_INTERRUPT_HUD") === "1") return true;
+  } catch (_) {
+    /* private mode */
+  }
+  try {
+    return new URLSearchParams(window.location.search).get("interrupt_hud") === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+let interruptHudEl = null;
+
+function updateInterruptHudText(lines) {
+  if (!interruptHudEnabled()) {
+    if (interruptHudEl) interruptHudEl.hidden = true;
+    return;
+  }
+  if (!interruptHudEl) {
+    interruptHudEl = document.createElement("div");
+    interruptHudEl.id = "vera-interrupt-hud";
+    interruptHudEl.setAttribute("aria-hidden", "true");
+    interruptHudEl.title =
+      "Interrupt HUD: add ?interrupt_hud=1 to URL or set localStorage VERA_INTERRUPT_HUD=1";
+    interruptHudEl.style.cssText = [
+      "position:fixed",
+      "bottom:0",
+      "left:0",
+      "right:0",
+      "z-index:99999",
+      "pointer-events:none",
+      "font:11px/1.35 ui-monospace,monospace",
+      "color:#cfefd7",
+      "background:rgba(0,0,0,.88)",
+      "padding:6px 8px 8px",
+      "border-top:1px solid #3a5",
+      "margin:0",
+      "max-height:32vh",
+      "overflow:auto",
+      "-webkit-overflow-scrolling:touch"
+    ].join(";");
+    document.body.appendChild(interruptHudEl);
+  }
+  interruptHudEl.hidden = false;
+  interruptHudEl.textContent = lines.join("\n");
+}
+
 /**
  * @param {"final"} phase — committed user line (bubble) from `/infer`.
  * @param {Record<string, unknown>} [meta] — e.g. { path: "main-ndjson" }
@@ -924,6 +976,9 @@ function detectInterrupt() {
 
   const now = performance.now();
 
+  const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
+  const speechLike = heuristicChecks.passes;
+
   // Only interrupt while main TTS is playing: single-file uses <audio>; chunked/streaming uses Web Audio BufferSources.
   const outAudio = getAudioEl();
   const htmlAudioPlaying = outAudio && !outAudio.paused;
@@ -938,9 +993,6 @@ function detectInterrupt() {
       const dtRaw = lastInterruptDetectTime ? now - lastInterruptDetectTime : 0;
       const dt = Math.min(Math.max(dtRaw, 0), 80);
       lastInterruptDetectTime = now;
-
-      const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
-      const speechLike = heuristicChecks.passes;
 
       if (speechLike) {
         interruptSpeechAccumMs += dt;
@@ -1013,6 +1065,26 @@ function detectInterrupt() {
     lastInterruptDetectTime = 0;
     interruptLastSpeechLikeTime = 0;
     lastInterruptSpeechLikeSnapshot = null;
+  }
+
+  if (interruptHudEnabled()) {
+    const cont = listeningMode === "continuous";
+    const graceOk = now - audioStartedAt > 200;
+    const ttsOn = cont && (htmlAudioPlaying || webAudioMainTtsPlaying);
+    const fail = [];
+    if (!heuristicChecks.rmsAboveMin) fail.push("rms_lo");
+    if (!heuristicChecks.rmsBelowMax) fail.push("rms_hi");
+    if (!heuristicChecks.zcrInRange) fail.push("zcr");
+    if (!heuristicChecks.crestOk) fail.push("crest");
+    updateInterruptHudText([
+      `interrupt HUD | tts=${ttsOn ? "on" : "off"} html=${!!htmlAudioPlaying} web=${!!webAudioMainTtsPlaying} cont=${cont} grace=${graceOk}`,
+      `rms=${rms.toFixed(4)} zcr=${zcr.toFixed(3)} crest=${crest.toFixed(1)} | pass=${speechLike} fail=${fail[0] ?? "—"}`,
+      `accum=${interruptSpeechAccumMs.toFixed(0)}/${INTERRUPT_SUSTAIN_MS}ms`,
+      `thresh rms>${INTERRUPT_RMS} rms<${MAX_SPEECH_RMS} zcr[${INTERRUPT_ZCR_MIN},${INTERRUPT_ZCR_MAX}]`,
+      "?interrupt_hud=1 or localStorage VERA_INTERRUPT_HUD=1"
+    ]);
+  } else if (interruptHudEl) {
+    interruptHudEl.hidden = true;
   }
 
   requestAnimationFrame(detectInterrupt);
