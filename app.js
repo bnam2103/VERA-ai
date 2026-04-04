@@ -427,13 +427,14 @@ const VOLUME_THRESHOLD = 0.0078; // slightly lower so quieter speech starts more
 const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
 /**
- * Optional cap: if the user has not produced any speech yet (`hasSpoken` false), stop waiting after N ms.
- * Applies to both browser SpeechRecognition and MediaRecorder fallback.
- * 0 = disabled (never time out while waiting for the user to start speaking — preferred for continuous mode).
- * A positive value was historically used to avoid endless capture when the mic was left open with no speech;
- * that also broke real usage when the first partial arrived late or the user paused before talking.
+ * Browser SpeechRecognition: cap before first partial (`hasSpoken` false). 0 = off (desktop Chrome can be slow).
  */
-const MAX_WAIT_FOR_SPEECH_MS = 0;
+const MAX_WAIT_FOR_BROWSER_ASR_INITIAL_MS = 0;
+/**
+ * MediaRecorder + VAD fallback (non–secure pages, iOS Safari without Web Speech, etc.): if VAD never marks
+ * speech, stop the recorder so we do not spin "Listening…" forever. Does not apply to browser ASR.
+ */
+const MAX_WAIT_FOR_MEDIA_RECORDER_INITIAL_MS = 60000;
 const MIN_AUDIO_BYTES = 1500;
 const INTERRUPT_MIN_FRAMES = 1;
 
@@ -485,6 +486,19 @@ const INTERRUPT_BROWSER_MIN_WORDS = 3;
 function browserAsrSupported() {
   return typeof (window.SpeechRecognition || window.webkitSpeechRecognition) === "function";
 }
+
+/** Match device locale (Chrome/Android works better than a hardcoded en-US for many users). */
+function getSpeechRecognitionLang() {
+  try {
+    const lang = (navigator.languages && navigator.languages[0]) || navigator.language;
+    if (lang && typeof lang === "string" && lang.length >= 2) return lang;
+  } catch {}
+  return "en-US";
+}
+
+/** Retries for main SR `network` errors (common on mobile data / brief offline). */
+let browserAsrMainNetworkRetries = 0;
+const BROWSER_ASR_MAIN_NETWORK_RETRY_MAX = 2;
 
 /**
  * Set true after Web Speech returns not-allowed / service-not-allowed so we stop retrying
@@ -1505,8 +1519,16 @@ function computeZCR(buf) {
 
 /** RMS + ZCR voiced band — used so background noise alone does not stall end-of-speech. */
 function listeningFrameIsSpeechLike(buf, rms) {
-  if (rms <= VOLUME_THRESHOLD) return false;
   const zcr = computeZCR(buf);
+  if (IS_MOBILE) {
+    /* Phone mics (Bluetooth, handset, AGC off) are often quieter and ZCR sits outside desktop bands. */
+    const th = VOLUME_THRESHOLD * 0.55;
+    if (rms <= th) return false;
+    const zLo = LISTEN_END_ZCR_MIN * 0.55;
+    const zHi = Math.min(0.28, LISTEN_END_ZCR_MAX * 1.35);
+    return zcr >= zLo && zcr <= zHi;
+  }
+  if (rms <= VOLUME_THRESHOLD) return false;
   return zcr >= LISTEN_END_ZCR_MIN && zcr <= LISTEN_END_ZCR_MAX;
 }
 
@@ -1975,6 +1997,7 @@ function cancelVoicePipelineAndResetState() {
 }
 
 function resumeAfterAssistantReplyPlayback() {
+  browserAsrMainNetworkRetries = 0;
   processing = false;
   requestInFlight = false;
   clearInterruptDetectionBubble();
@@ -2002,6 +2025,7 @@ function resumeAfterAssistantReplyPlayback() {
 }
 
 function resumeListeningAfterInterruptPlayback() {
+  browserAsrMainNetworkRetries = 0;
   processing = false;
   requestInFlight = false;
   clearInterruptDetectionBubble();
@@ -2420,13 +2444,19 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
 async function initMic() {
   if (micStream) return;
 
-  micStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false
-    }
-  });
+  const audioConstraints = IS_MOBILE
+    ? {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      }
+    : {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      };
+
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
 
   if (!audioCtx) {
     audioCtx = new AudioContext({ sampleRate: 16000 });
@@ -2982,9 +3012,10 @@ function startMainBrowserRecognitionContinuous() {
   mainBrowserRecognition = new SR();
   mainBrowserRecognition.continuous = true;
   mainBrowserRecognition.interimResults = true;
-  mainBrowserRecognition.lang = "en-US";
+  mainBrowserRecognition.lang = getSpeechRecognitionLang();
 
   mainBrowserRecognition.onresult = (event) => {
+    browserAsrMainNetworkRetries = 0;
     markBrowserAsrResult("main");
     interimBuf = "";
     for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -3012,6 +3043,18 @@ function startMainBrowserRecognitionContinuous() {
       logBrowserAsrStuckEvent("main onerror", { error: ev.error, message: ev.message });
     }
     if (ev.error === "aborted" || ev.error === "no-speech") return;
+    if (ev.error === "network") {
+      if (browserAsrMainNetworkRetries < BROWSER_ASR_MAIN_NETWORK_RETRY_MAX) {
+        browserAsrMainNetworkRetries++;
+        console.warn("[BrowserASR] network — retrying SpeechRecognition", browserAsrMainNetworkRetries);
+        window.setTimeout(() => {
+          if (!listening || processing || inputMuted) return;
+          if (listeningMode !== "continuous" || !browserAsrPreferred()) return;
+          startListening();
+        }, 750);
+        return;
+      }
+    }
     console.warn("[BrowserASR]", ev.error);
     if (isFatalBrowserSpeechError(ev.error)) {
       disableBrowserAsrForSession(ev.error);
@@ -3061,7 +3104,7 @@ function startMainBrowserRecognitionContinuous() {
     }, 150);
   }
 
-  if (MAX_WAIT_FOR_SPEECH_MS > 0) {
+  if (MAX_WAIT_FOR_BROWSER_ASR_INITIAL_MS > 0) {
     speechWaitTimeoutId = setTimeout(() => {
       speechWaitTimeoutId = null;
       if (!hasSpoken) {
@@ -3069,7 +3112,7 @@ function startMainBrowserRecognitionContinuous() {
         processing = false;
         voiceUxTurn = null;
       }
-    }, MAX_WAIT_FOR_SPEECH_MS);
+    }, MAX_WAIT_FOR_BROWSER_ASR_INITIAL_MS);
   }
 }
 
@@ -3089,7 +3132,7 @@ function startInterruptBrowserPartialDetection() {
   interruptDetectRecognition = new SR();
   interruptDetectRecognition.continuous = true;
   interruptDetectRecognition.interimResults = true;
-  interruptDetectRecognition.lang = "en-US";
+  interruptDetectRecognition.lang = getSpeechRecognitionLang();
 
   let lastCombined = "";
   interruptPartialAccumMs = 0;
@@ -3216,7 +3259,7 @@ function startPostInterruptBrowserRecognition() {
   postInterruptRecognition = new SR();
   postInterruptRecognition.continuous = true;
   postInterruptRecognition.interimResults = true;
-  postInterruptRecognition.lang = "en-US";
+  postInterruptRecognition.lang = getSpeechRecognitionLang();
 
   postInterruptRecognition.onresult = (event) => {
     markBrowserAsrResult("post-interrupt");
@@ -3327,6 +3370,8 @@ function startListening() {
     hasSpoken = false;
     lastVoiceTime = 0;
     setStatus("Listening…", "recording");
+    const stBrowser = uiEl("status");
+    if (stBrowser) stBrowser.title = "";
     updateMuteInputButton();
     startMainBrowserRecognitionContinuous();
     return;
@@ -3344,17 +3389,22 @@ function startListening() {
   mediaRecorder.start();
   detectSpeech();
 
-  if (MAX_WAIT_FOR_SPEECH_MS > 0) {
+  if (MAX_WAIT_FOR_MEDIA_RECORDER_INITIAL_MS > 0) {
     speechWaitTimeoutId = setTimeout(() => {
       speechWaitTimeoutId = null;
       if (!hasSpoken && mediaRecorder.state === "recording") {
         mediaRecorder.stop();
       }
-    }, MAX_WAIT_FOR_SPEECH_MS);
+    }, MAX_WAIT_FOR_MEDIA_RECORDER_INITIAL_MS);
   }
 
   updateMuteInputButton();
   setStatus("Listening…", "recording");
+  const stEl = uiEl("status");
+  if (stEl) {
+    stEl.title =
+      "Partial text needs Web Speech (HTTPS + a supported browser). Otherwise audio is sent after you pause speaking.";
+  }
 }
 
 /* =========================
@@ -3894,6 +3944,7 @@ async function onPttClick() {
 
 async function onRecordClick() {
   ensureChatStartedLayout();
+  browserAsrMainNetworkRetries = 0;
   listeningMode = "continuous";
   updateMuteInputButton();
 
