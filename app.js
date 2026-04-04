@@ -145,6 +145,8 @@ let interruptPartialRafTime = 0;
 /** "main" continuous/PTT vs "interrupt" post-barge-in utterance — controls silence-timer finalize. */
 let mainBrowserFinalizeKind = "main";
 let mainBrowserLastInterim = "";
+/** After >2 words during TTS, barge-in latched: same SR stream continues until 1s silence → LLM (no second SR). */
+let interruptBargeInLatched = false;
 
 let audioStartedAt = 0;
 let voiceUxTurn = null;
@@ -362,8 +364,8 @@ const BROWSER_ASR_MAIN_SILENCE_MS = 1000;
 const BROWSER_ASR_INTERRUPT_SUSTAIN_MS = 350;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
 const BROWSER_ASR_INTERRUPT_GAP_MS = 120;
-/** Fire interrupt when browser partial ASR has more than three words (i.e. at least this many). */
-const INTERRUPT_BROWSER_MIN_WORDS = 4;
+/** Fire interrupt when browser partial ASR has more than two words (i.e. at least this many). */
+const INTERRUPT_BROWSER_MIN_WORDS = 3;
 
 function browserAsrSupported() {
   return typeof (window.SpeechRecognition || window.webkitSpeechRecognition) === "function";
@@ -1109,24 +1111,16 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   state.bubble = addBubble(done.reply, "vera", { path: "ndjson-final" });
 }
 
-function interruptSpeech() {
-  const useBrowserAsr = browserAsrPreferred();
-  if (!interruptRecording && !useBrowserAsr) return;
-  const a = getAudioEl();
-  const htmlPlaying = a && !a.paused;
-  const webTtsPlaying =
-    activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
-  if (!htmlPlaying && !webTtsPlaying) return;
-
+/** Stops TTS and resets interrupt UI counters (shared by heuristic + browser barge-in). */
+function cancelBrowserInterruptTtsOnly() {
   setStatus("Listening… (interrupted)", "recording");
   resetAudioHandlers();
-
   cancelMainTtsPlayback();
+  const a = getAudioEl();
   if (a) {
     a.pause();
     a.currentTime = 0;
   }
-
   listening = true;
   processing = false;
   waveState = "listening";
@@ -1136,19 +1130,70 @@ function interruptSpeech() {
   lastInterruptDetectTime = 0;
   interruptLastSpeechLikeTime = 0;
   lastInterruptSpeechLikeSnapshot = null;
-
   interruptLastVoiceTime = performance.now();
+}
+
+function promoteInterruptPreviewToMainLiveBubble() {
+  if (interruptDetectionBubbleEl?.isConnected) {
+    mainBrowserLiveBubble = interruptDetectionBubbleEl;
+    interruptDetectionBubbleEl = null;
+    try {
+      mainBrowserLiveBubble.classList.remove("interrupt-preview");
+    } catch (_) {}
+  }
+}
+
+/**
+ * Browser ASR: >2 words ⇒ stop TTS; keep the same SpeechRecognition session and use 1s stable transcript → LLM.
+ * (Does not start a second recognition — that was the old post-interrupt listener.)
+ */
+function onBrowserInterruptBargeInFromDetect(event) {
+  if (interruptBargeInLatched) return;
+  interruptBargeInLatched = true;
+  cancelBrowserInterruptTtsOnly();
+  promoteInterruptPreviewToMainLiveBubble();
+  mainBrowserFinalizeKind = "interrupt";
+
+  let interimBuf = "";
+  let finalP = "";
+  for (let i = 0; i < event.results.length; i++) {
+    const r = event.results[i];
+    if (r.isFinal) {
+      const piece = r[0].transcript;
+      finalP += piece;
+      logPartialAsrSegmentFinal(piece.trim(), { mode: "interrupt-barge" });
+    } else {
+      interimBuf += r[0].transcript;
+    }
+  }
+  mainBrowserFinalTranscript = finalP;
+  mainBrowserLastInterim = interimBuf;
+  hasSpoken =
+    mainBrowserFinalTranscript.trim().length > 0 || interimBuf.trim().length > 0;
+  if (hasSpoken && speechWaitTimeoutId != null) {
+    clearTimeout(speechWaitTimeoutId);
+    speechWaitTimeoutId = null;
+  }
+  updateMainBrowserLiveBubble(mainBrowserFinalTranscript, interimBuf);
+  scheduleMainBrowserEndOfUtterance();
+}
+
+function interruptSpeech() {
+  const useBrowserAsr = browserAsrPreferred();
+  if (!interruptRecording && !useBrowserAsr) return;
+  const a = getAudioEl();
+  const htmlPlaying = a && !a.paused;
+  const webTtsPlaying =
+    activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
+  if (!htmlPlaying && !webTtsPlaying) return;
+
+  cancelBrowserInterruptTtsOnly();
+
   if (interruptRecording) {
     requestAnimationFrame(detectInterruptSpeechEnd);
   } else if (useBrowserAsr) {
-    /* Promote translucent interrupt preview to the same live bubble used for post-interrupt ASR. */
-    if (interruptDetectionBubbleEl?.isConnected) {
-      mainBrowserLiveBubble = interruptDetectionBubbleEl;
-      interruptDetectionBubbleEl = null;
-      try {
-        mainBrowserLiveBubble.classList.remove("interrupt-preview");
-      } catch (_) {}
-    }
+    /* Heuristic/VAD path while browser ASR is off or detect inactive: no word stream, start dedicated post-interrupt SR. */
+    promoteInterruptPreviewToMainLiveBubble();
     startPostInterruptBrowserRecognition();
   }
 }
@@ -2681,6 +2726,7 @@ function abortBrowserSpeechRecognizers() {
   interruptPartialAccumMs = 0;
   interruptPartialLastChangeAt = 0;
   interruptPartialLastText = "";
+  interruptBargeInLatched = false;
   mainBrowserFinalTranscript = "";
   mainBrowserFinalizeKind = "main";
   mainBrowserLastInterim = "";
@@ -2861,6 +2907,7 @@ function startInterruptBrowserPartialDetection() {
   if (!SR) return;
 
   clearInterruptDetectionBubble();
+  interruptBargeInLatched = false;
 
   try {
     if (interruptDetectRecognition) {
@@ -2882,6 +2929,32 @@ function startInterruptBrowserPartialDetection() {
 
   interruptDetectRecognition.onresult = (event) => {
     if (!interruptBrowserDetectActive) return;
+
+    if (interruptBargeInLatched) {
+      let interimBuf = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const r = event.results[i];
+        if (r.isFinal) {
+          const piece = r[0].transcript;
+          mainBrowserFinalTranscript += piece;
+          logPartialAsrSegmentFinal(piece.trim(), { mode: "interrupt-live" });
+        } else {
+          interimBuf += r[0].transcript;
+        }
+      }
+      mainBrowserLastInterim = interimBuf;
+      hasSpoken =
+        mainBrowserFinalTranscript.trim().length > 0 || interimBuf.trim().length > 0;
+      if (hasSpoken && speechWaitTimeoutId != null) {
+        clearTimeout(speechWaitTimeoutId);
+        speechWaitTimeoutId = null;
+      }
+      updateMainBrowserLiveBubble(mainBrowserFinalTranscript, interimBuf);
+      interruptPartialLastText = (mainBrowserFinalTranscript + interimBuf).trim();
+      scheduleMainBrowserEndOfUtterance();
+      return;
+    }
+
     let finalP = "";
     let interim = "";
     for (let i = 0; i < event.results.length; i++) {
@@ -2916,15 +2989,16 @@ function startInterruptBrowserPartialDetection() {
       };
 
       if (wc >= INTERRUPT_BROWSER_MIN_WORDS) {
-        interruptBrowserDetectActive = false;
-        try {
-          interruptDetectRecognition.abort();
-        } catch {}
-        interruptDetectRecognition = null;
-        interruptSpeech();
+        onBrowserInterruptBargeInFromDetect(event);
+        interruptPartialRafTime = now;
+        return;
       }
     }
     interruptPartialRafTime = now;
+  };
+
+  interruptDetectRecognition.onend = () => {
+    interruptDetectRecognition = null;
   };
 
   interruptDetectRecognition.onerror = (ev) => {
