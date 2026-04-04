@@ -148,6 +148,13 @@ let mainBrowserLastInterim = "";
 /** After >2 words during TTS, barge-in latched: same SR stream continues until 1s silence → LLM (no second SR). */
 let interruptBargeInLatched = false;
 
+/** Opt-in via localStorage VERA_DEBUG_BROWSER_ASR_STUCK=1 — heartbeats + onend/onerror/silence-timer traces. */
+let browserAsrStuckWatchdogId = null;
+let browserAsrSessionStartedAt = 0;
+let browserAsrLastResultAt = 0;
+let browserAsrHadAnyResult = false;
+let browserAsrLastResultRole = "";
+
 let audioStartedAt = 0;
 let voiceUxTurn = null;
 let textUxTurn = null;
@@ -209,6 +216,100 @@ function voicePartialAsrDoneLogEnabled() {
   } catch {
     return true;
   }
+}
+
+/** Set localStorage VERA_DEBUG_BROWSER_ASR_STUCK to "1" to enable [VOICE][BROWSER-ASR-STUCK] debug logs. */
+function browserAsrStuckDebugEnabled() {
+  try {
+    return localStorage.getItem("VERA_DEBUG_BROWSER_ASR_STUCK") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function stopBrowserAsrStuckWatchdog() {
+  if (browserAsrStuckWatchdogId != null) {
+    clearInterval(browserAsrStuckWatchdogId);
+    browserAsrStuckWatchdogId = null;
+  }
+}
+
+function snapshotBrowserAsrDebugState() {
+  const now = performance.now();
+  const sinceSessionStart = browserAsrSessionStartedAt
+    ? Math.round(now - browserAsrSessionStartedAt)
+    : null;
+  const sinceLastResult =
+    browserAsrHadAnyResult && browserAsrLastResultAt
+      ? Math.round(now - browserAsrLastResultAt)
+      : null;
+  return {
+    listening,
+    processing,
+    requestInFlight,
+    waveState,
+    interruptBrowserDetectActive,
+    interruptBargeInLatched,
+    mainBrowserFinalizeKind,
+    hasMainRecognizer: !!mainBrowserRecognition,
+    hasInterruptRecognizer: !!interruptDetectRecognition,
+    hasPostInterruptRecognizer: !!postInterruptRecognition,
+    silenceTimerActive: mainBrowserSilenceTimer != null,
+    speechWaitPending: speechWaitTimeoutId != null,
+    sinceSessionStartMs: sinceSessionStart,
+    sinceLastResultMs: sinceLastResult,
+    hadAnyResult: browserAsrHadAnyResult,
+    lastResultRole: browserAsrLastResultRole || null,
+    transcriptPreview: ((mainBrowserFinalTranscript + mainBrowserLastInterim).trim()).slice(0, 120),
+  };
+}
+
+function logBrowserAsrStuckEvent(message, extra = {}) {
+  if (!browserAsrStuckDebugEnabled()) return;
+  console.log("[VOICE][BROWSER-ASR-STUCK]", message, { ...extra, ...snapshotBrowserAsrDebugState() });
+}
+
+function markBrowserAsrResult(role) {
+  browserAsrLastResultAt = performance.now();
+  browserAsrHadAnyResult = true;
+  browserAsrLastResultRole = role;
+}
+
+/**
+ * Call after a SpeechRecognition `.start()` succeeds. Heartbeats every 5s; warns if no `onresult` for 8s+ after
+ * at least one result, or 12s+ with zero results (Chrome sometimes stops emitting).
+ */
+function beginBrowserAsrStuckSession(activeRole) {
+  if (!browserAsrStuckDebugEnabled()) return;
+  browserAsrSessionStartedAt = performance.now();
+  browserAsrLastResultAt = 0;
+  browserAsrHadAnyResult = false;
+  browserAsrLastResultRole = activeRole;
+  stopBrowserAsrStuckWatchdog();
+  browserAsrStuckWatchdogId = window.setInterval(() => {
+    if (!browserAsrStuckDebugEnabled()) {
+      stopBrowserAsrStuckWatchdog();
+      return;
+    }
+    const snap = snapshotBrowserAsrDebugState();
+    const anyRec =
+      snap.hasMainRecognizer || snap.hasInterruptRecognizer || snap.hasPostInterruptRecognizer;
+    if (!anyRec) {
+      stopBrowserAsrStuckWatchdog();
+      return;
+    }
+    console.log("[VOICE][BROWSER-ASR-STUCK] heartbeat", snap);
+    if (snap.hadAnyResult && snap.sinceLastResultMs != null && snap.sinceLastResultMs > 8000) {
+      console.warn(
+        "[VOICE][BROWSER-ASR-STUCK] no onresult for 8s+ while recognizer still referenced",
+        snap
+      );
+    }
+    if (!snap.hadAnyResult && snap.sinceSessionStartMs != null && snap.sinceSessionStartMs > 12000) {
+      console.warn("[VOICE][BROWSER-ASR-STUCK] no onresult since session start (12s+)", snap);
+    }
+  }, 5000);
+  logBrowserAsrStuckEvent("session_started", { activeRole });
 }
 
 /** One browser-ASR utterance finished (silence gate) and will go to Thinking/infer. */
@@ -2700,6 +2801,10 @@ function stopActiveMicCaptureSilently() {
 
 /** Stop Web Speech + timers; does not remove the live partial bubble (used before /infer so we can promote the same node). */
 function abortBrowserSpeechRecognizers() {
+  if (browserAsrStuckDebugEnabled()) {
+    logBrowserAsrStuckEvent("abortBrowserSpeechRecognizers");
+  }
+  stopBrowserAsrStuckWatchdog();
   if (mainBrowserSilenceTimer != null) {
     clearTimeout(mainBrowserSilenceTimer);
     mainBrowserSilenceTimer = null;
@@ -2752,7 +2857,18 @@ function scheduleMainBrowserEndOfUtterance() {
   mainBrowserSilenceTimer = setTimeout(() => {
     mainBrowserSilenceTimer = null;
     const cur = (mainBrowserFinalTranscript + "").trim();
-    if (cur !== snap || cur.length === 0) return;
+    if (cur !== snap || cur.length === 0) {
+      if (browserAsrStuckDebugEnabled()) {
+        logBrowserAsrStuckEvent("silence_timer_fired_no_finalize", {
+          reason: cur.length === 0 ? "empty_final" : "final_transcript_changed_since_schedule",
+          snapAtSchedule: snap.slice(0, 80),
+          curFinalNow: cur.slice(0, 80),
+          interimNow: (mainBrowserLastInterim || "").slice(0, 80),
+          finalizeKind: mainBrowserFinalizeKind,
+        });
+      }
+      return;
+    }
     logPartialAsrUtteranceDone(cur, {
       reason: "silence-timer",
       mode: mainBrowserFinalizeKind === "interrupt" ? "interrupt" : "main"
@@ -2837,6 +2953,7 @@ function startMainBrowserRecognitionContinuous() {
   mainBrowserRecognition.lang = "en-US";
 
   mainBrowserRecognition.onresult = (event) => {
+    markBrowserAsrResult("main");
     interimBuf = "";
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const r = event.results[i];
@@ -2859,6 +2976,9 @@ function startMainBrowserRecognitionContinuous() {
   };
 
   mainBrowserRecognition.onerror = (ev) => {
+    if (browserAsrStuckDebugEnabled()) {
+      logBrowserAsrStuckEvent("main onerror", { error: ev.error, message: ev.message });
+    }
     if (ev.error === "aborted" || ev.error === "no-speech") return;
     console.warn("[BrowserASR]", ev.error);
     if (isFatalBrowserSpeechError(ev.error)) {
@@ -2874,6 +2994,10 @@ function startMainBrowserRecognitionContinuous() {
   };
 
   mainBrowserRecognition.onend = () => {
+    logBrowserAsrStuckEvent(
+      "main onend (session ended — if unexpected while listening, partial ASR may look stuck)",
+      { note: "no auto-restart here by design" }
+    );
     mainBrowserRecognition = null;
     /* Do not call startMainBrowserRecognitionContinuous() here: stopAll() clears mainBrowserSilenceTimer and
        aborts the session, so a tight onend→restart loop prevents silence-finalize → never reaches Thinking/infer. */
@@ -2881,6 +3005,7 @@ function startMainBrowserRecognitionContinuous() {
 
   try {
     mainBrowserRecognition.start();
+    beginBrowserAsrStuckSession("main");
   } catch (e) {
     console.warn("[BrowserASR] start failed", e);
     window.setTimeout(() => {
@@ -2931,6 +3056,7 @@ function startInterruptBrowserPartialDetection() {
     if (!interruptBrowserDetectActive) return;
 
     if (interruptBargeInLatched) {
+      markBrowserAsrResult("interrupt-live");
       let interimBuf = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const r = event.results[i];
@@ -2976,6 +3102,7 @@ function startInterruptBrowserPartialDetection() {
       interruptPartialLastChangeAt = now;
       lastCombined = combined;
       interruptPartialLastText = combined;
+      markBrowserAsrResult("interrupt-detect");
 
       updateInterruptDetectionBubble(combined);
 
@@ -2998,10 +3125,19 @@ function startInterruptBrowserPartialDetection() {
   };
 
   interruptDetectRecognition.onend = () => {
+    logBrowserAsrStuckEvent("interrupt_detect onend", {
+      note: "detector SR ended; barge-in live stream uses same object until abort",
+    });
     interruptDetectRecognition = null;
   };
 
   interruptDetectRecognition.onerror = (ev) => {
+    if (browserAsrStuckDebugEnabled()) {
+      logBrowserAsrStuckEvent("interrupt_detect onerror", {
+        error: ev.error,
+        message: ev.message,
+      });
+    }
     if (isFatalBrowserSpeechError(ev.error)) {
       disableBrowserAsrForSession(ev.error);
       try {
@@ -3014,6 +3150,7 @@ function startInterruptBrowserPartialDetection() {
 
   try {
     interruptDetectRecognition.start();
+    beginBrowserAsrStuckSession("interrupt-detect");
   } catch (e) {
     interruptBrowserDetectActive = false;
   }
@@ -3036,6 +3173,7 @@ function startPostInterruptBrowserRecognition() {
   postInterruptRecognition.lang = "en-US";
 
   postInterruptRecognition.onresult = (event) => {
+    markBrowserAsrResult("post-interrupt");
     interimBuf = "";
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const r = event.results[i];
@@ -3053,6 +3191,12 @@ function startPostInterruptBrowserRecognition() {
   };
 
   postInterruptRecognition.onerror = (ev) => {
+    if (browserAsrStuckDebugEnabled()) {
+      logBrowserAsrStuckEvent("post-interrupt onerror", {
+        error: ev.error,
+        message: ev.message,
+      });
+    }
     if (isFatalBrowserSpeechError(ev.error)) {
       disableBrowserAsrForSession(ev.error);
       stopAllBrowserSpeechRecognizers();
@@ -3062,6 +3206,7 @@ function startPostInterruptBrowserRecognition() {
   };
 
   postInterruptRecognition.onend = () => {
+    logBrowserAsrStuckEvent("post-interrupt onend", {});
     postInterruptRecognition = null;
     mainBrowserRecognition = null;
   };
@@ -3070,6 +3215,7 @@ function startPostInterruptBrowserRecognition() {
 
   try {
     postInterruptRecognition.start();
+    beginBrowserAsrStuckSession("post-interrupt");
   } catch (e) {
     listening = true;
     startListening();
