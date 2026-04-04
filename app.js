@@ -792,6 +792,16 @@ function dismissGuide() {
   }, 350);
 }
 
+/** Bottom-centered input dock (same as after first LLM reply) — not only after server text. */
+function ensureChatStartedLayout() {
+  if (!document.body.classList.contains("chat-started")) {
+    document.body.classList.add("chat-started");
+    dismissGuide();
+  }
+}
+
+window.ensureChatStartedLayout = ensureChatStartedLayout;
+
 function countSpeechWords(s) {
   return String(s ?? "")
     .trim()
@@ -869,10 +879,7 @@ function commitServerUserTranscriptBubble(text, path) {
   } else {
     addBubble(t, "user", { path });
   }
-  if (!document.body.classList.contains("chat-started")) {
-    document.body.classList.add("chat-started");
-    dismissGuide();
-  }
+  ensureChatStartedLayout();
 }
 
 /** @deprecated name — use commitServerUserTranscriptBubble */
@@ -3692,10 +3699,7 @@ async function sendTextMessage() {
   setStatus("Thinking", "thinking");
 
   addBubble(text, "user", { path: "typed-text" });
-  if (!document.body.classList.contains("chat-started")) {
-    document.body.classList.add("chat-started");
-    dismissGuide();
-  }
+  ensureChatStartedLayout();
   try {
     const textFetchStart = performance.now();
     const res = await fetch(`${API_URL}/text`, {
@@ -3836,6 +3840,7 @@ async function beginPttRecordingNow() {
 }
 
 async function onPttClick() {
+  ensureChatStartedLayout();
   if (isServerPipelineBusy()) {
     cancelVoicePipelineAndResetState();
     await beginPttRecordingNow();
@@ -3888,6 +3893,7 @@ async function onPttClick() {
 });
 
 async function onRecordClick() {
+  ensureChatStartedLayout();
   listeningMode = "continuous";
   updateMuteInputButton();
 
