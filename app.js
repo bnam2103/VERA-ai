@@ -147,6 +147,8 @@ let mainBrowserFinalizeKind = "main";
 let mainBrowserLastInterim = "";
 /** After >2 words during TTS, barge-in latched: same SR stream continues until 1s silence → LLM (no second SR). */
 let interruptBargeInLatched = false;
+/** If interrupt-detect SR never emits onresult while TTS plays, abort so heuristic fallback can run. */
+let interruptDetectNoResultWatchdogTimer = null;
 
 /** Debounce main SR onend → startListening recovery (Chrome sometimes ends the session with no error). */
 let browserAsrMainEndRecoveryTimer = null;
@@ -514,7 +516,9 @@ let browserAsrPermanentlyDisabled = false;
  *
  * Overrides:
  * - localStorage VERA_BROWSER_ASR = "0" → never use browser ASR (any device).
- * - localStorage VERA_BROWSER_ASR_PHONE = "0" → on narrow viewports, force server ASR even in Chrome (if flaky).
+ * - Narrow viewports (max-width 768px): default to MediaRecorder + server ASR (more reliable than Web Speech on phones).
+ * - localStorage VERA_BROWSER_ASR_PHONE = "1" → opt in to Web Speech on narrow viewports (Chrome only).
+ * - localStorage VERA_BROWSER_ASR_PHONE = "0" → force server ASR on narrow viewports (same as default).
  */
 function isLikelyGoogleChrome() {
   try {
@@ -555,7 +559,12 @@ function browserAsrPreferred() {
       try {
         if (localStorage.getItem("VERA_BROWSER_ASR_PHONE") === "0") return false;
       } catch {}
-      return isLikelyGoogleChrome();
+      try {
+        if (localStorage.getItem("VERA_BROWSER_ASR_PHONE") === "1") {
+          return isLikelyGoogleChrome();
+        }
+      } catch {}
+      return false;
     }
   } catch {}
   return true;
@@ -1923,6 +1932,15 @@ function resolveAudioUrls(data) {
 let activeMainTtsBufferSources = [];
 /** True from first main TTS chunk until last chunk ends — gaps between BufferSources have 0 active sources but TTS is still "playing". */
 let mainTtsPlaybackActive = false;
+
+function isAssistantTtsPlaying() {
+  const outAudio = getAudioEl();
+  const htmlAudioPlaying = outAudio && !outAudio.paused;
+  const webAudioMainTtsPlaying =
+    activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
+  return Boolean(htmlAudioPlaying || webAudioMainTtsPlaying);
+}
+
 /** Incremented on interrupt so NDJSON read + incremental Web Audio loops exit and stop scheduling further chunks. */
 let mainTtsPlaybackToken = 0;
 /** Active NDJSON `res.body.getReader()`; cancelled on interrupt so the stream stops feeding the URL queue. */
@@ -2488,7 +2506,7 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
 async function initMic() {
   if (micStream) return;
 
-  const audioConstraints = IS_MOBILE
+  const audioConstraints = isNarrowViewport()
     ? {
         echoCancellation: true,
         noiseSuppression: true,
@@ -2903,6 +2921,10 @@ function stopActiveMicCaptureSilently() {
 
 /** Stop Web Speech + timers; does not remove the live partial bubble (used before /infer so we can promote the same node). */
 function abortBrowserSpeechRecognizers() {
+  if (interruptDetectNoResultWatchdogTimer != null) {
+    clearTimeout(interruptDetectNoResultWatchdogTimer);
+    interruptDetectNoResultWatchdogTimer = null;
+  }
   if (browserAsrMainEndRecoveryTimer != null) {
     clearTimeout(browserAsrMainEndRecoveryTimer);
     browserAsrMainEndRecoveryTimer = null;
@@ -3127,6 +3149,7 @@ function startMainBrowserRecognitionContinuous() {
     browserAsrMainEndRecoveryTimer = window.setTimeout(() => {
       browserAsrMainEndRecoveryTimer = null;
       if (!listening || processing || inputMuted) return;
+      if (isAssistantTtsPlaying()) return;
       if (listeningMode !== "continuous" || !browserAsrPreferred()) return;
       if (mainBrowserRecognition || interruptDetectRecognition || postInterruptRecognition) return;
       console.info(
@@ -3164,6 +3187,11 @@ function startInterruptBrowserPartialDetection() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return;
 
+  if (interruptDetectNoResultWatchdogTimer != null) {
+    clearTimeout(interruptDetectNoResultWatchdogTimer);
+    interruptDetectNoResultWatchdogTimer = null;
+  }
+
   clearInterruptDetectionBubble();
   interruptBargeInLatched = false;
 
@@ -3185,8 +3213,11 @@ function startInterruptBrowserPartialDetection() {
   interruptPartialRafTime = performance.now();
   interruptBrowserDetectActive = true;
 
+  let hadAnyResult = false;
+
   interruptDetectRecognition.onresult = (event) => {
     if (!interruptBrowserDetectActive) return;
+    hadAnyResult = true;
 
     if (interruptBargeInLatched) {
       markBrowserAsrResult("interrupt-live");
@@ -3258,6 +3289,10 @@ function startInterruptBrowserPartialDetection() {
   };
 
   interruptDetectRecognition.onend = () => {
+    if (interruptDetectNoResultWatchdogTimer != null) {
+      clearTimeout(interruptDetectNoResultWatchdogTimer);
+      interruptDetectNoResultWatchdogTimer = null;
+    }
     logBrowserAsrStuckEvent("interrupt_detect onend", {
       note: "detector SR ended; barge-in live stream uses same object until abort",
     });
@@ -3285,6 +3320,17 @@ function startInterruptBrowserPartialDetection() {
   try {
     interruptDetectRecognition.start();
     beginBrowserAsrStuckSession("interrupt-detect");
+    interruptDetectNoResultWatchdogTimer = window.setTimeout(() => {
+      interruptDetectNoResultWatchdogTimer = null;
+      if (hadAnyResult || interruptBargeInLatched) return;
+      if (!isAssistantTtsPlaying()) return;
+      if (!interruptDetectRecognition) return;
+      try {
+        interruptDetectRecognition.abort();
+      } catch {}
+      interruptBrowserDetectActive = false;
+      interruptDetectRecognition = null;
+    }, 4000);
   } catch (e) {
     interruptBrowserDetectActive = false;
     try {
