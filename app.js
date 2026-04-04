@@ -1376,8 +1376,15 @@ function detectInterrupt() {
     return;
   }
 
-  /* Desktop + browser ASR: barge-in is partial-ASR word count only; never RMS/ZCR/crest heuristic. */
-  if (browserAsrPreferred() && !isNarrowViewport()) {
+  /*
+   * Desktop + browser ASR: while interrupt-detect SpeechRecognition is alive, barge-in is word-count only.
+   * If start() failed or onend fired, fall back to heuristic so TTS is still interruptible (no silent failure).
+   */
+  if (
+    browserAsrPreferred() &&
+    !isNarrowViewport() &&
+    interruptDetectRecognition
+  ) {
     requestAnimationFrame(detectInterrupt);
     return;
   }
@@ -3254,6 +3261,7 @@ function startInterruptBrowserPartialDetection() {
     logBrowserAsrStuckEvent("interrupt_detect onend", {
       note: "detector SR ended; barge-in live stream uses same object until abort",
     });
+    interruptBrowserDetectActive = false;
     interruptDetectRecognition = null;
   };
 
@@ -3279,6 +3287,10 @@ function startInterruptBrowserPartialDetection() {
     beginBrowserAsrStuckSession("interrupt-detect");
   } catch (e) {
     interruptBrowserDetectActive = false;
+    try {
+      interruptDetectRecognition?.abort();
+    } catch {}
+    interruptDetectRecognition = null;
   }
 }
 
