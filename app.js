@@ -2716,17 +2716,8 @@ function startMainBrowserRecognitionContinuous() {
 
   mainBrowserRecognition.onend = () => {
     mainBrowserRecognition = null;
-    /* Chrome often ends the SR session between utterances; restart so continuous mode keeps partial ASR after TTS. */
-    if (!browserAsrPreferred()) return;
-    if (listeningMode !== "continuous" || !listening || inputMuted) return;
-    if (processing || requestInFlight || isServerPipelineBusy()) return;
-    if (pttRecording) return;
-    queueMicrotask(() => {
-      if (!listening || processing || requestInFlight || isServerPipelineBusy()) return;
-      if (!browserAsrPreferred()) return;
-      if (listeningMode !== "continuous" || inputMuted) return;
-      startMainBrowserRecognitionContinuous();
-    });
+    /* Do not call startMainBrowserRecognitionContinuous() here: stopAll() clears mainBrowserSilenceTimer and
+       aborts the session, so a tight onend→restart loop prevents silence-finalize → never reaches Thinking/infer. */
   };
 
   try {
@@ -3037,7 +3028,19 @@ async function runInferMainPipeline(formData) {
             }
           });
         } catch (e) {
-          if (e?.name !== "AbortError") console.warn(e);
+          if (e?.name !== "AbortError") {
+            console.warn("[UX][TTS] NDJSON main playback failed", e);
+            processing = false;
+            requestInFlight = false;
+            voiceUxTurn = null;
+            if (listeningMode === "continuous" && listening && !inputMuted) {
+              setStatus("Reply playback failed — try again", "offline");
+              startListening();
+            } else {
+              setStatus("Ready", "idle");
+            }
+            updateMuteInputButton();
+          }
         }
       })();
       return;
