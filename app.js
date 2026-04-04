@@ -125,6 +125,24 @@ let pttRecording = false;
 let inputMuted = false;
 let suppressNextUtterance = false;
 
+/** Web Speech API (main + interrupt + post-interrupt); mutually exclusive instances. */
+let mainBrowserRecognition = null;
+let mainBrowserSilenceTimer = null;
+let mainBrowserFinalTranscript = "";
+/** @type {HTMLElement | null} */
+let mainBrowserLiveBubble = null;
+
+let interruptDetectRecognition = null;
+let interruptBrowserDetectActive = false;
+let postInterruptRecognition = null;
+let interruptPartialAccumMs = 0;
+let interruptPartialLastChangeAt = 0;
+let interruptPartialLastText = "";
+let interruptPartialRafTime = 0;
+/** "main" continuous/PTT vs "interrupt" post-barge-in utterance — controls silence-timer finalize. */
+let mainBrowserFinalizeKind = "main";
+let mainBrowserLastInterim = "";
+
 let audioStartedAt = 0;
 let voiceUxTurn = null;
 let textUxTurn = null;
@@ -310,6 +328,55 @@ const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /** Request NDJSON streaming TTS from /infer and /text so the first /audio URL arrives as soon as it is synthesized. */
 const STREAM_TTS = true;
+
+/** Browser Web Speech API: live partials, then 1s stable transcript → /infer without server ASR. */
+const BROWSER_ASR_MAIN_SILENCE_MS = 1000;
+/** Min accumulated ms of changing partial transcript to count as interrupt (vs VAD on audio). */
+const BROWSER_ASR_INTERRUPT_SUSTAIN_MS = 350;
+/** Reset interrupt sustain if no transcript change for this long (ms). */
+const BROWSER_ASR_INTERRUPT_GAP_MS = 120;
+
+function browserAsrSupported() {
+  return typeof (window.SpeechRecognition || window.webkitSpeechRecognition) === "function";
+}
+
+/**
+ * Set true after Web Speech returns not-allowed / service-not-allowed so we stop retrying
+ * (retries re-trigger permission prompts, especially on file://).
+ */
+let browserAsrPermanentlyDisabled = false;
+
+/** Set localStorage VERA_BROWSER_ASR to "0" to force classic MediaRecorder + server ASR. */
+function browserAsrPreferred() {
+  if (browserAsrPermanentlyDisabled) return false;
+  /* Web Speech API requires a secure context (HTTPS or localhost). file:// is not — do not use Browser ASR. */
+  if (typeof window.isSecureContext !== "undefined" && !window.isSecureContext) {
+    return false;
+  }
+  if (!browserAsrSupported()) return false;
+  try {
+    return localStorage.getItem("VERA_BROWSER_ASR") !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function disableBrowserAsrForSession(reason) {
+  browserAsrPermanentlyDisabled = true;
+  if (speechWaitTimeoutId != null) {
+    clearTimeout(speechWaitTimeoutId);
+    speechWaitTimeoutId = null;
+  }
+  console.warn("[BrowserASR] disabled for this session:", reason);
+}
+
+function isFatalBrowserSpeechError(code) {
+  return (
+    code === "not-allowed" ||
+    code === "service-not-allowed" ||
+    code === "audio-capture"
+  );
+}
 
 function isNdjsonTtsResponse(res) {
   const ct = res.headers.get("content-type") || "";
@@ -941,7 +1008,8 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
 }
 
 function interruptSpeech() {
-  if (!interruptRecording) return;
+  const useBrowserAsr = browserAsrPreferred();
+  if (!interruptRecording && !useBrowserAsr) return;
   const a = getAudioEl();
   const htmlPlaying = a && !a.paused;
   const webTtsPlaying =
@@ -968,11 +1036,20 @@ function interruptSpeech() {
   lastInterruptSpeechLikeSnapshot = null;
 
   interruptLastVoiceTime = performance.now();
-  requestAnimationFrame(detectInterruptSpeechEnd);
+  if (interruptRecording) {
+    requestAnimationFrame(detectInterruptSpeechEnd);
+  } else if (useBrowserAsr) {
+    startPostInterruptBrowserRecognition();
+  }
 }
 
 function detectInterrupt() {
   if (!analyser) {
+    requestAnimationFrame(detectInterrupt);
+    return;
+  }
+
+  if (browserAsrPreferred() && interruptBrowserDetectActive) {
     requestAnimationFrame(detectInterrupt);
     return;
   }
@@ -1362,6 +1439,11 @@ function wireMobileInterruptDebugUi() {
 }
 
 function startInterruptCapture() {
+  if (browserAsrPreferred()) {
+    startInterruptBrowserPartialDetection();
+    return;
+  }
+
   // 🔥 HARD FLUSH — stop and discard any previous capture
   if (interruptRecorder && interruptRecorder.state !== "inactive") {
     try {
@@ -1437,116 +1519,7 @@ async function handleInterruptUtterance(blob) {
   );
   formData.append("stream_tts", STREAM_TTS ? "1" : "0");
 
-  try {
-    logVoicePipe("POST /infer starting (interrupt, upload in flight)");
-    const inferFetchStart = performance.now();
-    const res = await fetch(`${API_URL}/infer`, {
-      method: "POST",
-      body: formData,
-      signal: attachPipelineAbortSignal()
-    });
-    const inferTtfbMs = performance.now() - inferFetchStart;
-    logVoicePipe("POST /infer response headers (interrupt)");
-
-    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
-      requestInFlight = false;
-
-      const runStream = async () => {
-        let ndjsonMeta = null;
-        const streamReplyState = createNdjsonStreamingReplyState();
-        resetAudioHandlers();
-        try {
-          await runNdjsonTtsPlayback(res, {
-            onMeta: (meta) => {
-              ndjsonMeta = { ...ndjsonMeta, ...meta };
-              if (meta.transcript) {
-                addBubble(meta.transcript, "user", { path: "interrupt-ndjson" });
-              }
-            },
-            onReplyProgress: (replySoFar) => {
-              applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
-            },
-            onDone: (done) => {
-              logInferLatency(done, "interrupt", inferTtfbMs);
-              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
-            },
-            onPlayStart: () => {
-              logVoiceFirstAudio("main-reply");
-              logVoiceMainReplyAudio();
-              /* NDJSON: reply bubble comes from reply_so_far + finalizeNdjsonStreamingReply — not addBubble here (duplicate). */
-              applyActionPayload(ndjsonMeta);
-              waveState = "speaking";
-              audioStartedAt = performance.now();
-              setStatus("Speaking… (can only be interrupted once)", "speaking");
-              processing = false;
-            },
-            onPlayEnd: () => {
-              resumeListeningAfterInterruptPlayback();
-            }
-          });
-        } catch (e) {
-          if (e?.name !== "AbortError") console.warn(e);
-        }
-      };
-
-      await runStream();
-      return;
-    }
-
-    const data = await res.json();
-    logInferLatency(data, "interrupt", inferTtfbMs);
-
-    requestInFlight = false;
-
-    /* =========================
-       CONTROL FLOW (FIRST)
-    ========================= */
-
-    if (data.skip) {
-      hideSidePanel();
-      processing = false;
-      getAudioEl()?.pause();
-      if (listeningMode === "ptt") {
-        listening = false;
-        waveState = "idle";
-        setStatus("Ready", "idle");
-        updateMuteInputButton();
-        return;
-      }
-      listening = true;
-      startListening();
-      return;
-    }
-
-    if (data.client_action === "mute_input") {
-      hideSidePanel();
-      getAudioEl()?.pause();
-      processing = false;
-      listening = true;
-      setContinuousInputMuted(true);
-      return;
-    }
-
-    /* =========================
-       NORMAL INTERRUPT REPLY
-    ========================= */
-
-    addBubble(data.transcript, "user", { path: "interrupt-json" });
-
-    await playInterruptAnswer(data);
-
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      hideSidePanel();
-      requestInFlight = false;
-      processing = false;
-      return;
-    }
-    hideSidePanel();
-    requestInFlight = false;
-    setStatus("Server error", "offline");
-    listening = true;
-  }
+  await runInferInterruptPipeline(formData);
 }
 
 async function playInterruptAnswer(data) {
@@ -1705,6 +1678,7 @@ function cancelVoicePipelineAndResetState() {
   interruptRecorder = null;
   interruptRecording = false;
   interruptChunks = [];
+  stopAllBrowserSpeechRecognizers();
   if (mediaRecorder && mediaRecorder.state === "recording") {
     suppressNextUtterance = true;
     mediaRecorder.stop();
@@ -2553,6 +2527,372 @@ function stopActiveMicCaptureSilently() {
     suppressNextUtterance = true;
     mediaRecorder.stop();
   }
+  stopAllBrowserSpeechRecognizers();
+}
+
+function stopAllBrowserSpeechRecognizers() {
+  if (mainBrowserSilenceTimer != null) {
+    clearTimeout(mainBrowserSilenceTimer);
+    mainBrowserSilenceTimer = null;
+  }
+  [mainBrowserRecognition, interruptDetectRecognition, postInterruptRecognition].forEach(
+    (r) => {
+      if (!r) return;
+      try {
+        r.onresult = null;
+        r.onerror = null;
+        r.onend = null;
+        r.abort();
+      } catch {
+        try {
+          r.stop();
+        } catch {}
+      }
+    }
+  );
+  mainBrowserRecognition = null;
+  interruptDetectRecognition = null;
+  postInterruptRecognition = null;
+  interruptBrowserDetectActive = false;
+  interruptPartialAccumMs = 0;
+  interruptPartialLastChangeAt = 0;
+  interruptPartialLastText = "";
+  mainBrowserFinalTranscript = "";
+  mainBrowserLiveBubble = null;
+  mainBrowserFinalizeKind = "main";
+  mainBrowserLastInterim = "";
+}
+
+function scheduleMainBrowserEndOfUtterance() {
+  if (mainBrowserSilenceTimer != null) {
+    clearTimeout(mainBrowserSilenceTimer);
+    mainBrowserSilenceTimer = null;
+  }
+  const snap = (mainBrowserFinalTranscript + "").trim();
+  mainBrowserSilenceTimer = setTimeout(() => {
+    mainBrowserSilenceTimer = null;
+    const cur = (mainBrowserFinalTranscript + "").trim();
+    if (cur !== snap || cur.length === 0) return;
+    if (mainBrowserFinalizeKind === "interrupt") {
+      void finalizeInterruptBrowserTranscript(cur);
+    } else {
+      void finalizeMainBrowserTranscript(cur);
+    }
+  }, BROWSER_ASR_MAIN_SILENCE_MS);
+}
+
+function updateMainBrowserLiveBubble(fullText, interim) {
+  const convo = uiEl("conversation");
+  if (!convo) return;
+  const line = (fullText + interim).trim();
+  if (!line) return;
+  if (!mainBrowserLiveBubble || !mainBrowserLiveBubble.isConnected) {
+    mainBrowserLiveBubble = addBubble(line, "user", { path: "main-browser-partial" });
+  } else {
+    mainBrowserLiveBubble.textContent = line;
+  }
+  convo.scrollTop = convo.scrollHeight;
+}
+
+function removeMainBrowserLiveBubble() {
+  if (mainBrowserLiveBubble?.isConnected) {
+    mainBrowserLiveBubble.remove();
+  }
+  mainBrowserLiveBubble = null;
+}
+
+async function finalizeMainBrowserTranscript(text) {
+  const trimmed = (text || "").trim();
+  stopAllBrowserSpeechRecognizers();
+  if (!trimmed) {
+    processing = false;
+    voiceUxTurn = null;
+    if (listeningMode === "continuous" && listening && !inputMuted) {
+      startListening();
+    }
+    return;
+  }
+
+  removeMainBrowserLiveBubble();
+  beginVoiceUxTurn();
+  requestInFlight = true;
+  processing = true;
+  waveState = "idle";
+  setStatus("Thinking", "thinking");
+
+  const formData = new FormData();
+  formData.append("transcript", trimmed);
+  formData.append("use_browser_asr", "1");
+  formData.append("session_id", getSessionId());
+  formData.append("client", appModePrefix());
+  if (listeningMode === "ptt") {
+    formData.append("mode", "ptt");
+  }
+  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+
+  logVoiceTranscript("final", trimmed, { path: "main-browser-asr" });
+  await runInferMainPipeline(formData);
+}
+
+function startMainBrowserRecognitionContinuous() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+
+  stopAllBrowserSpeechRecognizers();
+  mainBrowserFinalizeKind = "main";
+
+  mainBrowserFinalTranscript = "";
+  let interimBuf = "";
+
+  mainBrowserRecognition = new SR();
+  mainBrowserRecognition.continuous = true;
+  mainBrowserRecognition.interimResults = true;
+  mainBrowserRecognition.lang = "en-US";
+
+  mainBrowserRecognition.onresult = (event) => {
+    interimBuf = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) {
+        mainBrowserFinalTranscript += r[0].transcript;
+      } else {
+        interimBuf += r[0].transcript;
+      }
+    }
+    mainBrowserLastInterim = interimBuf;
+    hasSpoken = mainBrowserFinalTranscript.trim().length > 0 || interimBuf.trim().length > 0;
+    if (hasSpoken && speechWaitTimeoutId != null) {
+      clearTimeout(speechWaitTimeoutId);
+      speechWaitTimeoutId = null;
+    }
+    updateMainBrowserLiveBubble(mainBrowserFinalTranscript, interimBuf);
+    scheduleMainBrowserEndOfUtterance();
+  };
+
+  mainBrowserRecognition.onerror = (ev) => {
+    if (ev.error === "aborted" || ev.error === "no-speech") return;
+    console.warn("[BrowserASR]", ev.error);
+    if (isFatalBrowserSpeechError(ev.error)) {
+      disableBrowserAsrForSession(ev.error);
+      stopAllBrowserSpeechRecognizers();
+      processing = false;
+      voiceUxTurn = null;
+      if (listeningMode === "continuous" && listening && !inputMuted) {
+        setStatus("Use http://localhost or HTTPS for live captions — using mic recording", "recording");
+        startListening();
+      }
+    }
+  };
+
+  mainBrowserRecognition.onend = () => {
+    mainBrowserRecognition = null;
+  };
+
+  try {
+    mainBrowserRecognition.start();
+  } catch (e) {
+    console.warn("[BrowserASR] start failed", e);
+  }
+
+  speechWaitTimeoutId = setTimeout(() => {
+    speechWaitTimeoutId = null;
+    if (!hasSpoken) {
+      stopAllBrowserSpeechRecognizers();
+      processing = false;
+      voiceUxTurn = null;
+      if (
+        listeningMode === "continuous" &&
+        listening &&
+        !inputMuted &&
+        browserAsrPreferred()
+      ) {
+        startListening();
+      }
+    }
+  }, MAX_WAIT_FOR_SPEECH_MS);
+}
+
+function startInterruptBrowserPartialDetection() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+
+  try {
+    if (interruptDetectRecognition) {
+      interruptDetectRecognition.abort();
+    }
+  } catch {}
+
+  interruptDetectRecognition = new SR();
+  interruptDetectRecognition.continuous = true;
+  interruptDetectRecognition.interimResults = true;
+  interruptDetectRecognition.lang = "en-US";
+
+  let lastCombined = "";
+  interruptPartialAccumMs = 0;
+  interruptPartialLastChangeAt = 0;
+  interruptPartialLastText = "";
+  interruptPartialRafTime = performance.now();
+  interruptBrowserDetectActive = true;
+
+  interruptDetectRecognition.onresult = (event) => {
+    if (!interruptBrowserDetectActive) return;
+    let finalP = "";
+    let interim = "";
+    for (let i = 0; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) {
+        finalP += r[0].transcript;
+      } else {
+        interim += r[0].transcript;
+      }
+    }
+    const combined = (finalP + interim).trim();
+    const now = performance.now();
+    if (combined.length < 2) {
+      interruptPartialRafTime = now;
+      return;
+    }
+
+    if (combined !== lastCombined) {
+      if (
+        interruptPartialLastChangeAt &&
+        now - interruptPartialLastChangeAt > BROWSER_ASR_INTERRUPT_GAP_MS
+      ) {
+        interruptPartialAccumMs = 0;
+      }
+      if (interruptPartialLastChangeAt) {
+        interruptPartialAccumMs += Math.min(now - interruptPartialLastChangeAt, 80);
+      }
+      interruptPartialLastChangeAt = now;
+      lastCombined = combined;
+      interruptPartialLastText = combined;
+
+      lastInterruptProbe = {
+        interruptGate: "browser_partial_asr",
+        interruptReason: "browser_partial_asr",
+        speechAccumMs: interruptPartialAccumMs,
+        partialText: combined,
+      };
+
+      if (interruptPartialAccumMs >= BROWSER_ASR_INTERRUPT_SUSTAIN_MS) {
+        interruptBrowserDetectActive = false;
+        try {
+          interruptDetectRecognition.abort();
+        } catch {}
+        interruptDetectRecognition = null;
+        interruptSpeech();
+      }
+    }
+    interruptPartialRafTime = now;
+  };
+
+  interruptDetectRecognition.onerror = (ev) => {
+    if (isFatalBrowserSpeechError(ev.error)) {
+      disableBrowserAsrForSession(ev.error);
+      try {
+        interruptDetectRecognition?.abort();
+      } catch {}
+      interruptDetectRecognition = null;
+      interruptBrowserDetectActive = false;
+    }
+  };
+
+  try {
+    interruptDetectRecognition.start();
+  } catch (e) {
+    interruptBrowserDetectActive = false;
+  }
+}
+
+function startPostInterruptBrowserRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+
+  stopAllBrowserSpeechRecognizers();
+  mainBrowserFinalizeKind = "interrupt";
+
+  mainBrowserFinalTranscript = "";
+  let interimBuf = "";
+
+  postInterruptRecognition = new SR();
+  postInterruptRecognition.continuous = true;
+  postInterruptRecognition.interimResults = true;
+  postInterruptRecognition.lang = "en-US";
+
+  postInterruptRecognition.onresult = (event) => {
+    interimBuf = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) {
+        mainBrowserFinalTranscript += r[0].transcript;
+      } else {
+        interimBuf += r[0].transcript;
+      }
+    }
+    mainBrowserLastInterim = interimBuf;
+    updateMainBrowserLiveBubble(mainBrowserFinalTranscript, interimBuf);
+    scheduleMainBrowserEndOfUtterance();
+  };
+
+  postInterruptRecognition.onerror = (ev) => {
+    if (isFatalBrowserSpeechError(ev.error)) {
+      disableBrowserAsrForSession(ev.error);
+      stopAllBrowserSpeechRecognizers();
+      listening = true;
+      startListening();
+    }
+  };
+
+  postInterruptRecognition.onend = () => {
+    postInterruptRecognition = null;
+  };
+
+  mainBrowserRecognition = postInterruptRecognition;
+
+  try {
+    postInterruptRecognition.start();
+  } catch (e) {
+    listening = true;
+    startListening();
+  }
+}
+
+async function finalizeInterruptBrowserTranscript(text) {
+  const trimmed = (text || "").trim();
+  stopAllBrowserSpeechRecognizers();
+  if (!trimmed) {
+    listening = true;
+    startListening();
+    return;
+  }
+
+  removeMainBrowserLiveBubble();
+  requestInFlight = true;
+  processing = true;
+  waveState = "idle";
+  setStatus("Thinking", "thinking");
+
+  const formData = new FormData();
+  formData.append("transcript", trimmed);
+  formData.append("use_browser_asr", "1");
+  formData.append("session_id", getSessionId());
+  formData.append("client", appModePrefix());
+  formData.append("mode", "interrupt");
+  formData.append(
+    "interrupt_debug",
+    JSON.stringify({
+      probe: lastInterruptProbe,
+      browser_partial_asr: true,
+      thresholds: {
+        BROWSER_ASR_INTERRUPT_SUSTAIN_MS,
+        BROWSER_ASR_INTERRUPT_GAP_MS,
+      },
+    })
+  );
+  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+
+  logVoiceTranscript("final", trimmed, { path: "interrupt-browser-asr" });
+  await runInferInterruptPipeline(formData);
 }
 
 /* =========================
@@ -2567,6 +2907,18 @@ function startListening() {
     return;
   }
   clearSpeechWaitTimerAndDetectRaf();
+
+  if (listeningMode === "continuous" && browserAsrPreferred()) {
+    waveState = "listening";
+    audioChunks = [];
+    hasSpoken = false;
+    lastVoiceTime = 0;
+    setStatus("Listening…", "recording");
+    updateMuteInputButton();
+    startMainBrowserRecognitionContinuous();
+    return;
+  }
+
   waveState = "listening";
   audioChunks = [];
   hasSpoken = false;
@@ -2588,6 +2940,253 @@ function startListening() {
 
   updateMuteInputButton();
   setStatus("Listening…", "recording");
+}
+
+/* =========================
+   INFER PIPELINE (shared: recorded audio or browser transcript)
+========================= */
+
+async function runInferMainPipeline(formData) {
+  try {
+    logVoicePipe("POST /infer starting (main, upload in flight)");
+    const inferFetchStart = performance.now();
+    const res = await fetch(`${API_URL}/infer`, {
+      method: "POST",
+      body: formData,
+      signal: attachPipelineAbortSignal()
+    });
+    const inferTtfbMs = performance.now() - inferFetchStart;
+    logVoicePipe("POST /infer response headers (main — TTFB)");
+
+    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
+      requestInFlight = false;
+
+      let ndjsonMeta = null;
+      const streamReplyState = createNdjsonStreamingReplyState();
+      void (async () => {
+        try {
+          console.log("[UX][TTS] NDJSON streaming (main)");
+          resetAudioHandlers();
+          await runNdjsonTtsPlayback(res, {
+            onMeta: (meta) => {
+              ndjsonMeta = { ...ndjsonMeta, ...meta };
+              if (meta.transcript) {
+                addBubble(meta.transcript, "user", { path: "main-ndjson" });
+                if (!document.body.classList.contains("chat-started")) {
+                  document.body.classList.add("chat-started");
+                  dismissGuide();
+                }
+              }
+            },
+            onReplyProgress: (replySoFar) => {
+              applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
+            },
+            onDone: (done) => {
+              logInferLatency(done, "main", inferTtfbMs);
+              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+            },
+            onPlayStart: () => {
+              logVoiceFirstAudio("main-reply");
+              logVoiceMainReplyAudio();
+              applyActionPayload(ndjsonMeta);
+              waveState = "speaking";
+              audioStartedAt = performance.now();
+              setStatus(
+                listeningMode === "ptt"
+                  ? "Speaking"
+                  : "Speaking… (Interruptible)",
+                "speaking"
+              );
+              startInterruptCapture();
+            },
+            onPlayEnd: () => {
+              resumeAfterAssistantReplyPlayback();
+            }
+          });
+        } catch (e) {
+          if (e?.name !== "AbortError") console.warn(e);
+        }
+      })();
+      return;
+    }
+
+    const data = await res.json();
+    logInferLatency(data, "main", inferTtfbMs);
+    requestInFlight = false;
+
+    if (data.skip) {
+      hideSidePanel();
+      processing = false;
+      getAudioEl()?.pause();
+
+      if (listeningMode === "ptt") {
+        setStatus("No voice detected", "idle");
+      } else if (listeningMode === "continuous") {
+        startListening();
+      }
+
+      return;
+    }
+
+    if (data.client_action === "mute_input") {
+      hideSidePanel();
+      voiceUxTurn = null;
+      getAudioEl()?.pause();
+      processing = false;
+      setContinuousInputMuted(true);
+      return;
+    }
+
+    addBubble(data.transcript, "user", { path: "main-json" });
+    if (!document.body.classList.contains("chat-started")) {
+      document.body.classList.add("chat-started");
+      dismissGuide();
+    }
+    const playMainAnswer = () => {
+      resetAudioHandlers();
+      void (async () => {
+        try {
+          await playTtsFromApi(data, {
+            onPlayStart: () => {
+              logVoiceFirstAudio("main-reply");
+              logVoiceMainReplyAudio();
+              applyAssistantReplyAndPanels(data);
+              waveState = "speaking";
+              audioStartedAt = performance.now();
+              setStatus(
+                listeningMode === "ptt"
+                  ? "Speaking"
+                  : "Speaking… (Interruptible)",
+                "speaking"
+              );
+              startInterruptCapture();
+            },
+            onPlayEnd: () => {
+              resumeAfterAssistantReplyPlayback();
+            }
+          });
+        } catch (e) {
+          console.warn(e);
+        }
+      })();
+    };
+
+    playMainAnswer();
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      hideSidePanel();
+      processing = false;
+      requestInFlight = false;
+      return;
+    }
+    hideSidePanel();
+    processing = false;
+    requestInFlight = false;
+    setStatus("Server error", "offline");
+  }
+}
+
+async function runInferInterruptPipeline(formData) {
+  try {
+    logVoicePipe("POST /infer starting (interrupt, upload in flight)");
+    const inferFetchStart = performance.now();
+    const res = await fetch(`${API_URL}/infer`, {
+      method: "POST",
+      body: formData,
+      signal: attachPipelineAbortSignal()
+    });
+    const inferTtfbMs = performance.now() - inferFetchStart;
+    logVoicePipe("POST /infer response headers (interrupt)");
+
+    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
+      requestInFlight = false;
+
+      const runStream = async () => {
+        let ndjsonMeta = null;
+        const streamReplyState = createNdjsonStreamingReplyState();
+        resetAudioHandlers();
+        try {
+          await runNdjsonTtsPlayback(res, {
+            onMeta: (meta) => {
+              ndjsonMeta = { ...ndjsonMeta, ...meta };
+              if (meta.transcript) {
+                addBubble(meta.transcript, "user", { path: "interrupt-ndjson" });
+              }
+            },
+            onReplyProgress: (replySoFar) => {
+              applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
+            },
+            onDone: (done) => {
+              logInferLatency(done, "interrupt", inferTtfbMs);
+              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+            },
+            onPlayStart: () => {
+              logVoiceFirstAudio("main-reply");
+              logVoiceMainReplyAudio();
+              applyActionPayload(ndjsonMeta);
+              waveState = "speaking";
+              audioStartedAt = performance.now();
+              setStatus("Speaking… (can only be interrupted once)", "speaking");
+              processing = false;
+            },
+            onPlayEnd: () => {
+              resumeListeningAfterInterruptPlayback();
+            }
+          });
+        } catch (e) {
+          if (e?.name !== "AbortError") console.warn(e);
+        }
+      };
+
+      await runStream();
+      return;
+    }
+
+    const data = await res.json();
+    logInferLatency(data, "interrupt", inferTtfbMs);
+
+    requestInFlight = false;
+
+    if (data.skip) {
+      hideSidePanel();
+      processing = false;
+      getAudioEl()?.pause();
+      if (listeningMode === "ptt") {
+        listening = false;
+        waveState = "idle";
+        setStatus("Ready", "idle");
+        updateMuteInputButton();
+        return;
+      }
+      listening = true;
+      startListening();
+      return;
+    }
+
+    if (data.client_action === "mute_input") {
+      hideSidePanel();
+      getAudioEl()?.pause();
+      processing = false;
+      listening = true;
+      setContinuousInputMuted(true);
+      return;
+    }
+
+    addBubble(data.transcript, "user", { path: "interrupt-json" });
+
+    await playInterruptAnswer(data);
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      hideSidePanel();
+      requestInFlight = false;
+      processing = false;
+      return;
+    }
+    hideSidePanel();
+    requestInFlight = false;
+    setStatus("Server error", "offline");
+    listening = true;
+  }
 }
 
 /* =========================
@@ -2650,146 +3249,7 @@ async function handleUtterance() {
   }
   formData.append("stream_tts", STREAM_TTS ? "1" : "0");
 
-  try {
-    logVoicePipe("POST /infer starting (main, upload in flight)");
-    const inferFetchStart = performance.now();
-    const res = await fetch(`${API_URL}/infer`, {
-      method: "POST",
-      body: formData,
-      signal: attachPipelineAbortSignal()
-    });
-    const inferTtfbMs = performance.now() - inferFetchStart;
-    logVoicePipe("POST /infer response headers (main — TTFB)");
-
-    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
-      requestInFlight = false;
-
-      let ndjsonMeta = null;
-      const streamReplyState = createNdjsonStreamingReplyState();
-      void (async () => {
-        try {
-          console.log("[UX][TTS] NDJSON streaming (main)");
-          resetAudioHandlers();
-          await runNdjsonTtsPlayback(res, {
-            onMeta: (meta) => {
-              ndjsonMeta = { ...ndjsonMeta, ...meta };
-              if (meta.transcript) {
-                addBubble(meta.transcript, "user", { path: "main-ndjson" });
-                if (!document.body.classList.contains("chat-started")) {
-                  document.body.classList.add("chat-started");
-                  dismissGuide();
-                }
-              }
-            },
-            onReplyProgress: (replySoFar) => {
-              applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
-            },
-            onDone: (done) => {
-              logInferLatency(done, "main", inferTtfbMs);
-              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
-            },
-            onPlayStart: () => {
-              logVoiceFirstAudio("main-reply");
-              logVoiceMainReplyAudio();
-              /* NDJSON: assistant bubble already from streaming + finalize — only side panels here. */
-              applyActionPayload(ndjsonMeta);
-              waveState = "speaking";
-              audioStartedAt = performance.now();
-              setStatus(
-                listeningMode === "ptt"
-                  ? "Speaking"
-                  : "Speaking… (Interruptible)",
-                "speaking"
-              );
-              startInterruptCapture();
-            },
-            onPlayEnd: () => {
-              resumeAfterAssistantReplyPlayback();
-            }
-          });
-        } catch (e) {
-          if (e?.name !== "AbortError") console.warn(e);
-        }
-      })();
-      return;
-    }
-
-    const data = await res.json();
-    logInferLatency(data, "main", inferTtfbMs);
-    requestInFlight = false;
-
-    // 🔑 HANDLE CONTROL FLOW FIRST (NO AUDIO YET)
-    if (data.skip) {
-      hideSidePanel();
-      processing = false;
-      getAudioEl()?.pause();
-
-      if (listeningMode === "ptt") {
-        setStatus("No voice detected", "idle");
-      } else if (listeningMode === "continuous") {
-        startListening();
-      }
-
-      return;
-    }
-
-    if (data.client_action === "mute_input") {
-      hideSidePanel();
-      voiceUxTurn = null;
-      getAudioEl()?.pause();
-      processing = false;
-      setContinuousInputMuted(true);
-      return;
-    }
-
-    addBubble(data.transcript, "user", { path: "main-json" });
-    if (!document.body.classList.contains("chat-started")) {
-      document.body.classList.add("chat-started");
-      dismissGuide();
-    }
-    const playMainAnswer = () => {
-      resetAudioHandlers();
-      void (async () => {
-        try {
-          await playTtsFromApi(data, {
-            onPlayStart: () => {
-              logVoiceFirstAudio("main-reply");
-              logVoiceMainReplyAudio();
-              applyAssistantReplyAndPanels(data);
-              waveState = "speaking";
-              audioStartedAt = performance.now();
-              setStatus(
-                listeningMode === "ptt"
-                  ? "Speaking"
-                  : "Speaking… (Interruptible)",
-                "speaking"
-              );
-              startInterruptCapture();
-            },
-            onPlayEnd: () => {
-              resumeAfterAssistantReplyPlayback();
-            }
-          });
-        } catch (e) {
-          console.warn(e);
-        }
-      })();
-    };
-
-    playMainAnswer();
-
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      hideSidePanel();
-      processing = false;
-      requestInFlight = false;
-      return;
-    }
-    hideSidePanel();
-    processing = false;
-    requestInFlight = false;
-    setStatus("Server error", "offline");
-  }
+  await runInferMainPipeline(formData);
 }
 
 /* =========================
@@ -2948,6 +3408,14 @@ async function beginPttRecordingNow() {
   audioChunks = [];
   hasSpoken = false;
   lastVoiceTime = 0;
+
+  if (browserAsrPreferred()) {
+    mainBrowserFinalizeKind = "main";
+    startMainBrowserRecognitionContinuous();
+    setStatus("Listening (PTT)", "recording");
+    return;
+  }
+
   mediaRecorder = new MediaRecorder(micStream);
   mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
   mediaRecorder.onstop = handleUtterance;
@@ -2968,6 +3436,35 @@ async function onPttClick() {
   pttRecording = false;
   listening = false;
   waveState = "idle";
+
+  if (browserAsrPreferred()) {
+    const text = (
+      mainBrowserFinalTranscript + (mainBrowserLastInterim || "")
+    ).trim();
+    stopAllBrowserSpeechRecognizers();
+    if (!text) {
+      setStatus("Ready", "idle");
+      updateMuteInputButton();
+      return;
+    }
+    removeMainBrowserLiveBubble();
+    beginVoiceUxTurn();
+    requestInFlight = true;
+    processing = true;
+    waveState = "idle";
+    setStatus("Thinking", "thinking");
+    const formData = new FormData();
+    formData.append("transcript", text);
+    formData.append("use_browser_asr", "1");
+    formData.append("session_id", getSessionId());
+    formData.append("client", appModePrefix());
+    formData.append("mode", "ptt");
+    formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+    logVoiceTranscript("final", text, { path: "ptt-browser-asr" });
+    void runInferMainPipeline(formData);
+    return;
+  }
+
   if (mediaRecorder && mediaRecorder.state === "recording") {
     beginVoiceUxTurn();
     mediaRecorder.stop();
