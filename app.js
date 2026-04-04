@@ -349,7 +349,11 @@ let browserAsrPermanentlyDisabled = false;
 /** Set localStorage VERA_BROWSER_ASR to "0" to force classic MediaRecorder + server ASR. */
 function browserAsrPreferred() {
   if (browserAsrPermanentlyDisabled) return false;
-  /* Web Speech API requires a secure context (HTTPS or localhost). file:// is not — do not use Browser ASR. */
+  /* Opening index.html as file:// is unstable for Web Speech + permissions; use http://localhost or HTTPS. */
+  if (typeof location !== "undefined" && location.protocol === "file:") {
+    return false;
+  }
+  /* Web Speech API requires a secure context (HTTPS or localhost). */
   if (typeof window.isSecureContext !== "undefined" && !window.isSecureContext) {
     return false;
   }
@@ -2558,7 +2562,8 @@ function stopAllBrowserSpeechRecognizers() {
   interruptPartialLastChangeAt = 0;
   interruptPartialLastText = "";
   mainBrowserFinalTranscript = "";
-  mainBrowserLiveBubble = null;
+  /* Remove live caption bubble from DOM before dropping the ref — nulling alone left orphan bubbles + NDJSON duplicate. */
+  removeMainBrowserLiveBubble();
   mainBrowserFinalizeKind = "main";
   mainBrowserLastInterim = "";
 }
@@ -2613,7 +2618,6 @@ async function finalizeMainBrowserTranscript(text) {
     return;
   }
 
-  removeMainBrowserLiveBubble();
   beginVoiceUxTurn();
   requestInFlight = true;
   processing = true;
@@ -2694,20 +2698,14 @@ function startMainBrowserRecognitionContinuous() {
     console.warn("[BrowserASR] start failed", e);
   }
 
+  /* No auto-restart here: looping startListening() recreated SpeechRecognition every ~2s and re-triggered
+     mic permission prompts (especially on file:// / Incognito). User can tap the mic again if needed. */
   speechWaitTimeoutId = setTimeout(() => {
     speechWaitTimeoutId = null;
     if (!hasSpoken) {
       stopAllBrowserSpeechRecognizers();
       processing = false;
       voiceUxTurn = null;
-      if (
-        listeningMode === "continuous" &&
-        listening &&
-        !inputMuted &&
-        browserAsrPreferred()
-      ) {
-        startListening();
-      }
     }
   }, MAX_WAIT_FOR_SPEECH_MS);
 }
@@ -2866,7 +2864,6 @@ async function finalizeInterruptBrowserTranscript(text) {
     return;
   }
 
-  removeMainBrowserLiveBubble();
   requestInFlight = true;
   processing = true;
   waveState = "idle";
