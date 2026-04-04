@@ -2563,7 +2563,12 @@ function stopAllBrowserSpeechRecognizers() {
   interruptPartialLastText = "";
   mainBrowserFinalTranscript = "";
   /* Remove live caption bubble from DOM before dropping the ref — nulling alone left orphan bubbles + NDJSON duplicate. */
-  removeMainBrowserLiveBubble();
+  try {
+    if (mainBrowserLiveBubble?.isConnected) {
+      mainBrowserLiveBubble.remove();
+    }
+  } catch (_) {}
+  mainBrowserLiveBubble = null;
   mainBrowserFinalizeKind = "main";
   mainBrowserLastInterim = "";
 }
@@ -2900,6 +2905,18 @@ function startListening() {
   if (!listening || processing) return;
   if (listeningMode === "continuous" && inputMuted) {
     showMutedStatusIfIdle();
+    updateMuteInputButton();
+    return;
+  }
+  /* Re-entering startListening while Browser ASR is active would call stopAll() below and wipe
+     mainBrowserFinalTranscript + cancel silence-finalize — no "Thinking" and no transcript. */
+  if (
+    listeningMode === "continuous" &&
+    browserAsrPreferred() &&
+    mainBrowserRecognition
+  ) {
+    waveState = "listening";
+    setStatus("Listening…", "recording");
     updateMuteInputButton();
     return;
   }
