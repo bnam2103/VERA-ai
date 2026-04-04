@@ -148,6 +148,9 @@ let mainBrowserLastInterim = "";
 /** After >2 words during TTS, barge-in latched: same SR stream continues until 1s silence → LLM (no second SR). */
 let interruptBargeInLatched = false;
 
+/** Debounce main SR onend → startListening recovery (Chrome sometimes ends the session with no error). */
+let browserAsrMainEndRecoveryTimer = null;
+
 /** Opt-in via localStorage VERA_DEBUG_BROWSER_ASR_STUCK=1 — heartbeats + onend/onerror/silence-timer traces. */
 let browserAsrStuckWatchdogId = null;
 let browserAsrSessionStartedAt = 0;
@@ -218,7 +221,11 @@ function voicePartialAsrDoneLogEnabled() {
   }
 }
 
-/** Set localStorage VERA_DEBUG_BROWSER_ASR_STUCK to "1" to enable [VOICE][BROWSER-ASR-STUCK] debug logs. */
+/**
+ * Verbose browser-ASR diagnostics (heartbeats, onerror, silence-timer skips). Enable with:
+ *   localStorage.setItem("VERA_DEBUG_BROWSER_ASR_STUCK", "1")
+ * Reload the page after setting. (Recovery from dead SR and zero-audio TTS do not require this.)
+ */
 function browserAsrStuckDebugEnabled() {
   try {
     return localStorage.getItem("VERA_DEBUG_BROWSER_ASR_STUCK") === "1";
@@ -2195,7 +2202,14 @@ async function playTtsUrlSequenceIncremental(
     mainTtsPlaybackActive = false;
     return;
   }
-  if (!curRel) return;
+  /* NDJSON can call queue.end() before any chunk URL (e.g. done-before-chunk or empty TTS). Without this,
+     onPlayEnd / resumeAfterAssistantReplyPlayback never runs → processing stays true and listening never renews. */
+  if (!curRel) {
+    const endFn = onLastEnd ? wrapLastChunkForBmoMouth(onLastEnd) : null;
+    if (endFn) endFn();
+    else mainTtsPlaybackActive = false;
+    return;
+  }
   mainTtsPlaybackActive = true;
   getAudioEl()?.pause();
   let nextPromise = fetch(`${baseUrl}${curRel}`).then((r) => {
@@ -2801,6 +2815,10 @@ function stopActiveMicCaptureSilently() {
 
 /** Stop Web Speech + timers; does not remove the live partial bubble (used before /infer so we can promote the same node). */
 function abortBrowserSpeechRecognizers() {
+  if (browserAsrMainEndRecoveryTimer != null) {
+    clearTimeout(browserAsrMainEndRecoveryTimer);
+    browserAsrMainEndRecoveryTimer = null;
+  }
   if (browserAsrStuckDebugEnabled()) {
     logBrowserAsrStuckEvent("abortBrowserSpeechRecognizers");
   }
@@ -2996,11 +3014,25 @@ function startMainBrowserRecognitionContinuous() {
   mainBrowserRecognition.onend = () => {
     logBrowserAsrStuckEvent(
       "main onend (session ended — if unexpected while listening, partial ASR may look stuck)",
-      { note: "no auto-restart here by design" }
+      { note: "scheduling guarded recovery if still in continuous listen mode" }
     );
     mainBrowserRecognition = null;
-    /* Do not call startMainBrowserRecognitionContinuous() here: stopAll() clears mainBrowserSilenceTimer and
-       aborts the session, so a tight onend→restart loop prevents silence-finalize → never reaches Thinking/infer. */
+    /* Intentionally no synchronous restart: abort/stop during infer must not recreate SR. After natural end
+       (common after long TTS gaps), renew listening once if we still expect continuous browser ASR. */
+    if (browserAsrMainEndRecoveryTimer != null) {
+      clearTimeout(browserAsrMainEndRecoveryTimer);
+      browserAsrMainEndRecoveryTimer = null;
+    }
+    browserAsrMainEndRecoveryTimer = window.setTimeout(() => {
+      browserAsrMainEndRecoveryTimer = null;
+      if (!listening || processing || inputMuted) return;
+      if (listeningMode !== "continuous" || !browserAsrPreferred()) return;
+      if (mainBrowserRecognition || interruptDetectRecognition || postInterruptRecognition) return;
+      console.info(
+        "[BrowserASR] main SpeechRecognition ended while UI expected listening — restarting capture"
+      );
+      startListening();
+    }, 420);
   };
 
   try {
