@@ -462,7 +462,9 @@ const INTERRUPT_SUSTAIN_MS_DESKTOP = 350;
 const INTERRUPT_SUSTAIN_MS_PHONE = 100;
 
 function getInterruptSustainMs() {
-  return IS_MOBILE ? INTERRUPT_SUSTAIN_MS_PHONE : INTERRUPT_SUSTAIN_MS_DESKTOP;
+  return isNarrowViewport()
+    ? INTERRUPT_SUSTAIN_MS_PHONE
+    : INTERRUPT_SUSTAIN_MS_DESKTOP;
 }
 
 /** Max ms without a speech-like frame before resetting the sustain counter. */
@@ -506,7 +508,34 @@ const BROWSER_ASR_MAIN_NETWORK_RETRY_MAX = 2;
  */
 let browserAsrPermanentlyDisabled = false;
 
-/** Set localStorage VERA_BROWSER_ASR to "0" to force classic MediaRecorder + server ASR. */
+/**
+ * Google Chrome (desktop + Android + iOS shell): Web Speech partials are the intended path.
+ * Other mobile browsers (Safari, Firefox, Samsung Internet, …) default to MediaRecorder + server ASR.
+ *
+ * Overrides:
+ * - localStorage VERA_BROWSER_ASR = "0" → never use browser ASR (any device).
+ * - localStorage VERA_BROWSER_ASR_PHONE = "0" → on narrow viewports, force server ASR even in Chrome (if flaky).
+ */
+function isLikelyGoogleChrome() {
+  try {
+    const ua = navigator.userAgent || "";
+    if (/Edg\/|OPR\/|Opera\/|SamsungBrowser/i.test(ua)) return false;
+    if (/CriOS\//.test(ua)) return true;
+    return /Chrome\/\d/.test(ua) && String(navigator.vendor || "").includes("Google");
+  } catch {
+    return false;
+  }
+}
+
+/** Matches browserAsrPreferred() narrow branch: phone-sized layout vs desktop. */
+function isNarrowViewport() {
+  try {
+    return window.matchMedia("(max-width: 768px)").matches;
+  } catch {
+    return false;
+  }
+}
+
 function browserAsrPreferred() {
   if (browserAsrPermanentlyDisabled) return false;
   /* Opening index.html as file:// is unstable for Web Speech + permissions; use http://localhost or HTTPS. */
@@ -519,10 +548,17 @@ function browserAsrPreferred() {
   }
   if (!browserAsrSupported()) return false;
   try {
-    return localStorage.getItem("VERA_BROWSER_ASR") !== "0";
-  } catch {
-    return true;
-  }
+    if (localStorage.getItem("VERA_BROWSER_ASR") === "0") return false;
+  } catch {}
+  try {
+    if (isNarrowViewport()) {
+      try {
+        if (localStorage.getItem("VERA_BROWSER_ASR_PHONE") === "0") return false;
+      } catch {}
+      return isLikelyGoogleChrome();
+    }
+  } catch {}
+  return true;
 }
 
 function disableBrowserAsrForSession(reason) {
@@ -1328,7 +1364,7 @@ function interruptSpeech() {
   if (interruptRecording) {
     requestAnimationFrame(detectInterruptSpeechEnd);
   } else if (useBrowserAsr) {
-    /* Heuristic/VAD path while browser ASR is off or detect inactive: no word stream, start dedicated post-interrupt SR. */
+    /* No MediaRecorder interrupt path: start dedicated post-interrupt SR (e.g. phone Chrome edge cases). */
     promoteInterruptPreviewToMainLiveBubble();
     startPostInterruptBrowserRecognition();
   }
@@ -1340,7 +1376,8 @@ function detectInterrupt() {
     return;
   }
 
-  if (browserAsrPreferred() && interruptBrowserDetectActive) {
+  /* Desktop + browser ASR: barge-in is partial-ASR word count only; never RMS/ZCR/crest heuristic. */
+  if (browserAsrPreferred() && !isNarrowViewport()) {
     requestAnimationFrame(detectInterrupt);
     return;
   }
@@ -1738,7 +1775,7 @@ function wireMobileInterruptDebugUi() {
 }
 
 function startInterruptCapture() {
-  if (browserAsrPreferred()) {
+  if (browserAsrPreferred() && !isNarrowViewport()) {
     startInterruptBrowserPartialDetection();
     return;
   }
