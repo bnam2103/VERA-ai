@@ -426,7 +426,14 @@ const MOBILE_VAD_DEBUG = IS_MOBILE && hasMobileVadLogQuery();
 const VOLUME_THRESHOLD = 0.0078; // slightly lower so quieter speech starts more reliably
 const SILENCE_MS = 950;     // silence before ending speech
 const TRAILING_MS = 300;   // guaranteed tail
-const MAX_WAIT_FOR_SPEECH_MS = 2000;
+/**
+ * Optional cap: if the user has not produced any speech yet (`hasSpoken` false), stop waiting after N ms.
+ * Applies to both browser SpeechRecognition and MediaRecorder fallback.
+ * 0 = disabled (never time out while waiting for the user to start speaking — preferred for continuous mode).
+ * A positive value was historically used to avoid endless capture when the mic was left open with no speech;
+ * that also broke real usage when the first partial arrived late or the user paused before talking.
+ */
+const MAX_WAIT_FOR_SPEECH_MS = 0;
 const MIN_AUDIO_BYTES = 1500;
 const INTERRUPT_MIN_FRAMES = 1;
 
@@ -3047,16 +3054,16 @@ function startMainBrowserRecognitionContinuous() {
     }, 150);
   }
 
-  /* No auto-restart here: looping startListening() recreated SpeechRecognition every ~2s and re-triggered
-     mic permission prompts (especially on file:// / Incognito). User can tap the mic again if needed. */
-  speechWaitTimeoutId = setTimeout(() => {
-    speechWaitTimeoutId = null;
-    if (!hasSpoken) {
-      stopAllBrowserSpeechRecognizers();
-      processing = false;
-      voiceUxTurn = null;
-    }
-  }, MAX_WAIT_FOR_SPEECH_MS);
+  if (MAX_WAIT_FOR_SPEECH_MS > 0) {
+    speechWaitTimeoutId = setTimeout(() => {
+      speechWaitTimeoutId = null;
+      if (!hasSpoken) {
+        stopAllBrowserSpeechRecognizers();
+        processing = false;
+        voiceUxTurn = null;
+      }
+    }, MAX_WAIT_FOR_SPEECH_MS);
+  }
 }
 
 function startInterruptBrowserPartialDetection() {
@@ -3330,12 +3337,14 @@ function startListening() {
   mediaRecorder.start();
   detectSpeech();
 
-  speechWaitTimeoutId = setTimeout(() => {
-    speechWaitTimeoutId = null;
-    if (!hasSpoken && mediaRecorder.state === "recording") {
-      mediaRecorder.stop();
-    }
-  }, MAX_WAIT_FOR_SPEECH_MS);
+  if (MAX_WAIT_FOR_SPEECH_MS > 0) {
+    speechWaitTimeoutId = setTimeout(() => {
+      speechWaitTimeoutId = null;
+      if (!hasSpoken && mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+      }
+    }, MAX_WAIT_FOR_SPEECH_MS);
+  }
 
   updateMuteInputButton();
   setStatus("Listening…", "recording");
