@@ -197,6 +197,30 @@ function voiceTranscriptDebugEnabled() {
   }
 }
 
+/** Set localStorage VERA_DEBUG_PARTIAL_ASR_DONE to "0" to silence [VOICE][PARTIAL-ASR] done / segment logs. */
+function voicePartialAsrDoneLogEnabled() {
+  try {
+    return localStorage.getItem("VERA_DEBUG_PARTIAL_ASR_DONE") !== "0";
+  } catch {
+    return true;
+  }
+}
+
+/** One browser-ASR utterance finished (silence gate) and will go to Thinking/infer. */
+function logPartialAsrUtteranceDone(text, meta = {}) {
+  if (!voicePartialAsrDoneLogEnabled()) return;
+  console.log("[VOICE][PARTIAL-ASR] done", { text: text ?? "", ...meta });
+}
+
+/** Chrome emitted a final segment for this result (may be multiple per spoken phrase). */
+function logPartialAsrSegmentFinal(segmentText, meta = {}) {
+  if (!voicePartialAsrDoneLogEnabled()) return;
+  console.log("[VOICE][PARTIAL-ASR] segment-final", {
+    segment: segmentText ?? "",
+    ...meta
+  });
+}
+
 /**
  * @param {"final"} phase — committed user line (bubble) from `/infer`.
  * @param {Record<string, unknown>} [meta] — e.g. { path: "main-ndjson" }
@@ -2601,6 +2625,10 @@ function scheduleMainBrowserEndOfUtterance() {
     mainBrowserSilenceTimer = null;
     const cur = (mainBrowserFinalTranscript + "").trim();
     if (cur !== snap || cur.length === 0) return;
+    logPartialAsrUtteranceDone(cur, {
+      reason: "silence-timer",
+      mode: mainBrowserFinalizeKind === "interrupt" ? "interrupt" : "main"
+    });
     if (mainBrowserFinalizeKind === "interrupt") {
       void finalizeInterruptBrowserTranscript(cur);
     } else {
@@ -2684,7 +2712,9 @@ function startMainBrowserRecognitionContinuous() {
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const r = event.results[i];
       if (r.isFinal) {
-        mainBrowserFinalTranscript += r[0].transcript;
+        const piece = r[0].transcript;
+        mainBrowserFinalTranscript += piece;
+        logPartialAsrSegmentFinal(piece.trim(), { mode: "main" });
       } else {
         interimBuf += r[0].transcript;
       }
@@ -2850,7 +2880,9 @@ function startPostInterruptBrowserRecognition() {
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const r = event.results[i];
       if (r.isFinal) {
-        mainBrowserFinalTranscript += r[0].transcript;
+        const piece = r[0].transcript;
+        mainBrowserFinalTranscript += piece;
+        logPartialAsrSegmentFinal(piece.trim(), { mode: "post-interrupt" });
       } else {
         interimBuf += r[0].transcript;
       }
