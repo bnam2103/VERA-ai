@@ -131,6 +131,9 @@ let mainBrowserSilenceTimer = null;
 let mainBrowserFinalTranscript = "";
 /** @type {HTMLElement | null} */
 let mainBrowserLiveBubble = null;
+/** Translucent live preview during TTS interrupt detection (browser ASR); promoted to main live bubble on interrupt. */
+/** @type {HTMLElement | null} */
+let interruptDetectionBubbleEl = null;
 
 let interruptDetectRecognition = null;
 let interruptBrowserDetectActive = false;
@@ -359,6 +362,8 @@ const BROWSER_ASR_MAIN_SILENCE_MS = 1000;
 const BROWSER_ASR_INTERRUPT_SUSTAIN_MS = 350;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
 const BROWSER_ASR_INTERRUPT_GAP_MS = 120;
+/** Fire interrupt when browser partial ASR has more than three words (i.e. at least this many). */
+const INTERRUPT_BROWSER_MIN_WORDS = 4;
 
 function browserAsrSupported() {
   return typeof (window.SpeechRecognition || window.webkitSpeechRecognition) === "function";
@@ -670,6 +675,46 @@ function dismissGuide() {
   }, 350);
 }
 
+function countSpeechWords(s) {
+  return String(s ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+function clearInterruptDetectionBubble() {
+  if (!interruptDetectionBubbleEl) return;
+  try {
+    if (interruptDetectionBubbleEl.isConnected) {
+      const row = interruptDetectionBubbleEl.closest(".message-row");
+      if (row) row.remove();
+      else interruptDetectionBubbleEl.remove();
+    }
+  } catch (_) {}
+  interruptDetectionBubbleEl = null;
+}
+
+/** Live translucent user line while listening for interrupt during assistant TTS (browser ASR). */
+function updateInterruptDetectionBubble(text) {
+  const line = String(text ?? "").trim();
+  const convo = uiEl("conversation");
+  if (!convo) return;
+  if (!line) return;
+  if (!interruptDetectionBubbleEl?.isConnected) {
+    const row = document.createElement("div");
+    row.className = "message-row user";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble user interrupt-preview";
+    bubble.textContent = line;
+    row.appendChild(bubble);
+    convo.appendChild(row);
+    interruptDetectionBubbleEl = bubble;
+  } else {
+    interruptDetectionBubbleEl.textContent = line;
+  }
+  convo.scrollTop = convo.scrollHeight;
+}
+
 function addBubble(text, who, meta) {
   const convoEl = uiEl("conversation");
   if (!convoEl) return;
@@ -689,15 +734,20 @@ function addBubble(text, who, meta) {
   return bubble;
 }
 
-/** One user line for NDJSON: reuse live partial bubble if still in DOM, else add a row. */
-function applyNdjsonUserTranscriptBubble(text, path) {
+/**
+ * Apply final user transcript from the server (NDJSON or JSON) without removing the partial bubble:
+ * updates the same DOM node the user saw while speaking, then clears the live ref so the next
+ * utterance creates a new bubble. Avoids remove-then-add flash with identical text.
+ */
+function commitServerUserTranscriptBubble(text, path) {
   const t = String(text ?? "").trim();
   if (!t) return;
   const live = mainBrowserLiveBubble;
   if (live?.isConnected) {
     live.textContent = t;
+    mainBrowserLiveBubble = null;
     if (voiceTranscriptDebugEnabled()) {
-      logVoiceTranscript("final", t, { path, via: "ndjson-reuse-live" });
+      logVoiceTranscript("final", t, { path, via: "promote-partial-bubble" });
     }
   } else {
     addBubble(t, "user", { path });
@@ -706,6 +756,11 @@ function applyNdjsonUserTranscriptBubble(text, path) {
     document.body.classList.add("chat-started");
     dismissGuide();
   }
+}
+
+/** @deprecated name — use commitServerUserTranscriptBubble */
+function applyNdjsonUserTranscriptBubble(text, path) {
+  commitServerUserTranscriptBubble(text, path);
 }
 
 function escapeHtml(text) {
@@ -1086,6 +1141,14 @@ function interruptSpeech() {
   if (interruptRecording) {
     requestAnimationFrame(detectInterruptSpeechEnd);
   } else if (useBrowserAsr) {
+    /* Promote translucent interrupt preview to the same live bubble used for post-interrupt ASR. */
+    if (interruptDetectionBubbleEl?.isConnected) {
+      mainBrowserLiveBubble = interruptDetectionBubbleEl;
+      interruptDetectionBubbleEl = null;
+      try {
+        mainBrowserLiveBubble.classList.remove("interrupt-preview");
+      } catch (_) {}
+    }
     startPostInterruptBrowserRecognition();
   }
 }
@@ -1746,6 +1809,8 @@ function cancelVoicePipelineAndResetState() {
 
 function resumeAfterAssistantReplyPlayback() {
   processing = false;
+  requestInFlight = false;
+  clearInterruptDetectionBubble();
   if (listeningMode === "ptt") {
     listening = false;
     pttRecording = false;
@@ -1761,11 +1826,18 @@ function resumeAfterAssistantReplyPlayback() {
       showMutedStatusIfIdle();
       return;
     }
-    startListening();
+    /* Defer so Web Audio / <audio> teardown and NDJSON reader finish; avoids empty SR sessions that never transcribe. */
+    window.setTimeout(() => {
+      if (!listening || processing || inputMuted) return;
+      startListening();
+    }, 80);
   }
 }
 
 function resumeListeningAfterInterruptPlayback() {
+  processing = false;
+  requestInFlight = false;
+  clearInterruptDetectionBubble();
   if (listeningMode === "ptt") {
     listening = false;
     pttRecording = false;
@@ -1774,12 +1846,16 @@ function resumeListeningAfterInterruptPlayback() {
     updateMuteInputButton();
     return;
   }
+  waveState = "listening";
   listening = true;
   if (inputMuted) {
     showMutedStatusIfIdle();
     return;
   }
-  startListening();
+  window.setTimeout(() => {
+    if (!listening || processing || inputMuted) return;
+    startListening();
+  }, 80);
 }
 
 /** Same wiring as MediaElementSource → analyser + destination: chunked TTS must feed the TTS analyser or BMO mouth / VERA wave stay flat. */
@@ -2577,7 +2653,8 @@ function stopActiveMicCaptureSilently() {
   stopAllBrowserSpeechRecognizers();
 }
 
-function stopAllBrowserSpeechRecognizers() {
+/** Stop Web Speech + timers; does not remove the live partial bubble (used before /infer so we can promote the same node). */
+function abortBrowserSpeechRecognizers() {
   if (mainBrowserSilenceTimer != null) {
     clearTimeout(mainBrowserSilenceTimer);
     mainBrowserSilenceTimer = null;
@@ -2605,14 +2682,19 @@ function stopAllBrowserSpeechRecognizers() {
   interruptPartialLastChangeAt = 0;
   interruptPartialLastText = "";
   mainBrowserFinalTranscript = "";
+  mainBrowserFinalizeKind = "main";
+  mainBrowserLastInterim = "";
+}
+
+function stopAllBrowserSpeechRecognizers() {
+  abortBrowserSpeechRecognizers();
   try {
     if (mainBrowserLiveBubble?.isConnected) {
       mainBrowserLiveBubble.remove();
     }
   } catch (_) {}
   mainBrowserLiveBubble = null;
-  mainBrowserFinalizeKind = "main";
-  mainBrowserLastInterim = "";
+  clearInterruptDetectionBubble();
 }
 
 function scheduleMainBrowserEndOfUtterance() {
@@ -2676,7 +2758,8 @@ async function finalizeMainBrowserTranscript(text) {
   waveState = "idle";
   setStatus("Thinking", "thinking");
 
-  stopAllBrowserSpeechRecognizers();
+  /* Keep partial bubble in DOM; commitServerUserTranscriptBubble updates the same node when /infer returns. */
+  abortBrowserSpeechRecognizers();
 
   const formData = new FormData();
   formData.append("transcript", trimmed);
@@ -2754,6 +2837,11 @@ function startMainBrowserRecognitionContinuous() {
     mainBrowserRecognition.start();
   } catch (e) {
     console.warn("[BrowserASR] start failed", e);
+    window.setTimeout(() => {
+      if (!listening || processing || inputMuted) return;
+      if (listeningMode !== "continuous" || !browserAsrPreferred()) return;
+      startListening();
+    }, 150);
   }
 
   /* No auto-restart here: looping startListening() recreated SpeechRecognition every ~2s and re-triggered
@@ -2771,6 +2859,8 @@ function startMainBrowserRecognitionContinuous() {
 function startInterruptBrowserPartialDetection() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return;
+
+  clearInterruptDetectionBubble();
 
   try {
     if (interruptDetectRecognition) {
@@ -2804,33 +2894,28 @@ function startInterruptBrowserPartialDetection() {
     }
     const combined = (finalP + interim).trim();
     const now = performance.now();
-    if (combined.length < 2) {
+    if (combined.length < 1) {
       interruptPartialRafTime = now;
       return;
     }
 
     if (combined !== lastCombined) {
-      if (
-        interruptPartialLastChangeAt &&
-        now - interruptPartialLastChangeAt > BROWSER_ASR_INTERRUPT_GAP_MS
-      ) {
-        interruptPartialAccumMs = 0;
-      }
-      if (interruptPartialLastChangeAt) {
-        interruptPartialAccumMs += Math.min(now - interruptPartialLastChangeAt, 80);
-      }
       interruptPartialLastChangeAt = now;
       lastCombined = combined;
       interruptPartialLastText = combined;
 
+      updateInterruptDetectionBubble(combined);
+
+      const wc = countSpeechWords(combined);
       lastInterruptProbe = {
-        interruptGate: "browser_partial_asr",
-        interruptReason: "browser_partial_asr",
-        speechAccumMs: interruptPartialAccumMs,
+        interruptGate: "browser_partial_asr_words",
+        interruptReason: "browser_partial_asr_words",
+        wordCount: wc,
+        minWords: INTERRUPT_BROWSER_MIN_WORDS,
         partialText: combined,
       };
 
-      if (interruptPartialAccumMs >= BROWSER_ASR_INTERRUPT_SUSTAIN_MS) {
+      if (wc >= INTERRUPT_BROWSER_MIN_WORDS) {
         interruptBrowserDetectActive = false;
         try {
           interruptDetectRecognition.abort();
@@ -2864,10 +2949,11 @@ function startPostInterruptBrowserRecognition() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return;
 
-  stopAllBrowserSpeechRecognizers();
+  const seedTranscript = (interruptPartialLastText || "").trim();
+  abortBrowserSpeechRecognizers();
+  mainBrowserFinalTranscript = seedTranscript;
   mainBrowserFinalizeKind = "interrupt";
 
-  mainBrowserFinalTranscript = "";
   let interimBuf = "";
 
   postInterruptRecognition = new SR();
@@ -2930,7 +3016,7 @@ async function finalizeInterruptBrowserTranscript(text) {
   waveState = "idle";
   setStatus("Thinking", "thinking");
 
-  stopAllBrowserSpeechRecognizers();
+  abortBrowserSpeechRecognizers();
 
   const formData = new FormData();
   formData.append("transcript", trimmed);
@@ -2944,6 +3030,7 @@ async function finalizeInterruptBrowserTranscript(text) {
       probe: lastInterruptProbe,
       browser_partial_asr: true,
       thresholds: {
+        INTERRUPT_BROWSER_MIN_WORDS,
         BROWSER_ASR_INTERRUPT_SUSTAIN_MS,
         BROWSER_ASR_INTERRUPT_GAP_MS,
       },
@@ -3105,11 +3192,7 @@ async function runInferMainPipeline(formData) {
       return;
     }
 
-    addBubble(data.transcript, "user", { path: "main-json" });
-    if (!document.body.classList.contains("chat-started")) {
-      document.body.classList.add("chat-started");
-      dismissGuide();
-    }
+    commitServerUserTranscriptBubble(data.transcript, "main-json");
     const playMainAnswer = () => {
       resetAudioHandlers();
       void (async () => {
@@ -3240,7 +3323,7 @@ async function runInferInterruptPipeline(formData) {
       return;
     }
 
-    addBubble(data.transcript, "user", { path: "interrupt-json" });
+    commitServerUserTranscriptBubble(data.transcript, "interrupt-json");
 
     await playInterruptAnswer(data);
   } catch (e) {

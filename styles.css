@@ -2972,6 +2972,18 @@ body.app-open {
   background: #1e2a36;
 }
 
+/* Live interrupt preview (browser ASR while assistant TTS is playing) */
+.bubble.user.interrupt-preview {
+  opacity: 0.62;
+  background: rgba(30, 42, 54, 0.78);
+}
+
+body.bmo-open .bubble.user.interrupt-preview {
+  background: rgba(255, 255, 255, 0.42);
+  color: #142822;
+  border: 1px solid rgba(24, 49, 39, 0.12);
+}
+
 /* VERA — RIGHT */
 .bubble.vera {
   background: #2f3a44;
