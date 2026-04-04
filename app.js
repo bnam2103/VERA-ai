@@ -2979,11 +2979,19 @@ function stopAllBrowserSpeechRecognizers() {
 }
 
 /**
- * Chrome often leaves interrupt-detect SR referenced after TTS; main `onend` recovery bails while
- * `interruptDetectRecognition` is non-null. Tear down when not playing TTS and not in live barge-in.
+ * Two separate `SpeechRecognition` instances: `mainBrowserRecognition` (user turn) and
+ * `interruptDetectRecognition` (barge-in while assistant speaks). Chrome only reliably allows
+ * one active session at a time — they are sequenced (main aborted before /infer; interrupt starts
+ * at TTS `onPlayStart`; main restarts after playback ends).
+ *
+ * Leaked interrupt-detect handles block main `onend` recovery; we abort stale ones only when the
+ * assistant is not still in a reply (`waveState !== "speaking"` and `!isAssistantTtsPlaying()`).
+ * Do not tear down between streamed TTS chunks: `waveState` stays `"speaking"` even when buffers
+ * are momentarily empty.
  */
 function tearDownLeakedInterruptDetectSpeechRecognitionIfIdle() {
   if (!interruptDetectRecognition || interruptBargeInLatched) return;
+  if (waveState === "speaking") return;
   if (isAssistantTtsPlaying()) return;
   try {
     interruptDetectRecognition.abort();
@@ -2996,6 +3004,7 @@ function tearDownLeakedInterruptDetectSpeechRecognitionIfIdle() {
 /** After main SR `onend` or tab visible: restart main capture if we still expect desktop browser ASR. */
 function maybeResumeMainBrowserSpeechRecognition(reason) {
   if (!listening || processing || inputMuted) return;
+  if (waveState === "speaking") return;
   if (isAssistantTtsPlaying()) return;
   if (listeningMode !== "continuous" || !browserAsrPreferred()) return;
   tearDownLeakedInterruptDetectSpeechRecognitionIfIdle();
