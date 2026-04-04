@@ -2562,12 +2562,6 @@ function stopAllBrowserSpeechRecognizers() {
   interruptPartialLastChangeAt = 0;
   interruptPartialLastText = "";
   mainBrowserFinalTranscript = "";
-  /* Remove live caption bubble from DOM before dropping the ref — nulling alone left orphan bubbles + NDJSON duplicate. */
-  try {
-    if (mainBrowserLiveBubble?.isConnected) {
-      mainBrowserLiveBubble.remove();
-    }
-  } catch (_) {}
   mainBrowserLiveBubble = null;
   mainBrowserFinalizeKind = "main";
   mainBrowserLastInterim = "";
@@ -2623,6 +2617,7 @@ async function finalizeMainBrowserTranscript(text) {
     return;
   }
 
+  removeMainBrowserLiveBubble();
   beginVoiceUxTurn();
   requestInFlight = true;
   processing = true;
@@ -2869,6 +2864,7 @@ async function finalizeInterruptBrowserTranscript(text) {
     return;
   }
 
+  removeMainBrowserLiveBubble();
   requestInFlight = true;
   processing = true;
   waveState = "idle";
@@ -2905,18 +2901,6 @@ function startListening() {
   if (!listening || processing) return;
   if (listeningMode === "continuous" && inputMuted) {
     showMutedStatusIfIdle();
-    updateMuteInputButton();
-    return;
-  }
-  /* Re-entering startListening while Browser ASR is active would call stopAll() below and wipe
-     mainBrowserFinalTranscript + cancel silence-finalize — no "Thinking" and no transcript. */
-  if (
-    listeningMode === "continuous" &&
-    browserAsrPreferred() &&
-    mainBrowserRecognition
-  ) {
-    waveState = "listening";
-    setStatus("Listening…", "recording");
     updateMuteInputButton();
     return;
   }
