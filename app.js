@@ -152,6 +152,8 @@ let interruptDetectNoResultWatchdogTimer = null;
 
 /** Debounce main SR onend → startListening recovery (Chrome sometimes ends the session with no error). */
 let browserAsrMainEndRecoveryTimer = null;
+/** Debounce tab focus/visibility → resume main SR when Chrome ended the session in background. */
+let browserAsrVisibilityResumeTimer = null;
 
 /** Opt-in via localStorage VERA_DEBUG_BROWSER_ASR_STUCK=1 — heartbeats + onend/onerror/silence-timer traces. */
 let browserAsrStuckWatchdogId = null;
@@ -2976,6 +2978,32 @@ function stopAllBrowserSpeechRecognizers() {
   clearInterruptDetectionBubble();
 }
 
+/**
+ * Chrome often leaves interrupt-detect SR referenced after TTS; main `onend` recovery bails while
+ * `interruptDetectRecognition` is non-null. Tear down when not playing TTS and not in live barge-in.
+ */
+function tearDownLeakedInterruptDetectSpeechRecognitionIfIdle() {
+  if (!interruptDetectRecognition || interruptBargeInLatched) return;
+  if (isAssistantTtsPlaying()) return;
+  try {
+    interruptDetectRecognition.abort();
+  } catch {}
+  interruptDetectRecognition = null;
+  interruptBrowserDetectActive = false;
+  clearInterruptDetectionBubble();
+}
+
+/** After main SR `onend` or tab visible: restart main capture if we still expect desktop browser ASR. */
+function maybeResumeMainBrowserSpeechRecognition(reason) {
+  if (!listening || processing || inputMuted) return;
+  if (isAssistantTtsPlaying()) return;
+  if (listeningMode !== "continuous" || !browserAsrPreferred()) return;
+  tearDownLeakedInterruptDetectSpeechRecognitionIfIdle();
+  if (mainBrowserRecognition || interruptDetectRecognition || postInterruptRecognition) return;
+  console.info(`[BrowserASR] resume main SpeechRecognition (${reason})`);
+  startListening();
+}
+
 function scheduleMainBrowserEndOfUtterance() {
   if (mainBrowserSilenceTimer != null) {
     clearTimeout(mainBrowserSilenceTimer);
@@ -3148,14 +3176,7 @@ function startMainBrowserRecognitionContinuous() {
     }
     browserAsrMainEndRecoveryTimer = window.setTimeout(() => {
       browserAsrMainEndRecoveryTimer = null;
-      if (!listening || processing || inputMuted) return;
-      if (isAssistantTtsPlaying()) return;
-      if (listeningMode !== "continuous" || !browserAsrPreferred()) return;
-      if (mainBrowserRecognition || interruptDetectRecognition || postInterruptRecognition) return;
-      console.info(
-        "[BrowserASR] main SpeechRecognition ended while UI expected listening — restarting capture"
-      );
-      startListening();
+      maybeResumeMainBrowserSpeechRecognition("main-onend");
     }, 420);
   };
 
@@ -4078,6 +4099,18 @@ async function onRecordClick() {
 
 updateMuteInputButton();
 wireMobileInterruptDebugUi();
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (browserAsrVisibilityResumeTimer != null) {
+    clearTimeout(browserAsrVisibilityResumeTimer);
+    browserAsrVisibilityResumeTimer = null;
+  }
+  browserAsrVisibilityResumeTimer = window.setTimeout(() => {
+    browserAsrVisibilityResumeTimer = null;
+    maybeResumeMainBrowserSpeechRecognition("tab-visible");
+  }, 280);
+});
 
 if (!IS_MOBILE) {
   ["vera", "bmo"].forEach((prefix) => {
