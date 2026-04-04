@@ -665,6 +665,25 @@ function addBubble(text, who, meta) {
   return bubble;
 }
 
+/** One user line for NDJSON: reuse live partial bubble if still in DOM, else add a row. */
+function applyNdjsonUserTranscriptBubble(text, path) {
+  const t = String(text ?? "").trim();
+  if (!t) return;
+  const live = mainBrowserLiveBubble;
+  if (live?.isConnected) {
+    live.textContent = t;
+    if (voiceTranscriptDebugEnabled()) {
+      logVoiceTranscript("final", t, { path, via: "ndjson-reuse-live" });
+    }
+  } else {
+    addBubble(t, "user", { path });
+  }
+  if (!document.body.classList.contains("chat-started")) {
+    document.body.classList.add("chat-started");
+    dismissGuide();
+  }
+}
+
 function escapeHtml(text) {
   return String(text ?? "")
     .replaceAll("&", "&amp;")
@@ -2562,6 +2581,11 @@ function stopAllBrowserSpeechRecognizers() {
   interruptPartialLastChangeAt = 0;
   interruptPartialLastText = "";
   mainBrowserFinalTranscript = "";
+  try {
+    if (mainBrowserLiveBubble?.isConnected) {
+      mainBrowserLiveBubble.remove();
+    }
+  } catch (_) {}
   mainBrowserLiveBubble = null;
   mainBrowserFinalizeKind = "main";
   mainBrowserLastInterim = "";
@@ -2607,8 +2631,8 @@ function removeMainBrowserLiveBubble() {
 
 async function finalizeMainBrowserTranscript(text) {
   const trimmed = (text || "").trim();
-  stopAllBrowserSpeechRecognizers();
   if (!trimmed) {
+    stopAllBrowserSpeechRecognizers();
     processing = false;
     voiceUxTurn = null;
     if (listeningMode === "continuous" && listening && !inputMuted) {
@@ -2617,12 +2641,14 @@ async function finalizeMainBrowserTranscript(text) {
     return;
   }
 
-  removeMainBrowserLiveBubble();
-  beginVoiceUxTurn();
-  requestInFlight = true;
+  /* Set before stopAll so a sync SpeechRecognition "onend" cannot restart ASR while we're entering infer. */
   processing = true;
+  requestInFlight = true;
+  beginVoiceUxTurn();
   waveState = "idle";
   setStatus("Thinking", "thinking");
+
+  stopAllBrowserSpeechRecognizers();
 
   const formData = new FormData();
   formData.append("transcript", trimmed);
@@ -2690,6 +2716,17 @@ function startMainBrowserRecognitionContinuous() {
 
   mainBrowserRecognition.onend = () => {
     mainBrowserRecognition = null;
+    /* Chrome often ends the SR session between utterances; restart so continuous mode keeps partial ASR after TTS. */
+    if (!browserAsrPreferred()) return;
+    if (listeningMode !== "continuous" || !listening || inputMuted) return;
+    if (processing || requestInFlight || isServerPipelineBusy()) return;
+    if (pttRecording) return;
+    queueMicrotask(() => {
+      if (!listening || processing || requestInFlight || isServerPipelineBusy()) return;
+      if (!browserAsrPreferred()) return;
+      if (listeningMode !== "continuous" || inputMuted) return;
+      startMainBrowserRecognitionContinuous();
+    });
   };
 
   try {
@@ -2843,6 +2880,7 @@ function startPostInterruptBrowserRecognition() {
 
   postInterruptRecognition.onend = () => {
     postInterruptRecognition = null;
+    mainBrowserRecognition = null;
   };
 
   mainBrowserRecognition = postInterruptRecognition;
@@ -2857,18 +2895,19 @@ function startPostInterruptBrowserRecognition() {
 
 async function finalizeInterruptBrowserTranscript(text) {
   const trimmed = (text || "").trim();
-  stopAllBrowserSpeechRecognizers();
   if (!trimmed) {
+    stopAllBrowserSpeechRecognizers();
     listening = true;
     startListening();
     return;
   }
 
-  removeMainBrowserLiveBubble();
-  requestInFlight = true;
   processing = true;
+  requestInFlight = true;
   waveState = "idle";
   setStatus("Thinking", "thinking");
+
+  stopAllBrowserSpeechRecognizers();
 
   const formData = new FormData();
   formData.append("transcript", trimmed);
@@ -2969,11 +3008,7 @@ async function runInferMainPipeline(formData) {
             onMeta: (meta) => {
               ndjsonMeta = { ...ndjsonMeta, ...meta };
               if (meta.transcript) {
-                addBubble(meta.transcript, "user", { path: "main-ndjson" });
-                if (!document.body.classList.contains("chat-started")) {
-                  document.body.classList.add("chat-started");
-                  dismissGuide();
-                }
+                applyNdjsonUserTranscriptBubble(meta.transcript, "main-ndjson");
               }
             },
             onReplyProgress: (replySoFar) => {
@@ -3108,7 +3143,7 @@ async function runInferInterruptPipeline(formData) {
             onMeta: (meta) => {
               ndjsonMeta = { ...ndjsonMeta, ...meta };
               if (meta.transcript) {
-                addBubble(meta.transcript, "user", { path: "interrupt-ndjson" });
+                applyNdjsonUserTranscriptBubble(meta.transcript, "interrupt-ndjson");
               }
             },
             onReplyProgress: (replySoFar) => {
