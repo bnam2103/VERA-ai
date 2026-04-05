@@ -1564,6 +1564,9 @@ function revealApp() {
       requestAnimationFrame(() => {
         window.dispatchEvent(new Event("resize"));
         requestAnimationFrame(() => {
+          if (typeof window.wireVeraStartupTypingWaveform === "function") {
+            window.wireVeraStartupTypingWaveform();
+          }
           typeStartup({
             typingSpeed: 50,
             startDelay: 400,
@@ -1741,6 +1744,9 @@ function wireInputModeToggles() {
     const keyboardBar = document.getElementById(`${prefix}-keyboard-bar`);
     if (!toggleBtn || !voiceBar || !keyboardBar) return;
     toggleBtn.addEventListener("click", () => {
+      if (typeof window.ensureChatStartedLayout === "function") {
+        window.ensureChatStartedLayout();
+      }
       const keyboardVisible = !keyboardBar.classList.contains("hidden");
       const showKeyboard = !keyboardVisible;
       voiceBar.classList.toggle("hidden", showKeyboard);

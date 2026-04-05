@@ -652,8 +652,20 @@ async function ensureStartupTypingAudioGraph() {
   const el = document.getElementById("vera-startup-audio");
   if (!el) return;
   try {
-    startupWaveAudioCtx = new AudioContext();
+    startupWaveAudioCtx = startupWaveAudioCtx || new AudioContext();
     await startupWaveAudioCtx.resume();
+    /* createMediaElementSource disconnects the element from built-in output. If the context
+       stays suspended (no user gesture), routing through the graph is silent — skip the tap. */
+    if (startupWaveAudioCtx.state !== "running") {
+      await new Promise((r) => setTimeout(r, 0));
+      await startupWaveAudioCtx.resume();
+    }
+    if (startupWaveAudioCtx.state !== "running") {
+      console.warn(
+        "[StartupWave] AudioContext not running; skipping waveform tap (startup audio plays normally)."
+      );
+      return;
+    }
     const src = startupWaveAudioCtx.createMediaElementSource(el);
     startupTypingAnalyser = startupWaveAudioCtx.createAnalyser();
     startupTypingAnalyser.fftSize = 2048;
