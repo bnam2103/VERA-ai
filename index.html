@@ -1564,9 +1564,6 @@ function revealApp() {
       requestAnimationFrame(() => {
         window.dispatchEvent(new Event("resize"));
         requestAnimationFrame(() => {
-          if (typeof window.wireVeraStartupTypingWaveform === "function") {
-            window.wireVeraStartupTypingWaveform();
-          }
           typeStartup({
             typingSpeed: 50,
             startDelay: 400,

@@ -641,73 +641,6 @@ let lastRippleTime = 0;
 const RIPPLE_SPAWN_INTERVAL_MS = 120;
 let waveformRaf = null;
 
-/** `startup-typing.wav` — separate AudioContext so mic/TTS graphs are unchanged; one MediaElementSource per element. */
-let startupWaveAudioCtx = null;
-let startupTypingAnalyser = null;
-let startupTypingWaveActive = false;
-let startupTypingAudioGraphReady = false;
-
-async function ensureStartupTypingAudioGraph() {
-  if (startupTypingAudioGraphReady) return;
-  const el = document.getElementById("vera-startup-audio");
-  if (!el) return;
-  try {
-    startupWaveAudioCtx = startupWaveAudioCtx || new AudioContext();
-    await startupWaveAudioCtx.resume();
-    /* createMediaElementSource disconnects the element from built-in output. If the context
-       stays suspended (no user gesture), routing through the graph is silent — skip the tap. */
-    if (startupWaveAudioCtx.state !== "running") {
-      await new Promise((r) => setTimeout(r, 0));
-      await startupWaveAudioCtx.resume();
-    }
-    if (startupWaveAudioCtx.state !== "running") {
-      console.warn(
-        "[StartupWave] AudioContext not running; skipping waveform tap (startup audio plays normally)."
-      );
-      return;
-    }
-    const src = startupWaveAudioCtx.createMediaElementSource(el);
-    startupTypingAnalyser = startupWaveAudioCtx.createAnalyser();
-    startupTypingAnalyser.fftSize = 2048;
-    src.connect(startupTypingAnalyser);
-    startupTypingAnalyser.connect(startupWaveAudioCtx.destination);
-    startupTypingAudioGraphReady = true;
-  } catch (e) {
-    console.warn("[StartupWave] Web Audio graph failed:", e);
-  }
-}
-
-let startupTypingWaveformWired = false;
-
-function wireStartupTypingWaveform() {
-  if (startupTypingWaveformWired) return;
-  const el = document.getElementById("vera-startup-audio");
-  if (!el) return;
-  startupTypingWaveformWired = true;
-  el.addEventListener(
-    "play",
-    () => {
-      void (async () => {
-        await ensureStartupTypingAudioGraph();
-        startupTypingWaveActive = true;
-        /* Canvas is laid out only after #vera-app is visible — wait for paint before sizing buffer. */
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            resizeWaveCanvas();
-            startWaveAnimation();
-          });
-        });
-      })();
-    },
-    { passive: true }
-  );
-  const clear = () => {
-    startupTypingWaveActive = false;
-  };
-  el.addEventListener("ended", clear);
-  el.addEventListener("pause", clear);
-}
-
 function resizeWaveCanvas() {
   const canvas = getWaveCanvas();
   const waveCtx = getWaveCtx();
@@ -2663,10 +2596,8 @@ function startWaveAnimation() {
 
     const ttsA = getTtsAnalyser();
     let activeAnalyser = null;
-    if (startupTypingWaveActive && startupTypingAnalyser) {
-      activeAnalyser = startupTypingAnalyser;
-    } else if (waveState === "listening" && analyser) activeAnalyser = analyser;
-    else if (waveState === "speaking" && ttsA) activeAnalyser = ttsA;
+    if (waveState === "listening" && analyser) activeAnalyser = analyser;
+    if (waveState === "speaking" && ttsA) activeAnalyser = ttsA;
 
     if (!frequencyData || !activeAnalyser || frequencyData.length !== activeAnalyser.frequencyBinCount) {
       if (activeAnalyser) {
@@ -2675,14 +2606,7 @@ function startWaveAnimation() {
       }
     }
 
-    const targetEnergy =
-      startupTypingWaveActive && startupTypingAnalyser
-        ? 0.88
-        : waveState === "speaking"
-          ? 0.9
-          : waveState === "listening"
-            ? 0.8
-            : 0;
+    const targetEnergy = waveState === "speaking" ? 0.9 : waveState === "listening" ? 0.8 : 0;
     waveEnergy += (targetEnergy - waveEnergy) * 0.06;
 
     const barValues = new Float32Array(BARS);
@@ -2727,20 +2651,8 @@ function startWaveAnimation() {
       waveCtx.stroke();
     }
 
-    const boost =
-      startupTypingWaveActive && startupTypingAnalyser
-        ? 2.65
-        : waveState === "speaking"
-          ? 2.8
-          : waveState === "listening"
-            ? 2.8
-            : 0;
-    const minimumBarScale =
-      startupTypingWaveActive && startupTypingAnalyser
-        ? 0.04
-        : waveState === "listening"
-          ? 0.05
-          : 0.03;
+    const boost = waveState === "speaking" ? 2.8 : waveState === "listening" ? 2.8 : 0;
+    const minimumBarScale = waveState === "listening" ? 0.05 : 0.03;
     const mid = BARS / 2;
     if (bmoOpen) {
       waveCtx.fillStyle = "rgba(10, 68, 42, 0.98)";
@@ -4259,4 +4171,3 @@ if (sendFeedbackBtn) {
 }
 
 window.resetVoiceUiToIdle = cancelVoicePipelineAndResetState;
-window.wireVeraStartupTypingWaveform = wireStartupTypingWaveform;
