@@ -665,17 +665,26 @@ async function ensureStartupTypingAudioGraph() {
   }
 }
 
+let startupTypingWaveformWired = false;
+
 function wireStartupTypingWaveform() {
+  if (startupTypingWaveformWired) return;
   const el = document.getElementById("vera-startup-audio");
   if (!el) return;
+  startupTypingWaveformWired = true;
   el.addEventListener(
     "play",
     () => {
       void (async () => {
         await ensureStartupTypingAudioGraph();
         startupTypingWaveActive = true;
-        resizeWaveCanvas();
-        startWaveAnimation();
+        /* Canvas is laid out only after #vera-app is visible — wait for paint before sizing buffer. */
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            resizeWaveCanvas();
+            startWaveAnimation();
+          });
+        });
       })();
     },
     { passive: true }
@@ -685,7 +694,6 @@ function wireStartupTypingWaveform() {
   };
   el.addEventListener("ended", clear);
   el.addEventListener("pause", clear);
-  void ensureStartupTypingAudioGraph();
 }
 
 function resizeWaveCanvas() {
@@ -707,7 +715,6 @@ function resizeWaveCanvas() {
 
 window.addEventListener("load", () => {
   resizeWaveCanvas();
-  wireStartupTypingWaveform();
 });
 
 window.addEventListener("resize", resizeWaveCanvas);
@@ -4240,3 +4247,4 @@ if (sendFeedbackBtn) {
 }
 
 window.resetVoiceUiToIdle = cancelVoicePipelineAndResetState;
+window.wireVeraStartupTypingWaveform = wireStartupTypingWaveform;
