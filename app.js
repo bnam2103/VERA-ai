@@ -641,6 +641,53 @@ let lastRippleTime = 0;
 const RIPPLE_SPAWN_INTERVAL_MS = 120;
 let waveformRaf = null;
 
+/** `startup-typing.wav` — separate AudioContext so mic/TTS graphs are unchanged; one MediaElementSource per element. */
+let startupWaveAudioCtx = null;
+let startupTypingAnalyser = null;
+let startupTypingWaveActive = false;
+let startupTypingAudioGraphReady = false;
+
+async function ensureStartupTypingAudioGraph() {
+  if (startupTypingAudioGraphReady) return;
+  const el = document.getElementById("vera-startup-audio");
+  if (!el) return;
+  try {
+    startupWaveAudioCtx = new AudioContext();
+    await startupWaveAudioCtx.resume();
+    const src = startupWaveAudioCtx.createMediaElementSource(el);
+    startupTypingAnalyser = startupWaveAudioCtx.createAnalyser();
+    startupTypingAnalyser.fftSize = 2048;
+    src.connect(startupTypingAnalyser);
+    startupTypingAnalyser.connect(startupWaveAudioCtx.destination);
+    startupTypingAudioGraphReady = true;
+  } catch (e) {
+    console.warn("[StartupWave] Web Audio graph failed:", e);
+  }
+}
+
+function wireStartupTypingWaveform() {
+  const el = document.getElementById("vera-startup-audio");
+  if (!el) return;
+  el.addEventListener(
+    "play",
+    () => {
+      void (async () => {
+        await ensureStartupTypingAudioGraph();
+        startupTypingWaveActive = true;
+        resizeWaveCanvas();
+        startWaveAnimation();
+      })();
+    },
+    { passive: true }
+  );
+  const clear = () => {
+    startupTypingWaveActive = false;
+  };
+  el.addEventListener("ended", clear);
+  el.addEventListener("pause", clear);
+  void ensureStartupTypingAudioGraph();
+}
+
 function resizeWaveCanvas() {
   const canvas = getWaveCanvas();
   const waveCtx = getWaveCtx();
@@ -660,6 +707,7 @@ function resizeWaveCanvas() {
 
 window.addEventListener("load", () => {
   resizeWaveCanvas();
+  wireStartupTypingWaveform();
 });
 
 window.addEventListener("resize", resizeWaveCanvas);
@@ -2596,8 +2644,10 @@ function startWaveAnimation() {
 
     const ttsA = getTtsAnalyser();
     let activeAnalyser = null;
-    if (waveState === "listening" && analyser) activeAnalyser = analyser;
-    if (waveState === "speaking" && ttsA) activeAnalyser = ttsA;
+    if (startupTypingWaveActive && startupTypingAnalyser) {
+      activeAnalyser = startupTypingAnalyser;
+    } else if (waveState === "listening" && analyser) activeAnalyser = analyser;
+    else if (waveState === "speaking" && ttsA) activeAnalyser = ttsA;
 
     if (!frequencyData || !activeAnalyser || frequencyData.length !== activeAnalyser.frequencyBinCount) {
       if (activeAnalyser) {
@@ -2606,7 +2656,14 @@ function startWaveAnimation() {
       }
     }
 
-    const targetEnergy = waveState === "speaking" ? 0.9 : waveState === "listening" ? 0.8 : 0;
+    const targetEnergy =
+      startupTypingWaveActive && startupTypingAnalyser
+        ? 0.88
+        : waveState === "speaking"
+          ? 0.9
+          : waveState === "listening"
+            ? 0.8
+            : 0;
     waveEnergy += (targetEnergy - waveEnergy) * 0.06;
 
     const barValues = new Float32Array(BARS);
@@ -2651,8 +2708,20 @@ function startWaveAnimation() {
       waveCtx.stroke();
     }
 
-    const boost = waveState === "speaking" ? 2.8 : waveState === "listening" ? 2.8 : 0;
-    const minimumBarScale = waveState === "listening" ? 0.05 : 0.03;
+    const boost =
+      startupTypingWaveActive && startupTypingAnalyser
+        ? 2.65
+        : waveState === "speaking"
+          ? 2.8
+          : waveState === "listening"
+            ? 2.8
+            : 0;
+    const minimumBarScale =
+      startupTypingWaveActive && startupTypingAnalyser
+        ? 0.04
+        : waveState === "listening"
+          ? 0.05
+          : 0.03;
     const mid = BARS / 2;
     if (bmoOpen) {
       waveCtx.fillStyle = "rgba(10, 68, 42, 0.98)";
