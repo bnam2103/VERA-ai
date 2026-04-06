@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <!-- Optional: set to your FastAPI origin if this page is opened from file:// or another host -->
+  <!-- Optional: override user auth backend (otherwise localhost = same origin; GitHub Pages = Worker below) -->
   <meta name="vera-local-backend-origin" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css">
@@ -1856,7 +1856,24 @@ document.addEventListener("click", () => {
   </div>
 </div>
 
-<script src="app.js"></script>
+<script>
+(function () {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.VERA_LOCAL_BACKEND_ORIGIN) return;
+    var m = document.querySelector('meta[name="vera-local-backend-origin"]');
+    if (m && String(m.content || "").trim()) return;
+    var o = location.origin;
+    var local =
+      /^(https?:\/\/)(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(o);
+    if (local || o === "null" || (o && o.startsWith("file:"))) return;
+    if (o && !o.startsWith("file:")) {
+      window.VERA_LOCAL_BACKEND_ORIGIN = "https://vera-api.vera-api-ned.workers.dev";
+    }
+  } catch (e) {}
+})();
+</script>
+<script src="app.js?v=2"></script>
 </body>
 </html>
 

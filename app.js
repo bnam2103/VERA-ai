@@ -4178,16 +4178,13 @@ window.resetVoiceUiToIdle = cancelVoicePipelineAndResetState;
 
 /**
  * Base URL for FastAPI user routes (sign-in, /api/user/active).
- * Production UI is often on a static host; those origins have no /api — use API_URL (Worker → tunnel → app.py).
- * Local: open from http://127.0.0.1:8000/ so same-origin hits uvicorn, or set meta / window.VERA_LOCAL_BACKEND_ORIGIN.
+ * GitHub Pages / static hosts cannot serve POST /api — must use API_URL (Worker → tunnel → app.py).
+ * Order: explicit override → localhost uvicorn → meta → file → API_URL for all other https origins.
  */
 function localBackendBase() {
   if (typeof window !== "undefined" && window.VERA_LOCAL_BACKEND_ORIGIN) {
     return String(window.VERA_LOCAL_BACKEND_ORIGIN).replace(/\/$/, "");
   }
-  const m = document.querySelector('meta[name="vera-local-backend-origin"]');
-  const meta = m?.content?.trim();
-  if (meta) return meta.replace(/\/$/, "");
   const o = typeof window !== "undefined" ? window.location?.origin : "";
   if (o && o !== "null" && !o.startsWith("file:")) {
     const isLocal =
@@ -4195,14 +4192,29 @@ function localBackendBase() {
       /^https?:\/\/\[::1\](:\d+)?$/i.test(o);
     if (isLocal) return o.replace(/\/$/, "");
   }
+  const m = document.querySelector('meta[name="vera-local-backend-origin"]');
+  const meta = m?.content?.trim();
+  if (meta) return meta.replace(/\/$/, "");
   if (!o || o === "null" || o.startsWith("file:")) {
     return "http://127.0.0.1:8000";
   }
-  return String(API_URL).replace(/\/$/, "");
+  const remote = String(API_URL).replace(/\/$/, "");
+  return remote || "https://vera-api.vera-api-ned.workers.dev";
 }
 
 function authApiBase() {
   return localBackendBase();
+}
+
+/** Absolute URL for user auth; never same-origin relative /api/... on GitHub Pages. */
+function authApiUrl(path) {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  let base = localBackendBase();
+  if (!base || !String(base).trim()) {
+    base = String(API_URL).replace(/\/$/, "") || "https://vera-api.vera-api-ned.workers.dev";
+  }
+  const root = String(base).replace(/\/$/, "");
+  return new URL(p, `${root}/`).href;
 }
 
 function setVeraActiveUserLabel(usernameOrNull) {
@@ -4219,7 +4231,7 @@ function setVeraActiveUserLabel(usernameOrNull) {
 
 async function refreshVeraActiveUserLabel() {
   try {
-    const res = await fetch(`${localBackendBase()}/api/user/active`, { method: "GET" });
+    const res = await fetch(authApiUrl("/api/user/active"), { method: "GET" });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       setVeraActiveUserLabel(null);
@@ -4339,7 +4351,7 @@ function wireVeraUserSignInHoldAndModal() {
     const pass = passEl?.value?.trim() ?? "";
     showErr("");
     try {
-      const res = await fetch(`${authApiBase()}/api/user/sign-in`, {
+      const res = await fetch(authApiUrl("/api/user/sign-in"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: user, password: pass })
@@ -4360,7 +4372,7 @@ function wireVeraUserSignInHoldAndModal() {
       if (passEl) passEl.value = "";
     } catch {
       showErr(
-        "Could not reach the server. Open the app from the FastAPI URL (e.g. http://127.0.0.1:8000/) or set window.VERA_LOCAL_BACKEND_ORIGIN."
+        "Could not reach the auth server. If you use GitHub Pages, deploy the latest app.js (cache-busted) so sign-in uses the VERA API URL, or set window.VERA_LOCAL_BACKEND_ORIGIN."
       );
     }
   });
