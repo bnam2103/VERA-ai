@@ -4177,8 +4177,9 @@ window.resetVoiceUiToIdle = cancelVoicePipelineAndResetState;
 ========================= */
 
 /**
- * Base URL for local FastAPI (sign-in, /api/user/active). Must match the process that runs app.py.
- * Override: window.VERA_LOCAL_BACKEND_ORIGIN = "http://127.0.0.1:8000" or meta[name="vera-local-backend-origin"].
+ * Base URL for FastAPI user routes (sign-in, /api/user/active).
+ * Production UI is often on a static host; those origins have no /api — use API_URL (Worker → tunnel → app.py).
+ * Local: open from http://127.0.0.1:8000/ so same-origin hits uvicorn, or set meta / window.VERA_LOCAL_BACKEND_ORIGIN.
  */
 function localBackendBase() {
   if (typeof window !== "undefined" && window.VERA_LOCAL_BACKEND_ORIGIN) {
@@ -4188,8 +4189,16 @@ function localBackendBase() {
   const meta = m?.content?.trim();
   if (meta) return meta.replace(/\/$/, "");
   const o = typeof window !== "undefined" ? window.location?.origin : "";
-  if (o && o !== "null" && !o.startsWith("file:") && /^https?:/i.test(o)) return o;
-  return "http://127.0.0.1:8000";
+  if (o && o !== "null" && !o.startsWith("file:")) {
+    const isLocal =
+      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o) ||
+      /^https?:\/\/\[::1\](:\d+)?$/i.test(o);
+    if (isLocal) return o.replace(/\/$/, "");
+  }
+  if (!o || o === "null" || o.startsWith("file:")) {
+    return "http://127.0.0.1:8000";
+  }
+  return String(API_URL).replace(/\/$/, "");
 }
 
 function authApiBase() {
