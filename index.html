@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- Optional: set to your FastAPI origin if this page is opened from file:// or another host -->
+  <meta name="vera-local-backend-origin" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -672,6 +674,7 @@
       <source src="startup-typing.wav" type="audio/wav">
     </audio>
   </main>
+  <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
 </section>
 
 <section id="bmo-loading-screen" hidden>

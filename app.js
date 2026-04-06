@@ -4176,8 +4176,50 @@ window.resetVoiceUiToIdle = cancelVoicePipelineAndResetState;
    HIDDEN USER SIGN-IN (long-press VERA logo 2s)
 ========================= */
 
+/**
+ * Base URL for local FastAPI (sign-in, /api/user/active). Must match the process that runs app.py.
+ * Override: window.VERA_LOCAL_BACKEND_ORIGIN = "http://127.0.0.1:8000" or meta[name="vera-local-backend-origin"].
+ */
+function localBackendBase() {
+  if (typeof window !== "undefined" && window.VERA_LOCAL_BACKEND_ORIGIN) {
+    return String(window.VERA_LOCAL_BACKEND_ORIGIN).replace(/\/$/, "");
+  }
+  const m = document.querySelector('meta[name="vera-local-backend-origin"]');
+  const meta = m?.content?.trim();
+  if (meta) return meta.replace(/\/$/, "");
+  const o = typeof window !== "undefined" ? window.location?.origin : "";
+  if (o && o !== "null" && !o.startsWith("file:") && /^https?:/i.test(o)) return o;
+  return "http://127.0.0.1:8000";
+}
+
 function authApiBase() {
-  return typeof window !== "undefined" && window.location?.origin ? window.location.origin : "";
+  return localBackendBase();
+}
+
+function setVeraActiveUserLabel(usernameOrNull) {
+  const el = document.getElementById("vera-active-user-label");
+  if (!el) return;
+  if (usernameOrNull == null || usernameOrNull === "") {
+    el.textContent = "";
+    el.setAttribute("hidden", "");
+    return;
+  }
+  el.textContent = `user: ${usernameOrNull}`;
+  el.removeAttribute("hidden");
+}
+
+async function refreshVeraActiveUserLabel() {
+  try {
+    const res = await fetch(`${localBackendBase()}/api/user/active`, { method: "GET" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setVeraActiveUserLabel(null);
+      return;
+    }
+    setVeraActiveUserLabel(data.username ?? null);
+  } catch {
+    setVeraActiveUserLabel(null);
+  }
 }
 
 function wireVeraUserSignInHoldAndModal() {
@@ -4303,12 +4345,17 @@ function wireVeraUserSignInHoldAndModal() {
         showErr(typeof d === "string" ? d : "Wrong password or username.");
         return;
       }
+      const name = data.username != null && data.username !== "" ? String(data.username) : null;
+      setVeraActiveUserLabel(name);
       closeModal();
       if (passEl) passEl.value = "";
     } catch {
-      showErr("Could not reach the server. Run the VERA app from the same host as this page (e.g. uvicorn) and try again.");
+      showErr(
+        "Could not reach the server. Open the app from the FastAPI URL (e.g. http://127.0.0.1:8000/) or set window.VERA_LOCAL_BACKEND_ORIGIN."
+      );
     }
   });
 }
 
 wireVeraUserSignInHoldAndModal();
+refreshVeraActiveUserLabel();

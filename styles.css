@@ -2471,6 +2471,20 @@ body.chat-started .input-container {
   padding-bottom: 40px;   /* 🔥 was 40px */
 }
 
+/* Signed-in user name (POST /api/user/sign-in) — bottom right of VERA app */
+.vera-active-user-label {
+  position: fixed;
+  bottom: 14px;
+  right: 20px;
+  z-index: 120;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.72);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
 body.chat-started .input-bar {
   position: relative;
   pointer-events: auto;
