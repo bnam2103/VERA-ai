@@ -606,10 +606,22 @@
     </div>
 
     <div class="chat-header vera-app-header">
-      <button id="return-home-vera" class="nav-logo" type="button">VERA</button>
-      <button type="button" id="open-bmo-from-vera" class="nav-logo nav-logo-bmo">
-        BMO
+      <button id="return-home-vera" class="nav-logo" type="button" aria-label="VERA">
+        <span class="vera-logo-text-stack" aria-hidden="true">
+          <span class="vera-logo-dim">VERA</span>
+          <span class="vera-logo-sweep">
+            <span class="vera-logo-solid">VERA</span>
+          </span>
+        </span>
       </button>
+      <div class="vera-header-right">
+        <button type="button" id="vera-user-sign-in" class="nav-logo vera-sign-in-nav" hidden>
+          SIGN IN
+        </button>
+        <button type="button" id="open-bmo-from-vera" class="nav-logo nav-logo-bmo">
+          BMO
+        </button>
+      </div>
     </div>
 
     <div class="chat-main">
@@ -1812,6 +1824,34 @@ document.addEventListener("click", () => {
 });
 </script>
 
+<div id="vera-user-sign-in-modal" class="vera-user-sign-in-overlay" hidden>
+  <div
+    class="vera-user-sign-in-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="vera-sign-in-title"
+  >
+    <h2 id="vera-sign-in-title">Sign in</h2>
+    <label class="vera-sign-in-label">
+      Username
+      <input type="text" id="vera-sign-in-username" name="username" autocomplete="username" />
+    </label>
+    <label class="vera-sign-in-label">
+      Password
+      <input
+        type="password"
+        id="vera-sign-in-password"
+        name="password"
+        autocomplete="current-password"
+      />
+    </label>
+    <p id="vera-sign-in-error" class="vera-sign-in-error" hidden></p>
+    <div class="vera-sign-in-actions">
+      <button type="button" id="vera-sign-in-submit">Sign in</button>
+      <button type="button" id="vera-sign-in-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>

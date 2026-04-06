@@ -4171,3 +4171,144 @@ if (sendFeedbackBtn) {
 }
 
 window.resetVoiceUiToIdle = cancelVoicePipelineAndResetState;
+
+/* =========================
+   HIDDEN USER SIGN-IN (long-press VERA logo 2s)
+========================= */
+
+function authApiBase() {
+  return typeof window !== "undefined" && window.location?.origin ? window.location.origin : "";
+}
+
+function wireVeraUserSignInHoldAndModal() {
+  const holdMs = 2000;
+  /* Long-press sign-in only in VERA app (#return-home-vera), not on landing nav-home */
+  const logos = [document.getElementById("return-home-vera")].filter(Boolean);
+
+  const revealSignInButtons = () => {
+    document.getElementById("vera-user-sign-in")?.removeAttribute("hidden");
+  };
+
+  logos.forEach((el) => {
+    let timer = null;
+    let longPress = false;
+    let holding = false;
+    let rafId = null;
+    let holdStart = 0;
+
+    const tick = () => {
+      if (!holding) return;
+      const elapsed = performance.now() - holdStart;
+      const pct = Math.min(100, (elapsed / holdMs) * 100);
+      el.style.setProperty("--vera-hold-pct", `${pct}%`);
+      if (holding && elapsed < holdMs) {
+        rafId = requestAnimationFrame(tick);
+      }
+    };
+
+    const endHoldTracking = () => {
+      holding = false;
+      if (rafId != null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      el.style.setProperty("--vera-hold-pct", "0%");
+    };
+
+    el.addEventListener("pointerdown", () => {
+      longPress = false;
+      holding = true;
+      holdStart = performance.now();
+      timer = window.setTimeout(() => {
+        longPress = true;
+        revealSignInButtons();
+        el.style.setProperty("--vera-hold-pct", "100%");
+        holding = false;
+        if (rafId != null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+      }, holdMs);
+      rafId = requestAnimationFrame(tick);
+    });
+
+    const cancelTimerAndFill = () => {
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      endHoldTracking();
+    };
+
+    el.addEventListener("pointerup", cancelTimerAndFill);
+    el.addEventListener("pointerleave", cancelTimerAndFill);
+    el.addEventListener("pointercancel", cancelTimerAndFill);
+    el.addEventListener(
+      "click",
+      (e) => {
+        if (longPress) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          longPress = false;
+        }
+      },
+      true
+    );
+  });
+
+  const modal = document.getElementById("vera-user-sign-in-modal");
+  const errEl = document.getElementById("vera-sign-in-error");
+
+  const showErr = (msg) => {
+    if (!errEl) return;
+    errEl.textContent = msg || "";
+    errEl.hidden = !msg;
+  };
+
+  const openModal = () => {
+    showErr("");
+    modal?.removeAttribute("hidden");
+  };
+
+  const closeModal = () => {
+    modal?.setAttribute("hidden", "");
+    showErr("");
+  };
+
+  document.getElementById("vera-user-sign-in")?.addEventListener("click", openModal);
+  document.getElementById("vera-sign-in-cancel")?.addEventListener("click", closeModal);
+  modal?.addEventListener("click", (e) => {
+    if (e.target === modal) closeModal();
+  });
+
+  document.getElementById("vera-sign-in-submit")?.addEventListener("click", async () => {
+    const userEl = document.getElementById("vera-sign-in-username");
+    const passEl = document.getElementById("vera-sign-in-password");
+    const user = userEl?.value?.trim() ?? "";
+    const pass = passEl?.value?.trim() ?? "";
+    showErr("");
+    try {
+      const res = await fetch(`${authApiBase()}/api/user/sign-in`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: user, password: pass })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const d = data.detail;
+        if (Array.isArray(d) && d.length > 0 && d[0]?.msg) {
+          showErr(String(d[0].msg));
+          return;
+        }
+        showErr(typeof d === "string" ? d : "Wrong password or username.");
+        return;
+      }
+      closeModal();
+      if (passEl) passEl.value = "";
+    } catch {
+      showErr("Could not reach the server. Run the VERA app from the same host as this page (e.g. uvicorn) and try again.");
+    }
+  });
+}
+
+wireVeraUserSignInHoldAndModal();

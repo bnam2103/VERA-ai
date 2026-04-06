@@ -2518,6 +2518,146 @@ body.chat-started .input-bar {
   gap: 12px;
 }
 
+/* VERA wordmark + SIGN IN + BMO (same nav-logo treatment as BMO) */
+.vera-header-right {
+  display: flex;
+  align-items: center;
+  gap: clamp(14px, 3vw, 28px);
+}
+
+.vera-sign-in-nav {
+  white-space: nowrap;
+}
+
+/* Header "SIGN IN" — gray, slightly smaller than BMO / nav-logo */
+#vera-user-sign-in {
+  font-size: clamp(20px, 2.6vw, 24px);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(200, 204, 210, 0.88);
+  opacity: 0.92;
+}
+
+#vera-user-sign-in:hover {
+  color: rgba(220, 224, 230, 0.98);
+  opacity: 1;
+}
+
+/* Long-press (VERA app only): letter opacity fills left → right */
+#return-home-vera {
+  position: relative;
+  --vera-hold-pct: 0%;
+}
+
+#return-home-vera .vera-logo-text-stack {
+  position: relative;
+  display: inline-block;
+}
+
+#return-home-vera .vera-logo-dim {
+  opacity: 0.38;
+}
+
+#return-home-vera .vera-logo-sweep {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+  width: var(--vera-hold-pct, 0%);
+  pointer-events: none;
+}
+
+#return-home-vera .vera-logo-solid {
+  display: block;
+  opacity: 1;
+  white-space: nowrap;
+}
+
+.vera-user-sign-in-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.vera-user-sign-in-overlay[hidden] {
+  display: none !important;
+}
+
+.vera-user-sign-in-dialog {
+  width: 100%;
+  max-width: 400px;
+  padding: 24px 28px;
+  border-radius: 12px;
+  background: #12141a;
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+
+.vera-user-sign-in-dialog h2 {
+  margin: 0 0 18px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.vera-sign-in-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.vera-sign-in-label input {
+  padding: 10px 12px;
+  font-size: 15px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+}
+
+.vera-sign-in-error {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #ff6b6b;
+}
+
+.vera-sign-in-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.vera-sign-in-actions button {
+  padding: 10px 16px;
+  font-size: 13px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+}
+
+#vera-sign-in-submit {
+  background: #3d9cff;
+  color: #0a0c10;
+  font-weight: 600;
+}
+
+#vera-sign-in-cancel {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+}
+
 .chat-logo {
   background: none;
   border: none;
