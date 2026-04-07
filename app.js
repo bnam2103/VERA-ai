@@ -1295,11 +1295,52 @@ function loadSpotifyWebSdkScript() {
   return _veraSpotifySdkLoading;
 }
 
+function veraSpotifyAuthHeaders() {
+  try {
+    const t = sessionStorage.getItem("vera_spotify_bearer");
+    if (t) return { Authorization: `Bearer ${t}` };
+  } catch (_) {
+    /* ignore */
+  }
+  return {};
+}
+
+function clearVeraSpotifyBearer() {
+  try {
+    sessionStorage.removeItem("vera_spotify_bearer");
+  } catch (_) {
+    /* ignore */
+  }
+  window.__veraSpotifyBearer = null;
+}
+
+async function claimSpotifyHandoff(handoff) {
+  if (!handoff || typeof handoff !== "string") return;
+  const base = localBackendBase();
+  const res = await fetch(`${base}/api/spotify/claim-handoff`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
+    body: JSON.stringify({ handoff })
+  });
+  if (!res.ok) return;
+  const j = await res.json().catch(() => ({}));
+  if (j.bearer) {
+    try {
+      sessionStorage.setItem("vera_spotify_bearer", j.bearer);
+    } catch (_) {
+      /* ignore */
+    }
+    window.__veraSpotifyBearer = j.bearer;
+  }
+}
+
 async function refreshSpotifyConnectionUI(prefix) {
   const base = localBackendBase();
-  const res = await fetch(`${base}/api/spotify/connection-status`, { credentials: "include" }).catch(
-    () => null
-  );
+  const res = await fetch(`${base}/api/spotify/connection-status`, {
+    credentials: "include",
+    headers: { ...veraSpotifyAuthHeaders() }
+  }).catch(() => null);
   const j = res?.ok ? await res.json().catch(() => ({})) : { connected: false };
   const badge = document.getElementById(`${prefix}-spotify-connected-badge`);
   const logout = document.getElementById(`${prefix}-spotify-logout`);
@@ -1344,7 +1385,10 @@ function openSpotifyConnectOAuth() {
       void refreshSpotifyPanelAfterOAuthInOtherTab();
       return;
     }
-    const st = await fetch(`${base}/api/spotify/connection-status`, { credentials: "include" })
+    const st = await fetch(`${base}/api/spotify/connection-status`, {
+      credentials: "include",
+      headers: { ...veraSpotifyAuthHeaders() }
+    })
       .then((r) => (r.ok ? r.json() : { connected: false }))
       .catch(() => ({ connected: false }));
     if (st.connected) {
@@ -1383,7 +1427,10 @@ async function refreshSpotifyPanelAfterOAuthInOtherTab() {
   const prefix = appModePrefix();
   if (!document.getElementById(`${prefix}-spotify-connect-link`)) return;
   await refreshSpotifyConnectionUI(prefix);
-  const st = await fetch(`${localBackendBase()}/api/spotify/connection-status`, { credentials: "include" })
+  const st = await fetch(`${localBackendBase()}/api/spotify/connection-status`, {
+    credentials: "include",
+    headers: { ...veraSpotifyAuthHeaders() }
+  })
     .then((r) => r.json())
     .catch(() => ({ connected: false }));
   if (st.connected) await ensureSpotifyWebPlayer(prefix);
@@ -1391,7 +1438,10 @@ async function refreshSpotifyPanelAfterOAuthInOtherTab() {
 
 async function ensureSpotifyWebPlayer(prefix) {
   const base = localBackendBase();
-  const tokRes = await fetch(`${base}/api/spotify/player-token`, { credentials: "include" });
+  const tokRes = await fetch(`${base}/api/spotify/player-token`, {
+    credentials: "include",
+    headers: { ...veraSpotifyAuthHeaders() }
+  });
   if (!tokRes.ok) return;
   await loadSpotifyWebSdkScript();
   const Spotify = window.Spotify;
@@ -1410,7 +1460,10 @@ async function ensureSpotifyWebPlayer(prefix) {
   const player = new Spotify.Player({
     name: "VERA Web",
     getOAuthToken: (cb) => {
-      fetch(`${base}/api/spotify/player-token`, { credentials: "include" })
+      fetch(`${base}/api/spotify/player-token`, {
+        credentials: "include",
+        headers: { ...veraSpotifyAuthHeaders() }
+      })
         .then((r) => (r.ok ? r.json() : Promise.reject()))
         .then((d) => cb(d.access_token))
         .catch(() => cb(""));
@@ -1463,7 +1516,8 @@ async function initSpotifyPlaybackForPanel(prefix) {
   wireSpotifyConnectLink(document.getElementById(`${prefix}-spotify-connect-link`));
   await refreshSpotifyConnectionUI(prefix);
   const st = await fetch(`${localBackendBase()}/api/spotify/connection-status`, {
-    credentials: "include"
+    credentials: "include",
+    headers: { ...veraSpotifyAuthHeaders() }
   })
     .then((r) => r.json())
     .catch(() => ({ connected: false }));
@@ -1526,7 +1580,12 @@ function wireProductivityPanelEvents(prefix) {
 
   document.getElementById(`${prefix}-spotify-logout`)?.addEventListener("click", async () => {
     const base = localBackendBase();
-    await fetch(`${base}/api/spotify/logout`, { method: "POST", credentials: "include" }).catch(() => {});
+    await fetch(`${base}/api/spotify/logout`, {
+      method: "POST",
+      credentials: "include",
+      headers: { ...veraSpotifyAuthHeaders(), "Content-Type": "application/json" }
+    }).catch(() => {});
+    clearVeraSpotifyBearer();
     try {
       await window.__veraSpotifyPlayer?.disconnect();
     } catch (_) {
@@ -4835,7 +4894,10 @@ refreshVeraActiveUserLabel();
       console.warn("[Spotify OAuth]", ev.data.error);
       return;
     }
-    void refreshSpotifyPanelAfterOAuthInOtherTab();
+    void (async () => {
+      if (ev.data.handoff) await claimSpotifyHandoff(ev.data.handoff);
+      void refreshSpotifyPanelAfterOAuthInOtherTab();
+    })();
   });
 })();
 
@@ -4909,7 +4971,7 @@ window.VeraSpotify = {
       const res = await fetch(`${base}/api/spotify/player/play`, {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
         body: JSON.stringify({ uris: [uri], device_id: window.__veraSpotifyDeviceId })
       });
       if (res.ok) {
