@@ -3634,12 +3634,17 @@ body.chat-started .vera-guide {
     gap: 16px;
   }
 
-  .nav-right .nav-link:not(.music-toggle) {
-    display: none; /* hide text links */
+  .nav-right .nav-link {
+    display: none; /* hide nav links including MUSIC on small screens */
   }
 
   .hamburger {
     display: flex; /* show triple-line menu */
+  }
+
+  /* Floating Music / productivity — hidden on phone (no room + avoids overlap) */
+  .productivity-mode-btn {
+    display: none;
   }
 
   /* 🔑 REST OF YOUR EXISTING MOBILE STYLES */
