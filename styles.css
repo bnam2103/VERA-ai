@@ -2743,6 +2743,46 @@ body.chat-started .input-container {
   text-overflow: ellipsis;
 }
 
+.spotify-connect-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.spotify-connect-link {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1ed760;
+  text-decoration: none;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(30, 215, 96, 0.45);
+  background: rgba(30, 215, 96, 0.1);
+  transition: background 0.2s ease;
+}
+
+.spotify-connect-link:hover {
+  background: rgba(30, 215, 96, 0.2);
+}
+
+.spotify-logout-btn {
+  font-size: 11px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+}
+
+.spotify-connected-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(30, 215, 96, 0.9);
+}
+
 body.chat-started .input-bar {
   position: relative;
   pointer-events: auto;

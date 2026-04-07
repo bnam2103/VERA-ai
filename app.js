@@ -1272,6 +1272,120 @@ function renderSpotifySearchResults(prefix, items) {
     .join("");
 }
 
+let _veraSpotifySdkLoading = null;
+
+function loadSpotifyWebSdkScript() {
+  if (window.Spotify) return Promise.resolve();
+  if (_veraSpotifySdkLoading) return _veraSpotifySdkLoading;
+  _veraSpotifySdkLoading = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://sdk.scdn.co/spotify-player.js";
+    s.async = true;
+    s.dataset.veraSpotifySdk = "1";
+    window.onSpotifyWebPlaybackSDKReady = () => {
+      _veraSpotifySdkLoading = null;
+      resolve();
+    };
+    s.onerror = () => {
+      _veraSpotifySdkLoading = null;
+      reject(new Error("Spotify Web Playback SDK failed to load"));
+    };
+    document.body.appendChild(s);
+  });
+  return _veraSpotifySdkLoading;
+}
+
+async function refreshSpotifyConnectionUI(prefix) {
+  const base = localBackendBase();
+  const res = await fetch(`${base}/api/spotify/connection-status`, { credentials: "include" }).catch(
+    () => null
+  );
+  const j = res?.ok ? await res.json().catch(() => ({})) : { connected: false };
+  const badge = document.getElementById(`${prefix}-spotify-connected-badge`);
+  const logout = document.getElementById(`${prefix}-spotify-logout`);
+  const link = document.getElementById(`${prefix}-spotify-connect-link`);
+  if (badge) badge.hidden = !j.connected;
+  if (logout) logout.hidden = !j.connected;
+  if (link) link.style.display = j.connected ? "none" : "";
+}
+
+async function ensureSpotifyWebPlayer(prefix) {
+  const base = localBackendBase();
+  const tokRes = await fetch(`${base}/api/spotify/player-token`, { credentials: "include" });
+  if (!tokRes.ok) return;
+  await loadSpotifyWebSdkScript();
+  const Spotify = window.Spotify;
+  if (!Spotify) return;
+
+  if (window.__veraSpotifyPlayer) {
+    try {
+      await window.__veraSpotifyPlayer.disconnect();
+    } catch (_) {
+      /* ignore */
+    }
+    window.__veraSpotifyPlayer = null;
+    window.__veraSpotifyDeviceId = null;
+  }
+
+  const player = new Spotify.Player({
+    name: "VERA Web",
+    getOAuthToken: (cb) => {
+      fetch(`${base}/api/spotify/player-token`, { credentials: "include" })
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((d) => cb(d.access_token))
+        .catch(() => cb(""));
+    },
+    volume: 0.85
+  });
+
+  player.addListener("ready", ({ device_id }) => {
+    window.__veraSpotifyDeviceId = device_id;
+    window.__veraSpotifyPlayer = player;
+    document.getElementById(`${prefix}-spotify-prev`)?.removeAttribute("disabled");
+    document.getElementById(`${prefix}-spotify-next`)?.removeAttribute("disabled");
+  });
+  player.addListener("not_ready", () => {
+    window.__veraSpotifyDeviceId = null;
+  });
+  player.addListener("player_state_changed", (state) => {
+    if (!state?.track_window?.current_track) return;
+    const t = state.track_window.current_track;
+    const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
+    const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+    if (titleEl) titleEl.textContent = t.name || "";
+    if (artistEl) {
+      artistEl.textContent = (t.artists || []).map((a) => a.name).filter(Boolean).join(", ") || "";
+    }
+    const imgs = t.album?.images;
+    const ph = document.getElementById(`${prefix}-spotify-art-placeholder`);
+    if (imgs?.length && ph) {
+      ph.style.backgroundImage = `url(${JSON.stringify(imgs[0].url)})`;
+      ph.style.backgroundSize = "cover";
+    }
+  });
+
+  const connected = await player.connect();
+  if (!connected) {
+    console.warn("[Spotify] player.connect returned false (Premium / browser restrictions?)");
+  }
+}
+
+async function initSpotifyPlaybackForPanel(prefix) {
+  const link = document.getElementById(`${prefix}-spotify-connect-link`);
+  if (link) {
+    link.href = new URL("/auth/spotify/login", `${localBackendBase()}/`).href;
+  }
+  await refreshSpotifyConnectionUI(prefix);
+  const st = await fetch(`${localBackendBase()}/api/spotify/connection-status`, {
+    credentials: "include"
+  })
+    .then((r) => r.json())
+    .catch(() => ({ connected: false }));
+  if (st.connected) {
+    await ensureSpotifyWebPlayer(prefix);
+  }
+}
+
 function wireProductivityPanelEvents(prefix) {
   const form = document.getElementById(`${prefix}-spotify-search-form`);
   const input = document.getElementById(`${prefix}-spotify-search-input`);
@@ -1323,6 +1437,32 @@ function wireProductivityPanelEvents(prefix) {
     const toggle = window.VeraSpotify?.togglePlayback;
     if (typeof toggle === "function") toggle().catch(() => {});
   });
+
+  document.getElementById(`${prefix}-spotify-prev`)?.addEventListener("click", () => {
+    window.__veraSpotifyPlayer?.previousTrack();
+  });
+  document.getElementById(`${prefix}-spotify-next`)?.addEventListener("click", () => {
+    window.__veraSpotifyPlayer?.nextTrack();
+  });
+  document.getElementById(`${prefix}-spotify-logout`)?.addEventListener("click", async () => {
+    const base = localBackendBase();
+    await fetch(`${base}/api/spotify/logout`, { method: "POST", credentials: "include" }).catch(() => {});
+    try {
+      await window.__veraSpotifyPlayer?.disconnect();
+    } catch (_) {
+      /* ignore */
+    }
+    window.__veraSpotifyPlayer = null;
+    window.__veraSpotifyDeviceId = null;
+    await refreshSpotifyConnectionUI(prefix);
+  });
+
+  const connectLink = document.getElementById(`${prefix}-spotify-connect-link`);
+  if (connectLink) {
+    connectLink.href = new URL("/auth/spotify/login", `${localBackendBase()}/`).href;
+  }
+
+  void initSpotifyPlaybackForPanel(prefix);
 }
 
 function renderProductivityPanel() {
@@ -1345,11 +1485,16 @@ function renderProductivityPanel() {
       </div>
     </div>
     <div class="spotify-panel-body" data-productivity-root="${prefix}">
+      <div class="spotify-connect-row" id="${prefix}-spotify-connect-row">
+        <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link">Connect Spotify (Premium)</a>
+        <button type="button" class="spotify-logout-btn" id="${prefix}-spotify-logout" hidden>Disconnect</button>
+        <span class="spotify-connected-badge" id="${prefix}-spotify-connected-badge" hidden>Connected</span>
+      </div>
       <div class="spotify-now-playing">
         <div class="spotify-art-placeholder" id="${prefix}-spotify-art-placeholder" aria-hidden="true"></div>
         <div class="spotify-track-meta">
           <div class="spotify-track-title" id="${prefix}-spotify-track-title">Nothing playing</div>
-          <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Search uses your FastAPI <code>/api/spotify/search</code> (keys in server <code>.env</code>). Open from <code>http://127.0.0.1:8000</code> when testing locally.</div>
+          <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Connect Spotify for in-browser playback, or use search + preview / Open in Spotify.</div>
         </div>
         <div class="spotify-transport">
           <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-prev" aria-label="Previous" disabled>⏮</button>
@@ -1362,7 +1507,7 @@ function renderProductivityPanel() {
         <button type="submit" class="spotify-search-submit">Search</button>
       </form>
       <div class="spotify-results" id="${prefix}-spotify-results" role="listbox" aria-label="Search results">
-        <p class="spotify-results-hint">Click a track: 30s preview in-page when available; otherwise Spotify opens in a new tab for full playback.</p>
+        <p class="spotify-results-hint">Click a track: plays in VERA if Web Playback is connected; else 30s preview or open in Spotify.</p>
       </div>
       <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
     </div>
@@ -4567,9 +4712,22 @@ function wireVeraUserSignInHoldAndModal() {
 wireVeraUserSignInHoldAndModal();
 refreshVeraActiveUserLabel();
 
+(function stripSpotifyOAuthQueryParams() {
+  try {
+    const u = new URL(window.location.href);
+    if (!u.searchParams.has("spotify_connected") && !u.searchParams.has("spotify_error")) return;
+    const err = u.searchParams.get("spotify_error");
+    u.searchParams.delete("spotify_connected");
+    u.searchParams.delete("spotify_error");
+    if (err) console.warn("[Spotify OAuth]", err);
+    history.replaceState({}, "", u.pathname + u.search + u.hash);
+  } catch (_) {
+    /* ignore */
+  }
+})();
+
 /**
- * Spotify: search via FastAPI; in-browser audio only for 30s preview_url when present.
- * If no preview, opens Spotify web/app (open.spotify.com) in a new tab — full playback happens there.
+ * Spotify: search (Client Credentials) + optional Web Playback SDK after user connects (Premium).
  */
 window.__veraSpotifyLast = { preview_url: "", open_url: "", title: "", artist: "" };
 
@@ -4599,8 +4757,7 @@ window.VeraSpotify = {
   },
   async playTrack(uri, meta) {
     const prefix = appModePrefix();
-    const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
-    if (!audio) return;
+    const base = localBackendBase();
     const preview = meta?.preview_url;
     const openUrl = String(meta?.open_url || spotifyUriToOpenUrl(uri) || "").trim();
     window.__veraSpotifyLast = {
@@ -4609,7 +4766,25 @@ window.VeraSpotify = {
       title: meta?.title || "",
       artist: meta?.artist || ""
     };
+    const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+
+    if (uri && window.__veraSpotifyDeviceId) {
+      const res = await fetch(`${base}/api/spotify/player/play`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uris: [uri], device_id: window.__veraSpotifyDeviceId })
+      });
+      if (res.ok) {
+        if (titleEl) titleEl.textContent = meta?.title || "";
+        if (artistEl) artistEl.textContent = meta?.artist || "";
+        return;
+      }
+    }
+
+    const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
+    if (!audio) return;
     if (preview) {
       audio.src = preview;
       await audio.play().catch(() => {});
@@ -4621,16 +4796,21 @@ window.VeraSpotify = {
       window.open(openUrl, "_blank", "noopener,noreferrer");
       if (artistEl) {
         artistEl.textContent =
-          `${meta?.artist || ""} — Opened in Spotify (many tracks have no 30s preview in the API; listen in the Spotify app or browser tab.)`.trim();
+          `${meta?.artist || ""} — Opened Spotify in a new tab (connect Spotify in this panel for in-page playback).`.trim();
       }
       return;
     }
     if (artistEl) {
       artistEl.textContent =
-        "No preview or open link for this track. Try another result or open Spotify manually.";
+        "Connect Spotify (Premium) above, or pick a track with a preview / open link.";
     }
   },
   async togglePlayback() {
+    const web = window.__veraSpotifyPlayer;
+    if (web) {
+      await web.togglePlay();
+      return;
+    }
     const prefix = appModePrefix();
     const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
     const last = window.__veraSpotifyLast || {};
