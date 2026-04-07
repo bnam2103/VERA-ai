@@ -1223,6 +1223,12 @@ function renderFinanceChartPanel(payload) {
   });
 }
 
+/** spotify:track:abc -> https://open.spotify.com/track/abc when API omits external_urls */
+function spotifyUriToOpenUrl(uri) {
+  const m = String(uri || "").match(/^spotify:track:([a-zA-Z0-9]+)$/);
+  return m ? `https://open.spotify.com/track/${m[1]}` : "";
+}
+
 function spotifyFormatArtists(item) {
   const a = item?.artist ?? item?.artists;
   if (Array.isArray(a)) {
@@ -1252,8 +1258,10 @@ function renderSpotifySearchResults(prefix, items) {
         ? `<img class="spotify-result-thumb" src="${escapeHtml(img)}" alt="" loading="lazy" />`
         : `<div class="spotify-result-thumb" aria-hidden="true"></div>`;
       const prev = item.preview_url != null ? escapeHtml(String(item.preview_url)) : "";
+      const openRaw = String(item.open_url || spotifyUriToOpenUrl(item.uri) || "").trim();
+      const openEsc = openRaw ? escapeHtml(openRaw) : "";
       return `
-        <button type="button" class="spotify-result-row" data-spotify-uri="${uri}" data-spotify-index="${i}" data-preview-url="${prev}">
+        <button type="button" class="spotify-result-row" data-spotify-uri="${uri}" data-spotify-index="${i}" data-preview-url="${prev}" data-open-url="${openEsc}">
           ${thumb}
           <div class="spotify-result-text">
             <div class="spotify-result-title">${title}</div>
@@ -1291,15 +1299,22 @@ function wireProductivityPanelEvents(prefix) {
     if (!row) return;
     const uri = row.dataset.spotifyUri || "";
     const previewUrl = row.dataset.previewUrl || "";
+    const openUrl = row.dataset.openUrl || "";
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
     const title = row.querySelector(".spotify-result-title")?.textContent ?? "";
     const artist = row.querySelector(".spotify-result-sub")?.textContent ?? "";
     if (titleEl) titleEl.textContent = title || "—";
     if (artistEl) artistEl.textContent = artist || "";
+    const coverImg = row.querySelector("img.spotify-result-thumb");
+    const ph = document.getElementById(`${prefix}-spotify-art-placeholder`);
+    if (coverImg?.src && ph) {
+      ph.style.backgroundImage = `url(${JSON.stringify(coverImg.src)})`;
+      ph.style.backgroundSize = "cover";
+    }
     const play = window.VeraSpotify?.playTrack;
     if (typeof play === "function" && uri) {
-      play(uri, { title, artist, preview_url: previewUrl }).catch(() => {});
+      play(uri, { title, artist, preview_url: previewUrl, open_url: openUrl }).catch(() => {});
     }
   });
 
@@ -1331,7 +1346,7 @@ function renderProductivityPanel() {
     </div>
     <div class="spotify-panel-body" data-productivity-root="${prefix}">
       <div class="spotify-now-playing">
-        <div class="spotify-art-placeholder" aria-hidden="true"></div>
+        <div class="spotify-art-placeholder" id="${prefix}-spotify-art-placeholder" aria-hidden="true"></div>
         <div class="spotify-track-meta">
           <div class="spotify-track-title" id="${prefix}-spotify-track-title">Nothing playing</div>
           <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Search uses your FastAPI <code>/api/spotify/search</code> (keys in server <code>.env</code>). Open from <code>http://127.0.0.1:8000</code> when testing locally.</div>
@@ -1347,7 +1362,7 @@ function renderProductivityPanel() {
         <button type="submit" class="spotify-search-submit">Search</button>
       </form>
       <div class="spotify-results" id="${prefix}-spotify-results" role="listbox" aria-label="Search results">
-        <p class="spotify-results-hint">Search the catalog (results load from your API). 30s previews play when Spotify provides a preview URL.</p>
+        <p class="spotify-results-hint">Click a track: 30s preview in-page when available; otherwise Spotify opens in a new tab for full playback.</p>
       </div>
       <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
     </div>
@@ -4553,9 +4568,11 @@ wireVeraUserSignInHoldAndModal();
 refreshVeraActiveUserLabel();
 
 /**
- * Spotify: search + 30s previews via FastAPI `/api/spotify/search` (Client Credentials on server).
- * Full playback needs user OAuth + Web Playback SDK (not implemented here).
+ * Spotify: search via FastAPI; in-browser audio only for 30s preview_url when present.
+ * If no preview, opens Spotify web/app (open.spotify.com) in a new tab — full playback happens there.
  */
+window.__veraSpotifyLast = { preview_url: "", open_url: "", title: "", artist: "" };
+
 window.VeraSpotify = {
   async searchTracks(query) {
     const raw = String(query || "").trim();
@@ -4585,22 +4602,45 @@ window.VeraSpotify = {
     const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
     if (!audio) return;
     const preview = meta?.preview_url;
-    if (!preview) {
-      const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+    const openUrl = String(meta?.open_url || spotifyUriToOpenUrl(uri) || "").trim();
+    window.__veraSpotifyLast = {
+      preview_url: preview || "",
+      open_url: openUrl,
+      title: meta?.title || "",
+      artist: meta?.artist || ""
+    };
+    const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+    if (preview) {
+      audio.src = preview;
+      await audio.play().catch(() => {});
+      if (artistEl) artistEl.textContent = meta?.artist || "";
+      return;
+    }
+    audio.removeAttribute("src");
+    if (openUrl) {
+      window.open(openUrl, "_blank", "noopener,noreferrer");
       if (artistEl) {
         artistEl.textContent =
-          "No preview URL for this track (Spotify often omits it). Full play requires Spotify user login.";
+          `${meta?.artist || ""} — Opened in Spotify (many tracks have no 30s preview in the API; listen in the Spotify app or browser tab.)`.trim();
       }
       return;
     }
-    audio.src = preview;
-    await audio.play().catch(() => {});
+    if (artistEl) {
+      artistEl.textContent =
+        "No preview or open link for this track. Try another result or open Spotify manually.";
+    }
   },
   async togglePlayback() {
     const prefix = appModePrefix();
     const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
-    if (!audio?.src) return;
-    if (audio.paused) await audio.play().catch(() => {});
-    else audio.pause();
+    const last = window.__veraSpotifyLast || {};
+    if (last.preview_url && audio) {
+      if (audio.paused) await audio.play().catch(() => {});
+      else audio.pause();
+      return;
+    }
+    if (last.open_url) {
+      window.open(last.open_url, "_blank", "noopener,noreferrer");
+    }
   }
 };
