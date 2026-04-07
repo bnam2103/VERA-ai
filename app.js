@@ -1309,6 +1309,31 @@ async function refreshSpotifyConnectionUI(prefix) {
   if (link) link.style.display = j.connected ? "none" : "";
 }
 
+function spotifySyncPlayButtonUi(prefix) {
+  const playBtn = document.getElementById(`${prefix}-spotify-play`);
+  if (!playBtn) return;
+  if (window.__veraSpotifyPlayer) return;
+  const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
+  if (!audio?.src) {
+    playBtn.textContent = "▶";
+    playBtn.setAttribute("aria-label", "Play / pause");
+    return;
+  }
+  playBtn.textContent = audio.paused ? "▶" : "⏸";
+  playBtn.setAttribute("aria-label", audio.paused ? "Play" : "Pause");
+}
+
+async function refreshSpotifyPanelAfterOAuthInOtherTab() {
+  const side = uiEl("side-pane");
+  if (!side || side.hidden || side.dataset.sidePaneKind !== "productivity") return;
+  const prefix = appModePrefix();
+  await refreshSpotifyConnectionUI(prefix);
+  const st = await fetch(`${localBackendBase()}/api/spotify/connection-status`, { credentials: "include" })
+    .then((r) => r.json())
+    .catch(() => ({ connected: false }));
+  if (st.connected) await ensureSpotifyWebPlayer(prefix);
+}
+
 async function ensureSpotifyWebPlayer(prefix) {
   const base = localBackendBase();
   const tokRes = await fetch(`${base}/api/spotify/player-token`, { credentials: "include" });
@@ -1341,13 +1366,22 @@ async function ensureSpotifyWebPlayer(prefix) {
   player.addListener("ready", ({ device_id }) => {
     window.__veraSpotifyDeviceId = device_id;
     window.__veraSpotifyPlayer = player;
-    document.getElementById(`${prefix}-spotify-prev`)?.removeAttribute("disabled");
-    document.getElementById(`${prefix}-spotify-next`)?.removeAttribute("disabled");
+    /* Prev/next stay disabled until we implement a playback queue. */
   });
   player.addListener("not_ready", () => {
     window.__veraSpotifyDeviceId = null;
   });
   player.addListener("player_state_changed", (state) => {
+    const playBtn = document.getElementById(`${prefix}-spotify-play`);
+    if (playBtn) {
+      if (!state?.track_window?.current_track) {
+        playBtn.textContent = "▶";
+        playBtn.setAttribute("aria-label", "Play / pause");
+      } else {
+        playBtn.textContent = state.paused ? "▶" : "⏸";
+        playBtn.setAttribute("aria-label", state.paused ? "Play" : "Pause");
+      }
+    }
     if (!state?.track_window?.current_track) return;
     const t = state.track_window.current_track;
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
@@ -1440,12 +1474,6 @@ function wireProductivityPanelEvents(prefix) {
     if (typeof toggle === "function") toggle().catch(() => {});
   });
 
-  document.getElementById(`${prefix}-spotify-prev`)?.addEventListener("click", () => {
-    window.__veraSpotifyPlayer?.previousTrack();
-  });
-  document.getElementById(`${prefix}-spotify-next`)?.addEventListener("click", () => {
-    window.__veraSpotifyPlayer?.nextTrack();
-  });
   document.getElementById(`${prefix}-spotify-logout`)?.addEventListener("click", async () => {
     const base = localBackendBase();
     await fetch(`${base}/api/spotify/logout`, { method: "POST", credentials: "include" }).catch(() => {});
@@ -1464,6 +1492,15 @@ function wireProductivityPanelEvents(prefix) {
     connectLink.href = new URL("/auth/spotify/login", `${localBackendBase()}/`).href;
     connectLink.target = "_blank";
     connectLink.rel = "noopener noreferrer";
+  }
+
+  const previewAudio = document.getElementById(`${prefix}-spotify-preview-audio`);
+  if (previewAudio && !previewAudio.dataset.veraSpotifyPlayUiWired) {
+    previewAudio.dataset.veraSpotifyPlayUiWired = "1";
+    const onPreviewPlayState = () => spotifySyncPlayButtonUi(prefix);
+    previewAudio.addEventListener("play", onPreviewPlayState);
+    previewAudio.addEventListener("pause", onPreviewPlayState);
+    previewAudio.addEventListener("ended", onPreviewPlayState);
   }
 
   void initSpotifyPlaybackForPanel(prefix);
@@ -1501,9 +1538,9 @@ function renderProductivityPanel() {
           <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Connect Spotify for in-browser playback, or use search + preview / Open in Spotify.</div>
         </div>
         <div class="spotify-transport">
-          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-prev" aria-label="Previous" disabled>⏮</button>
+          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-prev" aria-label="Previous" disabled title="Queue not implemented yet">⏮</button>
           <button type="button" class="spotify-transport-btn spotify-play-btn" id="${prefix}-spotify-play" aria-label="Play / pause">▶</button>
-          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-next" aria-label="Next" disabled>⏭</button>
+          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-next" aria-label="Next" disabled title="Queue not implemented yet">⏭</button>
         </div>
       </div>
       <form class="spotify-search-form" id="${prefix}-spotify-search-form">
@@ -4725,9 +4762,39 @@ refreshVeraActiveUserLabel();
     u.searchParams.delete("spotify_error");
     if (err) console.warn("[Spotify OAuth]", err);
     history.replaceState({}, "", u.pathname + u.search + u.hash);
+    try {
+      const bc = new BroadcastChannel("vera-spotify");
+      bc.postMessage({ type: "spotify-oauth-done", error: err });
+      bc.close();
+    } catch (_) {
+      /* ignore */
+    }
   } catch (_) {
     /* ignore */
   }
+})();
+
+(function wireSpotifyOAuthOtherTabsRefresh() {
+  if (window.__veraSpotifyCrossTabWired) return;
+  window.__veraSpotifyCrossTabWired = true;
+  try {
+    const bc = new BroadcastChannel("vera-spotify");
+    bc.addEventListener("message", (ev) => {
+      if (ev.data?.type !== "spotify-oauth-done") return;
+      void refreshSpotifyPanelAfterOAuthInOtherTab();
+    });
+  } catch (_) {
+    /* ignore */
+  }
+  let focusT;
+  const onVisible = () => {
+    clearTimeout(focusT);
+    focusT = setTimeout(() => void refreshSpotifyPanelAfterOAuthInOtherTab(), 280);
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") onVisible();
+  });
+  window.addEventListener("focus", onVisible);
 })();
 
 /**
@@ -4783,6 +4850,11 @@ window.VeraSpotify = {
       if (res.ok) {
         if (titleEl) titleEl.textContent = meta?.title || "";
         if (artistEl) artistEl.textContent = meta?.artist || "";
+        const playBtn = document.getElementById(`${prefix}-spotify-play`);
+        if (playBtn && window.__veraSpotifyPlayer) {
+          playBtn.textContent = "⏸";
+          playBtn.setAttribute("aria-label", "Pause");
+        }
         return;
       }
     }
@@ -4792,6 +4864,7 @@ window.VeraSpotify = {
     if (preview) {
       audio.src = preview;
       await audio.play().catch(() => {});
+      spotifySyncPlayButtonUi(prefix);
       if (artistEl) artistEl.textContent = meta?.artist || "";
       return;
     }
@@ -4821,6 +4894,7 @@ window.VeraSpotify = {
     if (last.preview_url && audio) {
       if (audio.paused) await audio.play().catch(() => {});
       else audio.pause();
+      spotifySyncPlayButtonUi(prefix);
       return;
     }
     if (last.open_url) {
