@@ -1239,7 +1239,7 @@ function renderSpotifySearchResults(prefix, items) {
   if (!resultsEl) return;
   const list = Array.isArray(items) ? items : [];
   if (!list.length) {
-    resultsEl.innerHTML = `<p class="spotify-results-hint">No results. Implement <code>window.VeraSpotify.searchTracks(q)</code> to return tracks from the Spotify Web API.</p>`;
+    resultsEl.innerHTML = `<p class="spotify-results-hint">No tracks returned. If you use Spotify keys in a <strong>local</strong> <code>.env</code>, open this page from <code>http://127.0.0.1:8000</code> so search hits your FastAPI (not only the cloud worker).</p>`;
     return;
   }
   resultsEl.innerHTML = list
@@ -1251,8 +1251,9 @@ function renderSpotifySearchResults(prefix, items) {
       const thumb = img
         ? `<img class="spotify-result-thumb" src="${escapeHtml(img)}" alt="" loading="lazy" />`
         : `<div class="spotify-result-thumb" aria-hidden="true"></div>`;
+      const prev = item.preview_url != null ? escapeHtml(String(item.preview_url)) : "";
       return `
-        <button type="button" class="spotify-result-row" data-spotify-uri="${uri}" data-spotify-index="${i}">
+        <button type="button" class="spotify-result-row" data-spotify-uri="${uri}" data-spotify-index="${i}" data-preview-url="${prev}">
           ${thumb}
           <div class="spotify-result-text">
             <div class="spotify-result-title">${title}</div>
@@ -1289,6 +1290,7 @@ function wireProductivityPanelEvents(prefix) {
     const row = e.target instanceof HTMLElement ? e.target.closest(".spotify-result-row") : null;
     if (!row) return;
     const uri = row.dataset.spotifyUri || "";
+    const previewUrl = row.dataset.previewUrl || "";
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
     const title = row.querySelector(".spotify-result-title")?.textContent ?? "";
@@ -1297,7 +1299,7 @@ function wireProductivityPanelEvents(prefix) {
     if (artistEl) artistEl.textContent = artist || "";
     const play = window.VeraSpotify?.playTrack;
     if (typeof play === "function" && uri) {
-      play(uri, { title, artist }).catch(() => {});
+      play(uri, { title, artist, preview_url: previewUrl }).catch(() => {});
     }
   });
 
@@ -1332,7 +1334,7 @@ function renderProductivityPanel() {
         <div class="spotify-art-placeholder" aria-hidden="true"></div>
         <div class="spotify-track-meta">
           <div class="spotify-track-title" id="${prefix}-spotify-track-title">Nothing playing</div>
-          <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Add Spotify API credentials, then implement <code>window.VeraSpotify</code> in app.js.</div>
+          <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Search uses your FastAPI <code>/api/spotify/search</code> (keys in server <code>.env</code>). Open from <code>http://127.0.0.1:8000</code> when testing locally.</div>
         </div>
         <div class="spotify-transport">
           <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-prev" aria-label="Previous" disabled>⏮</button>
@@ -1345,7 +1347,7 @@ function renderProductivityPanel() {
         <button type="submit" class="spotify-search-submit">Search</button>
       </form>
       <div class="spotify-results" id="${prefix}-spotify-results" role="listbox" aria-label="Search results">
-        <p class="spotify-results-hint">Wire <code>window.VeraSpotify.searchTracks(q)</code> to the Spotify Web API (Client Credentials or user auth). Use <code>playTrack(uri)</code> when a row is clicked.</p>
+        <p class="spotify-results-hint">Search the catalog (results load from your API). 30s previews play when Spotify provides a preview URL.</p>
       </div>
       <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
     </div>
@@ -4551,14 +4553,54 @@ wireVeraUserSignInHoldAndModal();
 refreshVeraActiveUserLabel();
 
 /**
- * Productivity / Spotify panel — implement these when you add Spotify Web API credentials.
- * searchTracks: return [{ name, uri, artists|artist, imageUrl?, album? }]
- * playTrack: start playback for spotify:track:… (Web Playback SDK or Connect API require user auth).
+ * Spotify: search + 30s previews via FastAPI `/api/spotify/search` (Client Credentials on server).
+ * Full playback needs user OAuth + Web Playback SDK (not implemented here).
  */
 window.VeraSpotify = {
-  async searchTracks(/* query */) {
-    return [];
+  async searchTracks(query) {
+    const raw = String(query || "").trim();
+    if (!raw) return [];
+    /* Same origin as sign-in: local http://127.0.0.1:8000 uses your .env; GitHub Pages uses API_URL via localBackendBase(). */
+    const u = new URL(authApiUrl("/api/spotify/search"));
+    u.searchParams.set("q", raw);
+    u.searchParams.set("limit", "20");
+    const res = await fetch(u.href, { cache: "no-store" });
+    if (!res.ok) {
+      let msg = `Search failed (${res.status})`;
+      try {
+        const err = await res.json();
+        const d = err.detail;
+        if (typeof d === "string") msg = d;
+        else if (Array.isArray(d) && d[0]?.msg) msg = String(d[0].msg);
+      } catch (_) {
+        /* ignore */
+      }
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
   },
-  async playTrack(/* uri, meta */) {},
-  async togglePlayback() {}
+  async playTrack(uri, meta) {
+    const prefix = appModePrefix();
+    const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
+    if (!audio) return;
+    const preview = meta?.preview_url;
+    if (!preview) {
+      const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+      if (artistEl) {
+        artistEl.textContent =
+          "No preview URL for this track (Spotify often omits it). Full play requires Spotify user login.";
+      }
+      return;
+    }
+    audio.src = preview;
+    await audio.play().catch(() => {});
+  },
+  async togglePlayback() {
+    const prefix = appModePrefix();
+    const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
+    if (!audio?.src) return;
+    if (audio.paused) await audio.play().catch(() => {});
+    else audio.pause();
+  }
 };
