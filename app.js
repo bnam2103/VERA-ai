@@ -1374,6 +1374,8 @@ async function initSpotifyPlaybackForPanel(prefix) {
   const link = document.getElementById(`${prefix}-spotify-connect-link`);
   if (link) {
     link.href = new URL("/auth/spotify/login", `${localBackendBase()}/`).href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
   }
   await refreshSpotifyConnectionUI(prefix);
   const st = await fetch(`${localBackendBase()}/api/spotify/connection-status`, {
@@ -1460,6 +1462,8 @@ function wireProductivityPanelEvents(prefix) {
   const connectLink = document.getElementById(`${prefix}-spotify-connect-link`);
   if (connectLink) {
     connectLink.href = new URL("/auth/spotify/login", `${localBackendBase()}/`).href;
+    connectLink.target = "_blank";
+    connectLink.rel = "noopener noreferrer";
   }
 
   void initSpotifyPlaybackForPanel(prefix);
@@ -1486,7 +1490,7 @@ function renderProductivityPanel() {
     </div>
     <div class="spotify-panel-body" data-productivity-root="${prefix}">
       <div class="spotify-connect-row" id="${prefix}-spotify-connect-row">
-        <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link">Connect Spotify (Premium)</a>
+        <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link" target="_blank" rel="noopener noreferrer">Connect Spotify (Premium)</a>
         <button type="button" class="spotify-logout-btn" id="${prefix}-spotify-logout" hidden>Disconnect</button>
         <span class="spotify-connected-badge" id="${prefix}-spotify-connected-badge" hidden>Connected</span>
       </div>
