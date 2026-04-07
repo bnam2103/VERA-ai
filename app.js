@@ -1333,7 +1333,38 @@ function openSpotifyConnectOAuth() {
   const w = window.open(u.href, "_blank");
   if (!w) {
     window.location.href = u.href;
+    return;
   }
+  const base = localBackendBase();
+  clearInterval(window.__veraSpotifyOAuthPoll);
+  const tick = async () => {
+    if (w.closed) {
+      clearInterval(window.__veraSpotifyOAuthPoll);
+      window.__veraSpotifyOAuthPoll = null;
+      void refreshSpotifyPanelAfterOAuthInOtherTab();
+      return;
+    }
+    const st = await fetch(`${base}/api/spotify/connection-status`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : { connected: false }))
+      .catch(() => ({ connected: false }));
+    if (st.connected) {
+      clearInterval(window.__veraSpotifyOAuthPoll);
+      window.__veraSpotifyOAuthPoll = null;
+      try {
+        w.close();
+      } catch (_) {
+        /* ignore */
+      }
+      void refreshSpotifyPanelAfterOAuthInOtherTab();
+    }
+  };
+  window.__veraSpotifyOAuthPoll = setInterval(tick, 1200);
+  setTimeout(() => {
+    if (window.__veraSpotifyOAuthPoll) {
+      clearInterval(window.__veraSpotifyOAuthPoll);
+      window.__veraSpotifyOAuthPoll = null;
+    }
+  }, 180000);
 }
 
 function wireSpotifyConnectLink(link) {
@@ -1349,9 +1380,8 @@ function wireSpotifyConnectLink(link) {
 }
 
 async function refreshSpotifyPanelAfterOAuthInOtherTab() {
-  const side = uiEl("side-pane");
-  if (!side || side.hidden || side.dataset.sidePaneKind !== "productivity") return;
   const prefix = appModePrefix();
+  if (!document.getElementById(`${prefix}-spotify-connect-link`)) return;
   await refreshSpotifyConnectionUI(prefix);
   const st = await fetch(`${localBackendBase()}/api/spotify/connection-status`, { credentials: "include" })
     .then((r) => r.json())
