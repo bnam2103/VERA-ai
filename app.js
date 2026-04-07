@@ -1492,6 +1492,12 @@ async function ensureSpotifyWebPlayer(prefix) {
   player.addListener("not_ready", () => {
     window.__veraSpotifyDeviceId = null;
   });
+  player.addListener("authentication_error", ({ message }) => {
+    console.warn("[Spotify] Web Playback authentication_error", message);
+  });
+  player.addListener("playback_error", ({ message }) => {
+    console.warn("[Spotify] Web Playback playback_error", message);
+  });
   player.addListener("player_state_changed", (state) => {
     const playBtn = document.getElementById(`${prefix}-spotify-play`);
     if (playBtn) {
@@ -4986,17 +4992,17 @@ window.VeraSpotify = {
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
 
-    if (uri && !window.__veraSpotifyDeviceId) {
-      const st = await fetch(`${base}/api/spotify/connection-status`, {
-        credentials: "include",
-        headers: { ...veraSpotifyAuthHeaders() }
-      })
-        .then((r) => (r.ok ? r.json() : { connected: false }))
-        .catch(() => ({ connected: false }));
-      if (st.connected) {
-        await ensureSpotifyWebPlayer(prefix);
-        await waitForSpotifyDeviceId(22000);
-      }
+    const st = await fetch(`${base}/api/spotify/connection-status`, {
+      credentials: "include",
+      headers: { ...veraSpotifyAuthHeaders() }
+    })
+      .then((r) => (r.ok ? r.json() : { connected: false }))
+      .catch(() => ({ connected: false }));
+    const connectedSpotify = !!st.connected;
+
+    if (uri && !window.__veraSpotifyDeviceId && connectedSpotify) {
+      await ensureSpotifyWebPlayer(prefix);
+      await waitForSpotifyDeviceId(22000);
     }
 
     if (uri && window.__veraSpotifyDeviceId) {
@@ -5016,6 +5022,27 @@ window.VeraSpotify = {
         }
         return;
       }
+      let detail = "";
+      try {
+        const j = await res.json();
+        detail = typeof j.detail === "string" ? j.detail : "";
+      } catch (_) {
+        /* ignore */
+      }
+      console.warn("[Spotify] play failed", res.status, detail);
+      if (artistEl) {
+        artistEl.textContent =
+          detail || "Couldn't start playback in the browser (Spotify Premium + Web Playback required).";
+      }
+      return;
+    }
+
+    if (connectedSpotify && uri) {
+      if (artistEl) {
+        artistEl.textContent =
+          "Connected, but the in-browser player isn't ready. Confirm Spotify Premium and try again.";
+      }
+      return;
     }
 
     const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
@@ -5028,7 +5055,7 @@ window.VeraSpotify = {
       return;
     }
     audio.removeAttribute("src");
-    if (openUrl) {
+    if (openUrl && !connectedSpotify) {
       window.open(openUrl, "_blank", "noopener,noreferrer");
       if (artistEl) {
         artistEl.textContent =
@@ -5057,6 +5084,11 @@ window.VeraSpotify = {
       return;
     }
     if (last.open_url) {
+      try {
+        if (sessionStorage.getItem("vera_spotify_bearer")) return;
+      } catch (_) {
+        /* ignore */
+      }
       window.open(last.open_url, "_blank", "noopener,noreferrer");
     }
   }
