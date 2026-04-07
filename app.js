@@ -1323,6 +1323,31 @@ function spotifySyncPlayButtonUi(prefix) {
   playBtn.setAttribute("aria-label", audio.paused ? "Play" : "Pause");
 }
 
+function openSpotifyConnectOAuth() {
+  const u = new URL("/auth/spotify/login", `${localBackendBase()}/`);
+  try {
+    u.searchParams.set("opener_origin", window.location.origin);
+  } catch (_) {
+    /* ignore */
+  }
+  const w = window.open(u.href, "_blank");
+  if (!w) {
+    window.location.href = u.href;
+  }
+}
+
+function wireSpotifyConnectLink(link) {
+  if (!link || link.dataset.veraSpotifyConnectWired) return;
+  link.dataset.veraSpotifyConnectWired = "1";
+  link.href = "#";
+  link.removeAttribute("target");
+  link.removeAttribute("rel");
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    openSpotifyConnectOAuth();
+  });
+}
+
 async function refreshSpotifyPanelAfterOAuthInOtherTab() {
   const side = uiEl("side-pane");
   if (!side || side.hidden || side.dataset.sidePaneKind !== "productivity") return;
@@ -1405,12 +1430,7 @@ async function ensureSpotifyWebPlayer(prefix) {
 }
 
 async function initSpotifyPlaybackForPanel(prefix) {
-  const link = document.getElementById(`${prefix}-spotify-connect-link`);
-  if (link) {
-    link.href = new URL("/auth/spotify/login", `${localBackendBase()}/`).href;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-  }
+  wireSpotifyConnectLink(document.getElementById(`${prefix}-spotify-connect-link`));
   await refreshSpotifyConnectionUI(prefix);
   const st = await fetch(`${localBackendBase()}/api/spotify/connection-status`, {
     credentials: "include"
@@ -1487,12 +1507,7 @@ function wireProductivityPanelEvents(prefix) {
     await refreshSpotifyConnectionUI(prefix);
   });
 
-  const connectLink = document.getElementById(`${prefix}-spotify-connect-link`);
-  if (connectLink) {
-    connectLink.href = new URL("/auth/spotify/login", `${localBackendBase()}/`).href;
-    connectLink.target = "_blank";
-    connectLink.rel = "noopener noreferrer";
-  }
+  wireSpotifyConnectLink(document.getElementById(`${prefix}-spotify-connect-link`));
 
   const previewAudio = document.getElementById(`${prefix}-spotify-preview-audio`);
   if (previewAudio && !previewAudio.dataset.veraSpotifyPlayUiWired) {
@@ -1527,7 +1542,7 @@ function renderProductivityPanel() {
     </div>
     <div class="spotify-panel-body" data-productivity-root="${prefix}">
       <div class="spotify-connect-row" id="${prefix}-spotify-connect-row">
-        <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link" target="_blank" rel="noopener noreferrer">Connect Spotify (Premium)</a>
+        <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link">Connect Spotify (Premium)</a>
         <button type="button" class="spotify-logout-btn" id="${prefix}-spotify-logout" hidden>Disconnect</button>
         <span class="spotify-connected-badge" id="${prefix}-spotify-connected-badge" hidden>Connected</span>
       </div>
@@ -4772,6 +4787,26 @@ refreshVeraActiveUserLabel();
   } catch (_) {
     /* ignore */
   }
+})();
+
+(function wireSpotifyOAuthPostMessageFromPopup() {
+  if (window.__veraSpotifyOAuthPostMessageWired) return;
+  window.__veraSpotifyOAuthPostMessageWired = true;
+  window.addEventListener("message", (ev) => {
+    if (ev.data?.type !== "vera-spotify-oauth") return;
+    let apiOrigin;
+    try {
+      apiOrigin = new URL(localBackendBase()).origin;
+    } catch (_) {
+      return;
+    }
+    if (ev.origin !== apiOrigin) return;
+    if (!ev.data.ok) {
+      console.warn("[Spotify OAuth]", ev.data.error);
+      return;
+    }
+    void refreshSpotifyPanelAfterOAuthInOtherTab();
+  });
 })();
 
 (function wireSpotifyOAuthOtherTabsRefresh() {
