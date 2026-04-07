@@ -674,7 +674,17 @@
       <source src="startup-typing.wav" type="audio/wav">
     </audio>
   </main>
-  <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
+  <div class="vera-bottom-right-tools" aria-label="Quick tools">
+    <button
+      type="button"
+      id="vera-productivity-mode"
+      class="productivity-mode-btn"
+      title="Productivity mode — music panel"
+    >
+      Music
+    </button>
+    <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
+  </div>
 </section>
 
 <section id="bmo-loading-screen" hidden>
@@ -893,6 +903,16 @@
     </div>
 
     <audio id="bmo-audio" preload="auto" crossorigin="anonymous"></audio>
+    <div class="bmo-bottom-right-tools" aria-label="Quick tools">
+      <button
+        type="button"
+        id="bmo-productivity-mode"
+        class="productivity-mode-btn"
+        title="Productivity mode — music panel"
+      >
+        Music
+      </button>
+    </div>
   </main>
 </section>
 
@@ -1873,7 +1893,7 @@ document.addEventListener("click", () => {
   } catch (e) {}
 })();
 </script>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>
 

@@ -962,6 +962,8 @@ function hideSidePanel() {
   if (!sidePaneEl) return;
   sidePaneEl.classList.remove("visible");
   document.body.classList.remove("news-panel-open");
+  delete sidePaneEl.dataset.sidePaneKind;
+  document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
   window.setTimeout(() => {
     if (!sidePaneEl.classList.contains("visible")) {
       sidePaneEl.hidden = true;
@@ -1122,6 +1124,8 @@ function renderMediaTabsPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
 
+  document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+
   const results = Array.isArray(payload?.news_results)
     ? payload.news_results
     : Array.isArray(payload?.results)
@@ -1132,6 +1136,7 @@ function renderMediaTabsPanel(payload) {
   const defaultTab = payload?.default_tab || "news";
 
   sidePaneEl.hidden = false;
+  delete sidePaneEl.dataset.sidePaneKind;
   document.body.classList.add("news-panel-open");
 
   sidePaneEl.innerHTML = `
@@ -1170,11 +1175,15 @@ function renderMediaTabsPanel(payload) {
 function renderFinanceChartPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
+
+  document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+
   const frameSrc = payload?.chart_url
     ? (payload.chart_url.startsWith("/") ? `${API_URL}${payload.chart_url}` : payload.chart_url)
     : "";
 
   sidePaneEl.hidden = false;
+  delete sidePaneEl.dataset.sidePaneKind;
   document.body.classList.add("news-panel-open");
 
   sidePaneEl.innerHTML = `
@@ -1213,6 +1222,166 @@ function renderFinanceChartPanel(payload) {
     sidePaneEl.classList.add("visible");
   });
 }
+
+function spotifyFormatArtists(item) {
+  const a = item?.artist ?? item?.artists;
+  if (Array.isArray(a)) {
+    return a
+      .map((x) => (typeof x === "string" ? x : x?.name))
+      .filter(Boolean)
+      .join(", ");
+  }
+  return a != null ? String(a) : "";
+}
+
+function renderSpotifySearchResults(prefix, items) {
+  const resultsEl = document.getElementById(`${prefix}-spotify-results`);
+  if (!resultsEl) return;
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
+    resultsEl.innerHTML = `<p class="spotify-results-hint">No results. Implement <code>window.VeraSpotify.searchTracks(q)</code> to return tracks from the Spotify Web API.</p>`;
+    return;
+  }
+  resultsEl.innerHTML = list
+    .map((item, i) => {
+      const title = escapeHtml(item.title ?? item.name ?? "Track");
+      const artist = escapeHtml(spotifyFormatArtists(item));
+      const uri = item.uri != null ? escapeHtml(String(item.uri)) : "";
+      const img = item.imageUrl ?? item.image ?? item.album?.images?.[0]?.url ?? "";
+      const thumb = img
+        ? `<img class="spotify-result-thumb" src="${escapeHtml(img)}" alt="" loading="lazy" />`
+        : `<div class="spotify-result-thumb" aria-hidden="true"></div>`;
+      return `
+        <button type="button" class="spotify-result-row" data-spotify-uri="${uri}" data-spotify-index="${i}">
+          ${thumb}
+          <div class="spotify-result-text">
+            <div class="spotify-result-title">${title}</div>
+            <div class="spotify-result-sub">${artist}</div>
+          </div>
+        </button>`;
+    })
+    .join("");
+}
+
+function wireProductivityPanelEvents(prefix) {
+  const form = document.getElementById(`${prefix}-spotify-search-form`);
+  const input = document.getElementById(`${prefix}-spotify-search-input`);
+  const resultsEl = document.getElementById(`${prefix}-spotify-results`);
+  form?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const q = String(input?.value || "").trim();
+    if (!q || !resultsEl) return;
+    resultsEl.innerHTML = `<p class="spotify-results-hint">Searching…</p>`;
+    const fn = window.VeraSpotify?.searchTracks;
+    if (typeof fn !== "function") {
+      resultsEl.innerHTML = `<p class="spotify-results-hint">Set <code>window.VeraSpotify.searchTracks</code> to a function that returns Spotify results.</p>`;
+      return;
+    }
+    try {
+      const items = await fn(q);
+      renderSpotifySearchResults(prefix, items);
+    } catch (err) {
+      resultsEl.innerHTML = `<p class="spotify-results-error">${escapeHtml(String(err?.message ?? err))}</p>`;
+    }
+  });
+
+  document.getElementById(`${prefix}-spotify-results`)?.addEventListener("click", (e) => {
+    const row = e.target instanceof HTMLElement ? e.target.closest(".spotify-result-row") : null;
+    if (!row) return;
+    const uri = row.dataset.spotifyUri || "";
+    const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
+    const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+    const title = row.querySelector(".spotify-result-title")?.textContent ?? "";
+    const artist = row.querySelector(".spotify-result-sub")?.textContent ?? "";
+    if (titleEl) titleEl.textContent = title || "—";
+    if (artistEl) artistEl.textContent = artist || "";
+    const play = window.VeraSpotify?.playTrack;
+    if (typeof play === "function" && uri) {
+      play(uri, { title, artist }).catch(() => {});
+    }
+  });
+
+  const playBtn = document.getElementById(`${prefix}-spotify-play`);
+  playBtn?.addEventListener("click", () => {
+    const toggle = window.VeraSpotify?.togglePlayback;
+    if (typeof toggle === "function") toggle().catch(() => {});
+  });
+}
+
+function renderProductivityPanel() {
+  const sidePaneEl = uiEl("side-pane");
+  if (!sidePaneEl) return;
+  const prefix = appModePrefix();
+
+  sidePaneEl.hidden = false;
+  sidePaneEl.dataset.sidePaneKind = "productivity";
+  document.body.classList.add("news-panel-open");
+
+  sidePaneEl.innerHTML = `
+    <div class="side-pane-header">
+      <div class="side-pane-heading">
+        <h3 class="side-pane-title">Productivity</h3>
+        <div class="side-pane-subtitle spotify-brand">Music</div>
+      </div>
+      <div class="side-pane-controls">
+        <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
+      </div>
+    </div>
+    <div class="spotify-panel-body" data-productivity-root="${prefix}">
+      <div class="spotify-now-playing">
+        <div class="spotify-art-placeholder" aria-hidden="true"></div>
+        <div class="spotify-track-meta">
+          <div class="spotify-track-title" id="${prefix}-spotify-track-title">Nothing playing</div>
+          <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Add Spotify API credentials, then implement <code>window.VeraSpotify</code> in app.js.</div>
+        </div>
+        <div class="spotify-transport">
+          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-prev" aria-label="Previous" disabled>⏮</button>
+          <button type="button" class="spotify-transport-btn spotify-play-btn" id="${prefix}-spotify-play" aria-label="Play / pause">▶</button>
+          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-next" aria-label="Next" disabled>⏭</button>
+        </div>
+      </div>
+      <form class="spotify-search-form" id="${prefix}-spotify-search-form">
+        <input type="search" class="spotify-search-input" id="${prefix}-spotify-search-input" placeholder="Search tracks, artists, albums…" autocomplete="off" />
+        <button type="submit" class="spotify-search-submit">Search</button>
+      </form>
+      <div class="spotify-results" id="${prefix}-spotify-results" role="listbox" aria-label="Search results">
+        <p class="spotify-results-hint">Wire <code>window.VeraSpotify.searchTracks(q)</code> to the Spotify Web API (Client Credentials or user auth). Use <code>playTrack(uri)</code> when a row is clicked.</p>
+      </div>
+      <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
+    </div>
+  `;
+
+  sidePaneEl.scrollTop = 0;
+  requestAnimationFrame(() => {
+    sidePaneEl.classList.add("visible");
+  });
+  wireProductivityPanelEvents(prefix);
+}
+
+function toggleProductivityPanel() {
+  const sidePaneEl = uiEl("side-pane");
+  if (!sidePaneEl) return;
+  const prefix = appModePrefix();
+  const btn = document.getElementById(`${prefix}-productivity-mode`);
+  if (!sidePaneEl.hidden && sidePaneEl.dataset.sidePaneKind === "productivity") {
+    hideSidePanel();
+    return;
+  }
+  document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+  renderProductivityPanel();
+  btn?.classList.add("is-active");
+}
+
+function wireProductivityModeButtons() {
+  document.getElementById("vera-productivity-mode")?.addEventListener("click", () => {
+    toggleProductivityPanel();
+  });
+  document.getElementById("bmo-productivity-mode")?.addEventListener("click", () => {
+    toggleProductivityPanel();
+  });
+}
+
+wireProductivityModeButtons();
 
 function onSidePaneClick(event) {
   const target = event.target;
@@ -4380,3 +4549,16 @@ function wireVeraUserSignInHoldAndModal() {
 
 wireVeraUserSignInHoldAndModal();
 refreshVeraActiveUserLabel();
+
+/**
+ * Productivity / Spotify panel — implement these when you add Spotify Web API credentials.
+ * searchTracks: return [{ name, uri, artists|artist, imageUrl?, album? }]
+ * playTrack: start playback for spotify:track:… (Web Playback SDK or Connect API require user auth).
+ */
+window.VeraSpotify = {
+  async searchTracks(/* query */) {
+    return [];
+  },
+  async playTrack(/* uri, meta */) {},
+  async togglePlayback() {}
+};
