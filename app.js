@@ -1436,6 +1436,15 @@ async function refreshSpotifyPanelAfterOAuthInOtherTab() {
   if (st.connected) await ensureSpotifyWebPlayer(prefix);
 }
 
+async function waitForSpotifyDeviceId(maxMs = 20000) {
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    if (window.__veraSpotifyDeviceId) return true;
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return false;
+}
+
 async function ensureSpotifyWebPlayer(prefix) {
   const base = localBackendBase();
   const tokRes = await fetch(`${base}/api/spotify/player-token`, {
@@ -1471,10 +1480,14 @@ async function ensureSpotifyWebPlayer(prefix) {
     volume: 0.85
   });
 
-  player.addListener("ready", ({ device_id }) => {
-    window.__veraSpotifyDeviceId = device_id;
-    window.__veraSpotifyPlayer = player;
-    /* Prev/next stay disabled until we implement a playback queue. */
+  const readyPromise = new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("Spotify Web Playback ready timeout")), 28000);
+    player.addListener("ready", ({ device_id }) => {
+      clearTimeout(t);
+      window.__veraSpotifyDeviceId = device_id;
+      window.__veraSpotifyPlayer = player;
+      resolve(device_id);
+    });
   });
   player.addListener("not_ready", () => {
     window.__veraSpotifyDeviceId = null;
@@ -1509,6 +1522,12 @@ async function ensureSpotifyWebPlayer(prefix) {
   const connected = await player.connect();
   if (!connected) {
     console.warn("[Spotify] player.connect returned false (Premium / browser restrictions?)");
+    return;
+  }
+  try {
+    await readyPromise;
+  } catch (e) {
+    console.warn("[Spotify]", e?.message || e);
   }
 }
 
@@ -4966,6 +4985,19 @@ window.VeraSpotify = {
     };
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+
+    if (uri && !window.__veraSpotifyDeviceId) {
+      const st = await fetch(`${base}/api/spotify/connection-status`, {
+        credentials: "include",
+        headers: { ...veraSpotifyAuthHeaders() }
+      })
+        .then((r) => (r.ok ? r.json() : { connected: false }))
+        .catch(() => ({ connected: false }));
+      if (st.connected) {
+        await ensureSpotifyWebPlayer(prefix);
+        await waitForSpotifyDeviceId(22000);
+      }
+    }
 
     if (uri && window.__veraSpotifyDeviceId) {
       const res = await fetch(`${base}/api/spotify/player/play`, {
