@@ -2097,15 +2097,22 @@ function renderProductivityPanel() {
         </div>
       </div>
       <div class="spotify-playlist-view" id="${prefix}-spotify-playlist-view" hidden>
-        <div class="spotify-playlist-actions">
-          <button type="button" class="spotify-search-submit spotify-playlist-play-btn" id="${prefix}-spotify-playlist-play" disabled>Play Playlist</button>
-        </div>
-        <div class="spotify-results" id="${prefix}-spotify-playlists" role="listbox" aria-label="Your playlists">
-          <p class="spotify-results-hint">Select a playlist to load its songs.</p>
-        </div>
-        <div class="spotify-playlist-selected" id="${prefix}-spotify-playlist-selected">No playlist selected.</div>
-        <div class="spotify-results" id="${prefix}-spotify-playlist-tracks" role="listbox" aria-label="Playlist tracks">
-          <p class="spotify-results-hint">Choose a playlist above to see tracks.</p>
+        <div class="spotify-playlist-layout">
+          <div class="spotify-playlist-tracks-pane">
+            <div class="spotify-playlist-pane-title">Songs</div>
+            <div class="spotify-results" id="${prefix}-spotify-playlist-tracks" role="listbox" aria-label="Playlist tracks">
+              <p class="spotify-results-hint">Choose a playlist to see tracks.</p>
+            </div>
+          </div>
+          <div class="spotify-playlist-list-pane">
+            <div class="spotify-playlist-actions">
+              <button type="button" class="spotify-search-submit spotify-playlist-play-btn" id="${prefix}-spotify-playlist-play" disabled>Play Playlist</button>
+            </div>
+            <div class="spotify-results" id="${prefix}-spotify-playlists" role="listbox" aria-label="Your playlists">
+              <p class="spotify-results-hint">Select a playlist to load its songs.</p>
+            </div>
+            <div class="spotify-playlist-selected" id="${prefix}-spotify-playlist-selected">No playlist selected.</div>
+          </div>
         </div>
       </div>
       <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
