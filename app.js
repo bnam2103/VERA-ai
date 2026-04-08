@@ -2270,6 +2270,25 @@ function applyActionPayload(data) {
 
   if (payload?.panel_type === "music_control") {
     const prefix = appModePrefix();
+    const op = payload.op || "open_panel";
+    if (op === "close_panel") {
+      hideSidePanel();
+      return;
+    }
+    if (op === "pause") {
+      const pause = window.VeraSpotify?.pausePlayback;
+      if (typeof pause === "function") void pause();
+      return;
+    }
+    if (op === "volume_delta") {
+      const cur = typeof window.VeraSpotify?.getVolume === "function"
+        ? window.VeraSpotify.getVolume()
+        : spotifyGetVolume();
+      const setVolume = window.VeraSpotify?.setVolume;
+      const next = Math.max(0, Math.min(1, Number(cur) + (Number(payload.delta) || 0)));
+      if (typeof setVolume === "function") void setVolume(next);
+      return;
+    }
     const sidePaneEl = uiEl("side-pane");
     if (sidePaneEl) {
       const hasProductivityMarkup =
@@ -2282,7 +2301,6 @@ function applyActionPayload(data) {
       }
       document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
     }
-    const op = payload.op || "open_panel";
     if (op === "play_track" && payload.uri) {
       const play = window.VeraSpotify?.playTrack;
       if (typeof play === "function") {
@@ -5862,6 +5880,31 @@ window.VeraSpotify = {
     const slider = document.getElementById(`${prefix}-spotify-volume`);
     if (slider && document.activeElement !== slider) {
       slider.value = String(Math.round(v * 100));
+    }
+  },
+  getVolume() {
+    return spotifyGetVolume();
+  },
+  async pausePlayback() {
+    const prefix = appModePrefix();
+    const web = window.__veraSpotifyPlayer;
+    if (web && typeof web.pause === "function") {
+      await web.pause();
+      spotifyUpdateNowState({ paused: true, active: false });
+      spotifyApplyNowStateToPanel(prefix);
+      return;
+    }
+    const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
+    if (audio) {
+      audio.pause();
+      spotifySyncPlayButtonUi(prefix);
+      spotifyUpdateNowState({
+        position_ms: Math.round((audio.currentTime || 0) * 1000),
+        duration_ms: Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : 0,
+        paused: true,
+        active: false
+      });
+      spotifyApplyNowStateToPanel(prefix);
     }
   }
 };
