@@ -967,7 +967,7 @@ function hideSidePanel() {
   if (!sidePaneEl) return;
   const prefix = appModePrefix();
   const isProductivityPane = sidePaneEl.dataset.sidePaneKind === "productivity";
-  const keepProductivityMounted = isProductivityPane && isSpotifyPlaybackActive(prefix);
+  const keepProductivityMounted = isProductivityPane && shouldKeepMusicPanelMounted(prefix);
   sidePaneEl.classList.remove("visible");
   document.body.classList.remove("news-panel-open");
   if (!keepProductivityMounted) {
@@ -1016,6 +1016,71 @@ function isSpotifyPlaybackActive(prefix) {
   const previewAudio = document.getElementById(`${prefix}-spotify-preview-audio`);
   if (previewAudio && !previewAudio.paused && previewAudio.currentTime > 0) return true;
   return window.__veraSpotifyPlaybackActive === true;
+}
+
+/** Keep music DOM when paused so preview/Web position is not lost on panel close. */
+function shouldKeepMusicPanelMounted(prefix) {
+  if (isSpotifyPlaybackActive(prefix)) return true;
+  const previewAudio = document.getElementById(`${prefix}-spotify-preview-audio`);
+  if (previewAudio?.src && !previewAudio.ended) return true;
+  const s = spotifyEnsureNowState();
+  if (window.__veraSpotifyPlayer && (s.duration_ms > 0 || s.title)) return true;
+  return false;
+}
+
+function persistSpotifyResumePreview(prefix) {
+  const last = window.__veraSpotifyLast || {};
+  if (!last.preview_url) return;
+  const a = document.getElementById(`${prefix}-spotify-preview-audio`);
+  if (!a?.src || a.ended) return;
+  window.__veraSpotifyResume = {
+    preview_url: last.preview_url,
+    currentTimeSec: a.currentTime || 0,
+    paused: !!a.paused
+  };
+}
+
+async function restoreSpotifyPlaybackAfterPanelRemount(prefix) {
+  const resume = window.__veraSpotifyResume;
+  const last = window.__veraSpotifyLast || {};
+  const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
+
+  if (resume?.preview_url && last.preview_url === resume.preview_url && audio) {
+    audio.volume = spotifyGetVolume();
+    const targetSec = Math.max(0, Number(resume.currentTimeSec) || 0);
+    const applySeek = () => {
+      const dur = audio.duration;
+      if (Number.isFinite(dur) && dur > 0) {
+        audio.currentTime = Math.min(targetSec, Math.max(0, dur - 0.05));
+      } else {
+        audio.currentTime = targetSec;
+      }
+    };
+    audio.src = resume.preview_url;
+    if (audio.readyState >= 1) applySeek();
+    else audio.addEventListener("loadedmetadata", applySeek, { once: true });
+    spotifyUpdateNowState({
+      title: last.title || "",
+      artist: last.artist || "",
+      position_ms: Math.round(targetSec * 1000),
+      duration_ms: spotifyEnsureNowState().duration_ms,
+      paused: !!resume.paused,
+      active: !resume.paused
+    });
+    spotifySyncPlayButtonUi(prefix);
+    spotifyApplyNowStateToPanel(prefix);
+  }
+
+  const wr = window.__veraSpotifyResumeWeb;
+  const web = window.__veraSpotifyPlayer;
+  if (web && wr && typeof web.seek === "function" && Number(wr.position_ms) > 0) {
+    try {
+      await web.seek(Math.floor(Number(wr.position_ms)));
+    } catch (_) {
+      /* ignore */
+    }
+    spotifyApplyNowStateToPanel(prefix);
+  }
 }
 
 function restoreProductivityPanel(prefix) {
@@ -1672,6 +1737,9 @@ async function waitForSpotifyDeviceId(maxMs = 20000) {
 
 async function ensureSpotifyWebPlayer(prefix) {
   const base = localBackendBase();
+  if (window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId) {
+    return;
+  }
   const tokRes = await fetch(`${base}/api/spotify/player-token`, {
     credentials: "include",
     headers: { ...veraSpotifyAuthHeaders() }
@@ -1740,6 +1808,10 @@ async function ensureSpotifyWebPlayer(prefix) {
       window.__veraSpotifyPlaybackActive = !state.paused;
       if (state.paused) removeSpotifyMiniButton(prefix);
       spotifyApplyNowStateToPanel(prefix);
+      window.__veraSpotifyResumeWeb = {
+        position_ms: Number(state.position) || 0,
+        paused: !!state.paused
+      };
     }
     const playBtn = document.getElementById(`${prefix}-spotify-play`);
     if (playBtn) {
@@ -1951,6 +2023,8 @@ function wireProductivityPanelEvents(prefix) {
     window.__veraSpotifyPlayer = null;
     window.__veraSpotifyDeviceId = null;
     window.__veraSpotifyPlaybackActive = false;
+    window.__veraSpotifyResume = null;
+    window.__veraSpotifyResumeWeb = null;
     spotifyUpdateNowState({
       title: "",
       artist: "",
@@ -1975,6 +2049,11 @@ function wireProductivityPanelEvents(prefix) {
       if (!window.__veraSpotifyPlaybackActive) {
         removeSpotifyMiniButton(prefix);
       }
+      if (previewAudio.ended) {
+        window.__veraSpotifyResume = null;
+      } else {
+        persistSpotifyResumePreview(prefix);
+      }
       spotifyUpdateNowState({
         position_ms: Math.round((previewAudio.currentTime || 0) * 1000),
         duration_ms: Number.isFinite(previewAudio.duration) ? Math.round(previewAudio.duration * 1000) : 0,
@@ -1984,6 +2063,7 @@ function wireProductivityPanelEvents(prefix) {
       spotifyApplyNowStateToPanel(prefix);
     };
     const onPreviewTime = () => {
+      persistSpotifyResumePreview(prefix);
       spotifyUpdateNowState({
         position_ms: Math.round((previewAudio.currentTime || 0) * 1000),
         duration_ms: Number.isFinite(previewAudio.duration) ? Math.round(previewAudio.duration * 1000) : 0
@@ -2022,7 +2102,7 @@ function wireProductivityPanelEvents(prefix) {
     volume.addEventListener("change", onVolumeInput);
   }
 
-  void initSpotifyPlaybackForPanel(prefix);
+  void initSpotifyPlaybackForPanel(prefix).then(() => restoreSpotifyPlaybackAfterPanelRemount(prefix));
   spotifyApplyViewMode(prefix);
   spotifyApplyNowStateToPanel(prefix);
 }
@@ -5724,6 +5804,10 @@ window.VeraSpotify = {
     if (web) {
       await web.seek(ms);
       spotifyUpdateNowState({ position_ms: ms });
+      window.__veraSpotifyResumeWeb = {
+        ...(window.__veraSpotifyResumeWeb || {}),
+        position_ms: ms
+      };
       spotifyApplyNowStateToPanel(prefix);
       return;
     }
@@ -5732,6 +5816,7 @@ window.VeraSpotify = {
       const sec = ms / 1000;
       audio.currentTime = Number.isFinite(sec) ? sec : 0;
       spotifyUpdateNowState({ position_ms: Math.round((audio.currentTime || 0) * 1000) });
+      persistSpotifyResumePreview(prefix);
       spotifyApplyNowStateToPanel(prefix);
     }
   },
