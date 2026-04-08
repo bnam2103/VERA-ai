@@ -347,6 +347,11 @@ function logVoiceTranscript(phase, text, meta = {}) {
   console.log("[VOICE][TRANSCRIPT]", { phase, ...meta, text: text ?? "" });
 }
 
+function logFinalTranscriptSentToLlm(path, text) {
+  if (!voiceTranscriptDebugEnabled()) return;
+  console.log("[VOICE][LLM-INPUT]", { path, text: text ?? "" });
+}
+
 function beginTextUxTurn() {
   textUxTurn = {
     sendAt: performance.now(),
@@ -960,16 +965,71 @@ function escapeHtml(text) {
 function hideSidePanel() {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
+  const prefix = appModePrefix();
+  const isProductivityPane = sidePaneEl.dataset.sidePaneKind === "productivity";
+  const keepProductivityMounted = isProductivityPane && isSpotifyPlaybackActive(prefix);
   sidePaneEl.classList.remove("visible");
   document.body.classList.remove("news-panel-open");
-  delete sidePaneEl.dataset.sidePaneKind;
+  if (!keepProductivityMounted) {
+    delete sidePaneEl.dataset.sidePaneKind;
+  } else {
+    upsertSpotifyMiniButton(prefix);
+  }
   document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
   window.setTimeout(() => {
     if (!sidePaneEl.classList.contains("visible")) {
       sidePaneEl.hidden = true;
-      sidePaneEl.innerHTML = "";
+      if (!keepProductivityMounted) {
+        sidePaneEl.innerHTML = "";
+      }
     }
   }, 840);
+}
+
+function spotifyMiniToggleId(prefix) {
+  return `${prefix}-spotify-mini-toggle`;
+}
+
+function removeSpotifyMiniButton(prefix) {
+  document.getElementById(spotifyMiniToggleId(prefix))?.remove();
+}
+
+function upsertSpotifyMiniButton(prefix) {
+  let btn = document.getElementById(spotifyMiniToggleId(prefix));
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.id = spotifyMiniToggleId(prefix);
+    btn.type = "button";
+    btn.className = "spotify-mini-toggle";
+    btn.textContent = "♪";
+    btn.setAttribute("aria-label", "Restore music panel");
+    btn.title = "Restore music panel";
+    btn.addEventListener("click", () => {
+      restoreProductivityPanel(prefix);
+    });
+    document.body.appendChild(btn);
+  }
+  btn.hidden = false;
+}
+
+function isSpotifyPlaybackActive(prefix) {
+  const previewAudio = document.getElementById(`${prefix}-spotify-preview-audio`);
+  if (previewAudio && !previewAudio.paused && previewAudio.currentTime > 0) return true;
+  return window.__veraSpotifyPlaybackActive === true;
+}
+
+function restoreProductivityPanel(prefix) {
+  const sidePaneEl = uiEl("side-pane");
+  if (!sidePaneEl) return;
+  removeSpotifyMiniButton(prefix);
+  sidePaneEl.hidden = false;
+  sidePaneEl.dataset.sidePaneKind = "productivity";
+  document.body.classList.add("news-panel-open");
+  document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+  document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
+  requestAnimationFrame(() => {
+    sidePaneEl.classList.add("visible");
+  });
 }
 
 function renderNewsResultListMarkup(results) {
@@ -1499,6 +1559,10 @@ async function ensureSpotifyWebPlayer(prefix) {
     console.warn("[Spotify] Web Playback playback_error", message);
   });
   player.addListener("player_state_changed", (state) => {
+    window.__veraSpotifyPlaybackActive = !!(state?.track_window?.current_track && !state.paused);
+    if (!window.__veraSpotifyPlaybackActive) {
+      removeSpotifyMiniButton(prefix);
+    }
     const playBtn = document.getElementById(`${prefix}-spotify-play`);
     if (playBtn) {
       if (!state?.track_window?.current_track) {
@@ -1618,6 +1682,8 @@ function wireProductivityPanelEvents(prefix) {
     }
     window.__veraSpotifyPlayer = null;
     window.__veraSpotifyDeviceId = null;
+    window.__veraSpotifyPlaybackActive = false;
+    removeSpotifyMiniButton(prefix);
     await refreshSpotifyConnectionUI(prefix);
   });
 
@@ -1626,7 +1692,13 @@ function wireProductivityPanelEvents(prefix) {
   const previewAudio = document.getElementById(`${prefix}-spotify-preview-audio`);
   if (previewAudio && !previewAudio.dataset.veraSpotifyPlayUiWired) {
     previewAudio.dataset.veraSpotifyPlayUiWired = "1";
-    const onPreviewPlayState = () => spotifySyncPlayButtonUi(prefix);
+    const onPreviewPlayState = () => {
+      spotifySyncPlayButtonUi(prefix);
+      window.__veraSpotifyPlaybackActive = !previewAudio.paused && previewAudio.currentTime > 0;
+      if (!window.__veraSpotifyPlaybackActive) {
+        removeSpotifyMiniButton(prefix);
+      }
+    };
     previewAudio.addEventListener("play", onPreviewPlayState);
     previewAudio.addEventListener("pause", onPreviewPlayState);
     previewAudio.addEventListener("ended", onPreviewPlayState);
@@ -1687,6 +1759,7 @@ function renderProductivityPanel() {
   requestAnimationFrame(() => {
     sidePaneEl.classList.add("visible");
   });
+  removeSpotifyMiniButton(prefix);
   wireProductivityPanelEvents(prefix);
 }
 
@@ -1695,6 +1768,10 @@ function toggleProductivityPanel() {
   if (!sidePaneEl) return;
   const prefix = appModePrefix();
   const btn = document.getElementById(`${prefix}-productivity-mode`);
+  if (sidePaneEl.hidden && sidePaneEl.dataset.sidePaneKind === "productivity" && sidePaneEl.innerHTML.trim()) {
+    restoreProductivityPanel(prefix);
+    return;
+  }
   if (!sidePaneEl.hidden && sidePaneEl.dataset.sidePaneKind === "productivity") {
     hideSidePanel();
     return;
@@ -3600,6 +3677,7 @@ async function finalizeMainBrowserTranscript(text) {
   formData.append("stream_tts", STREAM_TTS ? "1" : "0");
 
   logVoiceTranscript("final", trimmed, { path: "main-browser-asr" });
+  logFinalTranscriptSentToLlm("main-browser-asr", trimmed);
   await runInferMainPipeline(formData);
 }
 
@@ -3974,6 +4052,7 @@ async function finalizeInterruptBrowserTranscript(text) {
   formData.append("stream_tts", STREAM_TTS ? "1" : "0");
 
   logVoiceTranscript("final", trimmed, { path: "interrupt-browser-asr" });
+  logFinalTranscriptSentToLlm("interrupt-browser-asr", trimmed);
   await runInferInterruptPipeline(formData);
 }
 
@@ -4554,6 +4633,7 @@ async function onPttClick() {
     formData.append("mode", "ptt");
     formData.append("stream_tts", STREAM_TTS ? "1" : "0");
     logVoiceTranscript("final", text, { path: "ptt-browser-asr" });
+    logFinalTranscriptSentToLlm("ptt-browser-asr", text);
     void runInferMainPipeline(formData);
     return;
   }

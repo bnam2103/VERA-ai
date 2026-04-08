@@ -2524,6 +2524,37 @@ body.chat-started .input-container {
   box-shadow: 0 0 0 1px rgba(30, 215, 96, 0.25);
 }
 
+.spotify-mini-toggle {
+  position: fixed;
+  right: 22px;
+  bottom: 74px;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid rgba(30, 215, 96, 0.45);
+  background: rgba(30, 215, 96, 0.2);
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 22px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  z-index: 951;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  transition: transform 0.16s ease, background 0.18s ease, border-color 0.18s ease;
+}
+
+.spotify-mini-toggle:hover {
+  transform: translateY(-1px);
+  background: rgba(30, 215, 96, 0.3);
+  border-color: rgba(30, 215, 96, 0.62);
+}
+
+.spotify-mini-toggle:active {
+  transform: scale(0.97);
+}
+
 /* Signed-in user name (POST /api/user/sign-in) */
 .vera-active-user-label {
   font-size: 13px;
@@ -3644,6 +3675,9 @@ body.chat-started .vera-guide {
 
   /* Floating Music / productivity — hidden on phone (no room + avoids overlap) */
   .productivity-mode-btn {
+    display: none;
+  }
+  .spotify-mini-toggle {
     display: none;
   }
 
