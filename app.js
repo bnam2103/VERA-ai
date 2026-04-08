@@ -2268,6 +2268,35 @@ function applyActionPayload(data) {
     return;
   }
 
+  if (payload?.panel_type === "music_control") {
+    const prefix = appModePrefix();
+    const sidePaneEl = uiEl("side-pane");
+    if (sidePaneEl) {
+      const hasProductivityMarkup =
+        Boolean(sidePaneEl.innerHTML.trim()) && sidePaneEl.dataset.sidePaneKind === "productivity";
+      document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+      if (hasProductivityMarkup) {
+        if (sidePaneEl.hidden) restoreProductivityPanel(prefix);
+      } else {
+        renderProductivityPanel();
+      }
+      document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
+    }
+    const op = payload.op || "open_panel";
+    if (op === "play_track" && payload.uri) {
+      const play = window.VeraSpotify?.playTrack;
+      if (typeof play === "function") {
+        void play(String(payload.uri), {
+          title: payload.title || "",
+          artist: payload.artist || "",
+          preview_url: payload.preview_url || "",
+          open_url: payload.open_url || ""
+        });
+      }
+    }
+    return;
+  }
+
   /* Keep the music panel open across normal assistant replies unless a new panel payload replaces it. */
   const sidePaneEl = uiEl("side-pane");
   if (
