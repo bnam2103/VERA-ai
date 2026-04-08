@@ -2577,6 +2577,26 @@ body.chat-started .input-container {
   gap: 14px;
 }
 
+.spotify-view-toggle {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.spotify-view-tab {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.spotify-view-tab.active {
+  border-color: rgba(30, 215, 96, 0.5);
+  background: rgba(30, 215, 96, 0.22);
+}
+
 .spotify-now-playing {
   display: flex;
   flex-wrap: wrap;
@@ -2646,6 +2666,7 @@ body.chat-started .input-container {
   gap: 6px;
   width: 100%;
   justify-content: center;
+  flex-wrap: wrap;
 }
 
 .spotify-transport-btn {
@@ -2674,6 +2695,25 @@ body.chat-started .input-container {
   height: 48px;
   background: rgba(30, 215, 96, 0.25);
   border-color: rgba(30, 215, 96, 0.4);
+}
+
+.spotify-volume-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  padding: 0 6px;
+}
+
+.spotify-volume-icon {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.spotify-volume {
+  width: 96px;
+  accent-color: #1ed760;
+  cursor: pointer;
 }
 
 .spotify-search-form {
@@ -2720,6 +2760,21 @@ body.chat-started .input-container {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.spotify-playlist-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.spotify-playlist-play-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.spotify-playlist-selected {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.68);
 }
 
 .spotify-results-hint {
@@ -4046,6 +4101,27 @@ body.bmo-open .side-pane-close:hover {
   background: rgba(24, 49, 39, 0.1);
   color: #0a1f16;
   border-color: rgba(24, 49, 39, 0.32);
+}
+
+body.bmo-open .spotify-brand,
+body.bmo-open .spotify-track-title,
+body.bmo-open .spotify-result-title,
+body.bmo-open .spotify-playlist-selected {
+  color: #0f2e22 !important;
+}
+
+body.bmo-open .spotify-track-artist,
+body.bmo-open .spotify-time-text,
+body.bmo-open .spotify-results-hint,
+body.bmo-open .spotify-result-sub {
+  color: rgba(24, 49, 39, 0.78);
+}
+
+body.bmo-open .spotify-view-tab,
+body.bmo-open .spotify-transport-btn {
+  color: #142822;
+  border-color: rgba(24, 49, 39, 0.22);
+  background: rgba(255, 255, 255, 0.45);
 }
 
 body.bmo-open .news-result-card {
