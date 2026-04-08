@@ -4124,6 +4124,60 @@ body.bmo-open .spotify-transport-btn {
   background: rgba(255, 255, 255, 0.45);
 }
 
+/* BMO music panel: match chat-log palette (light cards + dark-green text). */
+body.bmo-open .spotify-panel-body {
+  color: #142822;
+}
+
+body.bmo-open .spotify-now-playing {
+  background: rgba(24, 49, 39, 0.22);
+  border-color: rgba(24, 49, 39, 0.14);
+}
+
+body.bmo-open .spotify-connect-link,
+body.bmo-open .spotify-connected-badge,
+body.bmo-open .spotify-volume-icon {
+  color: #0f2e22;
+}
+
+body.bmo-open .spotify-search-input {
+  background: rgba(24, 49, 39, 0.26);
+  border-color: rgba(24, 49, 39, 0.18);
+  color: #142822;
+}
+
+body.bmo-open .spotify-search-input::placeholder {
+  color: rgba(24, 49, 39, 0.6);
+}
+
+body.bmo-open .spotify-search-submit {
+  background: rgba(205, 255, 215, 0.85);
+  border-color: rgba(24, 49, 39, 0.25);
+  color: #123526;
+}
+
+body.bmo-open .spotify-search-submit:hover {
+  background: rgba(177, 246, 191, 0.95);
+}
+
+body.bmo-open .spotify-results {
+  background: rgba(255, 255, 255, 0.36);
+  border: 1px solid rgba(24, 49, 39, 0.1);
+  border-radius: 14px;
+  padding: 6px;
+}
+
+body.bmo-open .spotify-result-row {
+  background: rgba(255, 255, 255, 0.62);
+  border-color: rgba(24, 49, 39, 0.1);
+  color: #132e23;
+}
+
+body.bmo-open .spotify-result-row:hover {
+  background: rgba(199, 237, 208, 0.8);
+  border-color: rgba(24, 49, 39, 0.18);
+}
+
 body.bmo-open .news-result-card {
   background: rgba(255, 255, 255, 0.42);
   border-color: rgba(24, 49, 39, 0.12);
