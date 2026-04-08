@@ -2619,6 +2619,27 @@ body.chat-started .input-container {
   text-overflow: ellipsis;
 }
 
+.spotify-progress-wrap {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.spotify-time-text {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.62);
+  min-width: 32px;
+  text-align: center;
+}
+
+.spotify-progress {
+  width: 100%;
+  accent-color: #1ed760;
+  cursor: pointer;
+}
+
 .spotify-transport {
   display: flex;
   align-items: center;

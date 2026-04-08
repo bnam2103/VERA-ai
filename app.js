@@ -1424,6 +1424,71 @@ function spotifySyncPlayButtonUi(prefix) {
   playBtn.setAttribute("aria-label", audio.paused ? "Play" : "Pause");
 }
 
+function spotifyFormatTimeMs(ms) {
+  const total = Math.max(0, Number(ms) || 0);
+  const s = Math.floor(total / 1000);
+  const m = Math.floor(s / 60);
+  const sec = String(s % 60).padStart(2, "0");
+  return `${m}:${sec}`;
+}
+
+function spotifyEnsureNowState() {
+  if (!window.__veraSpotifyNowState) {
+    window.__veraSpotifyNowState = {
+      title: "",
+      artist: "",
+      cover_url: "",
+      position_ms: 0,
+      duration_ms: 0,
+      paused: true,
+      active: false
+    };
+  }
+  return window.__veraSpotifyNowState;
+}
+
+function spotifyUpdateNowState(partial = {}) {
+  const cur = spotifyEnsureNowState();
+  window.__veraSpotifyNowState = { ...cur, ...partial };
+  return window.__veraSpotifyNowState;
+}
+
+function spotifyApplyNowStateToPanel(prefix) {
+  const s = spotifyEnsureNowState();
+  const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
+  const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+  const ph = document.getElementById(`${prefix}-spotify-art-placeholder`);
+  const progress = document.getElementById(`${prefix}-spotify-progress`);
+  const elapsed = document.getElementById(`${prefix}-spotify-time-elapsed`);
+  const total = document.getElementById(`${prefix}-spotify-time-total`);
+  const playBtn = document.getElementById(`${prefix}-spotify-play`);
+
+  if (titleEl) titleEl.textContent = s.title || "Nothing playing";
+  if (artistEl) {
+    artistEl.textContent =
+      s.artist ||
+      "Connect Spotify for in-browser playback, or use search + preview / Open in Spotify.";
+  }
+  if (ph && s.cover_url) {
+    ph.style.backgroundImage = `url(${JSON.stringify(s.cover_url)})`;
+    ph.style.backgroundSize = "cover";
+  }
+  if (elapsed) elapsed.textContent = spotifyFormatTimeMs(s.position_ms);
+  if (total) total.textContent = spotifyFormatTimeMs(s.duration_ms);
+  if (progress) {
+    const duration = Math.max(0, Number(s.duration_ms) || 0);
+    progress.max = String(duration);
+    if (document.activeElement !== progress) {
+      progress.value = String(Math.min(duration, Math.max(0, Number(s.position_ms) || 0)));
+    }
+    progress.disabled = duration <= 0;
+  }
+  if (playBtn) {
+    playBtn.textContent = s.paused ? "▶" : "⏸";
+    playBtn.setAttribute("aria-label", s.paused ? "Play" : "Pause");
+  }
+}
+
 function openSpotifyConnectOAuth() {
   const u = new URL("/auth/spotify/login", `${localBackendBase()}/`);
   try {
@@ -1559,13 +1624,26 @@ async function ensureSpotifyWebPlayer(prefix) {
     console.warn("[Spotify] Web Playback playback_error", message);
   });
   player.addListener("player_state_changed", (state) => {
-    window.__veraSpotifyPlaybackActive = !!(state?.track_window?.current_track && !state.paused);
-    if (!window.__veraSpotifyPlaybackActive) {
-      removeSpotifyMiniButton(prefix);
+    if (!state) return;
+    const curTrack = state?.track_window?.current_track;
+    if (curTrack) {
+      const cover = curTrack.album?.images?.[0]?.url || "";
+      spotifyUpdateNowState({
+        title: curTrack.name || "",
+        artist: (curTrack.artists || []).map((a) => a.name).filter(Boolean).join(", "),
+        cover_url: cover,
+        position_ms: Number(state.position) || 0,
+        duration_ms: Number(curTrack.duration_ms) || 0,
+        paused: !!state.paused,
+        active: !state.paused
+      });
+      window.__veraSpotifyPlaybackActive = !state.paused;
+      if (state.paused) removeSpotifyMiniButton(prefix);
+      spotifyApplyNowStateToPanel(prefix);
     }
     const playBtn = document.getElementById(`${prefix}-spotify-play`);
     if (playBtn) {
-      if (!state?.track_window?.current_track) {
+      if (!curTrack) {
         playBtn.textContent = "▶";
         playBtn.setAttribute("aria-label", "Play / pause");
       } else {
@@ -1573,8 +1651,8 @@ async function ensureSpotifyWebPlayer(prefix) {
         playBtn.setAttribute("aria-label", state.paused ? "Play" : "Pause");
       }
     }
-    if (!state?.track_window?.current_track) return;
-    const t = state.track_window.current_track;
+    if (!curTrack) return;
+    const t = curTrack;
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
     if (titleEl) titleEl.textContent = t.name || "";
@@ -1683,6 +1761,15 @@ function wireProductivityPanelEvents(prefix) {
     window.__veraSpotifyPlayer = null;
     window.__veraSpotifyDeviceId = null;
     window.__veraSpotifyPlaybackActive = false;
+    spotifyUpdateNowState({
+      title: "",
+      artist: "",
+      cover_url: "",
+      position_ms: 0,
+      duration_ms: 0,
+      paused: true,
+      active: false
+    });
     removeSpotifyMiniButton(prefix);
     await refreshSpotifyConnectionUI(prefix);
   });
@@ -1698,13 +1785,43 @@ function wireProductivityPanelEvents(prefix) {
       if (!window.__veraSpotifyPlaybackActive) {
         removeSpotifyMiniButton(prefix);
       }
+      spotifyUpdateNowState({
+        position_ms: Math.round((previewAudio.currentTime || 0) * 1000),
+        duration_ms: Number.isFinite(previewAudio.duration) ? Math.round(previewAudio.duration * 1000) : 0,
+        paused: !!previewAudio.paused,
+        active: !previewAudio.paused
+      });
+      spotifyApplyNowStateToPanel(prefix);
+    };
+    const onPreviewTime = () => {
+      spotifyUpdateNowState({
+        position_ms: Math.round((previewAudio.currentTime || 0) * 1000),
+        duration_ms: Number.isFinite(previewAudio.duration) ? Math.round(previewAudio.duration * 1000) : 0
+      });
+      spotifyApplyNowStateToPanel(prefix);
     };
     previewAudio.addEventListener("play", onPreviewPlayState);
     previewAudio.addEventListener("pause", onPreviewPlayState);
     previewAudio.addEventListener("ended", onPreviewPlayState);
+    previewAudio.addEventListener("timeupdate", onPreviewTime);
+    previewAudio.addEventListener("durationchange", onPreviewTime);
+    previewAudio.addEventListener("loadedmetadata", onPreviewTime);
   }
 
+  const progress = document.getElementById(`${prefix}-spotify-progress`);
+  progress?.addEventListener("input", () => {
+    const ms = Number(progress.value) || 0;
+    const elapsed = document.getElementById(`${prefix}-spotify-time-elapsed`);
+    if (elapsed) elapsed.textContent = spotifyFormatTimeMs(ms);
+  });
+  progress?.addEventListener("change", () => {
+    const seekTo = window.VeraSpotify?.seekTo;
+    const ms = Number(progress.value) || 0;
+    if (typeof seekTo === "function") seekTo(ms).catch(() => {});
+  });
+
   void initSpotifyPlaybackForPanel(prefix);
+  spotifyApplyNowStateToPanel(prefix);
 }
 
 function renderProductivityPanel() {
@@ -1737,6 +1854,21 @@ function renderProductivityPanel() {
         <div class="spotify-track-meta">
           <div class="spotify-track-title" id="${prefix}-spotify-track-title">Nothing playing</div>
           <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Connect Spotify for in-browser playback, or use search + preview / Open in Spotify.</div>
+          <div class="spotify-progress-wrap">
+            <span class="spotify-time-text" id="${prefix}-spotify-time-elapsed">0:00</span>
+            <input
+              type="range"
+              class="spotify-progress"
+              id="${prefix}-spotify-progress"
+              min="0"
+              max="0"
+              step="250"
+              value="0"
+              aria-label="Track position"
+              disabled
+            />
+            <span class="spotify-time-text" id="${prefix}-spotify-time-total">0:00</span>
+          </div>
         </div>
         <div class="spotify-transport">
           <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-prev" aria-label="Previous" disabled title="Queue not implemented yet">⏮</button>
@@ -1821,6 +1953,16 @@ function applyActionPayload(data) {
 
   if (payload?.panel_type === "finance_chart") {
     renderFinanceChartPanel(payload);
+    return;
+  }
+
+  /* Keep the music panel open across normal assistant replies unless a new panel payload replaces it. */
+  const sidePaneEl = uiEl("side-pane");
+  if (
+    sidePaneEl &&
+    !sidePaneEl.hidden &&
+    sidePaneEl.dataset.sidePaneKind === "productivity"
+  ) {
     return;
   }
 
@@ -5020,6 +5162,10 @@ refreshVeraActiveUserLabel();
   }
   let focusT;
   const onVisible = () => {
+    if (window.__veraSpotifyPlaybackActive) return;
+    const s = window.__veraSpotifyNowState;
+    if (s && (Number(s.position_ms) > 0 || Number(s.duration_ms) > 0)) return;
+    if (!window.__veraSpotifyOAuthPoll) return;
     clearTimeout(focusT);
     focusT = setTimeout(() => void refreshSpotifyPanelAfterOAuthInOtherTab(), 280);
   };
@@ -5069,6 +5215,12 @@ window.VeraSpotify = {
       title: meta?.title || "",
       artist: meta?.artist || ""
     };
+    spotifyUpdateNowState({
+      title: meta?.title || "",
+      artist: meta?.artist || "",
+      paused: false,
+      active: true
+    });
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
 
@@ -5093,6 +5245,7 @@ window.VeraSpotify = {
         body: JSON.stringify({ uris: [uri], device_id: window.__veraSpotifyDeviceId })
       });
       if (res.ok) {
+        window.__veraSpotifyPlaybackActive = true;
         if (titleEl) titleEl.textContent = meta?.title || "";
         if (artistEl) artistEl.textContent = meta?.artist || "";
         const playBtn = document.getElementById(`${prefix}-spotify-play`);
@@ -5131,6 +5284,15 @@ window.VeraSpotify = {
       audio.src = preview;
       await audio.play().catch(() => {});
       spotifySyncPlayButtonUi(prefix);
+      spotifyUpdateNowState({
+        title: meta?.title || "",
+        artist: meta?.artist || "",
+        position_ms: Math.round((audio.currentTime || 0) * 1000),
+        duration_ms: Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : 0,
+        paused: !!audio.paused,
+        active: !audio.paused
+      });
+      spotifyApplyNowStateToPanel(prefix);
       if (artistEl) artistEl.textContent = meta?.artist || "";
       return;
     }
@@ -5170,6 +5332,24 @@ window.VeraSpotify = {
         /* ignore */
       }
       window.open(last.open_url, "_blank", "noopener,noreferrer");
+    }
+  },
+  async seekTo(positionMs) {
+    const ms = Math.max(0, Math.floor(Number(positionMs) || 0));
+    const prefix = appModePrefix();
+    const web = window.__veraSpotifyPlayer;
+    if (web) {
+      await web.seek(ms);
+      spotifyUpdateNowState({ position_ms: ms });
+      spotifyApplyNowStateToPanel(prefix);
+      return;
+    }
+    const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
+    if (audio) {
+      const sec = ms / 1000;
+      audio.currentTime = Number.isFinite(sec) ? sec : 0;
+      spotifyUpdateNowState({ position_ms: Math.round((audio.currentTime || 0) * 1000) });
+      spotifyApplyNowStateToPanel(prefix);
     }
   }
 };
