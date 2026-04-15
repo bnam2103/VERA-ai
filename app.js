@@ -1482,19 +1482,42 @@ function loadSpotifyWebSdkScript() {
   return _veraSpotifySdkLoading;
 }
 
-function veraSpotifyAuthHeaders() {
+const VERA_SPOTIFY_BEARER_STORAGE_KEY = "vera_spotify_bearer";
+
+/** Prefer localStorage so Spotify stays “connected” across reloads and new tabs (same browser). */
+function veraSpotifyGetStoredBearer() {
   try {
-    const t = sessionStorage.getItem("vera_spotify_bearer");
-    if (t) return { Authorization: `Bearer ${t}` };
+    return localStorage.getItem(VERA_SPOTIFY_BEARER_STORAGE_KEY) || sessionStorage.getItem(VERA_SPOTIFY_BEARER_STORAGE_KEY);
   } catch (_) {
-    /* ignore */
+    return null;
   }
+}
+
+function veraSpotifySetStoredBearer(token) {
+  const t = String(token || "").trim();
+  if (!t) return;
+  try {
+    localStorage.setItem(VERA_SPOTIFY_BEARER_STORAGE_KEY, t);
+    sessionStorage.setItem(VERA_SPOTIFY_BEARER_STORAGE_KEY, t);
+  } catch (_) {
+    try {
+      sessionStorage.setItem(VERA_SPOTIFY_BEARER_STORAGE_KEY, t);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+}
+
+function veraSpotifyAuthHeaders() {
+  const t = veraSpotifyGetStoredBearer();
+  if (t) return { Authorization: `Bearer ${t}` };
   return {};
 }
 
 function clearVeraSpotifyBearer() {
   try {
-    sessionStorage.removeItem("vera_spotify_bearer");
+    localStorage.removeItem(VERA_SPOTIFY_BEARER_STORAGE_KEY);
+    sessionStorage.removeItem(VERA_SPOTIFY_BEARER_STORAGE_KEY);
   } catch (_) {
     /* ignore */
   }
@@ -1513,11 +1536,7 @@ async function claimSpotifyHandoff(handoff) {
   if (!res.ok) return;
   const j = await res.json().catch(() => ({}));
   if (j.bearer) {
-    try {
-      sessionStorage.setItem("vera_spotify_bearer", j.bearer);
-    } catch (_) {
-      /* ignore */
-    }
+    veraSpotifySetStoredBearer(j.bearer);
     window.__veraSpotifyBearer = j.bearer;
   }
 }
@@ -5837,7 +5856,7 @@ window.VeraSpotify = {
     }
     if (last.open_url) {
       try {
-        if (sessionStorage.getItem("vera_spotify_bearer")) return;
+        if (veraSpotifyGetStoredBearer()) return;
       } catch (_) {
         /* ignore */
       }
