@@ -2299,6 +2299,11 @@ function applyActionPayload(data) {
       if (typeof pause === "function") void pause();
       return;
     }
+    if (op === "resume") {
+      const resume = window.VeraSpotify?.resumePlayback;
+      if (typeof resume === "function") void resume();
+      return;
+    }
     if (op === "volume_delta") {
       const cur = typeof window.VeraSpotify?.getVolume === "function"
         ? window.VeraSpotify.getVolume()
@@ -5922,6 +5927,36 @@ window.VeraSpotify = {
         duration_ms: Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : 0,
         paused: true,
         active: false
+      });
+      spotifyApplyNowStateToPanel(prefix);
+    }
+  },
+  async resumePlayback() {
+    const prefix = appModePrefix();
+    const web = window.__veraSpotifyPlayer;
+    if (web) {
+      if (typeof web.resume === "function") {
+        await web.resume();
+      } else if (typeof web.togglePlay === "function") {
+        await web.togglePlay();
+      }
+      spotifyUpdateNowState({ paused: false, active: true });
+      spotifyApplyNowStateToPanel(prefix);
+      return;
+    }
+    const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
+    const last = window.__veraSpotifyLast || {};
+    if (audio && last.preview_url && !audio.src) {
+      audio.src = last.preview_url;
+    }
+    if (audio && audio.paused && (audio.src || last.preview_url)) {
+      await audio.play().catch(() => {});
+      spotifySyncPlayButtonUi(prefix);
+      spotifyUpdateNowState({
+        position_ms: Math.round((audio.currentTime || 0) * 1000),
+        duration_ms: Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : 0,
+        paused: false,
+        active: true
       });
       spotifyApplyNowStateToPanel(prefix);
     }
