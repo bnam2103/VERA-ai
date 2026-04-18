@@ -2274,6 +2274,7 @@ wireProductivityModeButtons();
 
 const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
 let workModeReasoningConfirmPending = null;
+let workModeReasoningAttachment = null;
 window.clearWorkModeReasoningPending = function clearWorkModeReasoningPending() {
   workModeReasoningConfirmPending = null;
 };
@@ -2503,68 +2504,6 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
   if (!isVeraWorkModeOn()) return;
   const mdEl = document.getElementById("vera-reasoning-md");
   if (!mdEl) return;
-  const yesRe = /^(yes|yeah|yep|sure|ok|okay|do it|go ahead|please do|send it|put it in|sounds good)\b/i;
-  const noRe = /^(no|nah|nope|not now|don't|do not|skip|leave it|no thanks)\b/i;
-
-  // If we asked last turn, use this turn as explicit confirmation.
-  if (workModeReasoningConfirmPending) {
-    if (yesRe.test(trimmed)) {
-      const originalText = workModeReasoningConfirmPending.originalText;
-      workModeReasoningConfirmPending = null;
-      mdEl.replaceChildren();
-      mdEl.dataset.markdownAcc = "";
-      mdEl.dataset.summaryText = "";
-      const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: getSessionId(), text: originalText }),
-        signal
-      });
-      if (!sr.ok || !sr.body) return;
-      const reader = sr.body.getReader();
-      const decoder = new TextDecoder();
-      let lineBuf = "";
-      let foundSummary = false;
-      while (!foundSummary) {
-        const { done, value } = await reader.read();
-        if (done && !value) break;
-        if (value) lineBuf += decoder.decode(value, { stream: true });
-        for (;;) {
-          const n = lineBuf.indexOf("\n");
-          if (n < 0) break;
-          const line = lineBuf.slice(0, n).trim();
-          lineBuf = lineBuf.slice(n + 1);
-          if (!line) continue;
-          let o;
-          try {
-            o = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          if (o.type === "error") break;
-          if (o.type === "summary" && o.text) {
-            mdEl.dataset.summaryText = String(o.text);
-            formData.append("reasoning_voice_coach", String(o.text).trim());
-            foundSummary = true;
-            break;
-          }
-        }
-      }
-      if (foundSummary) {
-        void drainReasoningNdjsonMarkdownTail(reader, lineBuf, mdEl, decoder);
-      }
-      return;
-    }
-    if (noRe.test(trimmed)) {
-      workModeReasoningConfirmPending = null;
-      return;
-    }
-    formData.append(
-      "reasoning_voice_coach",
-      "I can add this to reasoning space if you want. Just say yes to continue or no to keep it in normal chat."
-    );
-    return;
-  }
 
   const heuristicComplex = (() => {
     const t = String(trimmed || "").toLowerCase();
@@ -2596,18 +2535,59 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
   }
   routeReasoning = routeReasoning || heuristicComplex;
   if (!routeReasoning) return;
-  workModeReasoningConfirmPending = {
-    originalText: trimmed,
-    category: "reasoning_candidate",
-    askedAt: Date.now()
-  };
-  formData.append(
-    "reasoning_voice_coach",
-    "Do you want me to put this into reasoning space?"
-  );
+  workModeReasoningConfirmPending = null;
+
+  mdEl.replaceChildren();
+  mdEl.dataset.markdownAcc = "";
+  mdEl.dataset.summaryText = "";
+  const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: getSessionId(), text: trimmed }),
+    signal
+  });
+  if (!sr.ok || !sr.body) return;
+  const reader = sr.body.getReader();
+  const decoder = new TextDecoder();
+  let lineBuf = "";
+  let foundSummary = false;
+  while (!foundSummary) {
+    const { done, value } = await reader.read();
+    if (done && !value) break;
+    if (value) lineBuf += decoder.decode(value, { stream: true });
+    for (;;) {
+      const n = lineBuf.indexOf("\n");
+      if (n < 0) break;
+      const line = lineBuf.slice(0, n).trim();
+      lineBuf = lineBuf.slice(n + 1);
+      if (!line) continue;
+      let o;
+      try {
+        o = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (o.type === "error") break;
+      if (o.type === "summary" && o.text) {
+        mdEl.dataset.summaryText = String(o.text);
+        formData.append("reasoning_voice_coach", String(o.text).trim());
+        foundSummary = true;
+        break;
+      }
+    }
+  }
+  if (foundSummary) {
+    void drainReasoningNdjsonMarkdownTail(reader, lineBuf, mdEl, decoder);
+  }
 }
 
-async function streamWorkModeReasoningComposer(text, signal) {
+function setWorkModeAttachmentMeta(message) {
+  const meta = document.getElementById("vera-reasoning-attach-meta");
+  if (!meta) return;
+  meta.textContent = message || "";
+}
+
+async function streamWorkModeReasoningComposer(text, signal, attachmentFile = null) {
   const mdEl = document.getElementById("vera-reasoning-md");
   if (!mdEl) return;
   mdEl.replaceChildren();
@@ -2615,13 +2595,38 @@ async function streamWorkModeReasoningComposer(text, signal) {
   mdEl.dataset.summaryText = "";
   let summaryText = "";
   let markdownAcc = "";
-  const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: getSessionId(), text }),
-    signal
-  });
-  if (!sr.ok || !sr.body) return;
+  let sr;
+  if (attachmentFile) {
+    const fd = new FormData();
+    fd.append("session_id", getSessionId());
+    fd.append("text", text);
+    fd.append("file", attachmentFile);
+    sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
+      method: "POST",
+      body: fd,
+      signal
+    });
+  } else {
+    sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: getSessionId(), text }),
+      signal
+    });
+  }
+  if (!sr.ok) {
+    let msg = `Upload failed (${sr.status})`;
+    try {
+      const err = await sr.json();
+      if (err?.detail) msg = String(err.detail);
+    } catch {}
+    setWorkModeAttachmentMeta(msg);
+    return;
+  }
+  if (!sr.body) {
+    setWorkModeAttachmentMeta("Upload failed: empty response body.");
+    return;
+  }
   const reader = sr.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -2727,6 +2732,34 @@ function wireWorkModeChecklistAndComposer() {
   });
   const rs = document.getElementById("vera-reasoning-send");
   const ri = document.getElementById("vera-reasoning-input");
+  const attachBtn = document.getElementById("vera-reasoning-attach-btn");
+  const fileInput = document.getElementById("vera-reasoning-file");
+  attachBtn?.addEventListener("click", () => fileInput?.click());
+  fileInput?.addEventListener("change", () => {
+    const f = fileInput.files?.[0] || null;
+    if (!f) {
+      workModeReasoningAttachment = null;
+      setWorkModeAttachmentMeta("");
+      return;
+    }
+    const name = (f.name || "").toLowerCase();
+    const isPdf = name.endsWith(".pdf") || (f.type || "").includes("pdf");
+    const isImage = (f.type || "").startsWith("image/") || /\.(png|jpe?g|webp)$/.test(name);
+    if (!isPdf && !isImage) {
+      workModeReasoningAttachment = null;
+      fileInput.value = "";
+      setWorkModeAttachmentMeta("Unsupported file. Use one PDF or image.");
+      return;
+    }
+    if (f.size > 25 * 1024 * 1024) {
+      workModeReasoningAttachment = null;
+      fileInput.value = "";
+      setWorkModeAttachmentMeta("File too large. Max 25MB.");
+      return;
+    }
+    workModeReasoningAttachment = f;
+    setWorkModeAttachmentMeta(`Attached: ${f.name}`);
+  });
   rs?.addEventListener("click", async () => {
     const t = ri?.value.trim() ?? "";
     if (!t) return;
@@ -2734,7 +2767,10 @@ function wireWorkModeChecklistAndComposer() {
     if (ri) ri.value = "";
     const ac = new AbortController();
     try {
-      await streamWorkModeReasoningComposer(t, ac.signal);
+      await streamWorkModeReasoningComposer(t, ac.signal, workModeReasoningAttachment);
+      workModeReasoningAttachment = null;
+      if (fileInput) fileInput.value = "";
+      setWorkModeAttachmentMeta("");
     } catch (err) {
       console.warn("[WorkMode] reasoning composer", err);
     }

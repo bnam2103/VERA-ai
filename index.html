@@ -659,6 +659,15 @@
         <div class="vera-wm-pane-title">Reasoning</div>
         <div class="vera-reasoning-scroll" id="vera-reasoning-md" aria-live="polite"></div>
         <div class="vera-reasoning-compose">
+          <button type="button" id="vera-reasoning-attach-btn" class="vera-reasoning-attach-btn" title="Attach one PDF or image (max 25MB)">
+            +
+          </button>
+          <input
+            type="file"
+            id="vera-reasoning-file"
+            class="vera-reasoning-file-input"
+            accept=".pdf,image/png,image/jpeg,image/jpg,image/webp"
+          />
           <input
             type="text"
             id="vera-reasoning-input"
@@ -671,6 +680,7 @@
             Send
           </button>
         </div>
+        <div class="vera-reasoning-attach-meta" id="vera-reasoning-attach-meta" aria-live="polite"></div>
       </section>
       <div class="vera-wm-right" id="vera-wm-right">
     <div class="vera-wm-pane-title">Voice UI</div>
@@ -2010,7 +2020,7 @@ document.addEventListener("click", () => {
 })();
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script src="app.js?v=19"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>
 

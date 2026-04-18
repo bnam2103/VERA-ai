@@ -3247,6 +3247,22 @@ body.chat-started .input-bar {
   background: rgba(0, 0, 0, 0.25);
 }
 
+#vera-app.work-mode .vera-reasoning-file-input {
+  display: none;
+}
+
+#vera-app.work-mode .vera-reasoning-attach-btn {
+  flex: 0 0 auto;
+  width: 40px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 #vera-app.work-mode .vera-reasoning-input {
   flex: 1 1 auto;
   min-width: 0;
@@ -3269,6 +3285,16 @@ body.chat-started .input-bar {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
+}
+
+#vera-app.work-mode .vera-reasoning-attach-meta {
+  min-height: 16px;
+  padding: 0 12px 8px;
+  font-size: 11px;
+  color: rgba(180, 210, 255, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #vera-app.work-mode .vera-wm-right {
