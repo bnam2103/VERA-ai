@@ -2566,6 +2566,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
     return;
   }
 
+  const heuristicComplex = (() => {
+    const t = String(trimmed || "").toLowerCase();
+    if (!t) return false;
+    const conceptWords = /\b(explain|how does|how do|derive|proof|theorem|compare|trade-?off|framework|architecture|mechanism|intuition)\b/;
+    const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
+    const multiPart = /(\b(step by step|in detail|deep dive|from scratch)\b)|([,:;].+[,:;])/;
+    return (
+      (conceptWords.test(t) && domainWords.test(t)) ||
+      domainWords.test(t) ||
+      multiPart.test(t)
+    );
+  })();
+
   let routeReasoning = false;
   try {
     const cr = await fetch(`${API_URL}/work_mode/classify`, {
@@ -2574,12 +2587,14 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
       body: JSON.stringify({ session_id: getSessionId(), text: trimmed }),
       signal
     });
-    if (!cr.ok) return;
-    const cj = await cr.json();
-    routeReasoning = Boolean(cj.prompt_reasoning || cj.reasoning);
+    if (cr.ok) {
+      const cj = await cr.json();
+      routeReasoning = Boolean(cj.prompt_reasoning || cj.reasoning);
+    }
   } catch {
-    return;
+    /* fall through to heuristic */
   }
+  routeReasoning = routeReasoning || heuristicComplex;
   if (!routeReasoning) return;
   workModeReasoningConfirmPending = {
     originalText: trimmed,
