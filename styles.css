@@ -2999,9 +2999,52 @@ body.chat-started .input-bar {
   transform: scale(0.98);
 }
 
+/* ----- VERA work mode: 3-column layout (music + checklist | reasoning | chat+voice) ----- */
+.vera-body-grid {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.vera-wm-left,
+.vera-wm-center {
+  display: none;
+}
+
+.vera-wm-right {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+}
+
+#vera-app:not(.work-mode) .vera-body-grid {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0;
+  height: auto;
+  width: 100%;
+}
+
+#vera-app:not(.work-mode) .vera-wm-right {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: auto;
+  width: 100%;
+}
+
+#vera-app:not(.work-mode) .vera-wm-right > .vera-wm-pane-title {
+  display: none !important;
+}
+
 #vera-app.work-mode .vera-guide,
-#vera-app.work-mode .chat-main,
-#vera-app.work-mode .input-container,
 #vera-app.work-mode #vera-user-sign-in,
 #vera-app.work-mode #vera-interrupt-debug-header {
   display: none !important;
@@ -3017,20 +3060,311 @@ body.chat-started .input-bar {
   content: none !important;
 }
 
-.vera-work-mode-dismiss {
-  position: fixed;
-  inset: 0;
-  z-index: 999;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  cursor: default;
+#vera-app.work-mode .vera-body-grid {
+  display: grid;
+  grid-template-columns: minmax(200px, 0.9fr) minmax(260px, 1.35fr) minmax(240px, 1fr);
+  gap: 12px;
+  padding: 14px 10px 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: calc(100vh - 98px);
+  align-items: stretch;
 }
 
-body.vera-work-mode:not(.bmo-open) .spotify-mini-toggle {
-  visibility: hidden !important;
-  pointer-events: none !important;
+#vera-app.work-mode .vera-wm-left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+#vera-app.work-mode .vera-wm-music-pane,
+#vera-app.work-mode .vera-wm-checklist-pane {
+  flex: 1 1 50%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(6, 10, 18, 0.55);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+
+#vera-app.work-mode .vera-wm-pane-title {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#vera-app.work-mode .vera-wm-music-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+#vera-app.work-mode #vera-side-pane {
+  position: relative !important;
+  right: auto !important;
+  top: auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  height: auto !important;
+}
+
+#vera-app.work-mode .vera-wm-music-body .side-pane-close {
+  display: none !important;
+}
+
+#vera-app.work-mode .vera-wm-checklist-ul {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 8px 10px 6px;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+#vera-app.work-mode .vera-wm-checklist-group {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 50%;
+}
+
+#vera-app.work-mode .vera-wm-checklist-subtitle {
+  padding: 6px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.54);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+#vera-app.work-mode .vera-wm-checklist-li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+#vera-app.work-mode .vera-wm-checklist-li.is-done {
+  color: rgba(255, 255, 255, 0.48);
+}
+
+#vera-app.work-mode .vera-wm-checklist-li.is-done span {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: rgba(255, 255, 255, 0.5);
+}
+
+#vera-app.work-mode .vera-wm-checklist-li input[type="checkbox"] {
+  margin-top: 3px;
+}
+
+#vera-app.work-mode .vera-wm-checklist-add {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+#vera-app.work-mode .vera-wm-checklist-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(5, 8, 14, 0.65);
+  color: rgba(255, 255, 255, 0.92);
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+#vera-app.work-mode .vera-wm-checklist-add-btn {
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.92);
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+#vera-app.work-mode .vera-wm-center {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(5, 10, 18, 0.72);
+  backdrop-filter: blur(12px);
+  overflow: hidden;
+}
+
+#vera-app.work-mode .vera-reasoning-scroll {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: auto;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: rgba(230, 235, 245, 0.95);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+#vera-app.work-mode .vera-reasoning-summary-line {
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(180, 210, 255, 0.88);
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.12);
+}
+
+#vera-app.work-mode .vera-reasoning-compose {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+#vera-app.work-mode .vera-reasoning-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(5, 8, 14, 0.75);
+  color: rgba(255, 255, 255, 0.94);
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+#vera-app.work-mode .vera-reasoning-send {
+  border-radius: 8px;
+  border: 1px solid rgba(100, 180, 255, 0.45);
+  background: rgba(60, 130, 220, 0.25);
+  color: rgba(255, 255, 255, 0.95);
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+#vera-app.work-mode .vera-wm-right {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(4, 8, 14, 0.35);
+}
+
+#vera-app.work-mode .vera-wm-right > .vera-wm-pane-title {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#vera-app.work-mode .vera-wm-right .chat-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 8px 10px 0;
+}
+
+#vera-app.work-mode .vera-wm-right .conversation {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 12px !important;
+}
+
+#vera-app.work-mode .vera-wm-right .input-container {
+  flex: 0 0 auto;
+  position: static !important;
+  inset: auto !important;
+  pointer-events: auto !important;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 10px 52px !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+#vera-app.work-mode .vera-wm-right .startup-text {
+  display: none !important;
+}
+
+#vera-app.work-mode .vera-wm-right .input-bar,
+#vera-app.work-mode .vera-wm-right #vera-keyboard-bar {
+  width: 100%;
+  max-width: none;
+  border-radius: 16px;
+  padding: 9px 12px;
+}
+
+#vera-app.work-mode .vera-wm-right .input-toggle-btn {
+  display: none !important;
+}
+
+#vera-app.work-mode .vera-wm-right #vera-keyboard-bar {
+  display: none !important;
+}
+
+#vera-app.work-mode .vera-wm-right #vera-voice-bar {
+  display: flex !important;
+}
+
+#vera-app.work-mode .vera-bottom-right-tools {
+  z-index: 1400;
+  right: 28px;
+  bottom: 24px;
+}
+
+@media (max-width: 768px) {
+  #vera-work-mode {
+    display: none !important;
+  }
+}
+
+@media (max-width: 1100px) {
+  #vera-app.work-mode .vera-body-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
+  }
+  #vera-app.work-mode .vera-wm-left {
+    flex-direction: row;
+  }
+  #vera-app.work-mode .vera-wm-music-pane,
+  #vera-app.work-mode .vera-wm-checklist-pane {
+    flex: 1 1 50%;
+  }
 }
 
 .vera-sign-in-nav {

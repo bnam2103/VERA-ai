@@ -7,6 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 </head>
 
 <body>
@@ -626,6 +627,53 @@
       </div>
     </div>
 
+    <div class="vera-body-grid" id="vera-body-grid">
+      <aside class="vera-wm-left" id="vera-wm-left" aria-label="Music and checklist">
+        <div class="vera-wm-music-pane" id="vera-wm-music-pane">
+          <div class="vera-wm-pane-title">Music</div>
+          <div class="vera-wm-music-body" id="vera-wm-music-body"></div>
+        </div>
+        <div class="vera-wm-checklist-pane" id="vera-wm-checklist-pane">
+          <div class="vera-wm-pane-title">Checklist</div>
+          <div class="vera-wm-checklist-group">
+            <div class="vera-wm-checklist-subtitle">Ongoing</div>
+            <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-ongoing" aria-label="Ongoing checklist items"></ul>
+          </div>
+          <div class="vera-wm-checklist-group">
+            <div class="vera-wm-checklist-subtitle">Completed</div>
+            <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-completed" aria-label="Completed checklist items"></ul>
+          </div>
+          <form class="vera-wm-checklist-add" id="vera-wm-checklist-form" autocomplete="off">
+            <input
+              type="text"
+              id="vera-wm-checklist-input"
+              class="vera-wm-checklist-input"
+              placeholder="Add item…"
+              maxlength="200"
+            />
+            <button type="submit" class="vera-wm-checklist-add-btn">Add</button>
+          </form>
+        </div>
+      </aside>
+      <section class="vera-wm-center" id="vera-wm-center" aria-label="Reasoning space">
+        <div class="vera-wm-pane-title">Reasoning</div>
+        <div class="vera-reasoning-scroll" id="vera-reasoning-md" aria-live="polite"></div>
+        <div class="vera-reasoning-compose">
+          <input
+            type="text"
+            id="vera-reasoning-input"
+            class="vera-reasoning-input"
+            placeholder="Type for reasoning space (no voice)…"
+            autocomplete="off"
+            spellcheck="true"
+          />
+          <button type="button" id="vera-reasoning-send" class="vera-reasoning-send">
+            Send
+          </button>
+        </div>
+      </section>
+      <div class="vera-wm-right" id="vera-wm-right">
+    <div class="vera-wm-pane-title">Voice UI</div>
     <div class="chat-main">
       <div class="conversation" id="vera-conversation"></div>
       <aside id="vera-side-pane" class="side-pane" hidden></aside>
@@ -668,6 +716,8 @@
         <button id="vera-send-text" type="button" title="Send message">➤</button>
       </div>
     </div>
+      </div>
+    </div>
 
     <audio id="vera-audio" preload="auto" crossorigin="anonymous"></audio>
     <audio id="vera-startup-audio" preload="auto">
@@ -680,7 +730,7 @@
       id="vera-work-mode"
       class="vera-work-mode-btn"
       aria-pressed="false"
-      title="Hide chat — click empty area or Escape to show again"
+      title="Work mode: panels + reasoning space (toggle off to restore)"
     >
       Work mode
     </button>
@@ -694,15 +744,6 @@
     </button>
     <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
   </div>
-  <button
-    type="button"
-    id="vera-work-mode-dismiss"
-    class="vera-work-mode-dismiss"
-    hidden
-    tabindex="-1"
-    title="Show chat again (or press Escape)"
-    aria-label="Show chat interface"
-  ></button>
 </section>
 
 <section id="bmo-loading-screen" hidden>
@@ -955,7 +996,6 @@
   const bmoPage = document.getElementById("bmo-page");
   const veraApp = document.getElementById("vera-app");
   const veraWorkModeBtn = document.getElementById("vera-work-mode");
-  const veraWorkModeDismiss = document.getElementById("vera-work-mode-dismiss");
   const bmoLoadingDotsEl = document.querySelector(".bmo-loading-dots");
 
   const navHome = document.getElementById("nav-home");
@@ -1330,19 +1370,41 @@ function startTyping() {
   };
 
   function exitVeraWorkMode() {
+    if (typeof window.layoutVeraWorkModePanels === "function") {
+      window.layoutVeraWorkModePanels(false);
+    }
+    if (typeof window.clearWorkModeReasoningPending === "function") {
+      window.clearWorkModeReasoningPending();
+    }
     veraApp?.classList.remove("work-mode");
-    document.body.classList.remove("vera-work-mode");
     veraWorkModeBtn?.setAttribute("aria-pressed", "false");
+    if (typeof window.ensureVeraVoiceUiActive === "function") {
+      void window.ensureVeraVoiceUiActive();
+    }
   }
 
   function enterVeraWorkMode() {
     if (!veraApp || veraApp.hidden) return;
+    if (window.matchMedia("(max-width: 768px)").matches) return;
     if (typeof window.hideSidePanel === "function") {
       window.hideSidePanel();
     }
     veraApp.classList.add("work-mode");
-    document.body.classList.add("vera-work-mode");
     veraWorkModeBtn?.setAttribute("aria-pressed", "true");
+    if (typeof window.layoutVeraWorkModePanels === "function") {
+      window.layoutVeraWorkModePanels(true);
+    }
+    if (typeof window.loadWorkModeChecklist === "function") {
+      window.loadWorkModeChecklist();
+    }
+    if (typeof window.ensureVeraVoiceUiActive === "function") {
+      void window.ensureVeraVoiceUiActive();
+    }
+  }
+
+  if (window.matchMedia("(max-width: 768px)").matches) {
+    veraWorkModeBtn?.setAttribute("hidden", "");
+    veraWorkModeBtn?.setAttribute("aria-hidden", "true");
   }
 
   veraWorkModeBtn?.addEventListener("click", () => {
@@ -1645,6 +1707,9 @@ function revealApp() {
       veraApp.classList.add("fade-in");
       requestAnimationFrame(() => {
         window.dispatchEvent(new Event("resize"));
+        if (typeof window.ensureVeraVoiceUiActive === "function") {
+          void window.ensureVeraVoiceUiActive();
+        }
         requestAnimationFrame(() => {
           typeStartup({
             typingSpeed: 50,
@@ -1694,6 +1759,9 @@ document.getElementById("return-home").onclick = async () => {
     veraApp.classList.add("fade-in");
 
     window.dispatchEvent(new Event("resize"));
+    if (typeof window.ensureVeraVoiceUiActive === "function") {
+      void window.ensureVeraVoiceUiActive();
+    }
   }, 600);
 };
 
@@ -1941,7 +2009,8 @@ document.addEventListener("click", () => {
   } catch (e) {}
 })();
 </script>
-<script src="app.js?v=15"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>
 

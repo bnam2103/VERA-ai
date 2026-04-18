@@ -967,6 +967,17 @@ function hideSidePanel() {
   if (!sidePaneEl) return;
   const prefix = appModePrefix();
   const isProductivityPane = sidePaneEl.dataset.sidePaneKind === "productivity";
+  const keepPinnedInWorkMode =
+    prefix === "vera" &&
+    isProductivityPane &&
+    document.getElementById("vera-app")?.classList.contains("work-mode");
+  if (keepPinnedInWorkMode) {
+    sidePaneEl.hidden = false;
+    sidePaneEl.classList.add("visible");
+    document.body.classList.remove("news-panel-open");
+    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+    return;
+  }
   const keepProductivityMounted = isProductivityPane && shouldKeepMusicPanelMounted(prefix);
   sidePaneEl.classList.remove("visible");
   document.body.classList.remove("news-panel-open");
@@ -2140,7 +2151,7 @@ function renderProductivityPanel() {
   sidePaneEl.innerHTML = `
     <div class="side-pane-header">
       <div class="side-pane-heading">
-        <h3 class="side-pane-title">Productivity</h3>
+        <h3 class="side-pane-title">Music panel</h3>
         <div class="side-pane-subtitle spotify-brand">Music</div>
       </div>
       <div class="side-pane-controls">
@@ -2256,6 +2267,471 @@ function wireProductivityModeButtons() {
 }
 
 wireProductivityModeButtons();
+
+/* =========================
+   WORK MODE — layout + reasoning stream + checklist
+========================= */
+
+const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
+let workModeReasoningConfirmPending = null;
+window.clearWorkModeReasoningPending = function clearWorkModeReasoningPending() {
+  workModeReasoningConfirmPending = null;
+};
+
+function isVeraWorkModeOn() {
+  return Boolean(document.getElementById("vera-app")?.classList.contains("work-mode"));
+}
+
+window.layoutVeraWorkModePanels = function layoutVeraWorkModePanels(on) {
+  const pane = document.getElementById("vera-side-pane");
+  const musicBody = document.getElementById("vera-wm-music-body");
+  const chatMain = document.querySelector("#vera-app .chat-main");
+  if (!pane || !musicBody || !chatMain) return;
+  try {
+    if (on) {
+      if (pane.parentElement !== musicBody) musicBody.appendChild(pane);
+      const hasProductivityMarkup =
+        Boolean(pane.innerHTML.trim()) && pane.dataset.sidePaneKind === "productivity";
+      if (!hasProductivityMarkup) {
+        renderProductivityPanel();
+      } else if (pane.hidden) {
+        restoreProductivityPanel("vera");
+      }
+    } else if (pane.parentElement !== chatMain) {
+      chatMain.appendChild(pane);
+    }
+  } catch (e) {
+    console.warn("[WorkMode] layout panes", e);
+  }
+};
+
+window.ensureWorkModeVoiceUiActive = async function ensureWorkModeVoiceUiActive() {
+  try {
+    if (window.matchMedia("(max-width: 768px)").matches) return;
+    if (appModePrefix() !== "vera") return;
+    listeningMode = "continuous";
+    inputMuted = false;
+    updateMuteInputButton();
+    await initMic();
+    micStream?.getAudioTracks().forEach((track) => {
+      track.enabled = true;
+    });
+    listening = true;
+    if (!processing && getAudioEl()?.paused) {
+      startListening();
+    }
+  } catch (e) {
+    console.warn("[WorkMode] ensure voice UI active", e);
+  }
+};
+window.ensureVeraVoiceUiActive = window.ensureWorkModeVoiceUiActive;
+
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function renderWorkModeMarkdown(el, markdown, summaryText = "") {
+  if (!el) return;
+  const lines = String(markdown || "").replace(/\r/g, "").split("\n");
+  const renderMath = (src, displayMode) => {
+    try {
+      if (window.katex && typeof window.katex.renderToString === "function") {
+        return window.katex.renderToString(src, { throwOnError: false, displayMode });
+      }
+    } catch {}
+    return null;
+  };
+  const applyInlineMath = (escapedHtml) => {
+    const withDisplayMath = escapedHtml
+      .replace(
+        /\\\[(.+?)\\\]/g,
+        (_, expr) => renderMath(expr, true) || `\\[${expr}\\]`
+      )
+      .replace(
+        /\$\$(.+?)\$\$/g,
+        (_, expr) => renderMath(expr, true) || `$$${expr}$$`
+      );
+    const withParenMath = withDisplayMath.replace(
+      /\\\((.+?)\\\)/g,
+      (_, expr) => renderMath(expr, false) || `\\(${expr}\\)`
+    );
+    return withParenMath.replace(
+      /\$(?!\s)(.+?)(?<!\s)\$/g,
+      (_, expr) => renderMath(expr, false) || `$${expr}$`
+    );
+  };
+  const inline = (text) => {
+    let t = escapeHtml(text);
+    t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
+    t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    return applyInlineMath(t);
+  };
+
+  let html = summaryText
+    ? `<div class="vera-reasoning-summary-line">${applyInlineMath(escapeHtml(summaryText))}</div>`
+    : "";
+  let inCode = false;
+  let listType = "";
+  let para = [];
+  const flushPara = () => {
+    if (para.length) {
+      html += `<p>${inline(para.join(" "))}</p>`;
+      para = [];
+    }
+  };
+  const closeList = () => {
+    if (listType) {
+      html += listType === "ol" ? "</ol>" : "</ul>";
+      listType = "";
+    }
+  };
+
+  for (const raw of lines) {
+    const line = raw ?? "";
+    if (line.trimStart().startsWith("```")) {
+      flushPara();
+      closeList();
+      if (!inCode) {
+        inCode = true;
+        html += "<pre><code>";
+      } else {
+        inCode = false;
+        html += "</code></pre>";
+      }
+      continue;
+    }
+    if (inCode) {
+      html += `${escapeHtml(line)}\n`;
+      continue;
+    }
+    const dispDollar = line.match(/^\s*\$\$(.+?)\$\$\s*$/);
+    if (dispDollar) {
+      flushPara();
+      closeList();
+      const block = renderMath(dispDollar[1], true);
+      html += block || `<pre><code>${escapeHtml(dispDollar[1])}</code></pre>`;
+      continue;
+    }
+    const dispBracket = line.match(/^\s*\\\[(.+?)\\\]\s*$/);
+    if (dispBracket) {
+      flushPara();
+      closeList();
+      const block = renderMath(dispBracket[1], true);
+      html += block || `<pre><code>${escapeHtml(dispBracket[1])}</code></pre>`;
+      continue;
+    }
+    const h = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+    if (h) {
+      flushPara();
+      closeList();
+      const lvl = h[1].length;
+      html += `<h${lvl}>${inline(h[2].trim())}</h${lvl}>`;
+      continue;
+    }
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ol) {
+      flushPara();
+      if (listType && listType !== "ol") closeList();
+      if (!listType) {
+        listType = "ol";
+        html += "<ol>";
+      }
+      html += `<li>${inline(ol[1])}</li>`;
+      continue;
+    }
+    const ul = line.match(/^\s*[-*]\s+(.*)$/);
+    if (ul) {
+      flushPara();
+      if (listType && listType !== "ul") closeList();
+      if (!listType) {
+        listType = "ul";
+        html += "<ul>";
+      }
+      html += `<li>${inline(ul[1])}</li>`;
+      continue;
+    }
+    if (!line.trim()) {
+      flushPara();
+      closeList();
+      continue;
+    }
+    para.push(line.trim());
+  }
+  flushPara();
+  closeList();
+  if (inCode) html += "</code></pre>";
+  el.innerHTML = html;
+}
+
+async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decoder) {
+  let buf = initialTail || "";
+  let markdownAcc = mdEl?.dataset.markdownAcc || "";
+  const summaryText = mdEl?.dataset.summaryText || "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (value) buf += decoder.decode(value, { stream: true });
+      for (;;) {
+        const n = buf.indexOf("\n");
+        if (n < 0) break;
+        const line = buf.slice(0, n).trim();
+        buf = buf.slice(n + 1);
+        if (!line) continue;
+        let o;
+        try {
+          o = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (o.type === "markdown" && o.text && mdEl) {
+          markdownAcc += String(o.text);
+          mdEl.dataset.markdownAcc = markdownAcc;
+          renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
+          mdEl.scrollTop = mdEl.scrollHeight;
+        }
+      }
+      if (done) break;
+    }
+  } catch (_) {}
+}
+
+async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
+  if (!isVeraWorkModeOn()) return;
+  const mdEl = document.getElementById("vera-reasoning-md");
+  if (!mdEl) return;
+  const yesRe = /^(yes|yeah|yep|sure|ok|okay|do it|go ahead|please do|send it|put it in|sounds good)\b/i;
+  const noRe = /^(no|nah|nope|not now|don't|do not|skip|leave it|no thanks)\b/i;
+
+  // If we asked last turn, use this turn as explicit confirmation.
+  if (workModeReasoningConfirmPending) {
+    if (yesRe.test(trimmed)) {
+      const originalText = workModeReasoningConfirmPending.originalText;
+      workModeReasoningConfirmPending = null;
+      mdEl.replaceChildren();
+      mdEl.dataset.markdownAcc = "";
+      mdEl.dataset.summaryText = "";
+      const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: getSessionId(), text: originalText }),
+        signal
+      });
+      if (!sr.ok || !sr.body) return;
+      const reader = sr.body.getReader();
+      const decoder = new TextDecoder();
+      let lineBuf = "";
+      let foundSummary = false;
+      while (!foundSummary) {
+        const { done, value } = await reader.read();
+        if (done && !value) break;
+        if (value) lineBuf += decoder.decode(value, { stream: true });
+        for (;;) {
+          const n = lineBuf.indexOf("\n");
+          if (n < 0) break;
+          const line = lineBuf.slice(0, n).trim();
+          lineBuf = lineBuf.slice(n + 1);
+          if (!line) continue;
+          let o;
+          try {
+            o = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (o.type === "error") break;
+          if (o.type === "summary" && o.text) {
+            mdEl.dataset.summaryText = String(o.text);
+            formData.append("reasoning_voice_coach", String(o.text).trim());
+            foundSummary = true;
+            break;
+          }
+        }
+      }
+      if (foundSummary) {
+        void drainReasoningNdjsonMarkdownTail(reader, lineBuf, mdEl, decoder);
+      }
+      return;
+    }
+    if (noRe.test(trimmed)) {
+      workModeReasoningConfirmPending = null;
+      return;
+    }
+    formData.append(
+      "reasoning_voice_coach",
+      "I can add this to reasoning space if you want. Just say yes to continue or no to keep it in normal chat."
+    );
+    return;
+  }
+
+  let routeReasoning = false;
+  let category = "none";
+  try {
+    const cr = await fetch(`${API_URL}/work_mode/classify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: getSessionId(), text: trimmed }),
+      signal
+    });
+    if (!cr.ok) return;
+    const cj = await cr.json();
+    routeReasoning = Boolean(cj.prompt_reasoning || cj.reasoning);
+    category = String(cj.category || "none").toLowerCase();
+  } catch {
+    return;
+  }
+  if (!routeReasoning) return;
+  if (!["school", "work", "errand"].includes(category)) return;
+  workModeReasoningConfirmPending = {
+    originalText: trimmed,
+    category,
+    askedAt: Date.now()
+  };
+  formData.append(
+    "reasoning_voice_coach",
+    "Do you want me to put this into reasoning space?"
+  );
+}
+
+async function streamWorkModeReasoningComposer(text, signal) {
+  const mdEl = document.getElementById("vera-reasoning-md");
+  if (!mdEl) return;
+  mdEl.replaceChildren();
+  mdEl.dataset.markdownAcc = "";
+  mdEl.dataset.summaryText = "";
+  let summaryText = "";
+  let markdownAcc = "";
+  const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: getSessionId(), text }),
+    signal
+  });
+  if (!sr.ok || !sr.body) return;
+  const reader = sr.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) buf += decoder.decode(value, { stream: true });
+    for (;;) {
+      const n = buf.indexOf("\n");
+      if (n < 0) break;
+      const line = buf.slice(0, n).trim();
+      buf = buf.slice(n + 1);
+      if (!line) continue;
+      let o;
+      try {
+        o = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (o.type === "summary" && o.text) {
+        summaryText = String(o.text);
+        mdEl.dataset.summaryText = summaryText;
+        renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
+      }
+      if (o.type === "markdown" && o.text) {
+        markdownAcc += String(o.text);
+        mdEl.dataset.markdownAcc = markdownAcc;
+        renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
+      }
+    }
+    if (done) break;
+  }
+  mdEl.scrollTop = mdEl.scrollHeight;
+}
+
+function loadWorkChecklistItems() {
+  const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
+  const completedUl = document.getElementById("vera-wm-checklist-completed");
+  if (!ongoingUl || !completedUl) return;
+  let items = [];
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    if (raw) items = JSON.parse(raw);
+    if (!Array.isArray(items)) items = [];
+  } catch {
+    items = [];
+  }
+  ongoingUl.replaceChildren();
+  completedUl.replaceChildren();
+  items.forEach((it) => {
+    if (!it || typeof it.text !== "string") return;
+    const li = document.createElement("li");
+    li.className = "vera-wm-checklist-li";
+    if (it.done) li.classList.add("is-done");
+    li.dataset.id = String(it.id || "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = Boolean(it.done);
+    const span = document.createElement("span");
+    span.textContent = it.text;
+    li.appendChild(cb);
+    li.appendChild(span);
+    cb.addEventListener("change", () => {
+      persistWorkChecklistToggle(String(it.id), cb.checked);
+      loadWorkChecklistItems();
+    });
+    (it.done ? completedUl : ongoingUl).appendChild(li);
+  });
+}
+
+function persistWorkChecklistToggle(id, done) {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items)) items = [];
+    items = items.map((x) =>
+      String(x.id) === id ? { ...x, done: Boolean(done) } : x
+    );
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+  } catch (_) {}
+}
+
+function persistWorkChecklistAdd(text) {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items)) items = [];
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    items.push({ id, text, done: false });
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+  } catch (_) {}
+}
+
+function wireWorkModeChecklistAndComposer() {
+  const form = document.getElementById("vera-wm-checklist-form");
+  const inp = document.getElementById("vera-wm-checklist-input");
+  form?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const t = inp?.value.trim() ?? "";
+    if (!t) return;
+    persistWorkChecklistAdd(t);
+    if (inp) inp.value = "";
+    loadWorkChecklistItems();
+  });
+  const rs = document.getElementById("vera-reasoning-send");
+  const ri = document.getElementById("vera-reasoning-input");
+  rs?.addEventListener("click", async () => {
+    const t = ri?.value.trim() ?? "";
+    if (!t) return;
+    if (!isVeraWorkModeOn()) return;
+    if (ri) ri.value = "";
+    const ac = new AbortController();
+    try {
+      await streamWorkModeReasoningComposer(t, ac.signal);
+    } catch (err) {
+      console.warn("[WorkMode] reasoning composer", err);
+    }
+  });
+}
+
+wireWorkModeChecklistAndComposer();
+loadWorkChecklistItems();
+window.loadWorkModeChecklist = loadWorkChecklistItems;
 
 function onSidePaneClick(event) {
   const target = event.target;
@@ -4205,7 +4681,10 @@ async function finalizeMainBrowserTranscript(text) {
 
   logVoiceTranscript("final", trimmed, { path: "main-browser-asr" });
   logFinalTranscriptSentToLlm("main-browser-asr", trimmed);
-  await runInferMainPipeline(formData);
+  attachPipelineAbortSignal();
+  const pipelineSig = activePipelineAbort.signal;
+  await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig);
+  await runInferMainPipeline(formData, { signal: pipelineSig });
 }
 
 function startMainBrowserRecognitionContinuous() {
@@ -4643,14 +5122,15 @@ function startListening() {
    INFER PIPELINE (shared: recorded audio or browser transcript)
 ========================= */
 
-async function runInferMainPipeline(formData) {
+async function runInferMainPipeline(formData, opts = {}) {
   try {
     logVoicePipe("POST /infer starting (main, upload in flight)");
     const inferFetchStart = performance.now();
+    const inferSignal = opts.signal ?? attachPipelineAbortSignal();
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData,
-      signal: attachPipelineAbortSignal()
+      signal: inferSignal
     });
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (main — TTFB)");
@@ -5161,7 +5641,18 @@ async function onPttClick() {
     formData.append("stream_tts", STREAM_TTS ? "1" : "0");
     logVoiceTranscript("final", text, { path: "ptt-browser-asr" });
     logFinalTranscriptSentToLlm("ptt-browser-asr", text);
-    void runInferMainPipeline(formData);
+    void (async () => {
+      try {
+        attachPipelineAbortSignal();
+        const pipelineSig = activePipelineAbort.signal;
+        await maybePrepareWorkModeReasoning(formData, text, pipelineSig);
+        await runInferMainPipeline(formData, { signal: pipelineSig });
+      } catch (err) {
+        if (err?.name !== "AbortError") {
+          console.warn("[PTT][browser-asr] infer", err);
+        }
+      }
+    })();
     return;
   }
 
