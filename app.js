@@ -2567,7 +2567,6 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
   }
 
   let routeReasoning = false;
-  let category = "none";
   try {
     const cr = await fetch(`${API_URL}/work_mode/classify`, {
       method: "POST",
@@ -2578,15 +2577,13 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
     if (!cr.ok) return;
     const cj = await cr.json();
     routeReasoning = Boolean(cj.prompt_reasoning || cj.reasoning);
-    category = String(cj.category || "none").toLowerCase();
   } catch {
     return;
   }
   if (!routeReasoning) return;
-  if (!["school", "work", "errand"].includes(category)) return;
   workModeReasoningConfirmPending = {
     originalText: trimmed,
-    category,
+    category: "reasoning_candidate",
     askedAt: Date.now()
   };
   formData.append(
@@ -2754,6 +2751,28 @@ function onSidePaneClick(event) {
 
 function applyActionPayload(data) {
   const payload = data?.action_payload;
+  const lockToMusicPanel =
+    isVeraWorkModeOn() && appModePrefix() === "vera";
+
+  if (
+    lockToMusicPanel &&
+    (payload?.panel_type === "media_tabs" ||
+      payload?.panel_type === "news_results" ||
+      payload?.panel_type === "finance_chart")
+  ) {
+    const sidePaneEl = uiEl("side-pane");
+    if (sidePaneEl) {
+      const hasProductivityMarkup =
+        Boolean(sidePaneEl.innerHTML.trim()) && sidePaneEl.dataset.sidePaneKind === "productivity";
+      if (hasProductivityMarkup) {
+        if (sidePaneEl.hidden) restoreProductivityPanel("vera");
+      } else {
+        renderProductivityPanel();
+      }
+    }
+    return;
+  }
+
   if (payload?.panel_type === "media_tabs" || payload?.panel_type === "news_results") {
     /* Large innerHTML (news + images + video embeds) can block the main thread; defer so BMO mouth RAF keeps up. */
     requestAnimationFrame(() => renderMediaTabsPanel(payload));
