@@ -2968,6 +2968,71 @@ body.chat-started .input-bar {
   gap: clamp(14px, 3vw, 28px);
 }
 
+.vera-work-mode-btn {
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(12, 18, 28, 0.45);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.15s ease;
+}
+
+.vera-work-mode-btn:hover {
+  background: rgba(24, 32, 48, 0.55);
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+.vera-work-mode-btn:active {
+  transform: scale(0.98);
+}
+
+#vera-app.work-mode .vera-guide,
+#vera-app.work-mode .chat-main,
+#vera-app.work-mode .input-container,
+#vera-app.work-mode #vera-user-sign-in,
+#vera-app.work-mode #vera-interrupt-debug-header {
+  display: none !important;
+}
+
+#vera-app.work-mode #vera-productivity-mode,
+#vera-app.work-mode #vera-active-user-label {
+  display: none !important;
+}
+
+#vera-app.work-mode .chat-centered::after {
+  display: none !important;
+  content: none !important;
+}
+
+.vera-work-mode-dismiss {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: default;
+}
+
+body.vera-work-mode:not(.bmo-open) .spotify-mini-toggle {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 .vera-sign-in-nav {
   white-space: nowrap;
 }

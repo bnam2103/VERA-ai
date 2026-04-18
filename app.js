@@ -145,7 +145,7 @@ let interruptPartialRafTime = 0;
 /** "main" continuous/PTT vs "interrupt" post-barge-in utterance — controls silence-timer finalize. */
 let mainBrowserFinalizeKind = "main";
 let mainBrowserLastInterim = "";
-/** After >2 words during TTS, barge-in latched: same SR stream continues until 1s silence → LLM (no second SR). */
+/** After >2 words during TTS, barge-in latched: same SR stream continues until 1.3s silence → LLM (no second SR). */
 let interruptBargeInLatched = false;
 /** If interrupt-detect SR never emits onresult while TTS plays, abort so heuristic fallback can run. */
 let interruptDetectNoResultWatchdogTimer = null;
@@ -485,8 +485,8 @@ const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 /** Request NDJSON streaming TTS from /infer and /text so the first /audio URL arrives as soon as it is synthesized. */
 const STREAM_TTS = true;
 
-/** Browser Web Speech API: live partials, then 1s stable transcript → /infer without server ASR. */
-const BROWSER_ASR_MAIN_SILENCE_MS = 1000;
+/** Browser Web Speech API: live partials, then 1.3s stable transcript → /infer without server ASR. */
+const BROWSER_ASR_MAIN_SILENCE_MS = 1300;
 /** Min accumulated ms of changing partial transcript to count as interrupt (vs VAD on audio). */
 const BROWSER_ASR_INTERRUPT_SUSTAIN_MS = 350;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
@@ -985,6 +985,8 @@ function hideSidePanel() {
     }
   }, 840);
 }
+
+window.hideSidePanel = hideSidePanel;
 
 function spotifyMiniToggleId(prefix) {
   return `${prefix}-spotify-mini-toggle`;
@@ -2430,7 +2432,7 @@ function promoteInterruptPreviewToMainLiveBubble() {
 }
 
 /**
- * Browser ASR: >2 words ⇒ stop TTS; keep the same SpeechRecognition session and use 1s stable transcript → LLM.
+ * Browser ASR: >2 words ⇒ stop TTS; keep the same SpeechRecognition session and use 1.3s stable transcript → LLM.
  * (Does not start a second recognition — that was the old post-interrupt listener.)
  */
 function onBrowserInterruptBargeInFromDetect(event) {

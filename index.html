@@ -677,6 +677,15 @@
   <div class="vera-bottom-right-tools" aria-label="Quick tools">
     <button
       type="button"
+      id="vera-work-mode"
+      class="vera-work-mode-btn"
+      aria-pressed="false"
+      title="Hide chat — click empty area or Escape to show again"
+    >
+      Work mode
+    </button>
+    <button
+      type="button"
       id="vera-productivity-mode"
       class="productivity-mode-btn"
       title="Productivity mode — music panel"
@@ -685,6 +694,15 @@
     </button>
     <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
   </div>
+  <button
+    type="button"
+    id="vera-work-mode-dismiss"
+    class="vera-work-mode-dismiss"
+    hidden
+    tabindex="-1"
+    title="Show chat again (or press Escape)"
+    aria-label="Show chat interface"
+  ></button>
 </section>
 
 <section id="bmo-loading-screen" hidden>
@@ -936,6 +954,8 @@
   const bmoLoadingScreen = document.getElementById("bmo-loading-screen");
   const bmoPage = document.getElementById("bmo-page");
   const veraApp = document.getElementById("vera-app");
+  const veraWorkModeBtn = document.getElementById("vera-work-mode");
+  const veraWorkModeDismiss = document.getElementById("vera-work-mode-dismiss");
   const bmoLoadingDotsEl = document.querySelector(".bmo-loading-dots");
 
   const navHome = document.getElementById("nav-home");
@@ -1309,7 +1329,33 @@ function startTyping() {
     }
   };
 
+  function exitVeraWorkMode() {
+    veraApp?.classList.remove("work-mode");
+    document.body.classList.remove("vera-work-mode");
+    veraWorkModeBtn?.setAttribute("aria-pressed", "false");
+  }
+
+  function enterVeraWorkMode() {
+    if (!veraApp || veraApp.hidden) return;
+    if (typeof window.hideSidePanel === "function") {
+      window.hideSidePanel();
+    }
+    veraApp.classList.add("work-mode");
+    document.body.classList.add("vera-work-mode");
+    veraWorkModeBtn?.setAttribute("aria-pressed", "true");
+  }
+
+  veraWorkModeBtn?.addEventListener("click", () => {
+    if (!veraApp || veraApp.hidden) return;
+    if (veraApp.classList.contains("work-mode")) {
+      exitVeraWorkMode();
+      return;
+    }
+    enterVeraWorkMode();
+  });
+
   function openBmoPage() {
+    exitVeraWorkMode();
     if (!bmoPage.hidden) {
       return;
     }
@@ -1581,6 +1627,7 @@ function revealApp() {
   appRevealed = true;
 
   setTimeout(() => {
+    exitVeraWorkMode();
     if (typeof window.resetVoiceUiToIdle === "function") {
       window.resetVoiceUiToIdle();
     }
@@ -1651,6 +1698,7 @@ document.getElementById("return-home").onclick = async () => {
 };
 
 document.getElementById("return-home-vera").onclick = async () => {
+  exitVeraWorkMode();
   await resumeHomeMusic();
 
   if (typeof window.resetVoiceUiToIdle === "function") {
