@@ -2932,12 +2932,11 @@ body.chat-started .input-container {
   background: rgba(30, 215, 96, 0.28);
 }
 
+/* Track rows scroll with the parent `.spotify-results` only — avoid nested scrollbars in album/playlist drill-in. */
 .spotify-detail-tracklist {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: min(42vh, 340px);
-  overflow-y: auto;
 }
 
 .spotify-detail-track-row {
