@@ -2202,7 +2202,7 @@ function renderProductivityPanel() {
     <div class="side-pane-header">
       <div class="side-pane-heading">
         <h3 class="side-pane-title">Music panel</h3>
-        <div class="side-pane-subtitle spotify-brand">Music</div>
+        <div class="side-pane-subtitle spotify-brand">Spotify</div>
       </div>
       <div class="side-pane-controls">
         <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
@@ -2254,9 +2254,7 @@ function renderProductivityPanel() {
         <button type="submit" class="spotify-search-submit">Search</button>
       </form>
       <div class="spotify-song-view" id="${prefix}-spotify-song-view">
-        <div class="spotify-results" id="${prefix}-spotify-results" role="listbox" aria-label="Search results">
-          <p class="spotify-results-hint">Click a track: plays in VERA if Web Playback is connected; else 30s preview or open in Spotify.</p>
-        </div>
+        <div class="spotify-results" id="${prefix}-spotify-results" role="listbox" aria-label="Search results"></div>
       </div>
       <div class="spotify-playlist-view" id="${prefix}-spotify-playlist-view" hidden>
         <div class="spotify-playlist-layout">
