@@ -765,17 +765,18 @@ setInterval(checkServer, 30_000);
 function syncVeraFlowVoiceDockLayoutClass() {
   const veraApp = document.getElementById("vera-app");
   if (!veraApp) return;
-  if (veraApp.classList.contains("work-mode")) {
-    veraApp.classList.remove("vera-flow-voice-docked");
-    veraApp.classList.remove("vera-flow-input-active");
-    return;
-  }
   const st = document.getElementById("vera-status");
   const voiceBar = document.getElementById("vera-voice-bar");
   const keyboardBar = document.getElementById("vera-keyboard-bar");
   if (!st || !voiceBar || !keyboardBar) return;
   const voiceVisible = !voiceBar.classList.contains("hidden");
   const keyboardVisible = !keyboardBar.classList.contains("hidden");
+  if (veraApp.classList.contains("work-mode")) {
+    /* Flow-mode “docked” bottom padding does not apply; keep input-active when voice/keyboard chrome is up for consistent stacking. */
+    veraApp.classList.toggle("vera-flow-input-active", voiceVisible || keyboardVisible);
+    veraApp.classList.remove("vera-flow-voice-docked");
+    return;
+  }
   /* Layer corner tools above bottom fade whenever voice or keyboard chrome is showing (e.g. Ready, not only listening). */
   veraApp.classList.toggle("vera-flow-input-active", voiceVisible || keyboardVisible);
   const rec = st.classList.contains("recording");
@@ -1024,14 +1025,12 @@ function hideSidePanel() {
   document.body.classList.remove("news-panel-open");
   if (!keepProductivityMounted) {
     delete sidePaneEl.dataset.sidePaneKind;
-  } else {
-    upsertSpotifyMiniButton(prefix);
   }
   document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
   window.setTimeout(() => {
     if (!sidePaneEl.classList.contains("visible")) {
       sidePaneEl.hidden = true;
-      if (!keepProductivityMounted) {
+      if (!keepProductivityMounted && !isVeraWorkModeOn()) {
         sidePaneEl.innerHTML = "";
       }
     }
@@ -1046,24 +1045,6 @@ function spotifyMiniToggleId(prefix) {
 
 function removeSpotifyMiniButton(prefix) {
   document.getElementById(spotifyMiniToggleId(prefix))?.remove();
-}
-
-function upsertSpotifyMiniButton(prefix) {
-  let btn = document.getElementById(spotifyMiniToggleId(prefix));
-  if (!btn) {
-    btn = document.createElement("button");
-    btn.id = spotifyMiniToggleId(prefix);
-    btn.type = "button";
-    btn.className = "spotify-mini-toggle";
-    btn.textContent = "♪";
-    btn.setAttribute("aria-label", "Restore music panel");
-    btn.title = "Restore music panel";
-    btn.addEventListener("click", () => {
-      restoreProductivityPanel(prefix);
-    });
-    document.body.appendChild(btn);
-  }
-  btn.hidden = false;
 }
 
 function isSpotifyPlaybackActive(prefix) {
@@ -2068,10 +2049,12 @@ function spotifyApplyViewMode(prefix) {
   const isPlaylist = ui.view === "playlist";
   const songView = document.getElementById(`${prefix}-spotify-song-view`);
   const playlistView = document.getElementById(`${prefix}-spotify-playlist-view`);
+  const searchForm = document.getElementById(`${prefix}-spotify-search-form`);
   const songTab = document.getElementById(`${prefix}-spotify-tab-song`);
   const playlistTab = document.getElementById(`${prefix}-spotify-tab-playlist`);
   if (songView) songView.hidden = isPlaylist;
   if (playlistView) playlistView.hidden = !isPlaylist;
+  if (searchForm) searchForm.hidden = isPlaylist;
   if (songTab) {
     songTab.classList.toggle("active", !isPlaylist);
     songTab.setAttribute("aria-selected", isPlaylist ? "false" : "true");
@@ -2671,8 +2654,8 @@ function renderProductivityPanel() {
           </div>
         </div>
       </div>
-      <div class="spotify-view-toggle" role="tablist" aria-label="Music mode">
-        <button type="button" class="spotify-view-tab active" id="${prefix}-spotify-tab-song" data-spotify-view="song" aria-selected="true">Song</button>
+      <div class="spotify-view-toggle" role="tablist" aria-label="Search and playlists">
+        <button type="button" class="spotify-view-tab active" id="${prefix}-spotify-tab-song" data-spotify-view="song" aria-selected="true">Search</button>
         <button type="button" class="spotify-view-tab" id="${prefix}-spotify-tab-playlist" data-spotify-view="playlist" aria-selected="false">Playlist</button>
       </div>
       <form class="spotify-search-form" id="${prefix}-spotify-search-form">

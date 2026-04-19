@@ -1430,11 +1430,12 @@ function startTyping() {
   function enterVeraWorkMode() {
     if (!veraApp || veraApp.hidden) return;
     if (window.matchMedia("(max-width: 768px)").matches) return;
+    /* Apply work-mode before hideSidePanel so productivity/music can stay pinned and the side pane is not wiped. */
+    veraApp.classList.add("work-mode");
+    veraWorkModeBtn?.setAttribute("aria-pressed", "true");
     if (typeof window.hideSidePanel === "function") {
       window.hideSidePanel();
     }
-    veraApp.classList.add("work-mode");
-    veraWorkModeBtn?.setAttribute("aria-pressed", "true");
     if (typeof window.layoutVeraWorkModePanels === "function") {
       window.layoutVeraWorkModePanels(true);
     }
@@ -1443,6 +1444,9 @@ function startTyping() {
     }
     if (typeof window.ensureVeraVoiceUiActive === "function") {
       void window.ensureVeraVoiceUiActive();
+    }
+    if (typeof window.syncVeraFlowVoiceDockLayoutClass === "function") {
+      window.syncVeraFlowVoiceDockLayoutClass();
     }
     if (typeof window.syncVeraHeaderDateTimeForWorkMode === "function") {
       window.syncVeraHeaderDateTimeForWorkMode();
