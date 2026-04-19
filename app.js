@@ -1836,6 +1836,66 @@ function spotifyUpdateNowState(partial = {}) {
   return window.__veraSpotifyNowState;
 }
 
+function spotifyStopWebPlaybackUiTick() {
+  if (window.__veraSpotifyUiTick != null) {
+    window.clearInterval(window.__veraSpotifyUiTick);
+    window.__veraSpotifyUiTick = null;
+  }
+  window.__veraSpotifyUiTickPrefix = null;
+}
+
+/**
+ * While Web Playback is running, ``player_state_changed`` is sparse; poll ``getCurrentState`` so the
+ * progress bar and elapsed time update smoothly (~4×/s, paused when the tab is hidden).
+ */
+function spotifyStartWebPlaybackUiTick(prefix) {
+  spotifyStopWebPlaybackUiTick();
+  const pfx = prefix || appModePrefix();
+  window.__veraSpotifyUiTickPrefix = pfx;
+  let inFlight = false;
+  window.__veraSpotifyUiTick = window.setInterval(async () => {
+    if (typeof document !== "undefined" && document.hidden) return;
+    if (inFlight) return;
+    const player = window.__veraSpotifyPlayer;
+    const tickPrefix = window.__veraSpotifyUiTickPrefix || appModePrefix();
+    if (!player || typeof player.getCurrentState !== "function") {
+      spotifyStopWebPlaybackUiTick();
+      return;
+    }
+    inFlight = true;
+    try {
+      const state = await player.getCurrentState();
+      if (!state) {
+        spotifyStopWebPlaybackUiTick();
+        return;
+      }
+      const curTrack = state.track_window?.current_track;
+      const position_ms = Number(state.position) || 0;
+      if (state.paused || !curTrack) {
+        spotifyUpdateNowState({
+          position_ms,
+          paused: !!state.paused,
+          active: !state.paused && !!curTrack
+        });
+        spotifyApplyNowStateToPanel(tickPrefix);
+        if (state.paused || !curTrack) spotifyStopWebPlaybackUiTick();
+        return;
+      }
+      spotifyUpdateNowState({
+        position_ms,
+        duration_ms: Number(curTrack.duration_ms) || spotifyEnsureNowState().duration_ms,
+        paused: false,
+        active: true
+      });
+      spotifyApplyNowStateToPanel(tickPrefix);
+    } catch (_) {
+      spotifyStopWebPlaybackUiTick();
+    } finally {
+      inFlight = false;
+    }
+  }, 250);
+}
+
 function spotifyApplyNowStateToPanel(prefix) {
   const s = spotifyEnsureNowState();
   const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
@@ -2014,6 +2074,7 @@ async function ensureSpotifyWebPlayer(prefix) {
 
   if (window.__veraSpotifyPlayer) {
     try {
+      spotifyStopWebPlaybackUiTick();
       await window.__veraSpotifyPlayer.disconnect();
     } catch (_) {
       /* ignore */
@@ -2046,6 +2107,7 @@ async function ensureSpotifyWebPlayer(prefix) {
     });
   });
   player.addListener("not_ready", () => {
+    spotifyStopWebPlaybackUiTick();
     window.__veraSpotifyDeviceId = null;
   });
   player.addListener("authentication_error", ({ message }) => {
@@ -2055,7 +2117,10 @@ async function ensureSpotifyWebPlayer(prefix) {
     console.warn("[Spotify] Web Playback playback_error", message);
   });
   player.addListener("player_state_changed", (state) => {
-    if (!state) return;
+    if (!state) {
+      spotifyStopWebPlaybackUiTick();
+      return;
+    }
     const curTrack = state?.track_window?.current_track;
     if (curTrack) {
       const cover = curTrack.album?.images?.[0]?.url || "";
@@ -2085,6 +2150,11 @@ async function ensureSpotifyWebPlayer(prefix) {
         playBtn.textContent = state.paused ? "▶" : "⏸";
         playBtn.setAttribute("aria-label", state.paused ? "Play" : "Pause");
       }
+    }
+    if (state && !state.paused && state.track_window?.current_track) {
+      spotifyStartWebPlaybackUiTick(prefix);
+    } else {
+      spotifyStopWebPlaybackUiTick();
     }
     if (!curTrack) return;
     const t = curTrack;
@@ -2358,6 +2428,7 @@ function wireProductivityPanelEvents(prefix) {
     window.__veraSpotifyPlaybackActive = false;
     window.__veraSpotifyResume = null;
     window.__veraSpotifyResumeWeb = null;
+    spotifyStopWebPlaybackUiTick();
     spotifyUpdateNowState({
       title: "",
       artist: "",
