@@ -2690,6 +2690,11 @@ body.chat-started .input-container {
   gap: 8px;
 }
 
+/* Playlist tab: catalog search is hidden (belt-and-suspenders with [hidden] — flex on <form> can win in some engines). */
+.spotify-panel-body[data-spotify-view="playlist"] .spotify-search-form {
+  display: none !important;
+}
+
 .spotify-search-input {
   flex: 1;
   min-width: 0;
@@ -3272,6 +3277,11 @@ body.chat-started .input-bar {
 }
 
 #vera-app.work-mode #vera-active-user-label {
+  display: none !important;
+}
+
+/* Music lives in the work-mode left column; hide the floating Music pill (non–work-mode still uses it). */
+#vera-app.work-mode #vera-productivity-mode {
   display: none !important;
 }
 

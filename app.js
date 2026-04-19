@@ -1127,6 +1127,7 @@ function restoreProductivityPanel(prefix) {
   document.body.classList.add("news-panel-open");
   document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
   document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
+  spotifyApplyViewMode(prefix);
   requestAnimationFrame(() => {
     sidePaneEl.classList.add("visible");
   });
@@ -1587,12 +1588,19 @@ async function spotifyOpenArtistSearchDetail(prefix, meta) {
   const list = Array.isArray(tracks) ? tracks : [];
   window.__veraSpotifyArtistTopTracks ||= {};
   window.__veraSpotifyArtistTopTracks[prefix] = list;
-  const first = spotifyDetailTrackRowsHtml(list, 0, Math.min(5, list.length));
+  /* Spotify “top” is typically ≤10 tracks — show them all at once (no redundant “Next 5” after the last track). */
+  const pageSize = 5;
+  const showAllAtOnce = list.length <= 10;
+  const firstCount = showAllAtOnce ? list.length : Math.min(pageSize, list.length);
+  const first = spotifyDetailTrackRowsHtml(list, 0, firstCount);
   const thumb = thumbUrl
     ? `<img class="spotify-search-detail-cover" src="${escapeHtml(thumbUrl)}" alt="" loading="lazy" />`
     : `<div class="spotify-search-detail-cover spotify-search-detail-cover--ph" aria-hidden="true"></div>`;
   const titleEsc = escapeHtml(title);
-  const moreHidden = list.length <= 5 ? "hidden" : "";
+  const moreButtonHtml =
+    showAllAtOnce || list.length <= pageSize
+      ? ""
+      : `<button type="button" class="spotify-artist-top-more" aria-label="Show five more tracks"><span class="spotify-artist-more-arrow" aria-hidden="true">→</span><span>Next 5</span></button>`;
   resultsEl.innerHTML = `
     <div class="spotify-search-detail" data-spotify-detail="artist">
       <button type="button" class="spotify-search-back">← Results</button>
@@ -1604,21 +1612,21 @@ async function spotifyOpenArtistSearchDetail(prefix, meta) {
         </div>
       </div>
       <div class="spotify-detail-tracklist" id="${prefix}-spotify-artist-track-list">${first || `<p class="spotify-results-hint">No top tracks.</p>`}</div>
-      <button type="button" class="spotify-artist-top-more" ${moreHidden} aria-label="Show five more tracks"><span class="spotify-artist-more-arrow" aria-hidden="true">→</span><span>Next 5</span></button>
+      ${moreButtonHtml}
     </div>`;
 }
 
 function spotifyAppendArtistTopTracksPage(prefix) {
   const list = window.__veraSpotifyArtistTopTracks?.[prefix];
-  const resultsRoot = document.getElementById(`${prefix}-spotify-results`);
   const wrap = document.getElementById(`${prefix}-spotify-artist-track-list`);
-  const moreBtn = resultsRoot?.querySelector(".spotify-artist-top-more");
+  const detailRoot = wrap?.closest(".spotify-search-detail");
+  const moreBtn = detailRoot?.querySelector(".spotify-artist-top-more");
   if (!Array.isArray(list) || !wrap || !moreBtn) return;
   const cur = wrap.querySelectorAll(".spotify-detail-track-row").length;
   const next = spotifyDetailTrackRowsHtml(list, cur, Math.min(cur + 5, list.length));
   if (next) wrap.insertAdjacentHTML("beforeend", next);
   if (wrap.querySelectorAll(".spotify-detail-track-row").length >= list.length) {
-    moreBtn.hidden = true;
+    moreBtn.remove();
   }
 }
 
@@ -2047,14 +2055,21 @@ function spotifySyncPlaylistSelectionHighlight(prefix) {
 function spotifyApplyViewMode(prefix) {
   const ui = spotifyEnsureUiState();
   const isPlaylist = ui.view === "playlist";
+  const panelBody = document.querySelector(`[data-productivity-root="${prefix}"]`);
   const songView = document.getElementById(`${prefix}-spotify-song-view`);
   const playlistView = document.getElementById(`${prefix}-spotify-playlist-view`);
   const searchForm = document.getElementById(`${prefix}-spotify-search-form`);
   const songTab = document.getElementById(`${prefix}-spotify-tab-song`);
   const playlistTab = document.getElementById(`${prefix}-spotify-tab-playlist`);
+  if (panelBody instanceof HTMLElement) {
+    panelBody.dataset.spotifyView = isPlaylist ? "playlist" : "search";
+  }
   if (songView) songView.hidden = isPlaylist;
   if (playlistView) playlistView.hidden = !isPlaylist;
-  if (searchForm) searchForm.hidden = isPlaylist;
+  if (searchForm) {
+    searchForm.hidden = isPlaylist;
+    searchForm.setAttribute("aria-hidden", isPlaylist ? "true" : "false");
+  }
   if (songTab) {
     songTab.classList.toggle("active", !isPlaylist);
     songTab.setAttribute("aria-selected", isPlaylist ? "false" : "true");
@@ -2617,7 +2632,7 @@ function renderProductivityPanel() {
         <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
       </div>
     </div>
-    <div class="spotify-panel-body" data-productivity-root="${prefix}">
+    <div class="spotify-panel-body" data-productivity-root="${prefix}" data-spotify-view="search">
       <div class="spotify-connect-row" id="${prefix}-spotify-connect-row">
         <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link">Connect Spotify (Premium)</a>
         <button type="button" class="spotify-logout-btn" id="${prefix}-spotify-logout" hidden>Disconnect</button>
