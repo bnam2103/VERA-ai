@@ -1836,6 +1836,84 @@ function spotifyUpdateNowState(partial = {}) {
   return window.__veraSpotifyNowState;
 }
 
+/** After user starts a ``spotify:track:`` on Web Playback, ignore mismatched SDK metadata until catch-up (prevents title/cover flicker). */
+function spotifyClearPendingSdkTrack() {
+  window.__veraSpotifyPendingSdkTrack = null;
+}
+
+function spotifySetPendingSdkTrack(uri) {
+  const u = String(uri || "").trim();
+  if (!u.startsWith("spotify:track:")) {
+    spotifyClearPendingSdkTrack();
+    return;
+  }
+  window.__veraSpotifyPendingSdkTrack = { uri: u, until: Date.now() + 3800 };
+}
+
+function spotifySdkMetadataStaleVersusPending(sdkTrackUri) {
+  const p = window.__veraSpotifyPendingSdkTrack;
+  if (!p?.uri) return false;
+  if (Date.now() > p.until) {
+    spotifyClearPendingSdkTrack();
+    return false;
+  }
+  const s = String(sdkTrackUri || "").trim();
+  return Boolean(s) && s !== p.uri;
+}
+
+function spotifyClearPendingIfSdkMatches(sdkTrackUri) {
+  const p = window.__veraSpotifyPendingSdkTrack;
+  if (!p?.uri) return;
+  if (Date.now() > p.until) {
+    spotifyClearPendingSdkTrack();
+    return;
+  }
+  if (String(sdkTrackUri || "").trim() === p.uri) spotifyClearPendingSdkTrack();
+}
+
+/** Merge Spotify Web Playback ``state`` into ``__veraSpotifyNowState`` (metadata skipped when pending URI mismatches SDK). */
+function spotifySyncNowStateFromWebSdk(state) {
+  if (!state) return;
+  const curTrack = state.track_window?.current_track;
+  const position_ms = Number(state.position) || 0;
+  const paused = !!state.paused;
+
+  if (!curTrack) {
+    spotifyUpdateNowState({
+      position_ms,
+      paused,
+      active: false
+    });
+    window.__veraSpotifyPlaybackActive = false;
+    return;
+  }
+
+  const sdkUri = String(curTrack.uri || "").trim();
+  const active = !paused;
+  if (spotifySdkMetadataStaleVersusPending(sdkUri)) {
+    spotifyUpdateNowState({
+      position_ms,
+      paused,
+      active
+    });
+    window.__veraSpotifyPlaybackActive = active;
+    return;
+  }
+
+  spotifyClearPendingIfSdkMatches(sdkUri);
+  const cover = curTrack.album?.images?.[0]?.url || "";
+  spotifyUpdateNowState({
+    title: curTrack.name || "",
+    artist: (curTrack.artists || []).map((a) => a.name).filter(Boolean).join(", "),
+    cover_url: cover,
+    position_ms,
+    duration_ms: Number(curTrack.duration_ms) || 0,
+    paused,
+    active
+  });
+  window.__veraSpotifyPlaybackActive = active;
+}
+
 function spotifyStopWebPlaybackUiTick() {
   if (window.__veraSpotifyUiTick != null) {
     window.clearInterval(window.__veraSpotifyUiTick);
@@ -1869,25 +1947,10 @@ function spotifyStartWebPlaybackUiTick(prefix) {
         spotifyStopWebPlaybackUiTick();
         return;
       }
-      const curTrack = state.track_window?.current_track;
-      const position_ms = Number(state.position) || 0;
-      if (state.paused || !curTrack) {
-        spotifyUpdateNowState({
-          position_ms,
-          paused: !!state.paused,
-          active: !state.paused && !!curTrack
-        });
-        spotifyApplyNowStateToPanel(tickPrefix);
-        if (state.paused || !curTrack) spotifyStopWebPlaybackUiTick();
-        return;
-      }
-      spotifyUpdateNowState({
-        position_ms,
-        duration_ms: Number(curTrack.duration_ms) || spotifyEnsureNowState().duration_ms,
-        paused: false,
-        active: true
-      });
+      spotifySyncNowStateFromWebSdk(state);
       spotifyApplyNowStateToPanel(tickPrefix);
+      const curTrack = state.track_window?.current_track;
+      if (state.paused || !curTrack) spotifyStopWebPlaybackUiTick();
     } catch (_) {
       spotifyStopWebPlaybackUiTick();
     } finally {
@@ -2075,6 +2138,7 @@ async function ensureSpotifyWebPlayer(prefix) {
   if (window.__veraSpotifyPlayer) {
     try {
       spotifyStopWebPlaybackUiTick();
+      spotifyClearPendingSdkTrack();
       await window.__veraSpotifyPlayer.disconnect();
     } catch (_) {
       /* ignore */
@@ -2108,6 +2172,7 @@ async function ensureSpotifyWebPlayer(prefix) {
   });
   player.addListener("not_ready", () => {
     spotifyStopWebPlaybackUiTick();
+    spotifyClearPendingSdkTrack();
     window.__veraSpotifyDeviceId = null;
   });
   player.addListener("authentication_error", ({ message }) => {
@@ -2122,25 +2187,13 @@ async function ensureSpotifyWebPlayer(prefix) {
       return;
     }
     const curTrack = state?.track_window?.current_track;
-    if (curTrack) {
-      const cover = curTrack.album?.images?.[0]?.url || "";
-      spotifyUpdateNowState({
-        title: curTrack.name || "",
-        artist: (curTrack.artists || []).map((a) => a.name).filter(Boolean).join(", "),
-        cover_url: cover,
-        position_ms: Number(state.position) || 0,
-        duration_ms: Number(curTrack.duration_ms) || 0,
-        paused: !!state.paused,
-        active: !state.paused
-      });
-      window.__veraSpotifyPlaybackActive = !state.paused;
-      if (state.paused) removeSpotifyMiniButton(prefix);
-      spotifyApplyNowStateToPanel(prefix);
-      window.__veraSpotifyResumeWeb = {
-        position_ms: Number(state.position) || 0,
-        paused: !!state.paused
-      };
-    }
+    spotifySyncNowStateFromWebSdk(state);
+    if (state.paused) removeSpotifyMiniButton(prefix);
+    spotifyApplyNowStateToPanel(prefix);
+    window.__veraSpotifyResumeWeb = {
+      position_ms: Number(state.position) || 0,
+      paused: !!state.paused
+    };
     const playBtn = document.getElementById(`${prefix}-spotify-play`);
     if (playBtn) {
       if (!curTrack) {
@@ -2155,20 +2208,6 @@ async function ensureSpotifyWebPlayer(prefix) {
       spotifyStartWebPlaybackUiTick(prefix);
     } else {
       spotifyStopWebPlaybackUiTick();
-    }
-    if (!curTrack) return;
-    const t = curTrack;
-    const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
-    const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-    if (titleEl) titleEl.textContent = t.name || "";
-    if (artistEl) {
-      artistEl.textContent = (t.artists || []).map((a) => a.name).filter(Boolean).join(", ") || "";
-    }
-    const imgs = t.album?.images;
-    const ph = document.getElementById(`${prefix}-spotify-art-placeholder`);
-    if (imgs?.length && ph) {
-      ph.style.backgroundImage = `url(${JSON.stringify(imgs[0].url)})`;
-      ph.style.backgroundSize = "cover";
     }
   });
 
@@ -2429,6 +2468,7 @@ function wireProductivityPanelEvents(prefix) {
     window.__veraSpotifyResume = null;
     window.__veraSpotifyResumeWeb = null;
     spotifyStopWebPlaybackUiTick();
+    spotifyClearPendingSdkTrack();
     spotifyUpdateNowState({
       title: "",
       artist: "",
@@ -7261,6 +7301,9 @@ window.VeraSpotify = {
     }
 
     if (uri && window.__veraSpotifyDeviceId) {
+      if (String(uri).trim().startsWith("spotify:track:")) {
+        spotifySetPendingSdkTrack(uri);
+      }
       const res = await fetch(`${base}/api/spotify/player/play`, {
         method: "POST",
         credentials: "include",
@@ -7278,6 +7321,7 @@ window.VeraSpotify = {
         }
         return;
       }
+      spotifyClearPendingSdkTrack();
       let detail = "";
       try {
         const j = await res.json();
@@ -7294,6 +7338,7 @@ window.VeraSpotify = {
     }
 
     if (connectedSpotify && uri) {
+      spotifyClearPendingSdkTrack();
       if (artistEl) {
         artistEl.textContent =
           "Connected, but the in-browser player isn't ready. Confirm Spotify Premium and try again.";
@@ -7301,6 +7346,7 @@ window.VeraSpotify = {
       return;
     }
 
+    spotifyClearPendingSdkTrack();
     const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
     if (!audio) return;
     audio.volume = spotifyGetVolume();
@@ -7339,6 +7385,7 @@ window.VeraSpotify = {
     const base = localBackendBase();
     const contextUri = String(playlistUri || "").trim();
     if (!contextUri) return;
+    spotifyClearPendingSdkTrack();
 
     const st = await fetch(`${base}/api/spotify/connection-status`, {
       credentials: "include",
@@ -7421,6 +7468,9 @@ window.VeraSpotify = {
       return;
     }
 
+    if (String(offsetUri).trim().startsWith("spotify:track:")) {
+      spotifySetPendingSdkTrack(offsetUri);
+    }
     const res = await fetch(`${base}/api/spotify/player/play-context`, {
       method: "POST",
       credentials: "include",
