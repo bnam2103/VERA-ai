@@ -1488,6 +1488,7 @@ function renderSpotifyPlaylistResults(prefix, playlists) {
       `;
     })
     .join("");
+  spotifySyncPlaylistSelectionHighlight(prefix);
 }
 
 function renderSpotifyPlaylistTrackResults(prefix, tracks) {
@@ -1714,6 +1715,20 @@ function spotifyEnsureUiState() {
     };
   }
   return window.__veraSpotifyUiState;
+}
+
+function spotifySyncPlaylistSelectionHighlight(prefix) {
+  const uiState = spotifyEnsureUiState();
+  const playlistRoot = document.getElementById(`${prefix}-spotify-playlists`);
+  if (!playlistRoot) return;
+  const selId = String(uiState.selectedPlaylistId || "");
+  playlistRoot.querySelectorAll(".spotify-playlist-row").forEach((el) => {
+    if (!(el instanceof HTMLElement)) return;
+    const id = String(el.dataset.playlistId || "");
+    const selected = Boolean(selId && id === selId);
+    el.classList.toggle("is-selected", selected);
+    el.setAttribute("aria-selected", selected ? "true" : "false");
+  });
 }
 
 function spotifyApplyViewMode(prefix) {
@@ -1954,14 +1969,9 @@ function wireProductivityPanelEvents(prefix) {
   const playlistRoot = document.getElementById(`${prefix}-spotify-playlists`);
   const playlistTracksRoot = document.getElementById(`${prefix}-spotify-playlist-tracks`);
   const playlistPlayBtn = document.getElementById(`${prefix}-spotify-playlist-play`);
-  const playlistSelectedEl = document.getElementById(`${prefix}-spotify-playlist-selected`);
 
   const applyPlaylistSelectedUi = () => {
-    if (playlistSelectedEl) {
-      playlistSelectedEl.textContent = uiState.selectedPlaylistName
-        ? `Selected: ${uiState.selectedPlaylistName}`
-        : "No playlist selected.";
-    }
+    spotifySyncPlaylistSelectionHighlight(prefix);
     if (playlistPlayBtn) playlistPlayBtn.disabled = !uiState.selectedPlaylistUri;
   };
   applyPlaylistSelectedUi();
@@ -2271,7 +2281,6 @@ function renderProductivityPanel() {
             <div class="spotify-results" id="${prefix}-spotify-playlists" role="listbox" aria-label="Your playlists">
               <p class="spotify-results-hint">Select a playlist to load its songs.</p>
             </div>
-            <div class="spotify-playlist-selected" id="${prefix}-spotify-playlist-selected">No playlist selected.</div>
           </div>
         </div>
       </div>
