@@ -2762,38 +2762,12 @@ body.chat-started .input-container {
   gap: 6px;
 }
 
-.spotify-playlist-actions {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.spotify-playlist-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  gap: 10px;
-}
-
-.spotify-playlist-tracks-pane,
-.spotify-playlist-list-pane {
+.spotify-playlist-view {
   min-width: 0;
 }
 
-.spotify-playlist-pane-title {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  margin: 0 0 6px;
-  color: rgba(255, 255, 255, 0.72);
-}
-
-.spotify-playlist-tracks-pane .spotify-results,
-.spotify-playlist-list-pane .spotify-results {
-  max-height: min(34vh, 290px);
-}
-
-.spotify-playlist-play-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.spotify-playlist-root.spotify-results {
+  max-height: min(40vh, 320px);
 }
 
 .spotify-playlist-row.is-selected {
@@ -5385,10 +5359,6 @@ body.bmo-open .spotify-search-submit {
 
 body.bmo-open .spotify-search-submit:hover {
   background: rgba(177, 246, 191, 0.95);
-}
-
-body.bmo-open .spotify-playlist-pane-title {
-  color: rgba(24, 49, 39, 0.82);
 }
 
 body.bmo-open .spotify-results {
