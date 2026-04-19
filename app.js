@@ -758,6 +758,41 @@ setInterval(checkServer, 30_000);
    UI HELPERS
 ========================= */
 
+/**
+ * Flow (non–work) mode: dock input row (voice or keyboard) + lift corner tools when the voice bar
+ * is in a docked state (listening / input muted) or the keyboard bar is visible.
+ */
+function syncVeraFlowVoiceDockLayoutClass() {
+  const veraApp = document.getElementById("vera-app");
+  if (!veraApp) return;
+  if (veraApp.classList.contains("work-mode")) {
+    veraApp.classList.remove("vera-flow-voice-docked");
+    veraApp.classList.remove("vera-flow-input-active");
+    return;
+  }
+  const st = document.getElementById("vera-status");
+  const voiceBar = document.getElementById("vera-voice-bar");
+  const keyboardBar = document.getElementById("vera-keyboard-bar");
+  if (!st || !voiceBar || !keyboardBar) return;
+  const voiceVisible = !voiceBar.classList.contains("hidden");
+  const keyboardVisible = !keyboardBar.classList.contains("hidden");
+  /* Layer corner tools above bottom fade whenever voice or keyboard chrome is showing (e.g. Ready, not only listening). */
+  veraApp.classList.toggle("vera-flow-input-active", voiceVisible || keyboardVisible);
+  const rec = st.classList.contains("recording");
+  const mutedIdle =
+    st.classList.contains("idle") && /muted/i.test(String(st.textContent || "").trim());
+  const voiceDock = voiceVisible && (rec || mutedIdle);
+  const dock = voiceDock || keyboardVisible;
+  veraApp.classList.toggle("vera-flow-voice-docked", dock);
+  if (dock) {
+    ensureChatStartedLayout();
+  }
+}
+
+window.syncVeraFlowVoiceDockLayoutClass = syncVeraFlowVoiceDockLayoutClass;
+/** @deprecated use syncVeraFlowVoiceDockLayoutClass */
+window.syncVeraVoiceListeningLayoutClass = syncVeraFlowVoiceDockLayoutClass;
+
 function setStatus(text, cls) {
   const statusEl = uiEl("status");
   if (!statusEl) return;
@@ -767,6 +802,12 @@ function setStatus(text, cls) {
     statusEl.textContent = text;
   }
   statusEl.className = `status ${cls}`;
+  if (statusEl.id === "vera-status") {
+    if (cls === "recording" && typeof window.cancelStartupTypingForVoiceEntry === "function") {
+      window.cancelStartupTypingForVoiceEntry();
+    }
+    syncVeraFlowVoiceDockLayoutClass();
+  }
 }
 
 function updateMuteInputButton() {
@@ -1262,22 +1303,23 @@ function renderMediaTabsPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
 
-  document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+  const mount = () => {
+    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
 
-  const results = Array.isArray(payload?.news_results)
-    ? payload.news_results
-    : Array.isArray(payload?.results)
-      ? payload.results
-      : [];
-  const images = Array.isArray(payload?.images) ? payload.images : [];
-  const videos = Array.isArray(payload?.videos) ? payload.videos : [];
-  const defaultTab = payload?.default_tab || "news";
+    const results = Array.isArray(payload?.news_results)
+      ? payload.news_results
+      : Array.isArray(payload?.results)
+        ? payload.results
+        : [];
+    const images = Array.isArray(payload?.images) ? payload.images : [];
+    const videos = Array.isArray(payload?.videos) ? payload.videos : [];
+    const defaultTab = payload?.default_tab || "news";
 
-  sidePaneEl.hidden = false;
-  delete sidePaneEl.dataset.sidePaneKind;
-  document.body.classList.add("news-panel-open");
+    sidePaneEl.hidden = false;
+    delete sidePaneEl.dataset.sidePaneKind;
+    document.body.classList.add("news-panel-open");
 
-  sidePaneEl.innerHTML = `
+    sidePaneEl.innerHTML = `
     <div class="side-pane-header">
       <div class="side-pane-heading">
         <h3 class="side-pane-title">${escapeHtml(payload?.title || "News Results")}</h3>
@@ -1303,28 +1345,32 @@ function renderMediaTabsPanel(payload) {
     </div>
   `;
 
-  sidePaneEl.scrollTop = 0;
+    sidePaneEl.scrollTop = 0;
 
-  requestAnimationFrame(() => {
-    sidePaneEl.classList.add("visible");
-  });
+    requestAnimationFrame(() => {
+      sidePaneEl.classList.add("visible");
+    });
+  };
+
+  runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
 }
 
 function renderFinanceChartPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
 
-  document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+  const mount = () => {
+    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
 
-  const frameSrc = payload?.chart_url
-    ? (payload.chart_url.startsWith("/") ? `${API_URL}${payload.chart_url}` : payload.chart_url)
-    : "";
+    const frameSrc = payload?.chart_url
+      ? (payload.chart_url.startsWith("/") ? `${API_URL}${payload.chart_url}` : payload.chart_url)
+      : "";
 
-  sidePaneEl.hidden = false;
-  delete sidePaneEl.dataset.sidePaneKind;
-  document.body.classList.add("news-panel-open");
+    sidePaneEl.hidden = false;
+    delete sidePaneEl.dataset.sidePaneKind;
+    document.body.classList.add("news-panel-open");
 
-  sidePaneEl.innerHTML = `
+    sidePaneEl.innerHTML = `
     <div class="side-pane-header">
       <div class="side-pane-heading">
         <h3 class="side-pane-title">${escapeHtml(payload?.title || "Stock Chart")}</h3>
@@ -1354,11 +1400,14 @@ function renderFinanceChartPanel(payload) {
     </div>
   `;
 
-  sidePaneEl.scrollTop = 0;
+    sidePaneEl.scrollTop = 0;
 
-  requestAnimationFrame(() => {
-    sidePaneEl.classList.add("visible");
-  });
+    requestAnimationFrame(() => {
+      sidePaneEl.classList.add("visible");
+    });
+  };
+
+  runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
 }
 
 /** spotify:track:abc -> https://open.spotify.com/track/abc when API omits external_urls */
@@ -2144,11 +2193,12 @@ function renderProductivityPanel() {
   if (!sidePaneEl) return;
   const prefix = appModePrefix();
 
-  sidePaneEl.hidden = false;
-  sidePaneEl.dataset.sidePaneKind = "productivity";
-  document.body.classList.add("news-panel-open");
+  const mount = () => {
+    sidePaneEl.hidden = false;
+    sidePaneEl.dataset.sidePaneKind = "productivity";
+    document.body.classList.add("news-panel-open");
 
-  sidePaneEl.innerHTML = `
+    sidePaneEl.innerHTML = `
     <div class="side-pane-header">
       <div class="side-pane-heading">
         <h3 class="side-pane-title">Music panel</h3>
@@ -2231,12 +2281,15 @@ function renderProductivityPanel() {
     </div>
   `;
 
-  sidePaneEl.scrollTop = 0;
-  requestAnimationFrame(() => {
-    sidePaneEl.classList.add("visible");
-  });
-  removeSpotifyMiniButton(prefix);
-  wireProductivityPanelEvents(prefix);
+    sidePaneEl.scrollTop = 0;
+    requestAnimationFrame(() => {
+      sidePaneEl.classList.add("visible");
+    });
+    removeSpotifyMiniButton(prefix);
+    wireProductivityPanelEvents(prefix);
+  };
+
+  runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
 }
 
 function toggleProductivityPanel() {
@@ -2273,6 +2326,58 @@ wireProductivityModeButtons();
 ========================= */
 
 const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
+const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
+const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
+
+function getWorkModeLeftPaneLayout() {
+  try {
+    const v = localStorage.getItem(WORK_LEFT_PANES_LAYOUT_KEY);
+    if (v === "music-full" || v === "checklist-full" || v === "split") return v;
+  } catch (_) {}
+  return "split";
+}
+
+function setWorkModeLeftPaneLayout(layout) {
+  const left = document.getElementById("vera-wm-left");
+  if (!left) return;
+  if (layout !== "split" && layout !== "music-full" && layout !== "checklist-full") layout = "split";
+  left.dataset.wmLeftLayout = layout;
+  try {
+    localStorage.setItem(WORK_LEFT_PANES_LAYOUT_KEY, layout);
+  } catch (_) {}
+}
+
+function applyWorkModeLeftPaneLayoutFromStorage() {
+  setWorkModeLeftPaneLayout(getWorkModeLeftPaneLayout());
+}
+
+function wireWorkModeLeftPaneLayout() {
+  const left = document.getElementById("vera-wm-left");
+  if (!left || left.dataset.wmLeftPaneWired === "1") return;
+  left.dataset.wmLeftPaneWired = "1";
+  left.addEventListener("click", (e) => {
+    if (!isVeraWorkModeOn()) return;
+    const btn = e.target.closest("[data-wm-pane-action]");
+    if (!(btn instanceof HTMLElement)) return;
+    const pane = btn.dataset.wmPane;
+    const action = btn.dataset.wmPaneAction;
+    if ((pane !== "music" && pane !== "checklist") || (action !== "expand" && action !== "collapse")) return;
+    e.preventDefault();
+    const cur = getWorkModeLeftPaneLayout();
+
+    if (action === "collapse") {
+      if (cur === "split") setWorkModeLeftPaneLayout(pane === "music" ? "checklist-full" : "music-full");
+      else if (cur === "music-full" && pane === "music") setWorkModeLeftPaneLayout("split");
+      else if (cur === "checklist-full" && pane === "checklist") setWorkModeLeftPaneLayout("split");
+      return;
+    }
+    if (action === "expand") {
+      if (cur === "split") setWorkModeLeftPaneLayout(pane === "music" ? "music-full" : "checklist-full");
+      else if (cur === "music-full" && pane === "checklist") setWorkModeLeftPaneLayout("split");
+      else if (cur === "checklist-full" && pane === "music") setWorkModeLeftPaneLayout("split");
+    }
+  });
+}
 let workModeReasoningConfirmPending = null;
 let workModeReasoningAttachment = null;
 window.clearWorkModeReasoningPending = function clearWorkModeReasoningPending() {
@@ -2298,6 +2403,7 @@ window.layoutVeraWorkModePanels = function layoutVeraWorkModePanels(on) {
       } else if (pane.hidden) {
         restoreProductivityPanel("vera");
       }
+      applyWorkModeLeftPaneLayoutFromStorage();
     } else if (pane.parentElement !== chatMain) {
       chatMain.appendChild(pane);
     }
@@ -2661,10 +2767,179 @@ async function streamWorkModeReasoningComposer(text, signal, attachmentFile = nu
   mdEl.scrollTop = mdEl.scrollHeight;
 }
 
+function createWorkChecklistDragHandle() {
+  const handle = document.createElement("div");
+  handle.className = "vera-wm-checklist-drag-handle";
+  handle.setAttribute("aria-label", "Drag to reorder");
+  const dots = document.createElement("div");
+  dots.className = "vera-wm-checklist-drag-dots";
+  dots.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < 6; i += 1) dots.appendChild(document.createElement("span"));
+  handle.appendChild(dots);
+  return handle;
+}
+
+function workChecklistInsertBeforeFromY(container, clientY) {
+  const dragging = container.querySelector(":scope > li.vera-wm-checklist-dragging");
+  const lis = [...container.querySelectorAll(":scope > li")].filter((el) => el !== dragging);
+  for (const child of lis) {
+    const r = child.getBoundingClientRect();
+    if (clientY < r.top + r.height / 2) return child;
+  }
+  return null;
+}
+
+function persistWorkChecklistOrderFromDom() {
+  const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
+  const completedUl = document.getElementById("vera-wm-checklist-completed");
+  if (!ongoingUl || !completedUl) return;
+  const ongoingIds = [...ongoingUl.querySelectorAll(":scope > li")].map((el) => el.dataset.id).filter(Boolean);
+  const completedIds = [...completedUl.querySelectorAll(":scope > li")].map((el) => el.dataset.id).filter(Boolean);
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items)) items = [];
+    const map = new Map(items.map((x) => [String(x.id), x]));
+    const next = [...ongoingIds, ...completedIds].map((id) => map.get(id)).filter(Boolean);
+    if (next.length !== items.length) return;
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(next));
+  } catch (_) {}
+}
+
+function applyWorkChecklistCompletedCollapseFromStorage() {
+  const pane = document.getElementById("vera-wm-checklist-pane");
+  const btn = document.getElementById("vera-wm-checklist-completed-toggle");
+  if (!pane || !btn || pane.classList.contains("vera-wm-checklist-pane--ongoing-only")) return;
+  let collapsed = false;
+  try {
+    collapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
+  } catch (_) {}
+  pane.classList.toggle("vera-wm-checklist-pane--completed-collapsed", collapsed);
+  btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+}
+
+function wireWorkChecklistCompletedCollapse() {
+  const btn = document.getElementById("vera-wm-checklist-completed-toggle");
+  const pane = document.getElementById("vera-wm-checklist-pane");
+  if (!btn || !pane || btn.dataset.collapseWired === "1") return;
+  btn.dataset.collapseWired = "1";
+  btn.addEventListener("click", () => {
+    if (pane.classList.contains("vera-wm-checklist-pane--ongoing-only")) return;
+    const collapsed = !pane.classList.contains("vera-wm-checklist-pane--completed-collapsed");
+    pane.classList.toggle("vera-wm-checklist-pane--completed-collapsed", collapsed);
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    try {
+      localStorage.setItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY, collapsed ? "1" : "0");
+    } catch (_) {}
+  });
+}
+
+function ensureWorkChecklistListDnD() {
+  const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
+  const completedUl = document.getElementById("vera-wm-checklist-completed");
+  if (!ongoingUl || !completedUl || ongoingUl.dataset.checklistDnd === "1") return;
+  ongoingUl.dataset.checklistDnd = "1";
+  completedUl.dataset.checklistDnd = "1";
+
+  const onDragOver = (e) => {
+    const ul = e.currentTarget;
+    if (!(ul instanceof HTMLElement)) return;
+    e.preventDefault();
+    try {
+      e.dataTransfer.dropEffect = "move";
+    } catch (_) {}
+    const dragging = ul.querySelector(":scope > li.vera-wm-checklist-dragging");
+    if (!dragging) return;
+    const insertBefore = workChecklistInsertBeforeFromY(ul, e.clientY);
+    if (insertBefore === null) ul.appendChild(dragging);
+    else ul.insertBefore(dragging, insertBefore);
+  };
+
+  ongoingUl.addEventListener("dragover", onDragOver);
+  completedUl.addEventListener("dragover", onDragOver);
+}
+
+/** Drops empty ongoing rows except the bottom-most one (storage order among !done items). */
+function pruneInteriorEmptyOngoingItems() {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items)) items = [];
+    const valid = (x) => x && typeof x.text === "string";
+    const ongoingIndices = [];
+    for (let i = 0; i < items.length; i += 1) {
+      if (valid(items[i]) && !Boolean(items[i].done)) ongoingIndices.push(i);
+    }
+    if (ongoingIndices.length <= 1) return false;
+    const toRemove = [];
+    for (let j = 0; j < ongoingIndices.length - 1; j += 1) {
+      const i = ongoingIndices[j];
+      if (String(items[i].text).trim() === "") toRemove.push(i);
+    }
+    if (toRemove.length === 0) return false;
+    toRemove.sort((a, b) => b - a);
+    for (const i of toRemove) items.splice(i, 1);
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Ensures the last ongoing row is always an empty slot for new text (no separate “+” row). */
+function ensureWorkChecklistTrailingEmptyOngoing() {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items)) items = [];
+    const valid = (x) => x && typeof x.text === "string";
+    let lastOngoingIndex = -1;
+    for (let i = 0; i < items.length; i += 1) {
+      if (valid(items[i]) && !Boolean(items[i].done)) lastOngoingIndex = i;
+    }
+    const lastOngoing = lastOngoingIndex >= 0 ? items[lastOngoingIndex] : null;
+    const needNew =
+      lastOngoingIndex < 0 || !lastOngoing || String(lastOngoing.text).trim() !== "";
+    if (!needNew) return false;
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    items.splice(lastOngoingIndex + 1, 0, { id, text: "", done: false });
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Insert a new empty ongoing row immediately after the given ongoing item (by storage order). */
+function insertWorkChecklistEmptyOngoingAfter(afterId) {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items)) items = [];
+    const idx = items.findIndex((x) => x && String(x.id) === String(afterId));
+    if (idx < 0) return null;
+    const row = items[idx];
+    if (!row || typeof row.text !== "string" || Boolean(row.done)) return null;
+    const nid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    items.splice(idx + 1, 0, { id: nid, text: "", done: false });
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    return nid;
+  } catch (_) {
+    return null;
+  }
+}
+
 function loadWorkChecklistItems() {
   const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
   const completedUl = document.getElementById("vera-wm-checklist-completed");
   if (!ongoingUl || !completedUl) return;
+  ensureWorkChecklistListDnD();
+  /* Do not prune here: Enter inserts an empty row between items; load must keep it until blur. */
+  let guard = 0;
+  while (ensureWorkChecklistTrailingEmptyOngoing()) {
+    guard += 1;
+    if (guard > 10) break;
+  }
   let items = [];
   try {
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
@@ -2677,23 +2952,249 @@ function loadWorkChecklistItems() {
   completedUl.replaceChildren();
   items.forEach((it) => {
     if (!it || typeof it.text !== "string") return;
+    const id = String(it.id || "");
     const li = document.createElement("li");
     li.className = "vera-wm-checklist-li";
     if (it.done) li.classList.add("is-done");
-    li.dataset.id = String(it.id || "");
+    li.dataset.id = id;
+    li.draggable = false;
+
+    const handle = createWorkChecklistDragHandle();
+    handle.draggable = true;
     const cb = document.createElement("input");
     cb.type = "checkbox";
+    cb.className = "vera-wm-checklist-cb";
     cb.checked = Boolean(it.done);
-    const span = document.createElement("span");
-    span.textContent = it.text;
-    li.appendChild(cb);
-    li.appendChild(span);
-    cb.addEventListener("change", () => {
-      persistWorkChecklistToggle(String(it.id), cb.checked);
+    cb.setAttribute("aria-label", it.done ? "Mark as not done" : "Mark complete");
+    const actions = document.createElement("div");
+    actions.className = "vera-wm-checklist-li-actions";
+
+    const btnDel = document.createElement("button");
+    btnDel.type = "button";
+    btnDel.className = "vera-wm-checklist-action vera-wm-checklist-action-del";
+    btnDel.textContent = "✕";
+    btnDel.setAttribute("aria-label", "Delete item");
+    btnDel.title = "Delete";
+
+    actions.appendChild(btnDel);
+
+    /* dragstart targets the draggable node; with draggable on <li>, e.target was often
+       the <li> itself, so closest(handle) failed and every drag was cancelled. */
+    handle.addEventListener("dragstart", (e) => {
+      e.stopPropagation();
+      li.classList.add("vera-wm-checklist-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      try {
+        e.dataTransfer.setData("text/plain", id);
+      } catch (_) {}
+      try {
+        const r = li.getBoundingClientRect();
+        e.dataTransfer.setDragImage(li, Math.round(e.clientX - r.left), Math.round(e.clientY - r.top));
+      } catch (_) {}
+    });
+    handle.addEventListener("dragend", () => {
+      li.classList.remove("vera-wm-checklist-dragging");
+      persistWorkChecklistOrderFromDom();
+      const pruned = pruneInteriorEmptyOngoingItems();
+      const ensured = ensureWorkChecklistTrailingEmptyOngoing();
+      if (pruned || ensured) loadWorkChecklistItems();
+    });
+
+    btnDel.addEventListener("click", () => {
+      persistWorkChecklistRemove(id);
       loadWorkChecklistItems();
     });
+
+    cb.addEventListener("change", () => {
+      const wantDone = cb.checked;
+      const reduceMotion =
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      if (wantDone && !it.done) {
+        const textInp = li.querySelector(".vera-wm-checklist-task-input");
+        const t = textInp instanceof HTMLInputElement ? textInp.value : it.text;
+        if (!String(t ?? "").trim()) {
+          cb.checked = false;
+          return;
+        }
+        if (textInp instanceof HTMLInputElement) persistWorkChecklistUpdateText(id, textInp.value);
+
+        if (reduceMotion) {
+          persistWorkChecklistToggle(id, true);
+          loadWorkChecklistItems();
+          return;
+        }
+
+        li.classList.add("vera-wm-checklist-li-exiting");
+        let finished = false;
+        const complete = () => {
+          if (finished) return;
+          finished = true;
+          window.clearTimeout(fallbackTimer);
+          li.removeEventListener("transitionend", onTransitionEnd);
+          persistWorkChecklistToggle(id, true);
+          loadWorkChecklistItems();
+          queueWorkChecklistRowEnterAnimation("vera-wm-checklist-completed", id);
+        };
+        const onTransitionEnd = (ev) => {
+          if (ev.target !== li) return;
+          if (ev.propertyName !== "opacity" && ev.propertyName !== "filter") return;
+          complete();
+        };
+        const fallbackTimer = window.setTimeout(complete, 420);
+        li.addEventListener("transitionend", onTransitionEnd);
+        return;
+      }
+
+      if (!wantDone && it.done) {
+        if (reduceMotion) {
+          persistWorkChecklistToggle(id, false);
+          loadWorkChecklistItems();
+          return;
+        }
+
+        li.classList.add("vera-wm-checklist-li-exiting");
+        let finished = false;
+        const complete = () => {
+          if (finished) return;
+          finished = true;
+          window.clearTimeout(fallbackTimer);
+          li.removeEventListener("transitionend", onTransitionEnd);
+          persistWorkChecklistToggle(id, false);
+          loadWorkChecklistItems();
+          queueWorkChecklistRowEnterAnimation("vera-wm-checklist-ongoing", id);
+        };
+        const onTransitionEnd = (ev) => {
+          if (ev.target !== li) return;
+          if (ev.propertyName !== "opacity" && ev.propertyName !== "filter") return;
+          complete();
+        };
+        const fallbackTimer = window.setTimeout(complete, 420);
+        li.addEventListener("transitionend", onTransitionEnd);
+        return;
+      }
+
+      persistWorkChecklistToggle(id, wantDone);
+      loadWorkChecklistItems();
+    });
+
+    if (it.done) {
+      const span = document.createElement("span");
+      span.className = "vera-wm-checklist-task-text";
+      span.textContent = it.text;
+      li.appendChild(handle);
+      li.appendChild(cb);
+      li.appendChild(span);
+      li.appendChild(actions);
+    } else {
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.className = "vera-wm-checklist-task-input";
+      inp.placeholder = "List item";
+      inp.value = it.text;
+      inp.maxLength = 200;
+      inp.autocomplete = "off";
+      inp.draggable = false;
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+          const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
+          if (!ongoingUl) return;
+          const inputs = [...ongoingUl.querySelectorAll(".vera-wm-checklist-task-input")];
+          const rowIdx = inputs.indexOf(inp);
+          if (rowIdx < 0) return;
+          const len = inp.value.length;
+          const sel0 = inp.selectionStart ?? 0;
+          const sel1 = inp.selectionEnd ?? 0;
+          if (e.key === "ArrowDown") {
+            if (sel0 !== len || sel1 !== len) return;
+            const next = inputs[rowIdx + 1];
+            if (next instanceof HTMLInputElement) {
+              e.preventDefault();
+              next.focus();
+              next.setSelectionRange(0, 0);
+            }
+            return;
+          }
+          if (sel0 !== 0 || sel1 !== 0) return;
+          const prev = inputs[rowIdx - 1];
+          if (prev instanceof HTMLInputElement) {
+            e.preventDefault();
+            prev.focus();
+            const pl = prev.value.length;
+            prev.setSelectionRange(pl, pl);
+          }
+          return;
+        }
+        if (e.key !== "Enter" || e.shiftKey) return;
+        e.preventDefault();
+        persistWorkChecklistUpdateText(id, inp.value);
+        const newId = insertWorkChecklistEmptyOngoingAfter(id);
+        loadWorkChecklistItems();
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            const ul = document.getElementById("vera-wm-checklist-ongoing");
+            const sel = newId
+              ? `li[data-id="${newId}"] .vera-wm-checklist-task-input`
+              : "li:last-child .vera-wm-checklist-task-input";
+            const nextInp = ul?.querySelector(sel);
+            if (nextInp instanceof HTMLInputElement) nextInp.focus();
+          });
+        });
+      });
+      inp.addEventListener("blur", () => {
+        window.setTimeout(() => {
+          const next = document.activeElement;
+          if (next && li.contains(next)) {
+            persistWorkChecklistUpdateText(id, inp.value);
+            return;
+          }
+          persistWorkChecklistUpdateText(id, inp.value);
+          /* replaceChildren (e.g. after Enter) detaches this row; blur still fires — do not treat as “abandon middle empty”. */
+          if (!li.isConnected) return;
+          const ul = document.getElementById("vera-wm-checklist-ongoing");
+          const siblings = ul ? [...ul.querySelectorAll(":scope > li")] : [];
+          const rowIdx = siblings.indexOf(li);
+          if (rowIdx < 0) return;
+          const isLastOngoing = rowIdx === siblings.length - 1;
+          let removedMiddle = false;
+          if (!inp.value.trim() && !isLastOngoing) {
+            persistWorkChecklistRemove(id);
+            removedMiddle = true;
+          }
+          /* Do not prune all interior empties on every blur — that removed a new Enter row when focus moved to another item. */
+          const ensured = ensureWorkChecklistTrailingEmptyOngoing();
+          if (removedMiddle || ensured) loadWorkChecklistItems();
+        }, 0);
+      });
+      li.appendChild(handle);
+      li.appendChild(cb);
+      li.appendChild(inp);
+      li.appendChild(actions);
+    }
     (it.done ? completedUl : ongoingUl).appendChild(li);
   });
+
+  const pane = document.getElementById("vera-wm-checklist-pane");
+  const completedSection = document.getElementById("vera-wm-checklist-completed-section");
+  /* Use rows actually rendered — items with done:true but invalid text are skipped in forEach
+     but used to be counted here, which left an empty “Completed” chrome visible. */
+  const completedCount = completedUl.querySelectorAll(":scope > li").length;
+  const countEl = document.getElementById("vera-wm-checklist-completed-count");
+  if (countEl) countEl.textContent = completedCount ? ` (${completedCount})` : "";
+  if (completedSection && pane) {
+    if (completedCount === 0) {
+      completedSection.hidden = true;
+      completedSection.classList.add("vera-wm-checklist-completed-section--empty");
+      pane.classList.add("vera-wm-checklist-pane--ongoing-only");
+      pane.classList.remove("vera-wm-checklist-pane--completed-collapsed");
+    } else {
+      completedSection.hidden = false;
+      completedSection.classList.remove("vera-wm-checklist-completed-section--empty");
+      pane.classList.remove("vera-wm-checklist-pane--ongoing-only");
+      applyWorkChecklistCompletedCollapseFromStorage();
+    }
+  }
 }
 
 function persistWorkChecklistToggle(id, done) {
@@ -2708,28 +3209,53 @@ function persistWorkChecklistToggle(id, done) {
   } catch (_) {}
 }
 
-function persistWorkChecklistAdd(text) {
+function persistWorkChecklistUpdateText(id, text) {
   try {
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    items.push({ id, text, done: false });
+    items = items.map((x) => (String(x.id) === id ? { ...x, text: String(text) } : x));
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
   } catch (_) {}
 }
 
+function persistWorkChecklistRemove(id) {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items)) items = [];
+    items = items.filter((x) => String(x.id) !== id);
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+  } catch (_) {}
+}
+
+function queueWorkChecklistRowEnterAnimation(ulId, taskId) {
+  const sid = String(taskId || "");
+  if (!sid || !ulId) return;
+  const run = () => {
+    const ul = document.getElementById(ulId);
+    if (!ul) return;
+    const esc =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(sid)
+        : sid.replace(/["\\]/g, "");
+    const moved = ul.querySelector(`:scope > li[data-id="${esc}"]`);
+    if (!(moved instanceof HTMLElement)) return;
+    moved.classList.add("vera-wm-checklist-li-entering");
+    const done = () => {
+      moved.removeEventListener("animationend", done);
+      moved.classList.remove("vera-wm-checklist-li-entering");
+    };
+    moved.addEventListener("animationend", done, { once: true });
+  };
+  window.requestAnimationFrame(() => window.requestAnimationFrame(run));
+}
+
 function wireWorkModeChecklistAndComposer() {
-  const form = document.getElementById("vera-wm-checklist-form");
-  const inp = document.getElementById("vera-wm-checklist-input");
-  form?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const t = inp?.value.trim() ?? "";
-    if (!t) return;
-    persistWorkChecklistAdd(t);
-    if (inp) inp.value = "";
-    loadWorkChecklistItems();
-  });
+  ensureWorkChecklistListDnD();
+  wireWorkChecklistCompletedCollapse();
+  wireWorkModeLeftPaneLayout();
+  applyWorkModeLeftPaneLayoutFromStorage();
   const rs = document.getElementById("vera-reasoning-send");
   const ri = document.getElementById("vera-reasoning-input");
   const attachBtn = document.getElementById("vera-reasoning-attach-btn");
@@ -2781,6 +3307,50 @@ wireWorkModeChecklistAndComposer();
 loadWorkChecklistItems();
 window.loadWorkModeChecklist = loadWorkChecklistItems;
 
+let veraHeaderDateTimeTimer = null;
+
+function stopVeraHeaderDateTime() {
+  if (veraHeaderDateTimeTimer) {
+    clearInterval(veraHeaderDateTimeTimer);
+    veraHeaderDateTimeTimer = null;
+  }
+}
+
+function wireVeraHeaderDateTime() {
+  const timeEl = document.getElementById("vera-datetime-time");
+  const dateEl = document.getElementById("vera-datetime-date");
+  if (!timeEl || !dateEl) return;
+  stopVeraHeaderDateTime();
+  const tick = () => {
+    const now = new Date();
+    timeEl.textContent = now.toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+    dateEl.textContent = now.toLocaleDateString(undefined, {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
+  tick();
+  veraHeaderDateTimeTimer = setInterval(tick, 1000);
+}
+
+/** Clock pill is work-mode only; stops the interval when leaving work mode. */
+function syncVeraHeaderDateTimeForWorkMode() {
+  const work = document.getElementById("vera-app")?.classList.contains("work-mode");
+  if (!work) {
+    stopVeraHeaderDateTime();
+    return;
+  }
+  wireVeraHeaderDateTime();
+}
+
+window.syncVeraHeaderDateTimeForWorkMode = syncVeraHeaderDateTimeForWorkMode;
+
 function onSidePaneClick(event) {
   const target = event.target;
   if (target instanceof HTMLElement && target.closest(".side-pane-close")) {
@@ -2799,6 +3369,68 @@ function onSidePaneClick(event) {
 ["vera-side-pane", "bmo-side-pane"].forEach((id) => {
   document.getElementById(id)?.addEventListener("click", onSidePaneClick);
 });
+
+function isFlowModeSidePaneCrossfadeEnabled() {
+  try {
+    if (appModePrefix() === "vera" && document.getElementById("vera-app")?.classList.contains("work-mode")) {
+      return false;
+    }
+  } catch {}
+  return true;
+}
+
+/**
+ * When the side pane is already visible, swap inner content with a short fade (music ↔ news / finance)
+ * so innerHTML replacement does not fight the panel slide-in transition.
+ */
+function runFlowModeSidePaneContentCrossfade(sidePaneEl, renderCallback) {
+  if (
+    !sidePaneEl ||
+    !isFlowModeSidePaneCrossfadeEnabled() ||
+    sidePaneEl.hidden ||
+    !sidePaneEl.classList.contains("visible")
+  ) {
+    renderCallback();
+    return;
+  }
+
+  let outDone = false;
+  let fallbackOut = null;
+  const finishOut = () => {
+    if (outDone) return;
+    outDone = true;
+    if (fallbackOut != null) window.clearTimeout(fallbackOut);
+    sidePaneEl.removeEventListener("transitionend", onOutEnd);
+    renderCallback();
+    window.requestAnimationFrame(() => {
+      sidePaneEl.classList.remove("side-pane-swap-hiding");
+      sidePaneEl.classList.add("side-pane-swap-in");
+      let fallbackIn = null;
+      function clearIn() {
+        if (fallbackIn != null) window.clearTimeout(fallbackIn);
+        sidePaneEl.removeEventListener("animationend", onInEnd);
+        sidePaneEl.classList.remove("side-pane-swap-in");
+      }
+      function onInEnd(ev) {
+        const n = String(ev.animationName || "");
+        if (!n.includes("side-pane-content-swap-in")) return;
+        clearIn();
+      }
+      sidePaneEl.addEventListener("animationend", onInEnd);
+      fallbackIn = window.setTimeout(clearIn, 480);
+    });
+  };
+
+  const onOutEnd = (ev) => {
+    if (ev.target !== sidePaneEl) return;
+    if (ev.propertyName !== "opacity" && ev.propertyName !== "filter") return;
+    finishOut();
+  };
+
+  sidePaneEl.classList.add("side-pane-swap-hiding");
+  sidePaneEl.addEventListener("transitionend", onOutEnd);
+  fallbackOut = window.setTimeout(finishOut, 420);
+}
 
 function applyActionPayload(data) {
   const payload = data?.action_payload;
@@ -3661,6 +4293,47 @@ function isServerPipelineBusy() {
     processing ||
     isMainTtsOrHtmlAudioPlaying()
   );
+}
+
+/** Flow (non–work) UI: typed send can replace an in-flight reply / speaking TTS. */
+function isFlowModeKeyboardInterruptAllowed() {
+  try {
+    if (appModePrefix() === "vera" && document.getElementById("vera-app")?.classList.contains("work-mode")) {
+      return false;
+    }
+  } catch {}
+  return true;
+}
+
+/** Abort fetch + stop main TTS so the next `/text` send can proceed (keyboard barge-in). */
+function interruptAssistantPipelineForTypedMessage() {
+  activePipelineAbort?.abort();
+  activePipelineAbort = null;
+  cancelMainTtsPlayback();
+  resetAudioHandlers();
+  const a = getAudioEl();
+  if (a) {
+    a.pause();
+    a.currentTime = 0;
+  }
+  processing = false;
+  requestInFlight = false;
+  clearInterruptDetectionBubble();
+  interruptBargeInLatched = false;
+  voiceUxTurn = null;
+  textUxTurn = null;
+  if (listeningMode === "ptt") {
+    listening = false;
+    pttRecording = false;
+    waveState = "idle";
+    setStatus("Ready", "idle");
+  } else {
+    listening = true;
+    waveState = "listening";
+    if (inputMuted) showMutedStatusIfIdle();
+    else setStatus("Listening…", "recording");
+  }
+  updateMuteInputButton();
 }
 
 function cancelVoicePipelineAndResetState() {
@@ -5517,6 +6190,10 @@ async function sendTextMessage() {
     processing = false;
     listening = false;
     setStatus("Ready", "idle");
+  }
+
+  if (isServerPipelineBusy() && isFlowModeKeyboardInterruptAllowed()) {
+    interruptAssistantPipelineForTypedMessage();
   }
 
   if (!text || isServerPipelineBusy()) return;

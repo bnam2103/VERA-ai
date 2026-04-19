@@ -609,14 +609,25 @@
     </div>
 
     <div class="chat-header vera-app-header">
-      <button id="return-home-vera" class="nav-logo" type="button" aria-label="VERA">
-        <span class="vera-logo-text-stack" aria-hidden="true">
-          <span class="vera-logo-dim">VERA</span>
-          <span class="vera-logo-sweep">
-            <span class="vera-logo-solid">VERA</span>
+      <div class="vera-header-left">
+        <button id="return-home-vera" class="nav-logo" type="button" aria-label="VERA">
+          <span class="vera-logo-text-stack" aria-hidden="true">
+            <span class="vera-logo-dim">VERA</span>
+            <span class="vera-logo-sweep">
+              <span class="vera-logo-solid">VERA</span>
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
+      </div>
+      <div class="vera-header-datetime" id="vera-header-datetime">
+        <svg class="vera-datetime-clock" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75" />
+          <path d="M12 12V7M12 12h4.2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
+        </svg>
+        <span class="vera-datetime-time" id="vera-datetime-time"></span>
+        <span class="vera-datetime-sep" aria-hidden="true"></span>
+        <span class="vera-datetime-date" id="vera-datetime-date"></span>
+      </div>
       <div class="vera-header-right">
         <button type="button" id="vera-user-sign-in" class="nav-logo vera-sign-in-nav" hidden>
           SIGN IN
@@ -628,31 +639,51 @@
     </div>
 
     <div class="vera-body-grid" id="vera-body-grid">
-      <aside class="vera-wm-left" id="vera-wm-left" aria-label="Music and checklist">
+      <aside class="vera-wm-left" id="vera-wm-left" aria-label="Music and checklist" data-wm-left-layout="split">
         <div class="vera-wm-music-pane" id="vera-wm-music-pane">
-          <div class="vera-wm-pane-title">Music</div>
+          <div class="vera-wm-pane-head">
+            <div class="vera-wm-pane-title">Music</div>
+            <div class="vera-wm-pane-head-actions">
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-expand" data-wm-pane="music" data-wm-pane-action="expand" aria-label="Expand music panel" title="Expand">+</button>
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-collapse" data-wm-pane="music" data-wm-pane-action="collapse" aria-label="Shrink music panel" title="Shrink">−</button>
+            </div>
+          </div>
           <div class="vera-wm-music-body" id="vera-wm-music-body"></div>
         </div>
         <div class="vera-wm-checklist-pane" id="vera-wm-checklist-pane">
-          <div class="vera-wm-pane-title">Checklist</div>
-          <div class="vera-wm-checklist-group">
+          <div class="vera-wm-pane-head">
+            <div class="vera-wm-pane-title">Checklist</div>
+            <div class="vera-wm-pane-head-actions">
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-expand" data-wm-pane="checklist" data-wm-pane-action="expand" aria-label="Expand checklist panel" title="Expand">+</button>
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-collapse" data-wm-pane="checklist" data-wm-pane-action="collapse" aria-label="Shrink checklist panel" title="Shrink">−</button>
+            </div>
+          </div>
+          <div class="vera-wm-checklist-pane-body">
+          <div class="vera-wm-checklist-group vera-wm-checklist-group--ongoing">
             <div class="vera-wm-checklist-subtitle">Ongoing</div>
-            <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-ongoing" aria-label="Ongoing checklist items"></ul>
+            <div class="vera-wm-checklist-ongoing-wrap">
+              <div class="vera-wm-checklist-ongoing-scroll">
+                <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-ongoing" aria-label="Ongoing checklist items"></ul>
+              </div>
+            </div>
           </div>
-          <div class="vera-wm-checklist-group">
-            <div class="vera-wm-checklist-subtitle">Completed</div>
-            <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-completed" aria-label="Completed checklist items"></ul>
+          <div class="vera-wm-checklist-group vera-wm-checklist-group--completed" id="vera-wm-checklist-completed-section" hidden>
+            <button
+              type="button"
+              class="vera-wm-checklist-completed-head"
+              id="vera-wm-checklist-completed-toggle"
+              aria-expanded="true"
+              aria-controls="vera-wm-checklist-completed-body"
+            >
+              <span class="vera-wm-checklist-completed-chevron" aria-hidden="true">▼</span>
+              <span class="vera-wm-checklist-completed-label">Completed</span>
+              <span class="vera-wm-checklist-completed-count" id="vera-wm-checklist-completed-count"></span>
+            </button>
+            <div class="vera-wm-checklist-completed-body" id="vera-wm-checklist-completed-body">
+              <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-completed" aria-label="Completed checklist items"></ul>
+            </div>
           </div>
-          <form class="vera-wm-checklist-add" id="vera-wm-checklist-form" autocomplete="off">
-            <input
-              type="text"
-              id="vera-wm-checklist-input"
-              class="vera-wm-checklist-input"
-              placeholder="Add item…"
-              maxlength="200"
-            />
-            <button type="submit" class="vera-wm-checklist-add-btn">Add</button>
-          </form>
+          </div>
         </div>
       </aside>
       <section class="vera-wm-center" id="vera-wm-center" aria-label="Reasoning space">
@@ -737,20 +768,20 @@
   <div class="vera-bottom-right-tools" aria-label="Quick tools">
     <button
       type="button"
+      id="vera-productivity-mode"
+      class="productivity-mode-btn"
+      title="Productivity mode — music panel"
+    >
+      Music
+    </button>
+    <button
+      type="button"
       id="vera-work-mode"
       class="vera-work-mode-btn"
       aria-pressed="false"
       title="Work mode: panels + reasoning space (toggle off to restore)"
     >
       Work mode
-    </button>
-    <button
-      type="button"
-      id="vera-productivity-mode"
-      class="productivity-mode-btn"
-      title="Productivity mode — music panel"
-    >
-      Music
     </button>
     <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
   </div>
@@ -1388,6 +1419,9 @@ function startTyping() {
     }
     veraApp?.classList.remove("work-mode");
     veraWorkModeBtn?.setAttribute("aria-pressed", "false");
+    if (typeof window.syncVeraHeaderDateTimeForWorkMode === "function") {
+      window.syncVeraHeaderDateTimeForWorkMode();
+    }
     if (typeof window.ensureVeraVoiceUiActive === "function") {
       void window.ensureVeraVoiceUiActive();
     }
@@ -1409,6 +1443,9 @@ function startTyping() {
     }
     if (typeof window.ensureVeraVoiceUiActive === "function") {
       void window.ensureVeraVoiceUiActive();
+    }
+    if (typeof window.syncVeraHeaderDateTimeForWorkMode === "function") {
+      window.syncVeraHeaderDateTimeForWorkMode();
     }
   }
 
@@ -1434,6 +1471,8 @@ function startTyping() {
     if (typeof window.resetVoiceUiToIdle === "function") {
       window.resetVoiceUiToIdle();
     }
+    veraApp?.classList.remove("vera-flow-voice-docked");
+    veraApp?.classList.remove("vera-flow-input-active");
     veraApp.hidden = true;
     home.hidden = true;
     document.body.classList.add("app-open", "bmo-open");
@@ -1794,10 +1833,54 @@ document.getElementById("return-home-vera").onclick = async () => {
     goHomeFromApp();
   }, 600);
 };
+
+let startupTypingOuterTimer = null;
+let startupTypingCharTimer = null;
+let startupAudioScheduleTimer = null;
+
+function clearStartupTypingTimers() {
+  if (startupTypingOuterTimer != null) {
+    clearTimeout(startupTypingOuterTimer);
+    startupTypingOuterTimer = null;
+  }
+  if (startupTypingCharTimer != null) {
+    clearTimeout(startupTypingCharTimer);
+    startupTypingCharTimer = null;
+  }
+  if (startupAudioScheduleTimer != null) {
+    clearTimeout(startupAudioScheduleTimer);
+    startupAudioScheduleTimer = null;
+  }
+}
+
+/** Stop VERA startup character loop + scheduled typing SFX; fade line if user starts listening mid-type. */
+function cancelStartupTypingForVoiceEntry() {
+  clearStartupTypingTimers();
+  const el = document.getElementById("vera-startup-text");
+  if (!el) return;
+  el.classList.remove("typing-cursor");
+  const startupAudio = document.getElementById("vera-startup-audio");
+  if (startupAudio) {
+    try {
+      startupAudio.pause();
+      startupAudio.currentTime = 0;
+    } catch (_) {}
+  }
+  el.style.transition = "opacity 0.35s ease, transform 0.35s ease";
+  el.style.opacity = "0";
+  el.style.transform = "translate(-50%, -10px)";
+}
+
+window.cancelStartupTypingForVoiceEntry = cancelStartupTypingForVoiceEntry;
+
 function typeStartup(options = {}) {
   const bmo = document.body.classList.contains("bmo-open");
   const el = document.getElementById(bmo ? "bmo-startup-text" : "vera-startup-text");
   if (!el) return;
+  clearStartupTypingTimers();
+  el.style.opacity = "";
+  el.style.transform = "";
+  el.style.transition = "";
   const guideSeenKey = bmo ? "bmo_seen_guide" : "vera_seen_guide";
   const guideId = bmo ? "bmo-guide" : "vera-guide";
   const text = options.text || "Hi, my name is VERA. How can I help you?";
@@ -1824,7 +1907,8 @@ function typeStartup(options = {}) {
       startupAudio.currentTime = 0;
       startupAudio.volume = 0.6;
 
-      setTimeout(() => {
+      startupAudioScheduleTimer = setTimeout(() => {
+        startupAudioScheduleTimer = null;
         startupAudio
           .play()
           .then(() => {
@@ -1850,13 +1934,18 @@ function typeStartup(options = {}) {
     });
   }
 
-  setTimeout(() => {
+  startupTypingOuterTimer = setTimeout(() => {
+    startupTypingOuterTimer = null;
     function type() {
       if (i < text.length) {
         el.textContent += text.charAt(i);
         i++;
-        setTimeout(type, config.typingSpeed);
+        startupTypingCharTimer = setTimeout(() => {
+          startupTypingCharTimer = null;
+          type();
+        }, config.typingSpeed);
       } else {
+        startupTypingCharTimer = null;
 
         if (config.cursor) {
           el.classList.remove("typing-cursor");
@@ -1912,6 +2001,9 @@ function wireInputModeToggles() {
       toggleBtn.textContent = showKeyboard ? "🎙️" : "⌨️";
       if (showKeyboard) {
         document.getElementById(`${prefix}-text-input`)?.focus();
+      }
+      if (prefix === "vera" && typeof window.syncVeraFlowVoiceDockLayoutClass === "function") {
+        window.syncVeraFlowVoiceDockLayoutClass();
       }
     });
   });
