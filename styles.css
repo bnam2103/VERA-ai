@@ -2862,12 +2862,36 @@ body.chat-started .input-container {
 }
 
 .spotify-result-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: #f0f4fc;
-  white-space: nowrap;
+}
+
+.spotify-result-title-text {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+  color: inherit;
+}
+
+.spotify-result-kind {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(30, 215, 96, 0.95);
+  border: 1px solid rgba(30, 215, 96, 0.4);
+  border-radius: 4px;
+  padding: 2px 5px;
+  line-height: 1.2;
 }
 
 .spotify-result-sub {
@@ -5129,6 +5153,12 @@ body.bmo-open .spotify-brand,
 body.bmo-open .spotify-track-title,
 body.bmo-open .spotify-result-title {
   color: #0f2e22 !important;
+}
+
+body.bmo-open .spotify-result-kind {
+  color: #0a3d24;
+  border-color: rgba(24, 49, 39, 0.35);
+  background: rgba(177, 246, 191, 0.65);
 }
 
 body.bmo-open .spotify-track-artist,

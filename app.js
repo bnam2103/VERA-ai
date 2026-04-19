@@ -1410,10 +1410,16 @@ function renderFinanceChartPanel(payload) {
   runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
 }
 
-/** spotify:track:abc -> https://open.spotify.com/track/abc when API omits external_urls */
+/** spotify URIs -> open.spotify.com when API omits external_urls */
 function spotifyUriToOpenUrl(uri) {
-  const m = String(uri || "").match(/^spotify:track:([a-zA-Z0-9]+)$/);
-  return m ? `https://open.spotify.com/track/${m[1]}` : "";
+  const s = String(uri || "");
+  const mT = s.match(/^spotify:track:([a-zA-Z0-9]+)$/);
+  if (mT) return `https://open.spotify.com/track/${mT[1]}`;
+  const mAr = s.match(/^spotify:artist:([a-zA-Z0-9]+)$/);
+  if (mAr) return `https://open.spotify.com/artist/${mAr[1]}`;
+  const mAl = s.match(/^spotify:album:([a-zA-Z0-9]+)$/);
+  if (mAl) return `https://open.spotify.com/album/${mAl[1]}`;
+  return "";
 }
 
 function spotifyFormatArtists(item) {
@@ -1432,13 +1438,19 @@ function renderSpotifySearchResults(prefix, items) {
   if (!resultsEl) return;
   const list = Array.isArray(items) ? items : [];
   if (!list.length) {
-    resultsEl.innerHTML = `<p class="spotify-results-hint">No tracks returned. If you use Spotify keys in a <strong>local</strong> <code>.env</code>, open this page from <code>http://127.0.0.1:8000</code> so search hits your FastAPI (not only the cloud worker).</p>`;
+    resultsEl.innerHTML = `<p class="spotify-results-hint">No results. If you use Spotify keys in a <strong>local</strong> <code>.env</code>, open this page from <code>http://127.0.0.1:8000</code> so search hits your FastAPI (not only the cloud worker).</p>`;
     return;
   }
   resultsEl.innerHTML = list
     .map((item, i) => {
-      const title = escapeHtml(item.title ?? item.name ?? "Track");
-      const artist = escapeHtml(spotifyFormatArtists(item));
+      const kind = String(item.kind || "track").toLowerCase();
+      const titlePlain = String(item.title ?? item.name ?? "Result");
+      const titleEsc = escapeHtml(titlePlain);
+      const subPlain =
+        item.subtitle != null && String(item.subtitle).trim()
+          ? String(item.subtitle).trim()
+          : spotifyFormatArtists(item) || (kind === "artist" ? "Artist" : kind === "album" ? "Album" : "");
+      const subEsc = escapeHtml(subPlain);
       const uri = item.uri != null ? escapeHtml(String(item.uri)) : "";
       const img = item.imageUrl ?? item.image ?? item.album?.images?.[0]?.url ?? "";
       const thumb = img
@@ -1447,12 +1459,21 @@ function renderSpotifySearchResults(prefix, items) {
       const prev = item.preview_url != null ? escapeHtml(String(item.preview_url)) : "";
       const openRaw = String(item.open_url || spotifyUriToOpenUrl(item.uri) || "").trim();
       const openEsc = openRaw ? escapeHtml(openRaw) : "";
+      const kindChip =
+        kind === "album" || kind === "artist"
+          ? `<span class="spotify-result-kind">${kind === "album" ? "Album" : "Artist"}</span>`
+          : "";
       return `
-        <button type="button" class="spotify-result-row" data-spotify-uri="${uri}" data-spotify-index="${i}" data-preview-url="${prev}" data-open-url="${openEsc}">
+        <button type="button" class="spotify-result-row spotify-result-row--${escapeHtml(kind)}" data-spotify-kind="${escapeHtml(
+        kind
+      )}" data-spotify-uri="${uri}" data-spotify-index="${i}" data-preview-url="${prev}" data-open-url="${openEsc}" data-display-title="${titleEsc}" data-display-sub="${subEsc}">
           ${thumb}
           <div class="spotify-result-text">
-            <div class="spotify-result-title">${title}</div>
-            <div class="spotify-result-sub">${artist}</div>
+            <div class="spotify-result-title">
+              ${kindChip}
+              <span class="spotify-result-title-text">${titleEsc}</span>
+            </div>
+            <div class="spotify-result-sub">${subEsc}</div>
           </div>
         </button>`;
     })
@@ -2020,13 +2041,14 @@ function wireProductivityPanelEvents(prefix) {
   document.getElementById(`${prefix}-spotify-results`)?.addEventListener("click", (e) => {
     const row = e.target instanceof HTMLElement ? e.target.closest(".spotify-result-row") : null;
     if (!row) return;
+    const kind = String(row.dataset.spotifyKind || "track").toLowerCase();
     const uri = row.dataset.spotifyUri || "";
     const previewUrl = row.dataset.previewUrl || "";
     const openUrl = row.dataset.openUrl || "";
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-    const title = row.querySelector(".spotify-result-title")?.textContent ?? "";
-    const artist = row.querySelector(".spotify-result-sub")?.textContent ?? "";
+    const title = row.dataset.displayTitle || row.querySelector(".spotify-result-title-text")?.textContent || "";
+    const artist = row.dataset.displaySub || row.querySelector(".spotify-result-sub")?.textContent || "";
     if (titleEl) titleEl.textContent = title || "—";
     if (artistEl) artistEl.textContent = artist || "";
     const coverImg = row.querySelector("img.spotify-result-thumb");
@@ -2034,6 +2056,13 @@ function wireProductivityPanelEvents(prefix) {
     if (coverImg?.src && ph) {
       ph.style.backgroundImage = `url(${JSON.stringify(coverImg.src)})`;
       ph.style.backgroundSize = "cover";
+    }
+    if ((kind === "album" || kind === "artist") && uri) {
+      const playCtx = window.VeraSpotify?.playPlaylist;
+      if (typeof playCtx === "function") {
+        playCtx(uri, { playlist_name: title, context_subtitle: artist }).catch(() => {});
+      }
+      return;
     }
     const play = window.VeraSpotify?.playTrack;
     if (typeof play === "function" && uri) {
@@ -2224,10 +2253,6 @@ function renderProductivityPanel() {
         <button type="button" class="spotify-logout-btn" id="${prefix}-spotify-logout" hidden>Disconnect</button>
         <span class="spotify-connected-badge" id="${prefix}-spotify-connected-badge" hidden>Connected</span>
       </div>
-      <div class="spotify-view-toggle" role="tablist" aria-label="Music mode">
-        <button type="button" class="spotify-view-tab active" id="${prefix}-spotify-tab-song" data-spotify-view="song" aria-selected="true">Song</button>
-        <button type="button" class="spotify-view-tab" id="${prefix}-spotify-tab-playlist" data-spotify-view="playlist" aria-selected="false">Playlist</button>
-      </div>
       <div class="spotify-now-playing">
         <div class="spotify-art-placeholder" id="${prefix}-spotify-art-placeholder" aria-hidden="true"></div>
         <div class="spotify-track-meta">
@@ -2258,6 +2283,10 @@ function renderProductivityPanel() {
             <input type="range" class="spotify-volume" id="${prefix}-spotify-volume" min="0" max="100" step="1" value="50" aria-label="Volume" />
           </div>
         </div>
+      </div>
+      <div class="spotify-view-toggle" role="tablist" aria-label="Music mode">
+        <button type="button" class="spotify-view-tab active" id="${prefix}-spotify-tab-song" data-spotify-view="song" aria-selected="true">Song</button>
+        <button type="button" class="spotify-view-tab" id="${prefix}-spotify-tab-playlist" data-spotify-view="playlist" aria-selected="false">Playlist</button>
       </div>
       <form class="spotify-search-form" id="${prefix}-spotify-search-form">
         <input type="search" class="spotify-search-input" id="${prefix}-spotify-search-input" placeholder="Search tracks, artists, albums…" autocomplete="off" />
@@ -6817,7 +6846,7 @@ window.VeraSpotify = {
     /* Same origin as sign-in: local http://127.0.0.1:8000 uses your .env; GitHub Pages uses API_URL via localBackendBase(). */
     const u = new URL(authApiUrl("/api/spotify/search"));
     u.searchParams.set("q", raw);
-    u.searchParams.set("limit", "20");
+    u.searchParams.set("limit", "12");
     const res = await fetch(u.href, { cache: "no-store" });
     if (!res.ok) {
       let msg = `Search failed (${res.status})`;
@@ -7000,7 +7029,7 @@ window.VeraSpotify = {
     const connectedSpotify = !!st.connected;
     if (!connectedSpotify) {
       const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-      if (artistEl) artistEl.textContent = "Connect Spotify to play playlists in VERA.";
+      if (artistEl) artistEl.textContent = "Connect Spotify to play playlists, albums, or artists in VERA.";
       return;
     }
     if (!window.__veraSpotifyDeviceId) {
@@ -7031,12 +7060,15 @@ window.VeraSpotify = {
         /* ignore */
       }
       const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-      if (artistEl) artistEl.textContent = detail || "Couldn't start playlist playback.";
+      if (artistEl) artistEl.textContent = detail || "Couldn't start playback.";
       return;
     }
+    let defaultSub = "Playing from playlist";
+    if (contextUri.startsWith("spotify:album:")) defaultSub = "Album";
+    else if (contextUri.startsWith("spotify:artist:")) defaultSub = "Artist";
     spotifyUpdateNowState({
       title: meta?.playlist_name || "Playlist",
-      artist: "Playing from playlist",
+      artist: meta?.context_subtitle || defaultSub,
       paused: false,
       active: true
     });
