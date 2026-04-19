@@ -3641,6 +3641,66 @@ body.chat-started .input-bar {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+#vera-app.work-mode .vera-wm-checklist-ongoing-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+#vera-app.work-mode .vera-wm-checklist-subtitle--ongoing {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+#vera-app.work-mode .vera-wm-checklist-help-plan-btn {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(140, 200, 255, 0.32);
+  background: rgba(55, 110, 200, 0.2);
+  color: rgba(235, 245, 255, 0.92);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    opacity 0.2s ease;
+}
+
+#vera-app.work-mode .vera-wm-checklist-help-plan-btn:hover:not(:disabled) {
+  border-color: rgba(170, 215, 255, 0.48);
+  background: rgba(70, 130, 220, 0.3);
+}
+
+#vera-app.work-mode .vera-wm-checklist-help-plan-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+#vera-app.work-mode .vera-wm-checklist-plan-hint {
+  display: block;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 10px 6px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: rgba(255, 200, 120, 0.85);
+}
+
 #vera-app.work-mode .vera-wm-checklist-li {
   display: flex;
   align-items: center;
@@ -3919,6 +3979,18 @@ body.chat-started .input-bar {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+#vera-app.work-mode .vera-reasoning-typed-note {
+  margin: 0;
+  padding: 0 12px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(200, 215, 235, 0.45);
+}
+
+#vera-app:not(.work-mode) .vera-reasoning-typed-note {
+  display: none;
 }
 
 #vera-app.work-mode .vera-wm-right {

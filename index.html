@@ -660,7 +660,19 @@
           </div>
           <div class="vera-wm-checklist-pane-body">
           <div class="vera-wm-checklist-group vera-wm-checklist-group--ongoing">
-            <div class="vera-wm-checklist-subtitle">Ongoing</div>
+            <div class="vera-wm-checklist-ongoing-head" role="group" aria-label="Ongoing tasks">
+              <div class="vera-wm-checklist-subtitle vera-wm-checklist-subtitle--ongoing">Ongoing</div>
+              <button
+                type="button"
+                id="vera-wm-checklist-help-plan"
+                class="vera-wm-checklist-help-plan-btn"
+                title="Help me plan — send ongoing items to Reasoning"
+                aria-label="Help me plan"
+              >
+                Plan
+              </button>
+            </div>
+            <span class="vera-wm-checklist-plan-hint" id="vera-wm-checklist-plan-hint" aria-live="polite"></span>
             <div class="vera-wm-checklist-ongoing-wrap">
               <div class="vera-wm-checklist-ongoing-scroll">
                 <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-ongoing" aria-label="Ongoing checklist items"></ul>
@@ -708,7 +720,7 @@
             type="text"
             id="vera-reasoning-input"
             class="vera-reasoning-input"
-            placeholder="Type for reasoning space (no voice)…"
+            placeholder="Message VERA (chat + optional Reasoning)…"
             autocomplete="off"
             spellcheck="true"
           />
@@ -717,6 +729,9 @@
           </button>
         </div>
         <div class="vera-reasoning-attach-meta" id="vera-reasoning-attach-meta" aria-live="polite"></div>
+        <p class="vera-reasoning-typed-note">
+          VERA will speak aloud unless you mute (same behavior as Voice UI). In-app mute for typed replies is coming soon; for now use system volume or your device mute when you need silence.
+        </p>
       </section>
       <div class="vera-wm-right" id="vera-wm-right">
     <div class="vera-wm-pane-title">Voice UI</div>

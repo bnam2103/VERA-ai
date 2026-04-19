@@ -3636,6 +3636,7 @@ function loadWorkChecklistItems() {
       applyWorkChecklistCompletedCollapseFromStorage();
     }
   }
+  syncWorkChecklistHelpPlanButton();
 }
 
 function persistWorkChecklistToggle(id, done) {
@@ -3668,6 +3669,58 @@ function persistWorkChecklistRemove(id) {
     items = items.filter((x) => String(x.id) !== id);
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
   } catch (_) {}
+}
+
+const WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS = 24;
+
+function collectWorkChecklistOngoingTexts() {
+  const ul = document.getElementById("vera-wm-checklist-ongoing");
+  if (!ul) return [];
+  const out = [];
+  for (const li of ul.querySelectorAll(":scope > li")) {
+    const inp = li.querySelector(".vera-wm-checklist-task-input");
+    if (inp instanceof HTMLInputElement) {
+      const t = inp.value.trim();
+      if (t) out.push(t);
+    }
+  }
+  return out;
+}
+
+function syncWorkChecklistHelpPlanButton() {
+  const btn = document.getElementById("vera-wm-checklist-help-plan");
+  if (!btn) return;
+  btn.disabled = collectWorkChecklistOngoingTexts().length === 0;
+}
+
+let workChecklistPlanHintTimer = null;
+function flashWorkChecklistPlanHint(message) {
+  const el = document.getElementById("vera-wm-checklist-plan-hint");
+  if (!el) return;
+  if (workChecklistPlanHintTimer) {
+    window.clearTimeout(workChecklistPlanHintTimer);
+    workChecklistPlanHintTimer = null;
+  }
+  el.textContent = message;
+  workChecklistPlanHintTimer = window.setTimeout(() => {
+    el.textContent = "";
+    workChecklistPlanHintTimer = null;
+  }, 4500);
+}
+
+function buildWorkChecklistHelpPlanUserMessage(lines) {
+  const cap = lines.slice(0, WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS);
+  const body = cap.map((t, i) => `${i + 1}. ${t}`).join("\n");
+  const more =
+    lines.length > WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS
+      ? `\n… (${lines.length - WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS} more items not shown)\n`
+      : "";
+  return (
+    "[Planning help — keep the reply concise. Use short bullets: sensible order or prep, easy-to-miss details (fuel, timing, gear, transitions). End with a short numbered list of specific questions to narrow things down (goals, time windows, cuisine, muscle focus, equipment, budget, constraints).]\n\n" +
+    "Ongoing checklist (in order):\n" +
+    body +
+    more
+  );
 }
 
 function queueWorkChecklistRowEnterAnimation(ulId, taskId) {
@@ -3727,21 +3780,74 @@ function wireWorkModeChecklistAndComposer() {
     workModeReasoningAttachment = f;
     setWorkModeAttachmentMeta(`Attached: ${f.name}`);
   });
-  rs?.addEventListener("click", async () => {
+
+  const submitWorkModeReasoningComposer = async () => {
     const t = ri?.value.trim() ?? "";
     if (!t) return;
     if (!isVeraWorkModeOn()) return;
     if (ri) ri.value = "";
-    const ac = new AbortController();
+    if (workModeReasoningAttachment) {
+      try {
+        await streamWorkModeReasoningComposer(t, undefined, workModeReasoningAttachment);
+      } catch (err) {
+        console.warn("[WorkMode] reasoning composer upload", err);
+      } finally {
+        workModeReasoningAttachment = null;
+        if (fileInput) fileInput.value = "";
+        setWorkModeAttachmentMeta("");
+      }
+      return;
+    }
     try {
-      await streamWorkModeReasoningComposer(t, ac.signal, workModeReasoningAttachment);
-      workModeReasoningAttachment = null;
-      if (fileInput) fileInput.value = "";
-      setWorkModeAttachmentMeta("");
+      await sendVeraWorkModeTypedInferTurn(t, { path: "reasoning-composer" });
     } catch (err) {
       console.warn("[WorkMode] reasoning composer", err);
     }
+  };
+
+  rs?.addEventListener("click", () => {
+    void submitWorkModeReasoningComposer();
   });
+  ri?.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    void submitWorkModeReasoningComposer();
+  });
+
+  const ongoingUlPlan = document.getElementById("vera-wm-checklist-ongoing");
+  if (ongoingUlPlan && ongoingUlPlan.dataset.helpPlanInput !== "1") {
+    ongoingUlPlan.dataset.helpPlanInput = "1";
+    ongoingUlPlan.addEventListener("input", () => {
+      syncWorkChecklistHelpPlanButton();
+    });
+  }
+
+  const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
+  if (helpPlanBtn && helpPlanBtn.dataset.wiredHelpPlan !== "1") {
+    helpPlanBtn.dataset.wiredHelpPlan = "1";
+    helpPlanBtn.addEventListener("click", async () => {
+      if (!isVeraWorkModeOn()) return;
+      const lines = collectWorkChecklistOngoingTexts();
+      if (!lines.length) {
+        flashWorkChecklistPlanHint("Add text to at least one ongoing item first.");
+        return;
+      }
+      const text = buildWorkChecklistHelpPlanUserMessage(lines);
+      helpPlanBtn.disabled = true;
+      try {
+        const reasoningScroll = document.querySelector("#vera-app.work-mode .vera-reasoning-scroll");
+        if (reasoningScroll instanceof HTMLElement) {
+          reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+        await streamWorkModeReasoningComposer(text, undefined, null);
+      } catch (err) {
+        console.warn("[WorkMode] help me plan", err);
+      } finally {
+        syncWorkChecklistHelpPlanButton();
+      }
+    });
+  }
+  syncWorkChecklistHelpPlanButton();
 }
 
 wireWorkModeChecklistAndComposer();
@@ -4736,13 +4842,8 @@ function isServerPipelineBusy() {
   );
 }
 
-/** Flow (non–work) UI: typed send can replace an in-flight reply / speaking TTS. */
+/** Typed send (flow or work mode) can replace an in-flight reply / speaking TTS. */
 function isFlowModeKeyboardInterruptAllowed() {
-  try {
-    if (appModePrefix() === "vera" && document.getElementById("vera-app")?.classList.contains("work-mode")) {
-      return false;
-    }
-  } catch {}
   return true;
 }
 
@@ -6620,6 +6721,72 @@ async function handleUtterance() {
 /* =========================
    TEXT INPUT PIPELINE
 ========================= */
+
+/**
+ * Work mode: typed lines use the same `/infer` path as browser-ASR voice (including optional
+ * reasoning-stream prep via maybePrepareWorkModeReasoning), not the separate `/text` handler.
+ */
+async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
+  const trimmed = String(text ?? "").trim();
+  const path = opts.path || "work-typed";
+  if (!trimmed || !isVeraWorkModeOn() || appModePrefix() !== "vera") return;
+
+  const statusLine = uiEl("status");
+  if (statusLine?.classList.contains("offline")) {
+    requestInFlight = false;
+    processing = false;
+    listening = false;
+    setStatus("Ready", "idle");
+  }
+
+  if (isServerPipelineBusy() && isFlowModeKeyboardInterruptAllowed()) {
+    interruptAssistantPipelineForTypedMessage();
+  }
+  if (isServerPipelineBusy()) return;
+
+  /* User bubble: do not addBubble here — /infer NDJSON first `asr` line calls commitServerUserTranscriptBubble
+     (same as voice). A prior addBubble would duplicate the row in Voice UI. */
+  ensureChatStartedLayout();
+
+  listening = false;
+  processing = true;
+  requestInFlight = true;
+  waveState = "idle";
+  setStatus("Thinking", "thinking");
+  beginVoiceUxTurn();
+
+  const formData = new FormData();
+  formData.append("transcript", trimmed);
+  formData.append("use_browser_asr", "1");
+  formData.append("session_id", getSessionId());
+  formData.append("client", appModePrefix());
+  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+  if (listeningMode === "ptt") {
+    formData.append("mode", "ptt");
+  }
+
+  logFinalTranscriptSentToLlm(path, trimmed);
+
+  const pipelineSig = attachPipelineAbortSignal();
+  try {
+    await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig);
+    await runInferMainPipeline(formData, { signal: pipelineSig });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      processing = false;
+      requestInFlight = false;
+      voiceUxTurn = null;
+      return;
+    }
+    console.warn("[WorkMode] typed infer", err);
+    hideSidePanel();
+    processing = false;
+    requestInFlight = false;
+    voiceUxTurn = null;
+    setStatus("Server error", "offline");
+  }
+}
+
 async function sendTextMessage() {
   const textInput = uiEl("text-input");
   const statusLine = uiEl("status");
@@ -6639,6 +6806,11 @@ async function sendTextMessage() {
 
   if (!text || isServerPipelineBusy()) return;
   if (textInput) textInput.value = "";
+
+  if (isVeraWorkModeOn() && appModePrefix() === "vera") {
+    await sendVeraWorkModeTypedInferTurn(text, { path: "typed-text" });
+    return;
+  }
 
   beginTextUxTurn();
   listening = false;
