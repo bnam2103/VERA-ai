@@ -1422,6 +1422,152 @@ function spotifyUriToOpenUrl(uri) {
   return "";
 }
 
+/** Spotify catalog id from ``spotify:album:…`` / ``spotify:artist:…`` / ``spotify:track:…``. */
+function spotifyEntityIdFromUri(uri, entity) {
+  const p = `spotify:${entity}:`;
+  const s = String(uri || "").trim();
+  if (!s.startsWith(p)) return "";
+  return s.slice(p.length).split(/[?#]/)[0] || "";
+}
+
+function spotifyRememberSearchSnapshot(prefix) {
+  const el = document.getElementById(`${prefix}-spotify-results`);
+  if (!el) return;
+  window.__veraSpotifySearchSnapshot ||= {};
+  window.__veraSpotifySearchSnapshot[prefix] = el.innerHTML;
+}
+
+function spotifyRestoreSearchSnapshot(prefix) {
+  const el = document.getElementById(`${prefix}-spotify-results`);
+  const snap = window.__veraSpotifySearchSnapshot?.[prefix];
+  if (el && typeof snap === "string" && snap.length) el.innerHTML = snap;
+}
+
+function spotifyDetailTrackRowsHtml(tracks, from, to) {
+  const slice = (tracks || []).slice(from, to);
+  return slice
+    .map((item) => {
+      const titlePlain = String(item.name ?? item.title ?? "Track");
+      const titleEsc = escapeHtml(titlePlain);
+      const artistEsc = escapeHtml(spotifyFormatArtists(item));
+      const uri = item.uri != null ? escapeHtml(String(item.uri)) : "";
+      const prev = item.preview_url != null ? escapeHtml(String(item.preview_url)) : "";
+      const openRaw = String(item.open_url || spotifyUriToOpenUrl(item.uri) || "").trim();
+      const openEsc = openRaw ? escapeHtml(openRaw) : "";
+      return `
+        <button type="button" class="spotify-detail-track-row" data-spotify-uri="${uri}" data-preview-url="${prev}" data-open-url="${openEsc}" data-display-title="${titleEsc}" data-display-sub="${artistEsc}">
+          <div class="spotify-result-text">
+            <div class="spotify-result-title"><span class="spotify-result-title-text">${titleEsc}</span></div>
+            <div class="spotify-result-sub">${artistEsc}</div>
+          </div>
+        </button>`;
+    })
+    .join("");
+}
+
+async function spotifyOpenAlbumSearchDetail(prefix, meta) {
+  const resultsEl = document.getElementById(`${prefix}-spotify-results`);
+  if (!resultsEl) return;
+  const albumUri = String(meta?.albumUri || "").trim();
+  const title = String(meta?.title || "Album");
+  const sub = String(meta?.sub || "");
+  const thumbUrl = String(meta?.thumbUrl || "").trim();
+  const aid = spotifyEntityIdFromUri(albumUri, "album");
+  if (!aid) return;
+  resultsEl.innerHTML = `<p class="spotify-results-hint">Loading album…</p>`;
+  const fn = window.VeraSpotify?.getAlbumTracks;
+  if (typeof fn !== "function") {
+    resultsEl.innerHTML = `<p class="spotify-results-error">Album tracks API unavailable.</p>`;
+    return;
+  }
+  let tracks;
+  try {
+    tracks = await fn(aid);
+  } catch (err) {
+    resultsEl.innerHTML = `<p class="spotify-results-error">${escapeHtml(String(err?.message ?? err))}</p>`;
+    return;
+  }
+  const list = Array.isArray(tracks) ? tracks : [];
+  const thumb = thumbUrl
+    ? `<img class="spotify-search-detail-cover" src="${escapeHtml(thumbUrl)}" alt="" loading="lazy" />`
+    : `<div class="spotify-search-detail-cover spotify-search-detail-cover--ph" aria-hidden="true"></div>`;
+  const titleEsc = escapeHtml(title);
+  const subEsc = escapeHtml(sub);
+  const uriEsc = escapeHtml(albumUri);
+  resultsEl.innerHTML = `
+    <div class="spotify-search-detail" data-spotify-detail="album">
+      <button type="button" class="spotify-search-back">← Results</button>
+      <div class="spotify-search-detail-head">
+        ${thumb}
+        <div class="spotify-search-detail-meta">
+          <div class="spotify-search-detail-title">${titleEsc}</div>
+          <div class="spotify-search-detail-sub">${subEsc}</div>
+        </div>
+        <button type="button" class="spotify-album-play-triangle" data-spotify-album-uri="${uriEsc}" aria-label="Play album">▶</button>
+      </div>
+      <div class="spotify-detail-tracklist">${list.length ? spotifyDetailTrackRowsHtml(list, 0, list.length) : `<p class="spotify-results-hint">No tracks on this album.</p>`}</div>
+    </div>`;
+}
+
+async function spotifyOpenArtistSearchDetail(prefix, meta) {
+  const resultsEl = document.getElementById(`${prefix}-spotify-results`);
+  if (!resultsEl) return;
+  const artistUri = String(meta?.artistUri || "").trim();
+  const title = String(meta?.title || "Artist");
+  const thumbUrl = String(meta?.thumbUrl || "").trim();
+  const arid = spotifyEntityIdFromUri(artistUri, "artist");
+  if (!arid) return;
+  resultsEl.innerHTML = `<p class="spotify-results-hint">Loading…</p>`;
+  const fn = window.VeraSpotify?.getArtistTopTracks;
+  if (typeof fn !== "function") {
+    resultsEl.innerHTML = `<p class="spotify-results-error">Artist top tracks API unavailable.</p>`;
+    return;
+  }
+  let tracks;
+  try {
+    tracks = await fn(arid);
+  } catch (err) {
+    resultsEl.innerHTML = `<p class="spotify-results-error">${escapeHtml(String(err?.message ?? err))}</p>`;
+    return;
+  }
+  const list = Array.isArray(tracks) ? tracks : [];
+  window.__veraSpotifyArtistTopTracks ||= {};
+  window.__veraSpotifyArtistTopTracks[prefix] = list;
+  const first = spotifyDetailTrackRowsHtml(list, 0, Math.min(5, list.length));
+  const thumb = thumbUrl
+    ? `<img class="spotify-search-detail-cover" src="${escapeHtml(thumbUrl)}" alt="" loading="lazy" />`
+    : `<div class="spotify-search-detail-cover spotify-search-detail-cover--ph" aria-hidden="true"></div>`;
+  const titleEsc = escapeHtml(title);
+  const moreHidden = list.length <= 5 ? "hidden" : "";
+  resultsEl.innerHTML = `
+    <div class="spotify-search-detail" data-spotify-detail="artist">
+      <button type="button" class="spotify-search-back">← Results</button>
+      <div class="spotify-search-detail-head">
+        ${thumb}
+        <div class="spotify-search-detail-meta">
+          <div class="spotify-search-detail-title">${titleEsc}</div>
+          <div class="spotify-search-detail-sub">Popular on Spotify</div>
+        </div>
+      </div>
+      <div class="spotify-detail-tracklist" id="${prefix}-spotify-artist-track-list">${first || `<p class="spotify-results-hint">No top tracks.</p>`}</div>
+      <button type="button" class="spotify-artist-top-more" ${moreHidden} aria-label="Show five more tracks"><span class="spotify-artist-more-arrow" aria-hidden="true">→</span><span>Next 5</span></button>
+    </div>`;
+}
+
+function spotifyAppendArtistTopTracksPage(prefix) {
+  const list = window.__veraSpotifyArtistTopTracks?.[prefix];
+  const resultsRoot = document.getElementById(`${prefix}-spotify-results`);
+  const wrap = document.getElementById(`${prefix}-spotify-artist-track-list`);
+  const moreBtn = resultsRoot?.querySelector(".spotify-artist-top-more");
+  if (!Array.isArray(list) || !wrap || !moreBtn) return;
+  const cur = wrap.querySelectorAll(".spotify-detail-track-row").length;
+  const next = spotifyDetailTrackRowsHtml(list, cur, Math.min(cur + 5, list.length));
+  if (next) wrap.insertAdjacentHTML("beforeend", next);
+  if (wrap.querySelectorAll(".spotify-detail-track-row").length >= list.length) {
+    moreBtn.hidden = true;
+  }
+}
+
 function spotifyFormatArtists(item) {
   const a = item?.artist ?? item?.artists;
   if (Array.isArray(a)) {
@@ -2033,14 +2179,69 @@ function wireProductivityPanelEvents(prefix) {
     try {
       const items = await fn(q);
       renderSpotifySearchResults(prefix, items);
+      spotifyRememberSearchSnapshot(prefix);
     } catch (err) {
       resultsEl.innerHTML = `<p class="spotify-results-error">${escapeHtml(String(err?.message ?? err))}</p>`;
     }
   });
 
   document.getElementById(`${prefix}-spotify-results`)?.addEventListener("click", (e) => {
-    const row = e.target instanceof HTMLElement ? e.target.closest(".spotify-result-row") : null;
-    if (!row) return;
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    const resultsRoot = document.getElementById(`${prefix}-spotify-results`);
+    if (!resultsRoot || !resultsRoot.contains(t)) return;
+
+    if (t.closest(".spotify-search-back")) {
+      spotifyRestoreSearchSnapshot(prefix);
+      return;
+    }
+    const albumPlay = t.closest(".spotify-album-play-triangle");
+    if (albumPlay instanceof HTMLElement) {
+      e.preventDefault();
+      e.stopPropagation();
+      const albumUri = albumPlay.dataset.spotifyAlbumUri || "";
+      const detail = resultsRoot.querySelector(".spotify-search-detail");
+      const ttl = detail?.querySelector(".spotify-search-detail-title")?.textContent || "Album";
+      const sub = detail?.querySelector(".spotify-search-detail-sub")?.textContent || "";
+      if (albumUri && window.VeraSpotify?.playPlaylist) {
+        window.VeraSpotify
+          .playPlaylist(albumUri, { playlist_name: ttl, context_subtitle: sub })
+          .catch(() => {});
+      }
+      return;
+    }
+    if (t.closest(".spotify-artist-top-more")) {
+      e.preventDefault();
+      spotifyAppendArtistTopTracksPage(prefix);
+      return;
+    }
+    const drow = t.closest(".spotify-detail-track-row");
+    if (drow instanceof HTMLElement) {
+      const uri = drow.dataset.spotifyUri || "";
+      const previewUrl = drow.dataset.previewUrl || "";
+      const openUrl = drow.dataset.openUrl || "";
+      const title = drow.dataset.displayTitle || "";
+      const artist = drow.dataset.displaySub || "";
+      const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
+      const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+      if (titleEl) titleEl.textContent = title || "—";
+      if (artistEl) artistEl.textContent = artist || "";
+      const detailRoot = drow.closest(".spotify-search-detail");
+      const coverImg = detailRoot?.querySelector(".spotify-search-detail-cover[src]");
+      const ph = document.getElementById(`${prefix}-spotify-art-placeholder`);
+      if (coverImg instanceof HTMLImageElement && coverImg.src && ph instanceof HTMLElement) {
+        ph.style.backgroundImage = `url(${JSON.stringify(coverImg.src)})`;
+        ph.style.backgroundSize = "cover";
+      }
+      const play = window.VeraSpotify?.playTrack;
+      if (typeof play === "function" && uri) {
+        play(uri, { title, artist, preview_url: previewUrl, open_url: openUrl }).catch(() => {});
+      }
+      return;
+    }
+
+    const row = t.closest(".spotify-result-row");
+    if (!row || !(row instanceof HTMLElement) || row.closest(".spotify-search-detail")) return;
     const kind = String(row.dataset.spotifyKind || "track").toLowerCase();
     const uri = row.dataset.spotifyUri || "";
     const previewUrl = row.dataset.previewUrl || "";
@@ -2049,6 +2250,25 @@ function wireProductivityPanelEvents(prefix) {
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
     const title = row.dataset.displayTitle || row.querySelector(".spotify-result-title-text")?.textContent || "";
     const artist = row.dataset.displaySub || row.querySelector(".spotify-result-sub")?.textContent || "";
+    if (kind === "album" && uri) {
+      const thumbImg = row.querySelector("img.spotify-result-thumb");
+      void spotifyOpenAlbumSearchDetail(prefix, {
+        albumUri: uri,
+        title,
+        sub: artist,
+        thumbUrl: thumbImg instanceof HTMLImageElement ? thumbImg.src || "" : ""
+      });
+      return;
+    }
+    if (kind === "artist" && uri) {
+      const thumbImg = row.querySelector("img.spotify-result-thumb");
+      void spotifyOpenArtistSearchDetail(prefix, {
+        artistUri: uri,
+        title,
+        thumbUrl: thumbImg instanceof HTMLImageElement ? thumbImg.src || "" : ""
+      });
+      return;
+    }
     if (titleEl) titleEl.textContent = title || "—";
     if (artistEl) artistEl.textContent = artist || "";
     const coverImg = row.querySelector("img.spotify-result-thumb");
@@ -2056,13 +2276,6 @@ function wireProductivityPanelEvents(prefix) {
     if (coverImg?.src && ph) {
       ph.style.backgroundImage = `url(${JSON.stringify(coverImg.src)})`;
       ph.style.backgroundSize = "cover";
-    }
-    if ((kind === "album" || kind === "artist") && uri) {
-      const playCtx = window.VeraSpotify?.playPlaylist;
-      if (typeof playCtx === "function") {
-        playCtx(uri, { playlist_name: title, context_subtitle: artist }).catch(() => {});
-      }
-      return;
     }
     const play = window.VeraSpotify?.playTrack;
     if (typeof play === "function" && uri) {
@@ -6846,7 +7059,6 @@ window.VeraSpotify = {
     /* Same origin as sign-in: local http://127.0.0.1:8000 uses your .env; GitHub Pages uses API_URL via localBackendBase(). */
     const u = new URL(authApiUrl("/api/spotify/search"));
     u.searchParams.set("q", raw);
-    u.searchParams.set("limit", "12");
     const res = await fetch(u.href, { cache: "no-store" });
     if (!res.ok) {
       let msg = `Search failed (${res.status})`;
@@ -6855,6 +7067,43 @@ window.VeraSpotify = {
         const d = err.detail;
         if (typeof d === "string") msg = d;
         else if (Array.isArray(d) && d[0]?.msg) msg = String(d[0].msg);
+      } catch (_) {
+        /* ignore */
+      }
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  },
+  async getAlbumTracks(albumId) {
+    const id = String(albumId || "").trim();
+    if (!id) return [];
+    const u = new URL(authApiUrl(`/api/spotify/albums/${encodeURIComponent(id)}/tracks`));
+    u.searchParams.set("limit", "50");
+    const res = await fetch(u.href, { cache: "no-store" });
+    if (!res.ok) {
+      let msg = `Album tracks failed (${res.status})`;
+      try {
+        const err = await res.json();
+        if (typeof err.detail === "string") msg = err.detail;
+      } catch (_) {
+        /* ignore */
+      }
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  },
+  async getArtistTopTracks(artistId) {
+    const id = String(artistId || "").trim();
+    if (!id) return [];
+    const u = new URL(authApiUrl(`/api/spotify/artists/${encodeURIComponent(id)}/top-tracks`));
+    const res = await fetch(u.href, { cache: "no-store" });
+    if (!res.ok) {
+      let msg = `Artist top tracks failed (${res.status})`;
+      try {
+        const err = await res.json();
+        if (typeof err.detail === "string") msg = err.detail;
       } catch (_) {
         /* ignore */
       }

@@ -2903,6 +2903,147 @@ body.chat-started .input-container {
   text-overflow: ellipsis;
 }
 
+/* Search drill-in: album track list + artist top tracks */
+.spotify-search-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.spotify-search-back {
+  align-self: flex-start;
+  padding: 4px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(30, 215, 96, 0.95);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.spotify-search-back:hover {
+  color: #1ed760;
+}
+
+.spotify-search-detail-head {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.spotify-search-detail-cover {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.spotify-search-detail-cover--ph {
+  background: linear-gradient(145deg, rgba(30, 215, 96, 0.25), rgba(0, 0, 0, 0.4));
+}
+
+.spotify-search-detail-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.spotify-search-detail-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f5f7fb;
+  line-height: 1.25;
+}
+
+.spotify-search-detail-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1.35;
+}
+
+.spotify-album-play-triangle {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  margin: 0 0 0 4px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(30, 215, 96, 0.45);
+  background: rgba(30, 215, 96, 0.18);
+  color: #1ed760;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.spotify-album-play-triangle:hover {
+  background: rgba(30, 215, 96, 0.28);
+}
+
+.spotify-detail-tracklist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(42vh, 340px);
+  overflow-y: auto;
+}
+
+.spotify-detail-track-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.spotify-detail-track-row:hover {
+  background: rgba(30, 215, 96, 0.12);
+  border-color: rgba(30, 215, 96, 0.2);
+}
+
+.spotify-artist-top-more {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.spotify-artist-top-more:hover {
+  background: rgba(30, 215, 96, 0.14);
+  border-color: rgba(30, 215, 96, 0.28);
+}
+
+.spotify-artist-more-arrow {
+  font-size: 12px;
+  line-height: 1;
+  color: rgba(30, 215, 96, 0.95);
+}
+
 .spotify-connect-row {
   display: flex;
   flex-wrap: wrap;
@@ -5159,6 +5300,41 @@ body.bmo-open .spotify-result-kind {
   color: #0a3d24;
   border-color: rgba(24, 49, 39, 0.35);
   background: rgba(177, 246, 191, 0.65);
+}
+
+body.bmo-open .spotify-search-back {
+  color: #0a5c2e;
+}
+
+body.bmo-open .spotify-search-detail-title {
+  color: #0f2e22;
+}
+
+body.bmo-open .spotify-search-detail-sub {
+  color: rgba(24, 49, 39, 0.78);
+}
+
+body.bmo-open .spotify-album-play-triangle {
+  color: #0f2e22;
+  border-color: rgba(24, 49, 39, 0.28);
+  background: rgba(205, 255, 215, 0.75);
+}
+
+body.bmo-open .spotify-detail-track-row {
+  background: rgba(255, 255, 255, 0.62);
+  border-color: rgba(24, 49, 39, 0.1);
+  color: #132e23;
+}
+
+body.bmo-open .spotify-detail-track-row:hover {
+  background: rgba(199, 237, 208, 0.85);
+  border-color: rgba(24, 49, 39, 0.18);
+}
+
+body.bmo-open .spotify-artist-top-more {
+  color: #142822;
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(24, 49, 39, 0.18);
 }
 
 body.bmo-open .spotify-track-artist,
