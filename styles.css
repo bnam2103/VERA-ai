@@ -3290,6 +3290,19 @@ body.chat-started .input-bar {
   content: none !important;
 }
 
+/* Bridge header + first row so the clock strip and panel region share one continuous field */
+#vera-app.work-mode > .chat-centered {
+  background-image: linear-gradient(
+    180deg,
+    rgba(6, 12, 22, 0.38) 0%,
+    rgba(6, 12, 22, 0.12) 56px,
+    transparent 112px
+  );
+  background-repeat: no-repeat;
+  background-size: 100% 112px;
+  background-position: top center;
+}
+
 #vera-app.work-mode .vera-body-grid {
   display: grid;
   grid-template-columns: minmax(200px, 0.9fr) minmax(260px, 1.35fr) minmax(240px, 1fr);
@@ -5470,4 +5483,130 @@ body.bmo-open #bmo-page .bmo-input-dock-row > * {
 body.bmo-open.news-panel-open #bmo-page .input-container {
   justify-content: flex-end !important;
   padding-right: 20px;
+}
+
+/* ----- Work mode UI polish (wrappers + depth + motion; flow layout unchanged) ----- */
+#vera-app:not(.work-mode) .vera-wm-reasoning-body-wrap,
+#vera-app:not(.work-mode) .vera-wm-conversation-wrap {
+  display: contents;
+}
+
+#vera-app:not(.work-mode) .vera-wm-empty-hint {
+  display: none !important;
+}
+
+#vera-app.work-mode .vera-wm-reasoning-body-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+#vera-app.work-mode .vera-wm-reasoning-body-wrap .vera-reasoning-scroll {
+  min-height: 0;
+}
+
+#vera-app.work-mode .vera-wm-conversation-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+#vera-app.work-mode .vera-wm-empty-hint {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  margin: 0;
+  padding: 20px 16px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  color: rgba(200, 215, 235, 0.42);
+  pointer-events: none;
+}
+
+#vera-app.work-mode
+  .vera-wm-reasoning-body-wrap:not(:has(#vera-reasoning-md > *))
+  .vera-wm-empty-hint--reasoning,
+#vera-app.work-mode
+  .vera-wm-conversation-wrap:not(:has(#vera-conversation > *))
+  .vera-wm-empty-hint--voice {
+  display: flex;
+}
+
+#vera-app.work-mode .vera-body-grid {
+  position: relative;
+  isolation: isolate;
+}
+
+#vera-app.work-mode .vera-body-grid::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 120% 70% at 50% 8%, rgba(120, 175, 255, 0.08), transparent 55%),
+    radial-gradient(ellipse 85% 55% at 92% 88%, rgba(160, 110, 255, 0.06), transparent 48%);
+  opacity: 0.9;
+  /* Soften the top edge so the strip under the clock does not read as a hard line */
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 10%, #000 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 10%, #000 100%);
+}
+
+#vera-app.work-mode .vera-body-grid > * {
+  position: relative;
+  z-index: 1;
+}
+
+#vera-app.work-mode .vera-wm-music-pane,
+#vera-app.work-mode .vera-wm-checklist-pane,
+#vera-app.work-mode .vera-wm-center,
+#vera-app.work-mode .vera-wm-right {
+  box-shadow: 0 14px 42px rgba(0, 0, 0, 0.38);
+  transition: box-shadow 0.35s ease, border-color 0.35s ease;
+}
+
+#vera-app.work-mode .vera-header-datetime {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(6, 10, 18, 0.62);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.32);
+  transition: box-shadow 0.35s ease, border-color 0.35s ease;
+}
+
+#vera-app.work-mode .vera-reasoning-send,
+#vera-app.work-mode .vera-reasoning-attach-btn,
+#vera-app.work-mode .vera-reasoning-input {
+  transition:
+    border-color 0.22s ease,
+    background-color 0.22s ease,
+    box-shadow 0.22s ease,
+    transform 0.18s ease,
+    color 0.2s ease;
+}
+
+#vera-app.work-mode .vera-reasoning-send:active {
+  transform: scale(0.98);
+}
+
+#vera-app.work-mode .vera-wm-right #vera-voice-bar {
+  transition:
+    border-color 0.22s ease,
+    background-color 0.22s ease,
+    box-shadow 0.22s ease;
+}
+
+#vera-app.work-mode .vera-wm-checklist-li {
+  transition: background-color 0.18s ease;
+}
+
+#vera-app.work-mode .vera-wm-checklist-li:hover {
+  background-color: rgba(255, 255, 255, 0.045);
 }

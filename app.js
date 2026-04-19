@@ -3272,6 +3272,28 @@ function ensureWorkChecklistListDnD() {
   completedUl.addEventListener("dragover", onDragOver);
 }
 
+/**
+ * If the first row is an empty ongoing placeholder but completed items follow it in storage,
+ * the placeholder was likely inserted at index 0 (legacy bug). Rotate it to the end so it
+ * stays the trailing “new item” slot, not a stray row above completed tasks.
+ */
+function normalizeWorkChecklistLeadingPlaceholderInStorage() {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items) || items.length < 2) return false;
+    const first = items[0];
+    if (!first || typeof first.text !== "string" || Boolean(first.done)) return false;
+    if (String(first.text).trim() !== "") return false;
+    if (!items.slice(1).some((x) => x && Boolean(x.done))) return false;
+    const [head, ...rest] = items;
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify([...rest, head]));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 /** Drops empty ongoing rows except the bottom-most one (storage order among !done items). */
 function pruneInteriorEmptyOngoingItems() {
   try {
@@ -3315,7 +3337,12 @@ function ensureWorkChecklistTrailingEmptyOngoing() {
       lastOngoingIndex < 0 || !lastOngoing || String(lastOngoing.text).trim() !== "";
     if (!needNew) return false;
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    items.splice(lastOngoingIndex + 1, 0, { id, text: "", done: false });
+    /* When there are no ongoing rows yet, append at list end — never splice(0,0) or the empty slot sits above completed items in storage order. */
+    if (lastOngoingIndex < 0) {
+      items.push({ id, text: "", done: false });
+    } else {
+      items.splice(lastOngoingIndex + 1, 0, { id, text: "", done: false });
+    }
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
     return true;
   } catch (_) {
@@ -3347,7 +3374,8 @@ function loadWorkChecklistItems() {
   const completedUl = document.getElementById("vera-wm-checklist-completed");
   if (!ongoingUl || !completedUl) return;
   ensureWorkChecklistListDnD();
-  /* Do not prune here: Enter inserts an empty row between items; load must keep it until blur. */
+  normalizeWorkChecklistLeadingPlaceholderInStorage();
+  /* Do not call pruneInteriorEmptyOngoingItems on load — it would remove intentional mid-list empties from Enter. */
   let guard = 0;
   while (ensureWorkChecklistTrailingEmptyOngoing()) {
     guard += 1;
