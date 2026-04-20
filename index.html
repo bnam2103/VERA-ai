@@ -1795,9 +1795,8 @@ function revealApp() {
     if (typeof window.resetVoiceUiToIdle === "function") {
       window.resetVoiceUiToIdle();
     }
-    if (typeof window.resetVeraSessionAndUi === "function") {
-      window.resetVeraSessionAndUi();
-    }
+    /* Do not call resetVeraSessionAndUi here: it assigns a new session id and clears the chat log,
+       which wipes client-restored Voice UI history right after reload/boot reveal. */
     bootLoader.classList.remove("active");
     bmoPage.hidden = true;
     veraApp.hidden = false;
