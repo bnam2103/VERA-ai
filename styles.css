@@ -4558,6 +4558,27 @@ body.chat-started .input-bar {
   transform: translateX(26px);
 }
 
+.vera-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.vera-settings-save-btn {
+  border: 1px solid rgba(118, 205, 158, 0.65);
+  background: rgba(82, 190, 130, 0.24);
+  color: rgba(228, 255, 239, 0.96);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vera-settings-save-btn:hover {
+  background: rgba(82, 190, 130, 0.34);
+}
+
 .vera-user-sign-in-dialog {
   width: 100%;
   max-width: 400px;

@@ -7973,9 +7973,13 @@ function wireVeraSettingsPanel() {
   const asrSingleBtn = document.getElementById("vera-setting-asr-single");
   const resetSessionBtn = document.getElementById("vera-setting-reset-session");
   const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
+  const saveBtn = document.getElementById("vera-settings-save");
   if (!(modal instanceof HTMLElement)) return;
 
   const silenceOptions = [1000, 1300, 1600];
+  let draftSilenceMs = getVeraAsrSilenceMs();
+  let draftAsrMode = getVeraAsrMode();
+  let draftWorkModeMute = isWorkModeMuteEnabled();
   const silenceToIndex = (ms) => {
     const idx = silenceOptions.indexOf(ms);
     return idx >= 0 ? idx : 1;
@@ -7994,7 +7998,7 @@ function wireVeraSettingsPanel() {
   };
 
   const applyMuteUi = () => {
-    const on = isWorkModeMuteEnabled();
+    const on = draftWorkModeMute;
     if (workModeMuteBtn instanceof HTMLButtonElement) {
       workModeMuteBtn.classList.toggle("is-on", on);
       workModeMuteBtn.setAttribute("aria-pressed", on ? "true" : "false");
@@ -8002,10 +8006,13 @@ function wireVeraSettingsPanel() {
   };
 
   const hydrate = () => {
+    draftSilenceMs = getVeraAsrSilenceMs();
+    draftAsrMode = getVeraAsrMode();
+    draftWorkModeMute = isWorkModeMuteEnabled();
     if (silenceSlider instanceof HTMLInputElement) {
-      silenceSlider.value = String(silenceToIndex(getVeraAsrSilenceMs()));
+      silenceSlider.value = String(silenceToIndex(draftSilenceMs));
     }
-    applyAsrModeUi(getVeraAsrMode());
+    applyAsrModeUi(draftAsrMode);
     applyMuteUi();
     applyVeraWorkModeMuteSetting();
   };
@@ -8027,20 +8034,25 @@ function wireVeraSettingsPanel() {
 
   silenceSlider?.addEventListener("input", () => {
     const idx = Math.max(0, Math.min(2, Number(silenceSlider.value) || 1));
-    setVeraAsrSilenceMs(silenceOptions[idx]);
+    draftSilenceMs = silenceOptions[idx];
   });
   asrStreamingBtn?.addEventListener("click", () => {
-    setVeraAsrMode("streaming");
+    draftAsrMode = "streaming";
     applyAsrModeUi("streaming");
   });
   asrSingleBtn?.addEventListener("click", () => {
-    setVeraAsrMode("single");
+    draftAsrMode = "single";
     applyAsrModeUi("single");
   });
   workModeMuteBtn?.addEventListener("click", () => {
-    const next = !isWorkModeMuteEnabled();
-    setWorkModeMuteEnabled(next);
+    draftWorkModeMute = !draftWorkModeMute;
     applyMuteUi();
+  });
+  saveBtn?.addEventListener("click", () => {
+    setVeraAsrSilenceMs(draftSilenceMs);
+    setVeraAsrMode(draftAsrMode);
+    setWorkModeMuteEnabled(draftWorkModeMute);
+    close();
   });
 
   resetSessionBtn?.addEventListener("click", () => {
