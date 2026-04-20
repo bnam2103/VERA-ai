@@ -3981,6 +3981,36 @@ function runFlowModeSidePaneContentCrossfade(sidePaneEl, renderCallback) {
   fallbackOut = window.setTimeout(finishOut, 420);
 }
 
+/** NDJSON can call ``applyActionPayload`` from ``finalizeNdjsonStreamingReply`` before first audio and again from ``onPlayStart`` — duplicate Spotify starts twitch the UI. */
+function musicPlaybackDedupeKey(payload, op) {
+  if (!payload || payload.panel_type !== "music_control") return "";
+  if (op === "play_track" && payload.uri) return `play_track:${String(payload.uri).trim()}`;
+  if (op === "play_album" && payload.uri) return `play_album:${String(payload.uri).trim()}`;
+  if (op === "play_playlist_by_name") {
+    const n = String(payload.playlist_name || "").trim().toLowerCase();
+    if (n) return `play_playlist_by_name:${n}`;
+  }
+  return "";
+}
+
+function isRecentSameMusicPlay(payload, op) {
+  const key = musicPlaybackDedupeKey(payload, op);
+  if (!key) return false;
+  const prev = window.__veraMusicPlaybackDedupe;
+  return !!(prev && prev.key === key && performance.now() - prev.at < 7000);
+}
+
+/** Returns false when the same play was already started a few seconds ago (NDJSON finalize + first-audio both call this). */
+function shouldPlayMusicThisInvocation(payload, op) {
+  const key = musicPlaybackDedupeKey(payload, op);
+  if (!key) return true;
+  const now = performance.now();
+  const prev = window.__veraMusicPlaybackDedupe;
+  if (prev && prev.key === key && now - prev.at < 7000) return false;
+  window.__veraMusicPlaybackDedupe = { key, at: now };
+  return true;
+}
+
 function applyActionPayload(data) {
   const payload = data?.action_payload;
   const lockToMusicPanel =
@@ -4042,8 +4072,9 @@ function applyActionPayload(data) {
       if (typeof setVolume === "function") void setVolume(next);
       return;
     }
+    const skipPanelRepeat = isRecentSameMusicPlay(payload, op);
     const sidePaneEl = uiEl("side-pane");
-    if (sidePaneEl) {
+    if (sidePaneEl && !skipPanelRepeat) {
       const hasProductivityMarkup =
         Boolean(sidePaneEl.innerHTML.trim()) && sidePaneEl.dataset.sidePaneKind === "productivity";
       document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
@@ -4054,7 +4085,7 @@ function applyActionPayload(data) {
       }
       document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
     }
-    if (op === "play_track" && payload.uri) {
+    if (op === "play_track" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
       const play = window.VeraSpotify?.playTrack;
       if (typeof play === "function") {
         void play(String(payload.uri), {
@@ -4064,7 +4095,7 @@ function applyActionPayload(data) {
           open_url: payload.open_url || ""
         });
       }
-    } else if (op === "play_album" && payload.uri) {
+    } else if (op === "play_album" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
       const playCtx = window.VeraSpotify?.playPlaylist;
       if (typeof playCtx === "function") {
         void (async () => {
@@ -4097,7 +4128,7 @@ function applyActionPayload(data) {
       }
     } else if (op === "play_playlist_by_name") {
       const rawName = String(payload.playlist_name || "").trim();
-      if (rawName) {
+      if (rawName && shouldPlayMusicThisInvocation(payload, op)) {
         void (async () => {
           const prefix = appModePrefix();
           const getLists = window.VeraSpotify?.getPlaylists;
