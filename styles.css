@@ -3318,6 +3318,12 @@ body.chat-started .input-bar {
   filter: none;
 }
 
+#vera-app:not(.work-mode).vera-flow-input-active .vera-bottom-left-tools {
+  z-index: 1010;
+  isolation: isolate;
+  filter: none;
+}
+
 #vera-app.work-mode .vera-guide,
 #vera-app.work-mode #vera-user-sign-in,
 #vera-app.work-mode #vera-interrupt-debug-header {

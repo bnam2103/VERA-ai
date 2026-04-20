@@ -85,6 +85,7 @@ function resetBmoSessionAndUi() {
  * Used on boot/reveal and when returning from BMO via the VERA nav control.
  */
 function resetVeraSessionAndUi() {
+  const prevSessionId = getSessionScopedId(VERA_SESSION_STORAGE_KEY);
   const newId = crypto.randomUUID();
   setSessionScopedId(VERA_SESSION_STORAGE_KEY, newId);
 
@@ -107,6 +108,39 @@ function resetVeraSessionAndUi() {
     veraAudio.removeAttribute("src");
     veraAudio.load?.();
   }
+
+  /* Reset work-mode client artifacts too: checklist + reasoning panes/state. */
+  try {
+    localStorage.removeItem(WORK_CHECKLIST_STORAGE_KEY);
+    localStorage.removeItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY);
+    if (prevSessionId) {
+      localStorage.removeItem(`${REASONING_TABS_STATE_STORAGE_KEY_PREFIX}:${prevSessionId}`);
+    }
+  } catch (_) {}
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (panelsRoot) {
+    panelsRoot.replaceChildren();
+    const panel = document.createElement("div");
+    panel.className = "vera-reasoning-tab-panel is-active";
+    panel.id = "vera-reasoning-tab-panel-0";
+    panel.dataset.tabIndex = "0";
+    panel.dataset.tabTopic = REASONING_UNTITLED_TAB_NAME;
+    panel.dataset.tabTopicSet = "0";
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-label", "Reasoning space 1");
+    const scroll = document.createElement("div");
+    scroll.className = "vera-reasoning-scroll vera-reasoning-md-panel";
+    scroll.id = "vera-reasoning-md";
+    scroll.setAttribute("aria-live", "polite");
+    panel.appendChild(scroll);
+    panelsRoot.appendChild(panel);
+    renderReasoningTabStrip();
+  }
+  loadWorkChecklistItems();
+  flashWorkChecklistPlanHint("");
+  workModeReasoningConfirmPending = null;
+  workModeReasoningAttachment = null;
+  setWorkModeAttachmentMeta("");
 
   hideSidePanel();
 }
@@ -8056,7 +8090,7 @@ function wireVeraSettingsPanel() {
   });
 
   resetSessionBtn?.addEventListener("click", () => {
-    const ok = window.confirm("Start a new session now? This clears the current chat on this page.");
+    const ok = window.confirm("Start a new session now? This clears current chat and work-mode checklist/reasoning state.");
     if (!ok) return;
     if (appModePrefix() === "bmo") resetBmoSessionAndUi();
     else resetVeraSessionAndUi();
