@@ -2779,29 +2779,85 @@ function getReasoningTabTopicLabel(panel) {
   return topic || REASONING_UNTITLED_TAB_NAME;
 }
 
-function summarizeReasoningTopicFromText(text) {
-  const raw = String(text || "").replace(/\s+/g, " ").trim();
-  if (!raw) return "";
-  const withoutLead = raw
-    .replace(/^(here(?:'s| is)\s+(?:an?\s+)?example(?:\s+of)?[:\-\s]*)/i, "")
-    .trim();
-  const candidate = withoutLead || raw;
-  const words = candidate.split(/\s+/).filter(Boolean);
-  if (!words.length) return "";
-  const maxWords = 4;
-  const topicWords = words.slice(0, maxWords);
-  return topicWords
-    .join(" ")
-    .replace(/[,:;.!?]+$/g, "")
-    .trim();
+function toTitleCaseWord(w) {
+  if (!w) return "";
+  if (/^[A-Z0-9]{2,}$/.test(w)) return w;
+  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
 }
 
-function setReasoningTabTopicFromSummary(turnEl, summaryText) {
+function compactTopicPhrase(text, maxWords = 4) {
+  const raw = String(text || "")
+    .replace(/[`*_#>[\]()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) return "";
+  const withoutLead = raw
+    .replace(/^(here(?:'s| is)\s+)?(?:an?\s+)?(?:short\s+)?example(?:\s+of)?[:\-\s]*/i, "")
+    .trim();
+  const candidate = withoutLead || raw;
+  const words = candidate.match(/[A-Za-z0-9][A-Za-z0-9'+-]*/g) || [];
+  if (!words.length) return "";
+  const badEdge = new Set([
+    "a", "an", "the", "is", "are", "was", "were", "be", "being", "been", "to", "of", "and", "or",
+    "for", "with", "in", "on", "at", "from", "by", "as", "that", "this"
+  ]);
+  let start = 0;
+  let end = words.length;
+  while (start < end && badEdge.has(words[start].toLowerCase())) start += 1;
+  while (end > start && badEdge.has(words[end - 1].toLowerCase())) end -= 1;
+  const core = words.slice(start, end).slice(0, maxWords);
+  if (!core.length) return "";
+  return core.map((w) => toTitleCaseWord(w)).join(" ");
+}
+
+function keywordTopicFromText(text, maxWords = 4) {
+  const tokens = (String(text || "").toLowerCase().match(/[a-z][a-z0-9'+-]*/g) || []);
+  if (!tokens.length) return "";
+  const stop = new Set([
+    "the", "and", "for", "with", "that", "this", "from", "into", "your", "you", "show", "example",
+    "short", "here", "there", "what", "when", "where", "which", "about", "have", "has", "had", "can",
+    "could", "would", "should", "step", "steps", "then", "than", "just", "more", "most", "some", "any",
+    "using", "use", "used", "also", "very", "much", "into", "onto", "over", "under"
+  ]);
+  const counts = new Map();
+  const firstPos = new Map();
+  tokens.forEach((t, i) => {
+    if (t.length < 3 || stop.has(t)) return;
+    if (!firstPos.has(t)) firstPos.set(t, i);
+    counts.set(t, (counts.get(t) || 0) + 1);
+  });
+  const ranked = [...counts.entries()]
+    .sort((a, b) => (b[1] - a[1]) || ((firstPos.get(a[0]) || 0) - (firstPos.get(b[0]) || 0)))
+    .slice(0, maxWords)
+    .map(([t]) => toTitleCaseWord(t));
+  return ranked.join(" ");
+}
+
+function buildReasoningTopicLabel({ summaryText = "", markdownText = "", userPrompt = "" } = {}) {
+  const headingLines = String(markdownText || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,6}\s+/.test(line))
+    .map((line) => line.replace(/^#{1,6}\s+/, "").trim());
+  for (const h of headingLines) {
+    const t = compactTopicPhrase(h, 4);
+    if (t) return t;
+  }
+  const keywordTopic = keywordTopicFromText(`${summaryText}\n${markdownText}`, 4);
+  if (keywordTopic) return keywordTopic;
+  const summaryTopic = compactTopicPhrase(summaryText, 4);
+  if (summaryTopic) return summaryTopic;
+  const promptTopic = compactTopicPhrase(userPrompt, 4);
+  if (promptTopic) return promptTopic;
+  return "";
+}
+
+function setReasoningTabTopicFromFinal(turnEl, opts = {}) {
   if (!turnEl) return;
   const panel = turnEl.closest(".vera-reasoning-tab-panel");
   if (!panel) return;
   if (String(panel.dataset.tabTopicSet || "") === "1") return;
-  const topic = summarizeReasoningTopicFromText(summaryText);
+  const topic = buildReasoningTopicLabel(opts);
   panel.dataset.tabTopic = topic || REASONING_UNTITLED_TAB_NAME;
   panel.dataset.tabTopicSet = "1";
   renderReasoningTabStrip();
@@ -3173,7 +3229,7 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
   el.innerHTML = html;
 }
 
-async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decoder) {
+async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decoder, opts = {}) {
   let buf = initialTail || "";
   let markdownAcc = mdEl?.dataset.markdownAcc || "";
   const summaryText = mdEl?.dataset.summaryText || "";
@@ -3204,6 +3260,11 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
       if (done) break;
     }
   } catch (_) {}
+  if (typeof opts.onDone === "function") {
+    try {
+      opts.onDone({ markdownAcc, summaryText });
+    } catch (_) {}
+  }
 }
 
 async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {}) {
@@ -3314,7 +3375,6 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       if (o.type === "error") break;
       if (o.type === "summary" && o.text) {
         turnEl.dataset.summaryText = String(o.text);
-        setReasoningTabTopicFromSummary(turnEl, o.text);
         formData.append("reasoning_voice_coach", String(o.text).trim());
         foundSummary = true;
         break;
@@ -3322,7 +3382,15 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     }
   }
   if (foundSummary) {
-    void drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder);
+    void drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder, {
+      onDone: ({ markdownAcc, summaryText }) => {
+        setReasoningTabTopicFromFinal(turnEl, {
+          summaryText,
+          markdownText: markdownAcc,
+          userPrompt: trimmed
+        });
+      }
+    });
   }
   scrollEl.scrollTop = scrollEl.scrollHeight;
 }
@@ -3387,7 +3455,6 @@ async function streamWorkModeReasoningComposer(text, signal) {
       if (o.type === "summary" && o.text) {
         summaryText = String(o.text);
         turnEl.dataset.summaryText = summaryText;
-        setReasoningTabTopicFromSummary(turnEl, summaryText);
         renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
       }
       if (o.type === "markdown" && o.text) {
@@ -3398,6 +3465,11 @@ async function streamWorkModeReasoningComposer(text, signal) {
     }
     if (done) break;
   }
+  setReasoningTabTopicFromFinal(turnEl, {
+    summaryText,
+    markdownText: markdownAcc,
+    userPrompt: text
+  });
   scrollEl.scrollTop = scrollEl.scrollHeight;
 }
 
