@@ -699,9 +699,33 @@
         </div>
       </aside>
       <section class="vera-wm-center" id="vera-wm-center" aria-label="Reasoning space">
-        <div class="vera-wm-pane-title">Reasoning</div>
+        <div class="vera-wm-reasoning-top">
+          <div class="vera-wm-pane-title">Reasoning</div>
+          <div class="vera-reasoning-tabs-strip">
+            <div class="vera-reasoning-tabs" id="vera-reasoning-tabs" role="tablist" aria-label="Reasoning spaces"></div>
+            <button
+              type="button"
+              id="vera-reasoning-tab-add"
+              class="vera-reasoning-tab-add"
+              aria-label="Add reasoning space (max 3)"
+              title="New space (max 3)"
+            >
+              +
+            </button>
+          </div>
+        </div>
         <div class="vera-wm-reasoning-body-wrap">
-          <div class="vera-reasoning-scroll" id="vera-reasoning-md" aria-live="polite"></div>
+          <div class="vera-reasoning-tab-panels" id="vera-reasoning-tab-panels">
+            <div
+              class="vera-reasoning-tab-panel is-active"
+              id="vera-reasoning-tab-panel-0"
+              data-tab-index="0"
+              role="tabpanel"
+              aria-label="Reasoning space 1"
+            >
+              <div class="vera-reasoning-scroll vera-reasoning-md-panel" id="vera-reasoning-md" aria-live="polite"></div>
+            </div>
+          </div>
           <p class="vera-wm-empty-hint vera-wm-empty-hint--reasoning" aria-hidden="true">
             Reasoning and step-by-step notes from the assistant will show here.
           </p>

@@ -3563,7 +3563,6 @@ body.chat-started .input-bar {
   overflow-y: auto;
 }
 
-#vera-app.work-mode .vera-wm-center > .vera-wm-pane-title,
 #vera-app.work-mode .vera-wm-right > .vera-wm-pane-title {
   flex: 0 0 auto;
   padding: 8px 10px;
@@ -3573,6 +3572,165 @@ body.chat-started .input-bar {
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.55);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#vera-app.work-mode .vera-wm-center > .vera-wm-reasoning-top {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#vera-app.work-mode .vera-wm-center > .vera-wm-reasoning-top .vera-wm-pane-title {
+  margin: 0;
+  padding: 0;
+  border: none;
+  flex: 0 1 auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+#vera-app.work-mode .vera-reasoning-tabs-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+#vera-app.work-mode .vera-reasoning-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: min(360px, 55vw);
+}
+
+#vera-app.work-mode .vera-reasoning-tab-add {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#vera-app.work-mode .vera-reasoning-tab-add[hidden] {
+  display: none !important;
+}
+
+#vera-app.work-mode .vera-reasoning-tab-slot {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+#vera-app.work-mode .vera-reasoning-tab-slot.is-active {
+  border-color: rgba(120, 175, 255, 0.45);
+  background: rgba(80, 140, 240, 0.2);
+}
+
+#vera-app.work-mode .vera-reasoning-tab-slot .vera-reasoning-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 96px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(230, 235, 245, 0.85);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+#vera-app.work-mode .vera-reasoning-tab-slot.is-active .vera-reasoning-tab {
+  color: rgba(230, 240, 255, 0.98);
+}
+
+#vera-app.work-mode .vera-reasoning-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#vera-app.work-mode .vera-reasoning-tab-slot .vera-reasoning-tab-close {
+  flex: 0 0 auto;
+  width: 26px;
+  min-height: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#vera-app.work-mode .vera-reasoning-tab-slot .vera-reasoning-tab-close:hover {
+  color: rgba(255, 210, 210, 0.98);
+  background: rgba(255, 80, 80, 0.15);
+}
+
+#vera-app.work-mode .vera-reasoning-tab-panels {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+#vera-app.work-mode .vera-reasoning-tab-panel {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+#vera-app.work-mode .vera-reasoning-tab-panel.is-active {
+  display: flex;
+}
+
+#vera-app.work-mode .vera-reasoning-tab-panel .vera-reasoning-scroll {
+  min-height: 0;
+}
+
+#vera-app.work-mode .vera-reasoning-turn-sep {
+  padding: 10px 0 6px;
+}
+
+#vera-app.work-mode .vera-reasoning-turn-hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 0;
+}
+
+#vera-app.work-mode .vera-reasoning-turn {
+  margin-bottom: 14px;
+}
+
+#vera-app.work-mode .vera-reasoning-turn:last-child {
+  margin-bottom: 0;
 }
 
 #vera-app.work-mode .vera-wm-music-body {
@@ -5605,7 +5763,7 @@ body.bmo-open.news-panel-open #bmo-page .input-container {
 }
 
 #vera-app.work-mode
-  .vera-wm-reasoning-body-wrap:not(:has(#vera-reasoning-md > *))
+  .vera-wm-reasoning-body-wrap:not(:has(.vera-reasoning-tab-panels .vera-reasoning-md-panel > *))
   .vera-wm-empty-hint--reasoning,
 #vera-app.work-mode
   .vera-wm-conversation-wrap:not(:has(#vera-conversation > *))

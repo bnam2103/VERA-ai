@@ -2743,6 +2743,144 @@ wireProductivityModeButtons();
 const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
 const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
 const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
+const REASONING_TABS_MAX = 3;
+
+function getActiveReasoningScrollEl() {
+  const p = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active .vera-reasoning-md-panel");
+  if (p) return p;
+  return document.getElementById("vera-reasoning-md");
+}
+
+/** Each assistant reasoning run appends a new block inside the active space (scroll container). */
+function appendReasoningTurnMount(scrollEl) {
+  let el = scrollEl;
+  if (!el) {
+    el = document.getElementById("vera-reasoning-md");
+    if (!el) return null;
+  }
+  if (el.querySelector(".vera-reasoning-turn")) {
+    const sep = document.createElement("div");
+    sep.className = "vera-reasoning-turn-sep";
+    const hr = document.createElement("hr");
+    hr.className = "vera-reasoning-turn-hr";
+    hr.setAttribute("aria-hidden", "true");
+    sep.appendChild(hr);
+    el.appendChild(sep);
+  }
+  const turn = document.createElement("div");
+  turn.className = "vera-reasoning-turn";
+  el.appendChild(turn);
+  return turn;
+}
+
+function renderReasoningTabStrip() {
+  const tabsEl = document.getElementById("vera-reasoning-tabs");
+  const addBtn = document.getElementById("vera-reasoning-tab-add");
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!tabsEl || !panelsRoot) return;
+  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  tabsEl.replaceChildren();
+  panels.forEach((panel, i) => {
+    const idx = Number(panel.dataset.tabIndex);
+    const slot = document.createElement("div");
+    slot.className =
+      "vera-reasoning-tab-slot" + (panel.classList.contains("is-active") ? " is-active" : "");
+    const tabBtn = document.createElement("button");
+    tabBtn.type = "button";
+    tabBtn.className = "vera-reasoning-tab";
+    tabBtn.setAttribute("role", "tab");
+    tabBtn.setAttribute("aria-selected", panel.classList.contains("is-active") ? "true" : "false");
+    tabBtn.dataset.tabIndex = String(idx);
+    tabBtn.title = `Reasoning space ${i + 1}`;
+    const label = document.createElement("span");
+    label.className = "vera-reasoning-tab-label";
+    label.textContent = String(i + 1);
+    tabBtn.appendChild(label);
+    slot.appendChild(tabBtn);
+    if (panels.length > 1) {
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "vera-reasoning-tab-close";
+      close.dataset.tabClose = String(idx);
+      close.setAttribute("aria-label", `Close reasoning space ${i + 1}`);
+      close.textContent = "×";
+      slot.appendChild(close);
+    }
+    tabsEl.appendChild(slot);
+  });
+  if (addBtn) addBtn.hidden = panels.length >= REASONING_TABS_MAX;
+}
+
+function activateReasoningTab(index) {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return;
+  panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").forEach((p) => {
+    p.classList.toggle("is-active", Number(p.dataset.tabIndex) === index);
+  });
+  renderReasoningTabStrip();
+}
+
+function addReasoningTab() {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return;
+  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  if (panels.length >= REASONING_TABS_MAX) return;
+  const maxIdx = panels.reduce((m, p) => Math.max(m, Number(p.dataset.tabIndex) || 0), -1);
+  const idx = maxIdx + 1;
+  const panel = document.createElement("div");
+  panel.className = "vera-reasoning-tab-panel";
+  panel.dataset.tabIndex = String(idx);
+  panel.id = `vera-reasoning-tab-panel-${idx}`;
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-label", `Reasoning space ${panels.length + 1}`);
+  const scroll = document.createElement("div");
+  scroll.className = "vera-reasoning-scroll vera-reasoning-md-panel";
+  scroll.setAttribute("aria-live", "polite");
+  panel.appendChild(scroll);
+  panels.forEach((p) => p.classList.remove("is-active"));
+  panelsRoot.appendChild(panel);
+  panel.classList.add("is-active");
+  renderReasoningTabStrip();
+}
+
+function closeReasoningTab(index) {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return;
+  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  if (panels.length <= 1) return;
+  const victim = panels.find((p) => Number(p.dataset.tabIndex) === index);
+  if (!victim) return;
+  const wasActive = victim.classList.contains("is-active");
+  victim.remove();
+  if (wasActive) {
+    const rest = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+    rest[0]?.classList.add("is-active");
+  }
+  renderReasoningTabStrip();
+}
+
+function wireReasoningTabStrip() {
+  const tabsEl = document.getElementById("vera-reasoning-tabs");
+  const addBtn = document.getElementById("vera-reasoning-tab-add");
+  if (!tabsEl || tabsEl.dataset.wiredReasoningTabs === "1") return;
+  if (!document.getElementById("vera-reasoning-tab-panels")) return;
+  tabsEl.dataset.wiredReasoningTabs = "1";
+  tabsEl.addEventListener("click", (e) => {
+    const closeBtn = e.target.closest(".vera-reasoning-tab-close");
+    if (closeBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeReasoningTab(Number(closeBtn.dataset.tabClose));
+      return;
+    }
+    const tab = e.target.closest("button.vera-reasoning-tab");
+    if (tab && tab.dataset.tabIndex != null) {
+      activateReasoningTab(Number(tab.dataset.tabIndex));
+    }
+  });
+  addBtn?.addEventListener("click", () => addReasoningTab());
+  renderReasoningTabStrip();
+}
 
 function getWorkModeLeftPaneLayout() {
   try {
@@ -3013,7 +3151,8 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
           markdownAcc += String(o.text);
           mdEl.dataset.markdownAcc = markdownAcc;
           renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
-          mdEl.scrollTop = mdEl.scrollHeight;
+          const scrollHost = mdEl.closest(".vera-reasoning-scroll") || mdEl;
+          scrollHost.scrollTop = scrollHost.scrollHeight;
         }
       }
       if (done) break;
@@ -3023,8 +3162,8 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
 
 async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
   if (!isVeraWorkModeOn()) return;
-  const mdEl = document.getElementById("vera-reasoning-md");
-  if (!mdEl) return;
+  const scrollEl = getActiveReasoningScrollEl();
+  if (!scrollEl) return;
 
   const heuristicComplex = (() => {
     const t = String(trimmed || "").toLowerCase();
@@ -3058,9 +3197,6 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
   if (!routeReasoning) return;
   workModeReasoningConfirmPending = null;
 
-  mdEl.replaceChildren();
-  mdEl.dataset.markdownAcc = "";
-  mdEl.dataset.summaryText = "";
   const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -3068,6 +3204,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
     signal
   });
   if (!sr.ok || !sr.body) return;
+
+  const turnEl = appendReasoningTurnMount(scrollEl);
+  if (!turnEl) return;
+  turnEl.dataset.markdownAcc = "";
+  turnEl.dataset.summaryText = "";
   const reader = sr.body.getReader();
   const decoder = new TextDecoder();
   let lineBuf = "";
@@ -3090,7 +3231,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
       }
       if (o.type === "error") break;
       if (o.type === "summary" && o.text) {
-        mdEl.dataset.summaryText = String(o.text);
+        turnEl.dataset.summaryText = String(o.text);
         formData.append("reasoning_voice_coach", String(o.text).trim());
         foundSummary = true;
         break;
@@ -3098,7 +3239,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
     }
   }
   if (foundSummary) {
-    void drainReasoningNdjsonMarkdownTail(reader, lineBuf, mdEl, decoder);
+    void drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder);
   }
 }
 
@@ -3109,11 +3250,8 @@ function setWorkModeAttachmentMeta(message) {
 }
 
 async function streamWorkModeReasoningComposer(text, signal, attachmentFile = null) {
-  const mdEl = document.getElementById("vera-reasoning-md");
-  if (!mdEl) return;
-  mdEl.replaceChildren();
-  mdEl.dataset.markdownAcc = "";
-  mdEl.dataset.summaryText = "";
+  const scrollEl = getActiveReasoningScrollEl();
+  if (!scrollEl) return;
   let summaryText = "";
   let markdownAcc = "";
   let sr;
@@ -3148,6 +3286,12 @@ async function streamWorkModeReasoningComposer(text, signal, attachmentFile = nu
     setWorkModeAttachmentMeta("Upload failed: empty response body.");
     return;
   }
+
+  const turnEl = appendReasoningTurnMount(scrollEl);
+  if (!turnEl) return;
+  turnEl.dataset.markdownAcc = "";
+  turnEl.dataset.summaryText = "";
+
   const reader = sr.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -3168,18 +3312,18 @@ async function streamWorkModeReasoningComposer(text, signal, attachmentFile = nu
       }
       if (o.type === "summary" && o.text) {
         summaryText = String(o.text);
-        mdEl.dataset.summaryText = summaryText;
-        renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
+        turnEl.dataset.summaryText = summaryText;
+        renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
       }
       if (o.type === "markdown" && o.text) {
         markdownAcc += String(o.text);
-        mdEl.dataset.markdownAcc = markdownAcc;
-        renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
+        turnEl.dataset.markdownAcc = markdownAcc;
+        renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
       }
     }
     if (done) break;
   }
-  mdEl.scrollTop = mdEl.scrollHeight;
+  scrollEl.scrollTop = scrollEl.scrollHeight;
 }
 
 function createWorkChecklistDragHandle() {
@@ -3837,7 +3981,7 @@ function wireWorkModeChecklistAndComposer() {
       const text = buildWorkChecklistHelpPlanUserMessage(lines);
       helpPlanBtn.disabled = true;
       try {
-        const reasoningScroll = document.querySelector("#vera-app.work-mode .vera-reasoning-scroll");
+        const reasoningScroll = getActiveReasoningScrollEl();
         if (reasoningScroll instanceof HTMLElement) {
           reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
         }
@@ -3855,6 +3999,7 @@ function wireWorkModeChecklistAndComposer() {
 wireWorkModeChecklistAndComposer();
 loadWorkChecklistItems();
 window.loadWorkModeChecklist = loadWorkChecklistItems;
+wireReasoningTabStrip();
 
 let veraHeaderDateTimeTimer = null;
 
