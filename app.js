@@ -2755,12 +2755,42 @@ const WORK_MODE_STATE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERA_CHAT_STATE_STORAGE_KEY_PREFIX = "vera_chat_state_v1";
 let chatStateHydrating = false;
 
-function getVeraSessionIdForStorage() {
-  return localStorage.getItem(VERA_SESSION_STORAGE_KEY) || "";
+/** Same id source as `getSessionId()` for VERA — must never return "" or chat restore/save keys drift apart. */
+function ensureVeraSessionIdForPersistence() {
+  try {
+    let id = localStorage.getItem(VERA_SESSION_STORAGE_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(VERA_SESSION_STORAGE_KEY, id);
+    }
+    return id;
+  } catch (_) {
+    return "";
+  }
 }
 
 function getVeraChatStateStorageKey() {
-  return `${VERA_CHAT_STATE_STORAGE_KEY_PREFIX}:${getVeraSessionIdForStorage()}`;
+  const id = ensureVeraSessionIdForPersistence();
+  if (!id) return `${VERA_CHAT_STATE_STORAGE_KEY_PREFIX}:unknown`;
+  return `${VERA_CHAT_STATE_STORAGE_KEY_PREFIX}:${id}`;
+}
+
+function migrateLegacyVeraChatStorageKey() {
+  try {
+    const id = ensureVeraSessionIdForPersistence();
+    const modern = `${VERA_CHAT_STATE_STORAGE_KEY_PREFIX}:${id}`;
+    /* Older builds used an empty session segment when the id had not been created yet. */
+    const legacy = `${VERA_CHAT_STATE_STORAGE_KEY_PREFIX}:`;
+    const raw = localStorage.getItem(legacy);
+    if (raw && !localStorage.getItem(modern)) {
+      localStorage.setItem(modern, raw);
+    }
+  } catch (_) {}
+}
+
+function persistVeraClientStateOnUnload() {
+  persistVeraChatState();
+  persistReasoningTabsState();
 }
 
 function persistVeraChatState() {
@@ -3161,8 +3191,8 @@ function wireReasoningTabStrip() {
   renderReasoningTabStrip();
   if (window.__veraReasoningTabsUnloadHook !== "1") {
     window.__veraReasoningTabsUnloadHook = "1";
-    window.addEventListener("beforeunload", persistReasoningTabsState);
-    window.addEventListener("pagehide", persistReasoningTabsState);
+    window.addEventListener("beforeunload", persistVeraClientStateOnUnload);
+    window.addEventListener("pagehide", persistVeraClientStateOnUnload);
   }
 }
 
@@ -4332,9 +4362,9 @@ function wireWorkModeChecklistAndComposer() {
 wireWorkModeChecklistAndComposer();
 loadWorkChecklistItems();
 window.loadWorkModeChecklist = loadWorkChecklistItems;
+migrateLegacyVeraChatStorageKey();
 restoreVeraChatState();
 wireReasoningTabStrip();
-window.addEventListener("beforeunload", persistVeraChatState);
 
 let veraHeaderDateTimeTimer = null;
 
