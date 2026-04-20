@@ -83,6 +83,7 @@ function resetVeraSessionAndUi() {
 
 window.resetBmoSessionAndUi = resetBmoSessionAndUi;
 window.resetVeraSessionAndUi = resetVeraSessionAndUi;
+window.persistVeraChatState = persistVeraChatState;
 
 /* =========================
    GLOBAL STATE
@@ -966,6 +967,9 @@ function addBubble(text, who, meta) {
   row.appendChild(bubble);
   convoEl.appendChild(row);
   convoEl.scrollTop = convoEl.scrollHeight;
+  if (!chatStateHydrating && (who === "user" || who === "vera")) {
+    persistVeraChatState();
+  }
   return bubble;
 }
 
@@ -987,6 +991,7 @@ function commitServerUserTranscriptBubble(text, path) {
   } else {
     addBubble(t, "user", { path });
   }
+  persistVeraChatState();
   ensureChatStartedLayout();
 }
 
@@ -2746,6 +2751,77 @@ const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
 const REASONING_TABS_MAX = 3;
 const REASONING_UNTITLED_TAB_NAME = "Untitled";
 const REASONING_TABS_STATE_STORAGE_KEY_PREFIX = "vera_reasoning_tabs_state_v2";
+const WORK_MODE_STATE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const VERA_CHAT_STATE_STORAGE_KEY_PREFIX = "vera_chat_state_v1";
+let chatStateHydrating = false;
+
+function getVeraSessionIdForStorage() {
+  return localStorage.getItem(VERA_SESSION_STORAGE_KEY) || "";
+}
+
+function getVeraChatStateStorageKey() {
+  return `${VERA_CHAT_STATE_STORAGE_KEY_PREFIX}:${getVeraSessionIdForStorage()}`;
+}
+
+function persistVeraChatState() {
+  if (chatStateHydrating) return;
+  const convo = document.getElementById("vera-conversation");
+  if (!convo) return;
+  const messages = [];
+  for (const row of convo.querySelectorAll(".message-row")) {
+    const who = row.classList.contains("user") ? "user" : row.classList.contains("vera") ? "vera" : "";
+    if (!who) continue;
+    const bubble = row.querySelector(".bubble");
+    if (!(bubble instanceof HTMLElement)) continue;
+    if (bubble.classList.contains("interrupt-preview")) continue;
+    const text = String(bubble.textContent || "").trim();
+    if (!text) continue;
+    messages.push({ who, text });
+  }
+  const payload = { ts: Date.now(), messages };
+  try {
+    localStorage.setItem(getVeraChatStateStorageKey(), JSON.stringify(payload));
+  } catch (_) {}
+}
+
+function restoreVeraChatState() {
+  const convo = document.getElementById("vera-conversation");
+  if (!convo) return;
+  let raw = "";
+  try {
+    raw = localStorage.getItem(getVeraChatStateStorageKey()) || "";
+  } catch (_) {
+    return;
+  }
+  if (!raw) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return;
+  }
+  const ts = Number(parsed?.ts) || 0;
+  if (!ts || Date.now() - ts > WORK_MODE_STATE_TTL_MS) {
+    try {
+      localStorage.removeItem(getVeraChatStateStorageKey());
+    } catch (_) {}
+    return;
+  }
+  const messages = Array.isArray(parsed?.messages) ? parsed.messages : [];
+  if (!messages.length) return;
+  chatStateHydrating = true;
+  try {
+    convo.replaceChildren();
+    messages.forEach((m) => {
+      const who = m?.who === "user" ? "user" : "vera";
+      const text = String(m?.text || "").trim();
+      if (text) addBubble(text, who, { path: "restore-chat-state" });
+    });
+    if (convo.children.length > 0) ensureChatStartedLayout();
+  } finally {
+    chatStateHydrating = false;
+  }
+}
 
 function getReasoningTabsStateStorageKey() {
   return `${REASONING_TABS_STATE_STORAGE_KEY_PREFIX}:${getSessionId()}`;
@@ -2788,6 +2864,13 @@ function restoreReasoningTabsState() {
   }
   const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs.slice(0, REASONING_TABS_MAX) : [];
   if (!tabs.length) return;
+  const ts = Number(parsed?.ts) || 0;
+  if (!ts || Date.now() - ts > WORK_MODE_STATE_TTL_MS) {
+    try {
+      localStorage.removeItem(getReasoningTabsStateStorageKey());
+    } catch (_) {}
+    return;
+  }
 
   panelsRoot.replaceChildren();
   let hasActive = false;
@@ -4236,7 +4319,9 @@ function wireWorkModeChecklistAndComposer() {
 wireWorkModeChecklistAndComposer();
 loadWorkChecklistItems();
 window.loadWorkModeChecklist = loadWorkChecklistItems;
+restoreVeraChatState();
 wireReasoningTabStrip();
+window.addEventListener("beforeunload", persistVeraChatState);
 
 let veraHeaderDateTimeTimer = null;
 
@@ -4587,6 +4672,7 @@ function applyNdjsonStreamingReplySoFar(replySoFar, state) {
     state.bubble = addBubble(text, "vera", { path: "ndjson-reply-so-far" });
   }
   convoEl.scrollTop = convoEl.scrollHeight;
+  persistVeraChatState();
 }
 
 /** After NDJSON done: sync bubble to final reply, or add bubble if no streaming partials. */
@@ -4594,11 +4680,13 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   if (!done?.reply) return;
   if (state.bubble?.isConnected) {
     state.bubble.textContent = done.reply;
+    persistVeraChatState();
     return;
   }
   /* Must assign state.bubble so applyNdjsonStreamingReplySoFar doesn't add a second bubble if done arrives before first audio (defer path). */
   applyActionPayload({ ...ndjsonMeta, reply: done.reply });
   state.bubble = addBubble(done.reply, "vera", { path: "ndjson-final" });
+  persistVeraChatState();
 }
 
 /** Stops TTS and resets interrupt UI counters (shared by heuristic + browser barge-in). */
@@ -7239,7 +7327,10 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   formData.append("client", appModePrefix());
   formData.append("stream_tts", STREAM_TTS ? "1" : "0");
   if (opts.reasoningAttachment instanceof File && opts.reasoningAttachment.size > 0) {
-    formData.append("context_file", opts.reasoningAttachment, opts.reasoningAttachment.name || "upload");
+    const f = opts.reasoningAttachment;
+    /* Clone bytes so the same File object can be read again by reasoning_stream_upload without edge-case stream reuse. */
+    const forInfer = f.slice(0, f.size, f.type || undefined);
+    formData.append("context_file", forInfer, f.name || "upload");
   }
   if (listeningMode === "ptt") {
     formData.append("mode", "ptt");
