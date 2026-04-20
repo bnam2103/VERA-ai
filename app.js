@@ -1401,6 +1401,8 @@ function spotifyUriToOpenUrl(uri) {
   if (mAr) return `https://open.spotify.com/artist/${mAr[1]}`;
   const mAl = s.match(/^spotify:album:([a-zA-Z0-9]+)$/);
   if (mAl) return `https://open.spotify.com/album/${mAl[1]}`;
+  const mPl = s.match(/^spotify:playlist:([a-zA-Z0-9]+)$/);
+  if (mPl) return `https://open.spotify.com/playlist/${mPl[1]}`;
   return "";
 }
 
@@ -4061,6 +4063,68 @@ function applyActionPayload(data) {
           preview_url: payload.preview_url || "",
           open_url: payload.open_url || ""
         });
+      }
+    } else if (op === "play_album" && payload.uri) {
+      const playCtx = window.VeraSpotify?.playPlaylist;
+      if (typeof playCtx === "function") {
+        void (async () => {
+          const prefix = appModePrefix();
+          const base = localBackendBase();
+          const uri = String(payload.uri || "").trim();
+          const title = payload.title || "";
+          const artist = payload.artist || "";
+          const sub = artist ? `"${title}" by "${artist}"` : `"${title}"`;
+          const openUrl = String(payload.open_url || spotifyUriToOpenUrl(uri) || "").trim();
+          const st = await fetch(`${base}/api/spotify/connection-status`, {
+            credentials: "include",
+            headers: { ...veraSpotifyAuthHeaders() }
+          })
+            .then((r) => (r.ok ? r.json() : { connected: false }))
+            .catch(() => ({ connected: false }));
+          const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+          if (st.connected) {
+            await playCtx(uri, { playlist_name: title, context_subtitle: sub });
+          } else if (openUrl) {
+            window.open(openUrl, "_blank", "noopener,noreferrer");
+            if (artistEl) {
+              artistEl.textContent =
+                `${artist ? `${artist} — ` : ""}Opened Spotify in a new tab (connect for in-page playback).`.trim();
+            }
+          } else if (artistEl) {
+            artistEl.textContent = "Connect Spotify to play this album in VERA.";
+          }
+        })();
+      }
+    } else if (op === "play_playlist_by_name") {
+      const rawName = String(payload.playlist_name || "").trim();
+      if (rawName) {
+        void (async () => {
+          const prefix = appModePrefix();
+          const getLists = window.VeraSpotify?.getPlaylists;
+          const playCtx = window.VeraSpotify?.playPlaylist;
+          const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+          if (typeof getLists !== "function" || typeof playCtx !== "function") {
+            if (artistEl) artistEl.textContent = "Playlist playback is not available.";
+            return;
+          }
+          const lists = await getLists().catch(() => []);
+          const needle = rawName.toLowerCase();
+          let hit =
+            lists.find((p) => String(p.name || "").toLowerCase() === needle) ||
+            lists.find((p) => String(p.name || "").toLowerCase().includes(needle));
+          if (!hit && needle.length >= 3) {
+            hit = lists.find((p) => needle.includes(String(p.name || "").toLowerCase()));
+          }
+          if (!hit?.uri) {
+            if (artistEl) artistEl.textContent = `No playlist in your library matched "${rawName}".`;
+            return;
+          }
+          const disp = hit.name || rawName;
+          await playCtx(hit.uri, {
+            playlist_name: disp,
+            context_subtitle: `"${disp}" in my playlist`
+          });
+        })();
       }
     }
     return;
