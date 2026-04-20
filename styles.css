@@ -3650,7 +3650,7 @@ body.chat-started .input-bar {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  max-width: 96px;
+  max-width: 192px;
   padding: 4px 8px;
   border: none;
   border-radius: 0;

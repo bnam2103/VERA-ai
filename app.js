@@ -2744,6 +2744,7 @@ const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
 const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
 const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
 const REASONING_TABS_MAX = 3;
+const REASONING_UNTITLED_TAB_NAME = "Untitled";
 
 function getActiveReasoningScrollEl() {
   const p = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active .vera-reasoning-md-panel");
@@ -2773,6 +2774,39 @@ function appendReasoningTurnMount(scrollEl) {
   return turn;
 }
 
+function getReasoningTabTopicLabel(panel) {
+  const topic = String(panel?.dataset?.tabTopic || "").trim();
+  return topic || REASONING_UNTITLED_TAB_NAME;
+}
+
+function summarizeReasoningTopicFromText(text) {
+  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  const withoutLead = raw
+    .replace(/^(here(?:'s| is)\s+(?:an?\s+)?example(?:\s+of)?[:\-\s]*)/i, "")
+    .trim();
+  const candidate = withoutLead || raw;
+  const words = candidate.split(/\s+/).filter(Boolean);
+  if (!words.length) return "";
+  const maxWords = 4;
+  const topicWords = words.slice(0, maxWords);
+  return topicWords
+    .join(" ")
+    .replace(/[,:;.!?]+$/g, "")
+    .trim();
+}
+
+function setReasoningTabTopicFromSummary(turnEl, summaryText) {
+  if (!turnEl) return;
+  const panel = turnEl.closest(".vera-reasoning-tab-panel");
+  if (!panel) return;
+  if (String(panel.dataset.tabTopicSet || "") === "1") return;
+  const topic = summarizeReasoningTopicFromText(summaryText);
+  panel.dataset.tabTopic = topic || REASONING_UNTITLED_TAB_NAME;
+  panel.dataset.tabTopicSet = "1";
+  renderReasoningTabStrip();
+}
+
 function renderReasoningTabStrip() {
   const tabsEl = document.getElementById("vera-reasoning-tabs");
   const addBtn = document.getElementById("vera-reasoning-tab-add");
@@ -2791,10 +2825,11 @@ function renderReasoningTabStrip() {
     tabBtn.setAttribute("role", "tab");
     tabBtn.setAttribute("aria-selected", panel.classList.contains("is-active") ? "true" : "false");
     tabBtn.dataset.tabIndex = String(idx);
-    tabBtn.title = `Reasoning space ${i + 1}`;
+    const tabLabel = getReasoningTabTopicLabel(panel);
+    tabBtn.title = tabLabel;
     const label = document.createElement("span");
     label.className = "vera-reasoning-tab-label";
-    label.textContent = String(i + 1);
+    label.textContent = tabLabel;
     tabBtn.appendChild(label);
     slot.appendChild(tabBtn);
     if (panels.length > 1) {
@@ -2830,6 +2865,8 @@ function addReasoningTab() {
   const panel = document.createElement("div");
   panel.className = "vera-reasoning-tab-panel";
   panel.dataset.tabIndex = String(idx);
+  panel.dataset.tabTopic = REASONING_UNTITLED_TAB_NAME;
+  panel.dataset.tabTopicSet = "0";
   panel.id = `vera-reasoning-tab-panel-${idx}`;
   panel.setAttribute("role", "tabpanel");
   panel.setAttribute("aria-label", `Reasoning space ${panels.length + 1}`);
@@ -2864,6 +2901,15 @@ function wireReasoningTabStrip() {
   const addBtn = document.getElementById("vera-reasoning-tab-add");
   if (!tabsEl || tabsEl.dataset.wiredReasoningTabs === "1") return;
   if (!document.getElementById("vera-reasoning-tab-panels")) return;
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  panelsRoot?.querySelectorAll(".vera-reasoning-tab-panel").forEach((panel) => {
+    if (!String(panel.dataset.tabTopic || "").trim()) {
+      panel.dataset.tabTopic = REASONING_UNTITLED_TAB_NAME;
+    }
+    if (!String(panel.dataset.tabTopicSet || "").trim()) {
+      panel.dataset.tabTopicSet = "0";
+    }
+  });
   tabsEl.dataset.wiredReasoningTabs = "1";
   tabsEl.addEventListener("click", (e) => {
     const closeBtn = e.target.closest(".vera-reasoning-tab-close");
@@ -3268,6 +3314,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       if (o.type === "error") break;
       if (o.type === "summary" && o.text) {
         turnEl.dataset.summaryText = String(o.text);
+        setReasoningTabTopicFromSummary(turnEl, o.text);
         formData.append("reasoning_voice_coach", String(o.text).trim());
         foundSummary = true;
         break;
@@ -3340,6 +3387,7 @@ async function streamWorkModeReasoningComposer(text, signal) {
       if (o.type === "summary" && o.text) {
         summaryText = String(o.text);
         turnEl.dataset.summaryText = summaryText;
+        setReasoningTabTopicFromSummary(turnEl, summaryText);
         renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
       }
       if (o.type === "markdown" && o.text) {
