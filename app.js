@@ -5884,6 +5884,7 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
   if (appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled()) {
     logVeraSettings("tts_play_suppressed_workmode_mute", { mode: "playTtsFromApi" });
     mainTtsPlaybackActive = false;
+    if (typeof onPlayStart === "function") onPlayStart();
     if (typeof onPlayEnd === "function") onPlayEnd();
     return;
   }
