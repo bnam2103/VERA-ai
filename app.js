@@ -5,13 +5,43 @@
 const VERA_SESSION_STORAGE_KEY = "vera_session_id";
 const BMO_SESSION_STORAGE_KEY = "bmo_session_id";
 
+/**
+ * Session ids are tab-scoped: switching pages keeps them, closing the tab clears them.
+ * Migrate legacy ids from localStorage once for backward compatibility.
+ */
+function getSessionScopedId(key) {
+  let id = "";
+  try {
+    id = sessionStorage.getItem(key) || "";
+  } catch (_) {}
+  if (id) return id;
+  try {
+    const legacy = localStorage.getItem(key) || "";
+    if (legacy) {
+      sessionStorage.setItem(key, legacy);
+      localStorage.removeItem(key);
+      return legacy;
+    }
+  } catch (_) {}
+  return "";
+}
+
+function setSessionScopedId(key, id) {
+  try {
+    sessionStorage.setItem(key, id);
+  } catch (_) {}
+  try {
+    localStorage.removeItem(key);
+  } catch (_) {}
+}
+
 function getSessionId() {
   const bmo = document.body.classList.contains("bmo-open");
   const key = bmo ? BMO_SESSION_STORAGE_KEY : VERA_SESSION_STORAGE_KEY;
-  let id = localStorage.getItem(key);
+  let id = getSessionScopedId(key);
   if (!id) {
     id = crypto.randomUUID();
-    localStorage.setItem(key, id);
+    setSessionScopedId(key, id);
   }
   return id;
 }
@@ -22,7 +52,7 @@ function getSessionId() {
  */
 function resetBmoSessionAndUi() {
   const newId = crypto.randomUUID();
-  localStorage.setItem(BMO_SESSION_STORAGE_KEY, newId);
+  setSessionScopedId(BMO_SESSION_STORAGE_KEY, newId);
 
   const convo = document.getElementById("bmo-conversation");
   if (convo) convo.replaceChildren();
@@ -56,7 +86,7 @@ function resetBmoSessionAndUi() {
  */
 function resetVeraSessionAndUi() {
   const newId = crypto.randomUUID();
-  localStorage.setItem(VERA_SESSION_STORAGE_KEY, newId);
+  setSessionScopedId(VERA_SESSION_STORAGE_KEY, newId);
 
   const convo = document.getElementById("vera-conversation");
   if (convo) convo.replaceChildren();
@@ -2758,10 +2788,10 @@ let chatStateHydrating = false;
 /** Same id source as `getSessionId()` for VERA — must never return "" or chat restore/save keys drift apart. */
 function ensureVeraSessionIdForPersistence() {
   try {
-    let id = localStorage.getItem(VERA_SESSION_STORAGE_KEY);
+    let id = getSessionScopedId(VERA_SESSION_STORAGE_KEY);
     if (!id) {
       id = crypto.randomUUID();
-      localStorage.setItem(VERA_SESSION_STORAGE_KEY, id);
+      setSessionScopedId(VERA_SESSION_STORAGE_KEY, id);
     }
     return id;
   } catch (_) {
@@ -7950,6 +7980,10 @@ function wireVeraUserSignInHoldAndModal() {
       }
       const name = data.username != null && data.username !== "" ? String(data.username) : null;
       setVeraActiveUserLabel(name);
+      /* Start a fresh VERA session on successful user sign-in. */
+      if (typeof window.resetVeraSessionAndUi === "function") {
+        window.resetVeraSessionAndUi();
+      }
       closeModal();
       if (passEl) passEl.value = "";
     } catch {

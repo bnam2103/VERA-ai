@@ -1529,9 +1529,6 @@ function startTyping() {
     veraApp.hidden = true;
     home.hidden = true;
     document.body.classList.add("app-open", "bmo-open");
-    if (typeof window.resetBmoSessionAndUi === "function") {
-      window.resetBmoSessionAndUi();
-    }
     bmoLoadingScreen.hidden = false;
     bmoLoadingScreen.classList.remove("fade-in");
     bmoLoadingScreen.classList.add("fade-out");
@@ -1842,9 +1839,6 @@ document.getElementById("return-home").onclick = async () => {
   stopBmoIntro();
   if (typeof window.resetVoiceUiToIdle === "function") {
     window.resetVoiceUiToIdle();
-  }
-  if (typeof window.resetVeraSessionAndUi === "function") {
-    window.resetVeraSessionAndUi();
   }
   bmoPage.classList.add("fade-out");
 
