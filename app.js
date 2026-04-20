@@ -3160,50 +3160,86 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
   } catch (_) {}
 }
 
-async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
+async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {}) {
   if (!isVeraWorkModeOn()) return;
   const scrollEl = getActiveReasoningScrollEl();
   if (!scrollEl) return;
 
-  const heuristicComplex = (() => {
-    const t = String(trimmed || "").toLowerCase();
-    if (!t) return false;
-    const conceptWords = /\b(explain|how does|how do|derive|proof|theorem|compare|trade-?off|framework|architecture|mechanism|intuition)\b/;
-    const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
-    const multiPart = /(\b(step by step|in detail|deep dive|from scratch)\b)|([,:;].+[,:;])/;
-    return (
-      (conceptWords.test(t) && domainWords.test(t)) ||
-      domainWords.test(t) ||
-      multiPart.test(t)
-    );
-  })();
+  const attachment = opts?.attachment;
+  const hasUpload = attachment instanceof File && attachment.size > 0;
 
   let routeReasoning = false;
-  try {
-    const cr = await fetch(`${API_URL}/work_mode/classify`, {
+  if (hasUpload) {
+    routeReasoning = true;
+  } else {
+    const heuristicComplex = (() => {
+      const t = String(trimmed || "").toLowerCase();
+      if (!t) return false;
+      const conceptWords = /\b(explain|how does|how do|derive|proof|theorem|compare|trade-?off|framework|architecture|mechanism|intuition)\b/;
+      const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
+      const multiPart = /(\b(step by step|in detail|deep dive|from scratch)\b)|([,:;].+[,:;])/;
+      return (
+        (conceptWords.test(t) && domainWords.test(t)) ||
+        domainWords.test(t) ||
+        multiPart.test(t)
+      );
+    })();
+
+    try {
+      const cr = await fetch(`${API_URL}/work_mode/classify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: getSessionId(), text: trimmed }),
+        signal
+      });
+      if (cr.ok) {
+        const cj = await cr.json();
+        routeReasoning = Boolean(cj.prompt_reasoning || cj.reasoning);
+      }
+    } catch {
+      /* fall through to heuristic */
+    }
+    routeReasoning = routeReasoning || heuristicComplex;
+    if (!routeReasoning) return;
+  }
+
+  workModeReasoningConfirmPending = null;
+
+  let sr;
+  if (hasUpload) {
+    const fd = new FormData();
+    fd.append("session_id", getSessionId());
+    fd.append("text", trimmed);
+    fd.append("file", attachment);
+    sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
+      method: "POST",
+      body: fd,
+      signal
+    });
+    if (!sr.ok) {
+      let msg = `Upload failed (${sr.status})`;
+      try {
+        const err = await sr.json();
+        if (err?.detail) msg = String(err.detail);
+      } catch {
+        /* ignore */
+      }
+      setWorkModeAttachmentMeta(msg);
+      return "reasoning-upload-failed";
+    }
+    if (!sr.body) {
+      setWorkModeAttachmentMeta("Upload failed: empty response body.");
+      return "reasoning-upload-failed";
+    }
+  } else {
+    sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: getSessionId(), text: trimmed }),
       signal
     });
-    if (cr.ok) {
-      const cj = await cr.json();
-      routeReasoning = Boolean(cj.prompt_reasoning || cj.reasoning);
-    }
-  } catch {
-    /* fall through to heuristic */
+    if (!sr.ok || !sr.body) return;
   }
-  routeReasoning = routeReasoning || heuristicComplex;
-  if (!routeReasoning) return;
-  workModeReasoningConfirmPending = null;
-
-  const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: getSessionId(), text: trimmed }),
-    signal
-  });
-  if (!sr.ok || !sr.body) return;
 
   const turnEl = appendReasoningTurnMount(scrollEl);
   if (!turnEl) return;
@@ -3241,6 +3277,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal) {
   if (foundSummary) {
     void drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder);
   }
+  scrollEl.scrollTop = scrollEl.scrollHeight;
 }
 
 function setWorkModeAttachmentMeta(message) {
@@ -3249,41 +3286,31 @@ function setWorkModeAttachmentMeta(message) {
   meta.textContent = message || "";
 }
 
-async function streamWorkModeReasoningComposer(text, signal, attachmentFile = null) {
+/** Text-only reasoning stream into the reasoning panel (no `/infer`). File uploads use `maybePrepareWorkModeReasoning` + typed infer instead. */
+async function streamWorkModeReasoningComposer(text, signal) {
   const scrollEl = getActiveReasoningScrollEl();
   if (!scrollEl) return;
   let summaryText = "";
   let markdownAcc = "";
-  let sr;
-  if (attachmentFile) {
-    const fd = new FormData();
-    fd.append("session_id", getSessionId());
-    fd.append("text", text);
-    fd.append("file", attachmentFile);
-    sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
-      method: "POST",
-      body: fd,
-      signal
-    });
-  } else {
-    sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: getSessionId(), text }),
-      signal
-    });
-  }
+  const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: getSessionId(), text }),
+    signal
+  });
   if (!sr.ok) {
-    let msg = `Upload failed (${sr.status})`;
+    let msg = `Reasoning failed (${sr.status})`;
     try {
       const err = await sr.json();
       if (err?.detail) msg = String(err.detail);
-    } catch {}
+    } catch {
+      /* ignore */
+    }
     setWorkModeAttachmentMeta(msg);
     return;
   }
   if (!sr.body) {
-    setWorkModeAttachmentMeta("Upload failed: empty response body.");
+    setWorkModeAttachmentMeta("Reasoning failed: empty response body.");
     return;
   }
 
@@ -3933,8 +3960,12 @@ function wireWorkModeChecklistAndComposer() {
     if (!isVeraWorkModeOn()) return;
     if (ri) ri.value = "";
     if (workModeReasoningAttachment) {
+      const att = workModeReasoningAttachment;
       try {
-        await streamWorkModeReasoningComposer(t, undefined, workModeReasoningAttachment);
+        await sendVeraWorkModeTypedInferTurn(t, {
+          path: "reasoning-composer-upload",
+          reasoningAttachment: att
+        });
       } catch (err) {
         console.warn("[WorkMode] reasoning composer upload", err);
       } finally {
@@ -3985,7 +4016,7 @@ function wireWorkModeChecklistAndComposer() {
         if (reasoningScroll instanceof HTMLElement) {
           reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
         }
-        await streamWorkModeReasoningComposer(text, undefined, null);
+        await streamWorkModeReasoningComposer(text, undefined);
       } catch (err) {
         console.warn("[WorkMode] help me plan", err);
       } finally {
@@ -7009,7 +7040,16 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
 
   const pipelineSig = attachPipelineAbortSignal();
   try {
-    await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig);
+    const prep = await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig, {
+      attachment: opts.reasoningAttachment || null
+    });
+    if (prep === "reasoning-upload-failed") {
+      processing = false;
+      requestInFlight = false;
+      voiceUxTurn = null;
+      setStatus("Ready", "idle");
+      return;
+    }
     await runInferMainPipeline(formData, { signal: pipelineSig });
   } catch (err) {
     if (err?.name === "AbortError") {
