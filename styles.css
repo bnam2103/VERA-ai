@@ -2485,6 +2485,23 @@ body.chat-started .input-container {
   pointer-events: none;
 }
 
+.vera-bottom-left-tools,
+.bmo-bottom-left-tools {
+  position: fixed;
+  bottom: 14px;
+  left: 20px;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.bmo-bottom-left-tools {
+  bottom: 18px;
+}
+
 .bmo-bottom-right-tools {
   bottom: 18px;
 }
@@ -2522,6 +2539,37 @@ body.chat-started .input-container {
   background: rgba(30, 215, 96, 0.28);
   border-color: rgba(30, 215, 96, 0.65);
   box-shadow: 0 0 0 1px rgba(30, 215, 96, 0.25);
+}
+
+.vera-settings-fab {
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(12, 18, 28, 0.45);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.15s ease;
+}
+
+.vera-settings-fab:hover {
+  background: rgba(24, 32, 48, 0.55);
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+.vera-settings-fab:active {
+  transform: scale(0.98);
 }
 
 /* Signed-in user name (POST /api/user/sign-in) */
@@ -4227,6 +4275,10 @@ body.chat-started .input-bar {
   bottom: 24px;
 }
 
+#vera-app.work-mode .vera-bottom-left-tools {
+  display: none;
+}
+
 @media (max-width: 768px) {
   #vera-work-mode {
     display: none !important;
@@ -4330,6 +4382,180 @@ body.chat-started .input-bar {
 
 .vera-user-sign-in-overlay[hidden] {
   display: none !important;
+}
+
+.vera-settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20010;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 26px;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(4px);
+}
+
+.vera-settings-modal[hidden] {
+  display: none !important;
+}
+
+.vera-settings-card {
+  width: min(920px, 94vw);
+  max-height: min(86vh, 820px);
+  overflow: auto;
+  padding: 24px 26px 18px;
+  border-radius: 14px;
+  background: #12141a;
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 18px 58px rgba(0, 0, 0, 0.46);
+}
+
+.vera-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.vera-settings-header h2 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.04em;
+}
+
+.vera-settings-close {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 8px;
+  min-width: 36px;
+  height: 36px;
+  cursor: pointer;
+}
+
+.vera-settings-section {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  padding: 14px 14px 10px;
+  margin-bottom: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.vera-settings-section h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.vera-settings-row {
+  margin-bottom: 12px;
+}
+
+.vera-settings-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+#vera-setting-silence {
+  width: min(560px, 100%);
+  accent-color: #8cb6ff;
+}
+
+.vera-settings-range-labels {
+  width: min(560px, 100%);
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.vera-settings-radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.vera-settings-radio {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.vera-settings-radio .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: transparent;
+}
+
+.vera-settings-radio.is-active {
+  border-color: rgba(140, 182, 255, 0.75);
+  background: rgba(140, 182, 255, 0.18);
+}
+
+.vera-settings-radio.is-active .dot {
+  background: rgba(170, 205, 255, 0.95);
+  border-color: rgba(170, 205, 255, 0.95);
+}
+
+.vera-settings-danger-btn {
+  border: 1px solid rgba(255, 98, 98, 0.6);
+  background: rgba(255, 98, 98, 0.16);
+  color: rgba(255, 223, 223, 0.96);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vera-settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.vera-settings-toggle {
+  position: relative;
+  width: 56px;
+  height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+}
+
+.vera-settings-toggle .knob {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #f2f5fb;
+  left: 2px;
+  top: 2px;
+  transition: transform 0.2s ease;
+}
+
+.vera-settings-toggle.is-on {
+  background: rgba(82, 190, 130, 0.44);
+  border-color: rgba(112, 220, 152, 0.62);
+}
+
+.vera-settings-toggle.is-on .knob {
+  transform: translateX(26px);
 }
 
 .vera-user-sign-in-dialog {

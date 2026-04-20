@@ -834,6 +834,11 @@
     </button>
     <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
   </div>
+  <div class="vera-bottom-left-tools" aria-label="Settings tools">
+    <button type="button" id="vera-settings-open" class="vera-settings-fab" title="Open settings">
+      Settings
+    </button>
+  </div>
 </section>
 
 <section id="bmo-loading-screen" hidden>
@@ -1060,6 +1065,11 @@
         title="Productivity mode — music panel"
       >
         Music
+      </button>
+    </div>
+    <div class="bmo-bottom-left-tools" aria-label="Settings tools">
+      <button type="button" id="bmo-settings-open" class="vera-settings-fab" title="Open settings">
+        Settings
       </button>
     </div>
   </main>
@@ -2140,6 +2150,51 @@ document.addEventListener("click", () => {
   </div>
 </div>
 
+<div id="vera-settings-modal" class="vera-settings-modal" hidden>
+  <div class="vera-settings-card" role="dialog" aria-modal="true" aria-labelledby="vera-settings-title">
+    <div class="vera-settings-header">
+      <h2 id="vera-settings-title">Settings</h2>
+      <button type="button" id="vera-settings-close" class="vera-settings-close" aria-label="Close settings">✕</button>
+    </div>
+
+    <section class="vera-settings-section">
+      <h3>Universal</h3>
+
+      <div class="vera-settings-row">
+        <label for="vera-setting-silence" class="vera-settings-label">Silence time after ASR</label>
+        <input id="vera-setting-silence" type="range" min="0" max="2" step="1" value="1" />
+        <div class="vera-settings-range-labels"><span>1.0s</span><span>1.3s</span><span>1.6s</span></div>
+      </div>
+
+      <div class="vera-settings-row">
+        <div class="vera-settings-label">ASR mode</div>
+        <div class="vera-settings-radio-row" role="radiogroup" aria-label="ASR mode">
+          <button type="button" id="vera-setting-asr-streaming" class="vera-settings-radio" data-asr-mode="streaming" aria-pressed="true">
+            <span class="dot" aria-hidden="true"></span> ASR streaming
+          </button>
+          <button type="button" id="vera-setting-asr-single" class="vera-settings-radio" data-asr-mode="single" aria-pressed="false">
+            <span class="dot" aria-hidden="true"></span> Single ASR pipeline
+          </button>
+        </div>
+      </div>
+
+      <div class="vera-settings-row">
+        <button type="button" id="vera-setting-reset-session" class="vera-settings-danger-btn">Reset session</button>
+      </div>
+    </section>
+
+    <section class="vera-settings-section">
+      <h3>Work Mode</h3>
+      <div class="vera-settings-row vera-settings-toggle-row">
+        <span class="vera-settings-label">Mute VERA in work mode</span>
+        <button type="button" id="vera-setting-workmode-mute" class="vera-settings-toggle" aria-pressed="false" title="Mute VERA in work mode only">
+          <span class="knob"></span>
+        </button>
+      </div>
+    </section>
+  </div>
+</div>
+
 <script>
 (function () {
   if (typeof window === "undefined") return;
@@ -2158,7 +2213,7 @@ document.addEventListener("click", () => {
 })();
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script src="app.js?v=20"></script>
+<script src="app.js?v=21"></script>
 </body>
 </html>
 

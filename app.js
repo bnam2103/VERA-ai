@@ -514,10 +514,10 @@ const INTERRUPT_MAX_CREST = 38;
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /** Request NDJSON streaming TTS from /infer and /text so the first /audio URL arrives as soon as it is synthesized. */
-const STREAM_TTS = true;
+const DEFAULT_STREAM_TTS = true;
 
 /** Browser Web Speech API: live partials, then 1.3s stable transcript → /infer without server ASR. */
-const BROWSER_ASR_MAIN_SILENCE_MS = 1300;
+let browserAsrMainSilenceMs = 1300;
 /** Min accumulated ms of changing partial transcript to count as interrupt (vs VAD on audio). */
 const BROWSER_ASR_INTERRUPT_SUSTAIN_MS = 350;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
@@ -541,6 +541,10 @@ function getSpeechRecognitionLang() {
 /** Retries for main SR `network` errors (common on mobile data / brief offline). */
 let browserAsrMainNetworkRetries = 0;
 const BROWSER_ASR_MAIN_NETWORK_RETRY_MAX = 2;
+
+const VERA_SETTING_ASR_SILENCE_MS_KEY = "vera_setting_asr_silence_ms_v1";
+const VERA_SETTING_ASR_MODE_KEY = "vera_setting_asr_mode_v1";
+const VERA_SETTING_WORKMODE_MUTE_KEY = "vera_setting_workmode_mute_v1";
 
 /**
  * Set true after Web Speech returns not-allowed / service-not-allowed so we stop retrying
@@ -580,6 +584,7 @@ function isNarrowViewport() {
 
 function browserAsrPreferred() {
   if (browserAsrPermanentlyDisabled) return false;
+  if (getVeraAsrMode() === "single") return false;
   /* Opening index.html as file:// is unstable for Web Speech + permissions; use http://localhost or HTTPS. */
   if (typeof location !== "undefined" && location.protocol === "file:") {
     return false;
@@ -607,6 +612,67 @@ function browserAsrPreferred() {
   } catch {}
   return true;
 }
+
+function getVeraAsrSilenceMs() {
+  try {
+    const v = Number(localStorage.getItem(VERA_SETTING_ASR_SILENCE_MS_KEY));
+    if (v === 1000 || v === 1300 || v === 1600) return v;
+  } catch (_) {}
+  return 1300;
+}
+
+function setVeraAsrSilenceMs(v) {
+  const next = v === 1000 || v === 1300 || v === 1600 ? v : 1300;
+  browserAsrMainSilenceMs = next;
+  try {
+    localStorage.setItem(VERA_SETTING_ASR_SILENCE_MS_KEY, String(next));
+  } catch (_) {}
+}
+
+function getVeraAsrMode() {
+  try {
+    const v = String(localStorage.getItem(VERA_SETTING_ASR_MODE_KEY) || "").trim();
+    if (v === "single" || v === "streaming") return v;
+  } catch (_) {}
+  return "streaming";
+}
+
+function setVeraAsrMode(mode) {
+  const next = mode === "single" ? "single" : "streaming";
+  try {
+    localStorage.setItem(VERA_SETTING_ASR_MODE_KEY, next);
+  } catch (_) {}
+}
+
+function isWorkModeMuteEnabled() {
+  try {
+    return localStorage.getItem(VERA_SETTING_WORKMODE_MUTE_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function setWorkModeMuteEnabled(on) {
+  try {
+    localStorage.setItem(VERA_SETTING_WORKMODE_MUTE_KEY, on ? "1" : "0");
+  } catch (_) {}
+  applyVeraWorkModeMuteSetting();
+}
+
+function applyVeraWorkModeMuteSetting() {
+  const veraAudio = document.getElementById("vera-audio");
+  if (!(veraAudio instanceof HTMLAudioElement)) return;
+  const inWork = Boolean(document.getElementById("vera-app")?.classList.contains("work-mode"));
+  veraAudio.muted = isWorkModeMuteEnabled() && inWork;
+}
+
+function shouldStreamTts() {
+  if (getVeraAsrMode() === "single") return false;
+  if (!DEFAULT_STREAM_TTS) return false;
+  return true;
+}
+
+browserAsrMainSilenceMs = getVeraAsrSilenceMs();
 
 function disableBrowserAsrForSession(reason) {
   browserAsrPermanentlyDisabled = true;
@@ -5372,7 +5438,7 @@ async function handleInterruptUtterance(blob) {
       },
     })
   );
-  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+  formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
 
   await runInferInterruptPipeline(formData);
 }
@@ -6580,7 +6646,7 @@ function scheduleMainBrowserEndOfUtterance() {
     } else {
       void finalizeMainBrowserTranscript(cur);
     }
-  }, BROWSER_ASR_MAIN_SILENCE_MS);
+  }, browserAsrMainSilenceMs);
 }
 
 function updateMainBrowserLiveBubble(fullText, interim) {
@@ -6636,7 +6702,7 @@ async function finalizeMainBrowserTranscript(text) {
   if (listeningMode === "ptt") {
     formData.append("mode", "ptt");
   }
-  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+  formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
 
   logVoiceTranscript("final", trimmed, { path: "main-browser-asr" });
   logFinalTranscriptSentToLlm("main-browser-asr", trimmed);
@@ -7014,7 +7080,7 @@ async function finalizeInterruptBrowserTranscript(text) {
       },
     })
   );
-  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+  formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
 
   logVoiceTranscript("final", trimmed, { path: "interrupt-browser-asr" });
   logFinalTranscriptSentToLlm("interrupt-browser-asr", trimmed);
@@ -7094,7 +7160,7 @@ async function runInferMainPipeline(formData, opts = {}) {
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (main — TTFB)");
 
-    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
+    if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
 
       let ndjsonMeta = null;
@@ -7238,7 +7304,7 @@ async function runInferInterruptPipeline(formData) {
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (interrupt)");
 
-    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
+    if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
 
       const runStream = async () => {
@@ -7387,7 +7453,7 @@ async function handleUtterance() {
   if (listeningMode === "ptt") {
     formData.append("mode", "ptt");
   }
-  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+  formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
 
   await runInferMainPipeline(formData);
 }
@@ -7435,7 +7501,7 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   formData.append("use_browser_asr", "1");
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
-  formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+  formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
   if (opts.reasoningAttachment instanceof File && opts.reasoningAttachment.size > 0) {
     const f = opts.reasoningAttachment;
     /* Clone bytes so the same File object can be read again by reasoning_stream_upload without edge-case stream reuse. */
@@ -7521,13 +7587,13 @@ async function sendTextMessage() {
         text,
         session_id: getSessionId(),
         client: appModePrefix(),
-        stream_tts: STREAM_TTS
+        stream_tts: shouldStreamTts()
       }),
       signal: attachPipelineAbortSignal()
     });
     const textTtfbMs = performance.now() - textFetchStart;
 
-    if (STREAM_TTS && res.ok && isNdjsonTtsResponse(res)) {
+    if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
 
       let ndjsonMeta = null;
@@ -7693,7 +7759,7 @@ async function onPttClick() {
     formData.append("session_id", getSessionId());
     formData.append("client", appModePrefix());
     formData.append("mode", "ptt");
-    formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+    formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
     logVoiceTranscript("final", text, { path: "ptt-browser-asr" });
     logFinalTranscriptSentToLlm("ptt-browser-asr", text);
     void (async () => {
@@ -7897,6 +7963,102 @@ async function refreshVeraActiveUserLabel() {
   }
 }
 
+function wireVeraSettingsPanel() {
+  const modal = document.getElementById("vera-settings-modal");
+  const openVeraBtn = document.getElementById("vera-settings-open");
+  const openBmoBtn = document.getElementById("bmo-settings-open");
+  const closeBtn = document.getElementById("vera-settings-close");
+  const silenceSlider = document.getElementById("vera-setting-silence");
+  const asrStreamingBtn = document.getElementById("vera-setting-asr-streaming");
+  const asrSingleBtn = document.getElementById("vera-setting-asr-single");
+  const resetSessionBtn = document.getElementById("vera-setting-reset-session");
+  const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
+  if (!(modal instanceof HTMLElement)) return;
+
+  const silenceOptions = [1000, 1300, 1600];
+  const silenceToIndex = (ms) => {
+    const idx = silenceOptions.indexOf(ms);
+    return idx >= 0 ? idx : 1;
+  };
+
+  const applyAsrModeUi = (mode) => {
+    const streamingOn = mode !== "single";
+    if (asrStreamingBtn instanceof HTMLButtonElement) {
+      asrStreamingBtn.classList.toggle("is-active", streamingOn);
+      asrStreamingBtn.setAttribute("aria-pressed", streamingOn ? "true" : "false");
+    }
+    if (asrSingleBtn instanceof HTMLButtonElement) {
+      asrSingleBtn.classList.toggle("is-active", !streamingOn);
+      asrSingleBtn.setAttribute("aria-pressed", !streamingOn ? "true" : "false");
+    }
+  };
+
+  const applyMuteUi = () => {
+    const on = isWorkModeMuteEnabled();
+    if (workModeMuteBtn instanceof HTMLButtonElement) {
+      workModeMuteBtn.classList.toggle("is-on", on);
+      workModeMuteBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  };
+
+  const hydrate = () => {
+    if (silenceSlider instanceof HTMLInputElement) {
+      silenceSlider.value = String(silenceToIndex(getVeraAsrSilenceMs()));
+    }
+    applyAsrModeUi(getVeraAsrMode());
+    applyMuteUi();
+    applyVeraWorkModeMuteSetting();
+  };
+
+  const open = () => {
+    hydrate();
+    modal.removeAttribute("hidden");
+  };
+  const close = () => {
+    modal.setAttribute("hidden", "");
+  };
+
+  openVeraBtn?.addEventListener("click", open);
+  openBmoBtn?.addEventListener("click", open);
+  closeBtn?.addEventListener("click", close);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) close();
+  });
+
+  silenceSlider?.addEventListener("input", () => {
+    const idx = Math.max(0, Math.min(2, Number(silenceSlider.value) || 1));
+    setVeraAsrSilenceMs(silenceOptions[idx]);
+  });
+  asrStreamingBtn?.addEventListener("click", () => {
+    setVeraAsrMode("streaming");
+    applyAsrModeUi("streaming");
+  });
+  asrSingleBtn?.addEventListener("click", () => {
+    setVeraAsrMode("single");
+    applyAsrModeUi("single");
+  });
+  workModeMuteBtn?.addEventListener("click", () => {
+    const next = !isWorkModeMuteEnabled();
+    setWorkModeMuteEnabled(next);
+    applyMuteUi();
+  });
+
+  resetSessionBtn?.addEventListener("click", () => {
+    const ok = window.confirm("Start a new session now? This clears the current chat on this page.");
+    if (!ok) return;
+    if (appModePrefix() === "bmo") resetBmoSessionAndUi();
+    else resetVeraSessionAndUi();
+    close();
+  });
+
+  const app = document.getElementById("vera-app");
+  if (app && typeof MutationObserver !== "undefined") {
+    const obs = new MutationObserver(() => applyVeraWorkModeMuteSetting());
+    obs.observe(app, { attributes: true, attributeFilter: ["class"] });
+  }
+  hydrate();
+}
+
 function wireVeraUserSignInHoldAndModal() {
   const holdMs = 2000;
   /* Long-press sign-in only in VERA app (#return-home-vera), not on landing nav-home */
@@ -8037,6 +8199,7 @@ function wireVeraUserSignInHoldAndModal() {
 }
 
 wireVeraUserSignInHoldAndModal();
+wireVeraSettingsPanel();
 refreshVeraActiveUserLabel();
 
 (function stripSpotifyOAuthQueryParams() {
