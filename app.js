@@ -580,6 +580,12 @@ const VERA_SETTING_ASR_SILENCE_MS_KEY = "vera_setting_asr_silence_ms_v1";
 const VERA_SETTING_ASR_MODE_KEY = "vera_setting_asr_mode_v1";
 const VERA_SETTING_WORKMODE_MUTE_KEY = "vera_setting_workmode_mute_v1";
 
+function logVeraSettings(event, data = {}) {
+  try {
+    console.log("[SETTINGS]", event, data);
+  } catch (_) {}
+}
+
 /**
  * Set true after Web Speech returns not-allowed / service-not-allowed so we stop retrying
  * (retries re-trigger permission prompts, especially on file://).
@@ -661,6 +667,7 @@ function setVeraAsrSilenceMs(v) {
   try {
     localStorage.setItem(VERA_SETTING_ASR_SILENCE_MS_KEY, String(next));
   } catch (_) {}
+  logVeraSettings("save_silence_ms", { value: next });
 }
 
 function getVeraAsrMode() {
@@ -676,6 +683,7 @@ function setVeraAsrMode(mode) {
   try {
     localStorage.setItem(VERA_SETTING_ASR_MODE_KEY, next);
   } catch (_) {}
+  logVeraSettings("save_asr_mode", { value: next });
 }
 
 function isWorkModeMuteEnabled() {
@@ -690,6 +698,7 @@ function setWorkModeMuteEnabled(on) {
   try {
     localStorage.setItem(VERA_SETTING_WORKMODE_MUTE_KEY, on ? "1" : "0");
   } catch (_) {}
+  logVeraSettings("save_workmode_mute", { value: on ? 1 : 0 });
   applyVeraWorkModeMuteSetting();
 }
 
@@ -706,6 +715,12 @@ function applyVeraWorkModeMuteSetting() {
       vg.gain.setValueAtTime(mute ? 0 : 1, audioCtx.currentTime);
     } catch (_) {}
   }
+  logVeraSettings("apply_workmode_mute", {
+    enabled_setting: isWorkModeMuteEnabled() ? 1 : 0,
+    in_work_mode: inWork ? 1 : 0,
+    effective_mute: mute ? 1 : 0,
+    has_gain: vg ? 1 : 0
+  });
 }
 
 function shouldStreamTts() {
@@ -6695,6 +6710,10 @@ function scheduleMainBrowserEndOfUtterance() {
       void finalizeMainBrowserTranscript(cur);
     }
   }, browserAsrMainSilenceMs);
+  logVeraSettings("schedule_asr_silence_timer", {
+    ms: browserAsrMainSilenceMs,
+    asr_mode: getVeraAsrMode()
+  });
 }
 
 function updateMainBrowserLiveBubble(fullText, interim) {
@@ -8072,6 +8091,11 @@ function wireVeraSettingsPanel() {
 
   const open = () => {
     hydrate();
+    logVeraSettings("open_modal", {
+      silence_ms: draftSilenceMs,
+      asr_mode: draftAsrMode,
+      workmode_mute: draftWorkModeMute ? 1 : 0
+    });
     modal.removeAttribute("hidden");
   };
   const close = () => {
@@ -8087,23 +8111,32 @@ function wireVeraSettingsPanel() {
 
   const syncDraftSilenceFromSlider = () => {
     draftSilenceMs = readSliderSilenceMs();
+    logVeraSettings("draft_silence_ms", { value: draftSilenceMs });
   };
   silenceSlider?.addEventListener("input", syncDraftSilenceFromSlider);
   silenceSlider?.addEventListener("change", syncDraftSilenceFromSlider);
   asrStreamingBtn?.addEventListener("click", () => {
     draftAsrMode = "streaming";
     applyAsrModeUi("streaming");
+    logVeraSettings("draft_asr_mode", { value: draftAsrMode });
   });
   asrSingleBtn?.addEventListener("click", () => {
     draftAsrMode = "single";
     applyAsrModeUi("single");
+    logVeraSettings("draft_asr_mode", { value: draftAsrMode });
   });
   workModeMuteBtn?.addEventListener("click", () => {
     draftWorkModeMute = !draftWorkModeMute;
     applyMuteUi();
+    logVeraSettings("draft_workmode_mute", { value: draftWorkModeMute ? 1 : 0 });
   });
   saveBtn?.addEventListener("click", () => {
     draftSilenceMs = readSliderSilenceMs();
+    logVeraSettings("save_click", {
+      silence_ms: draftSilenceMs,
+      asr_mode: draftAsrMode,
+      workmode_mute: draftWorkModeMute ? 1 : 0
+    });
     setVeraAsrSilenceMs(draftSilenceMs);
     setVeraAsrMode(draftAsrMode);
     setWorkModeMuteEnabled(draftWorkModeMute);
@@ -8111,6 +8144,7 @@ function wireVeraSettingsPanel() {
   });
 
   resetSessionBtn?.addEventListener("click", () => {
+    logVeraSettings("reset_session_click", { mode: appModePrefix() });
     const ok = window.confirm("Start a new session now? This clears current chat and work-mode checklist/reasoning state.");
     if (!ok) return;
     if (appModePrefix() === "bmo") resetBmoSessionAndUi();
