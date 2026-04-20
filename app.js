@@ -695,9 +695,17 @@ function setWorkModeMuteEnabled(on) {
 
 function applyVeraWorkModeMuteSetting() {
   const veraAudio = document.getElementById("vera-audio");
-  if (!(veraAudio instanceof HTMLAudioElement)) return;
   const inWork = Boolean(document.getElementById("vera-app")?.classList.contains("work-mode"));
-  veraAudio.muted = isWorkModeMuteEnabled() && inWork;
+  const mute = isWorkModeMuteEnabled() && inWork;
+  if (veraAudio instanceof HTMLAudioElement) {
+    veraAudio.muted = mute;
+  }
+  const vg = ttsByMode?.vera?.gain;
+  if (vg && audioCtx && typeof vg.gain?.setValueAtTime === "function") {
+    try {
+      vg.gain.setValueAtTime(mute ? 0 : 1, audioCtx.currentTime);
+    } catch (_) {}
+  }
 }
 
 function shouldStreamTts() {
@@ -756,8 +764,8 @@ function getWaveCtx() {
 }
 
 const ttsByMode = {
-  vera: { source: null, analyser: null },
-  bmo: { source: null, analyser: null }
+  vera: { source: null, analyser: null, gain: null },
+  bmo: { source: null, analyser: null, gain: null }
 };
 
 function getTtsAnalyser() {
@@ -5517,11 +5525,16 @@ async function ensureMainAudioTtsGraph() {
   await audioCtx.resume();
   const analyser = audioCtx.createAnalyser();
   analyser.fftSize = 2048;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 1;
   const source = audioCtx.createMediaElementSource(el);
   source.connect(analyser);
-  source.connect(audioCtx.destination);
+  source.connect(gain);
+  gain.connect(audioCtx.destination);
   ttsByMode[m].source = source;
   ttsByMode[m].analyser = analyser;
+  ttsByMode[m].gain = gain;
+  applyVeraWorkModeMuteSetting();
 }
 
 /** Prefer `audio_urls` when present (sentence-chunked TTS); else single `audio_url`. */
@@ -5757,7 +5770,8 @@ function connectBufferSourceToTtsGraph(src) {
   if (t?.analyser) {
     src.connect(t.analyser);
   }
-  src.connect(audioCtx.destination);
+  if (t?.gain) src.connect(t.gain);
+  else src.connect(audioCtx.destination);
 }
 
 function wrapLastChunkForBmoMouth(onLastEnd) {
@@ -8018,6 +8032,11 @@ function wireVeraSettingsPanel() {
     const idx = silenceOptions.indexOf(ms);
     return idx >= 0 ? idx : 1;
   };
+  const readSliderSilenceMs = () => {
+    if (!(silenceSlider instanceof HTMLInputElement)) return draftSilenceMs;
+    const idx = Math.max(0, Math.min(2, Number(silenceSlider.value) || 1));
+    return silenceOptions[idx];
+  };
 
   const applyAsrModeUi = (mode) => {
     const streamingOn = mode !== "single";
@@ -8066,10 +8085,11 @@ function wireVeraSettingsPanel() {
     if (e.target === modal) close();
   });
 
-  silenceSlider?.addEventListener("input", () => {
-    const idx = Math.max(0, Math.min(2, Number(silenceSlider.value) || 1));
-    draftSilenceMs = silenceOptions[idx];
-  });
+  const syncDraftSilenceFromSlider = () => {
+    draftSilenceMs = readSliderSilenceMs();
+  };
+  silenceSlider?.addEventListener("input", syncDraftSilenceFromSlider);
+  silenceSlider?.addEventListener("change", syncDraftSilenceFromSlider);
   asrStreamingBtn?.addEventListener("click", () => {
     draftAsrMode = "streaming";
     applyAsrModeUi("streaming");
@@ -8083,6 +8103,7 @@ function wireVeraSettingsPanel() {
     applyMuteUi();
   });
   saveBtn?.addEventListener("click", () => {
+    draftSilenceMs = readSliderSilenceMs();
     setVeraAsrSilenceMs(draftSilenceMs);
     setVeraAsrMode(draftAsrMode);
     setWorkModeMuteEnabled(draftWorkModeMute);
