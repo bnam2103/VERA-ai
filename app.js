@@ -2827,6 +2827,7 @@ function getReasoningTabsStateStorageKey() {
   return `${REASONING_TABS_STATE_STORAGE_KEY_PREFIX}:${getSessionId()}`;
 }
 
+/** Snapshot reasoning tabs to localStorage — call only on page unload (see wireReasoningTabStrip). */
 function persistReasoningTabsState() {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return;
@@ -3036,7 +3037,6 @@ function setReasoningTabTopicFromFinal(turnEl, opts = {}) {
   panel.dataset.tabTopic = topic || REASONING_UNTITLED_TAB_NAME;
   panel.dataset.tabTopicSet = "1";
   renderReasoningTabStrip();
-  persistReasoningTabsState();
 }
 
 function renderReasoningTabStrip() {
@@ -3085,7 +3085,6 @@ function activateReasoningTab(index) {
     p.classList.toggle("is-active", Number(p.dataset.tabIndex) === index);
   });
   renderReasoningTabStrip();
-  persistReasoningTabsState();
 }
 
 function addReasoningTab() {
@@ -3111,7 +3110,6 @@ function addReasoningTab() {
   panelsRoot.appendChild(panel);
   panel.classList.add("is-active");
   renderReasoningTabStrip();
-  persistReasoningTabsState();
 }
 
 function closeReasoningTab(index) {
@@ -3128,7 +3126,6 @@ function closeReasoningTab(index) {
     rest[0]?.classList.add("is-active");
   }
   renderReasoningTabStrip();
-  persistReasoningTabsState();
 }
 
 function wireReasoningTabStrip() {
@@ -3162,8 +3159,11 @@ function wireReasoningTabStrip() {
   });
   addBtn?.addEventListener("click", () => addReasoningTab());
   renderReasoningTabStrip();
-  persistReasoningTabsState();
-  window.addEventListener("beforeunload", persistReasoningTabsState);
+  if (window.__veraReasoningTabsUnloadHook !== "1") {
+    window.__veraReasoningTabsUnloadHook = "1";
+    window.addEventListener("beforeunload", persistReasoningTabsState);
+    window.addEventListener("pagehide", persistReasoningTabsState);
+  }
 }
 
 function getWorkModeLeftPaneLayout() {
@@ -3437,7 +3437,6 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
           renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
           const scrollHost = mdEl.closest(".vera-reasoning-scroll") || mdEl;
           scrollHost.scrollTop = scrollHost.scrollHeight;
-          persistReasoningTabsState();
         }
       }
       if (done) break;
@@ -3448,7 +3447,6 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
       opts.onDone({ markdownAcc, summaryText });
     } catch (_) {}
   }
-  persistReasoningTabsState();
 }
 
 async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {}) {
@@ -3640,13 +3638,11 @@ async function streamWorkModeReasoningComposer(text, signal) {
         summaryText = String(o.text);
         turnEl.dataset.summaryText = summaryText;
         renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
-        persistReasoningTabsState();
       }
       if (o.type === "markdown" && o.text) {
         markdownAcc += String(o.text);
         turnEl.dataset.markdownAcc = markdownAcc;
         renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
-        persistReasoningTabsState();
       }
     }
     if (done) break;
@@ -3656,7 +3652,6 @@ async function streamWorkModeReasoningComposer(text, signal) {
     markdownText: markdownAcc,
     userPrompt: text
   });
-  persistReasoningTabsState();
   scrollEl.scrollTop = scrollEl.scrollHeight;
 }
 
