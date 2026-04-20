@@ -2745,6 +2745,80 @@ const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_coll
 const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
 const REASONING_TABS_MAX = 3;
 const REASONING_UNTITLED_TAB_NAME = "Untitled";
+const REASONING_TABS_STATE_STORAGE_KEY_PREFIX = "vera_reasoning_tabs_state_v2";
+
+function getReasoningTabsStateStorageKey() {
+  return `${REASONING_TABS_STATE_STORAGE_KEY_PREFIX}:${getSessionId()}`;
+}
+
+function persistReasoningTabsState() {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return;
+  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  const payload = {
+    ts: Date.now(),
+    tabs: panels.map((p) => ({
+      idx: Number(p.dataset.tabIndex) || 0,
+      topic: String(p.dataset.tabTopic || REASONING_UNTITLED_TAB_NAME),
+      topicSet: String(p.dataset.tabTopicSet || "0"),
+      active: p.classList.contains("is-active"),
+      html: (p.querySelector(".vera-reasoning-md-panel") || p.querySelector(".vera-reasoning-scroll"))?.innerHTML || ""
+    }))
+  };
+  try {
+    localStorage.setItem(getReasoningTabsStateStorageKey(), JSON.stringify(payload));
+  } catch (_) {}
+}
+
+function restoreReasoningTabsState() {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return;
+  let raw = "";
+  try {
+    raw = localStorage.getItem(getReasoningTabsStateStorageKey()) || "";
+  } catch (_) {
+    return;
+  }
+  if (!raw) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return;
+  }
+  const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs.slice(0, REASONING_TABS_MAX) : [];
+  if (!tabs.length) return;
+
+  panelsRoot.replaceChildren();
+  let hasActive = false;
+  for (const t of tabs) {
+    const idx = Number(t?.idx);
+    if (!Number.isFinite(idx)) continue;
+    const panel = document.createElement("div");
+    panel.className = "vera-reasoning-tab-panel";
+    panel.dataset.tabIndex = String(idx);
+    panel.dataset.tabTopic = String(t?.topic || REASONING_UNTITLED_TAB_NAME);
+    panel.dataset.tabTopicSet = String(t?.topicSet || "0");
+    panel.id = `vera-reasoning-tab-panel-${idx}`;
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-label", "Reasoning space");
+
+    const scroll = document.createElement("div");
+    scroll.className = "vera-reasoning-scroll vera-reasoning-md-panel";
+    scroll.setAttribute("aria-live", "polite");
+    scroll.innerHTML = String(t?.html || "");
+    panel.appendChild(scroll);
+
+    if (Boolean(t?.active) && !hasActive) {
+      panel.classList.add("is-active");
+      hasActive = true;
+    }
+    panelsRoot.appendChild(panel);
+  }
+  if (!hasActive) {
+    panelsRoot.querySelector(".vera-reasoning-tab-panel")?.classList.add("is-active");
+  }
+}
 
 function getActiveReasoningScrollEl() {
   const p = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active .vera-reasoning-md-panel");
@@ -2861,6 +2935,7 @@ function setReasoningTabTopicFromFinal(turnEl, opts = {}) {
   panel.dataset.tabTopic = topic || REASONING_UNTITLED_TAB_NAME;
   panel.dataset.tabTopicSet = "1";
   renderReasoningTabStrip();
+  persistReasoningTabsState();
 }
 
 function renderReasoningTabStrip() {
@@ -2909,6 +2984,7 @@ function activateReasoningTab(index) {
     p.classList.toggle("is-active", Number(p.dataset.tabIndex) === index);
   });
   renderReasoningTabStrip();
+  persistReasoningTabsState();
 }
 
 function addReasoningTab() {
@@ -2934,6 +3010,7 @@ function addReasoningTab() {
   panelsRoot.appendChild(panel);
   panel.classList.add("is-active");
   renderReasoningTabStrip();
+  persistReasoningTabsState();
 }
 
 function closeReasoningTab(index) {
@@ -2950,6 +3027,7 @@ function closeReasoningTab(index) {
     rest[0]?.classList.add("is-active");
   }
   renderReasoningTabStrip();
+  persistReasoningTabsState();
 }
 
 function wireReasoningTabStrip() {
@@ -2958,6 +3036,7 @@ function wireReasoningTabStrip() {
   if (!tabsEl || tabsEl.dataset.wiredReasoningTabs === "1") return;
   if (!document.getElementById("vera-reasoning-tab-panels")) return;
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  restoreReasoningTabsState();
   panelsRoot?.querySelectorAll(".vera-reasoning-tab-panel").forEach((panel) => {
     if (!String(panel.dataset.tabTopic || "").trim()) {
       panel.dataset.tabTopic = REASONING_UNTITLED_TAB_NAME;
@@ -2982,6 +3061,8 @@ function wireReasoningTabStrip() {
   });
   addBtn?.addEventListener("click", () => addReasoningTab());
   renderReasoningTabStrip();
+  persistReasoningTabsState();
+  window.addEventListener("beforeunload", persistReasoningTabsState);
 }
 
 function getWorkModeLeftPaneLayout() {
@@ -3255,6 +3336,7 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
           renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
           const scrollHost = mdEl.closest(".vera-reasoning-scroll") || mdEl;
           scrollHost.scrollTop = scrollHost.scrollHeight;
+          persistReasoningTabsState();
         }
       }
       if (done) break;
@@ -3265,6 +3347,7 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
       opts.onDone({ markdownAcc, summaryText });
     } catch (_) {}
   }
+  persistReasoningTabsState();
 }
 
 async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {}) {
@@ -3456,11 +3539,13 @@ async function streamWorkModeReasoningComposer(text, signal) {
         summaryText = String(o.text);
         turnEl.dataset.summaryText = summaryText;
         renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
+        persistReasoningTabsState();
       }
       if (o.type === "markdown" && o.text) {
         markdownAcc += String(o.text);
         turnEl.dataset.markdownAcc = markdownAcc;
         renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
+        persistReasoningTabsState();
       }
     }
     if (done) break;
@@ -3470,6 +3555,7 @@ async function streamWorkModeReasoningComposer(text, signal) {
     markdownText: markdownAcc,
     userPrompt: text
   });
+  persistReasoningTabsState();
   scrollEl.scrollTop = scrollEl.scrollHeight;
 }
 
@@ -7152,6 +7238,9 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
   formData.append("stream_tts", STREAM_TTS ? "1" : "0");
+  if (opts.reasoningAttachment instanceof File && opts.reasoningAttachment.size > 0) {
+    formData.append("context_file", opts.reasoningAttachment, opts.reasoningAttachment.name || "upload");
+  }
   if (listeningMode === "ptt") {
     formData.append("mode", "ptt");
   }
