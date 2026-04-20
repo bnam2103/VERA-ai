@@ -3521,16 +3521,20 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   if (hasUpload) {
     routeReasoning = true;
   } else {
-    const heuristicComplex = (() => {
+    const heuristicReasoning = (() => {
       const t = String(trimmed || "").toLowerCase();
       if (!t) return false;
       const conceptWords = /\b(explain|how does|how do|derive|proof|theorem|compare|trade-?off|framework|architecture|mechanism|intuition)\b/;
       const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
       const multiPart = /(\b(step by step|in detail|deep dive|from scratch)\b)|([,:;].+[,:;])/;
+      const writingTask =
+        /\b(write|draft|compose|polish|rewrite)\b/.test(t) &&
+        /\b(email|essay|script|speech|letter|cover letter|proposal|statement|outline)\b/.test(t);
       return (
         (conceptWords.test(t) && domainWords.test(t)) ||
         domainWords.test(t) ||
-        multiPart.test(t)
+        multiPart.test(t) ||
+        writingTask
       );
     })();
 
@@ -3548,7 +3552,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     } catch {
       /* fall through to heuristic */
     }
-    routeReasoning = routeReasoning || heuristicComplex;
+    routeReasoning = routeReasoning || heuristicReasoning;
     if (!routeReasoning) return;
   }
 
@@ -4258,6 +4262,49 @@ function buildWorkChecklistHelpPlanUserMessage(lines) {
   );
 }
 
+let workChecklistPlanRequestInFlight = false;
+
+function isWorkChecklistPlanShortcutIntent(text) {
+  const t = String(text || "").toLowerCase().trim();
+  if (!t) return false;
+  const hasPlanVerb = /\b(plan|planning|roadmap|prioriti[sz]e|break\s*(it\s*)?down|organi[sz]e)\b/.test(t);
+  const hasChecklistNoun = /\b(check\s*list|checklist|to-?do|todo|task list|tasks?)\b/.test(t);
+  const directPhrase = /\b(help me plan|can you help me plan)\b/.test(t);
+  return (hasPlanVerb && hasChecklistNoun) || (directPhrase && hasChecklistNoun);
+}
+
+async function runWorkChecklistHelpPlan({ signal } = {}) {
+  if (!isVeraWorkModeOn()) return false;
+  if (workChecklistPlanRequestInFlight) return true;
+  const lines = collectWorkChecklistOngoingTexts();
+  if (!lines.length) {
+    flashWorkChecklistPlanHint("Add text to at least one ongoing item first.");
+    return true;
+  }
+  const text = buildWorkChecklistHelpPlanUserMessage(lines);
+  const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
+  workChecklistPlanRequestInFlight = true;
+  if (helpPlanBtn instanceof HTMLButtonElement) helpPlanBtn.disabled = true;
+  try {
+    const reasoningScroll = getActiveReasoningScrollEl();
+    if (reasoningScroll instanceof HTMLElement) {
+      reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+    await streamWorkModeReasoningComposer(text, signal);
+  } finally {
+    workChecklistPlanRequestInFlight = false;
+    syncWorkChecklistHelpPlanButton();
+  }
+  return true;
+}
+
+async function maybeHandleWorkChecklistPlanShortcut(text, signal) {
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
+  if (!isWorkChecklistPlanShortcutIntent(text)) return false;
+  await runWorkChecklistHelpPlan({ signal });
+  return true;
+}
+
 function queueWorkChecklistRowEnterAnimation(ulId, taskId) {
   const sid = String(taskId || "");
   if (!sid || !ulId) return;
@@ -4365,24 +4412,10 @@ function wireWorkModeChecklistAndComposer() {
   if (helpPlanBtn && helpPlanBtn.dataset.wiredHelpPlan !== "1") {
     helpPlanBtn.dataset.wiredHelpPlan = "1";
     helpPlanBtn.addEventListener("click", async () => {
-      if (!isVeraWorkModeOn()) return;
-      const lines = collectWorkChecklistOngoingTexts();
-      if (!lines.length) {
-        flashWorkChecklistPlanHint("Add text to at least one ongoing item first.");
-        return;
-      }
-      const text = buildWorkChecklistHelpPlanUserMessage(lines);
-      helpPlanBtn.disabled = true;
       try {
-        const reasoningScroll = getActiveReasoningScrollEl();
-        if (reasoningScroll instanceof HTMLElement) {
-          reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
-        }
-        await streamWorkModeReasoningComposer(text, undefined);
+        await runWorkChecklistHelpPlan();
       } catch (err) {
         console.warn("[WorkMode] help me plan", err);
-      } finally {
-        syncWorkChecklistHelpPlanButton();
       }
     });
   }
@@ -6581,6 +6614,9 @@ async function finalizeMainBrowserTranscript(text) {
     }
     return;
   }
+  if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
+    return;
+  }
 
   /* Set before stopAll so a sync SpeechRecognition "onend" cannot restart ASR while we're entering infer. */
   processing = true;
@@ -7368,6 +7404,7 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   const trimmed = String(text ?? "").trim();
   const path = opts.path || "work-typed";
   if (!trimmed || !isVeraWorkModeOn() || appModePrefix() !== "vera") return;
+  if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) return;
 
   const statusLine = uiEl("status");
   if (statusLine?.classList.contains("offline")) {
@@ -7635,6 +7672,11 @@ async function onPttClick() {
     ).trim();
     stopAllBrowserSpeechRecognizers();
     if (!text) {
+      setStatus("Ready", "idle");
+      updateMuteInputButton();
+      return;
+    }
+    if (await maybeHandleWorkChecklistPlanShortcut(text)) {
       setStatus("Ready", "idle");
       updateMuteInputButton();
       return;
