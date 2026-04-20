@@ -726,6 +726,10 @@ function applyVeraWorkModeMuteSetting() {
 function shouldStreamTts() {
   if (getVeraAsrMode() === "single") return false;
   if (!DEFAULT_STREAM_TTS) return false;
+  if (appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled()) {
+    logVeraSettings("stream_tts_forced_off_workmode_mute", { value: 0 });
+    return false;
+  }
   return true;
 }
 
@@ -5877,6 +5881,12 @@ async function playTtsUrlSequenceGapless(
 
 /** Single <audio> for one file; Web Audio queue when multiple sentence chunks. */
 async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
+  if (appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled()) {
+    logVeraSettings("tts_play_suppressed_workmode_mute", { mode: "playTtsFromApi" });
+    mainTtsPlaybackActive = false;
+    if (typeof onPlayEnd === "function") onPlayEnd();
+    return;
+  }
   const urls = resolveAudioUrls(data);
   if (!urls.length) return;
 
@@ -8053,7 +8063,8 @@ function wireVeraSettingsPanel() {
   };
   const readSliderSilenceMs = () => {
     if (!(silenceSlider instanceof HTMLInputElement)) return draftSilenceMs;
-    const idx = Math.max(0, Math.min(2, Number(silenceSlider.value) || 1));
+    const raw = Number(silenceSlider.value);
+    const idx = Number.isFinite(raw) ? Math.max(0, Math.min(2, raw)) : 1;
     return silenceOptions[idx];
   };
 
