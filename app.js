@@ -2942,6 +2942,20 @@ function toTitleCaseWord(w) {
   return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
 }
 
+/** Skip headings / tab titles that are generic assistant filler, not the task topic. */
+function isBanalReasoningTopicLabel(s) {
+  const t = String(s || "")
+    .toLowerCase()
+    .replace(/[—–-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return true;
+  if (/^(yes|yeah|yep|sure|ok|okay|absolutely)\b/.test(t)) return true;
+  if (/\b(i can help|i'll help|i will help|happy to help|let me help|here to help)\b/.test(t)) return true;
+  if (/\b(work through it|help you work|walk you through)\b/.test(t) && t.split(/\s+/).length <= 8) return true;
+  return false;
+}
+
 function compactTopicPhrase(text, maxWords = 4) {
   const raw = String(text || "")
     .replace(/[`*_#>[\]()]/g, " ")
@@ -2964,7 +2978,9 @@ function compactTopicPhrase(text, maxWords = 4) {
   while (end > start && badEdge.has(words[end - 1].toLowerCase())) end -= 1;
   const core = words.slice(start, end).slice(0, maxWords);
   if (!core.length) return "";
-  return core.map((w) => toTitleCaseWord(w)).join(" ");
+  const out = core.map((w) => toTitleCaseWord(w)).join(" ");
+  if (isBanalReasoningTopicLabel(out)) return "";
+  return out;
 }
 
 function keywordTopicFromText(text, maxWords = 4) {
@@ -2974,7 +2990,8 @@ function keywordTopicFromText(text, maxWords = 4) {
     "the", "and", "for", "with", "that", "this", "from", "into", "your", "you", "show", "example",
     "short", "here", "there", "what", "when", "where", "which", "about", "have", "has", "had", "can",
     "could", "would", "should", "step", "steps", "then", "than", "just", "more", "most", "some", "any",
-    "using", "use", "used", "also", "very", "much", "into", "onto", "over", "under"
+    "using", "use", "used", "also", "very", "much", "into", "onto", "over", "under",
+    "yes", "yeah", "yep", "sure", "help", "i'll", "okay", "ok"
   ]);
   const counts = new Map();
   const firstPos = new Map();
@@ -2997,15 +3014,16 @@ function buildReasoningTopicLabel({ summaryText = "", markdownText = "", userPro
     .filter((line) => /^#{1,6}\s+/.test(line))
     .map((line) => line.replace(/^#{1,6}\s+/, "").trim());
   for (const h of headingLines) {
+    if (isBanalReasoningTopicLabel(h)) continue;
     const t = compactTopicPhrase(h, 4);
     if (t) return t;
   }
   const keywordTopic = keywordTopicFromText(`${summaryText}\n${markdownText}`, 4);
-  if (keywordTopic) return keywordTopic;
+  if (keywordTopic && !isBanalReasoningTopicLabel(keywordTopic)) return keywordTopic;
   const summaryTopic = compactTopicPhrase(summaryText, 4);
-  if (summaryTopic) return summaryTopic;
+  if (summaryTopic && !isBanalReasoningTopicLabel(summaryTopic)) return summaryTopic;
   const promptTopic = compactTopicPhrase(userPrompt, 4);
-  if (promptTopic) return promptTopic;
+  if (promptTopic && !isBanalReasoningTopicLabel(promptTopic)) return promptTopic;
   return "";
 }
 
