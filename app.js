@@ -4990,6 +4990,7 @@ function onBrowserInterruptBargeInFromDetect(event) {
 }
 
 function interruptSpeech() {
+  if (listeningMode !== "continuous") return;
   const useBrowserAsr = browserAsrPreferred();
   if (!interruptRecording && !useBrowserAsr) return;
   const a = getAudioEl();
@@ -5421,6 +5422,11 @@ function wireMobileInterruptDebugUi() {
 }
 
 function startInterruptCapture() {
+  if (listeningMode !== "continuous") {
+    interruptRecording = false;
+    interruptChunks = [];
+    return;
+  }
   if (browserAsrPreferred() && !isNarrowViewport()) {
     startInterruptBrowserPartialDetection();
     return;
