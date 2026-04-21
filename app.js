@@ -2003,11 +2003,15 @@ function spotifyFormatTimeMs(ms) {
   return `${m}:${sec}`;
 }
 
+const SPOTIFY_VOLUME_DEFAULT = 0.2;
+const SPOTIFY_VOLUME_MAX = 0.5;
+
 function spotifyGetVolume() {
   const v = Number(window.__veraSpotifyVolume);
-  if (Number.isFinite(v) && v >= 0 && v <= 1) return v;
-  window.__veraSpotifyVolume = 0.5;
-  return 0.5;
+  if (Number.isFinite(v) && v >= 0 && v <= SPOTIFY_VOLUME_MAX) return v;
+  const clamped = Number.isFinite(v) ? Math.max(0, Math.min(SPOTIFY_VOLUME_MAX, v)) : SPOTIFY_VOLUME_DEFAULT;
+  window.__veraSpotifyVolume = clamped;
+  return clamped;
 }
 
 function spotifyEnsureNowState() {
@@ -2829,7 +2833,7 @@ function renderProductivityPanel() {
           <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-next" aria-label="Next" disabled title="Queue not implemented yet">⏭</button>
           <div class="spotify-volume-wrap" title="Volume">
             <span class="spotify-volume-icon" aria-hidden="true">🔊</span>
-            <input type="range" class="spotify-volume" id="${prefix}-spotify-volume" min="0" max="100" step="1" value="50" aria-label="Volume" />
+            <input type="range" class="spotify-volume" id="${prefix}-spotify-volume" min="0" max="50" step="1" value="20" aria-label="Volume" />
           </div>
         </div>
       </div>
@@ -4768,7 +4772,7 @@ function applyActionPayload(data) {
         ? window.VeraSpotify.getVolume()
         : spotifyGetVolume();
       const setVolume = window.VeraSpotify?.setVolume;
-      const next = Math.max(0, Math.min(1, Number(cur) + (Number(payload.delta) || 0)));
+      const next = Math.max(0, Math.min(SPOTIFY_VOLUME_MAX, Number(cur) + (Number(payload.delta) || 0)));
       if (typeof setVolume === "function") void setVolume(next);
       return;
     }
@@ -8775,7 +8779,7 @@ window.VeraSpotify = {
     }
   },
   async setVolume(volume01) {
-    const v = Math.max(0, Math.min(1, Number(volume01) || 0));
+    const v = Math.max(0, Math.min(SPOTIFY_VOLUME_MAX, Number(volume01) || 0));
     window.__veraSpotifyVolume = v;
     const prefix = appModePrefix();
     const web = window.__veraSpotifyPlayer;
