@@ -1618,6 +1618,38 @@ function spotifyDetailTrackRowsHtml(tracks, from, to) {
     .join("");
 }
 
+function spotifyArtistAlbumRowsHtml(albums) {
+  const list = Array.isArray(albums) ? albums : [];
+  return list
+    .map((item) => {
+      const titlePlain = String(item.name ?? item.title ?? "Album");
+      const titleEsc = escapeHtml(titlePlain);
+      const subPlain =
+        item.subtitle != null && String(item.subtitle).trim()
+          ? String(item.subtitle).trim()
+          : spotifyFormatArtists(item) || "Album";
+      const subEsc = escapeHtml(subPlain);
+      const uriRaw = String(item.uri || "").trim();
+      const uri = escapeHtml(uriRaw);
+      const thumbUrl = String(item.imageUrl || item.image || "").trim();
+      const thumbEsc = thumbUrl ? escapeHtml(thumbUrl) : "";
+      return `
+        <button type="button" class="spotify-result-row spotify-result-row--album spotify-artist-album-row" data-spotify-album-uri="${uri}" data-display-title="${titleEsc}" data-display-sub="${subEsc}" data-thumb-url="${thumbEsc}">
+          ${thumbEsc
+            ? `<img class="spotify-result-thumb" src="${thumbEsc}" alt="" loading="lazy" />`
+            : `<div class="spotify-result-thumb" aria-hidden="true"></div>`}
+          <div class="spotify-result-text">
+            <div class="spotify-result-title">
+              <span class="spotify-result-kind">Album</span>
+              <span class="spotify-result-title-text">${titleEsc}</span>
+            </div>
+            <div class="spotify-result-sub">${subEsc}</div>
+          </div>
+        </button>`;
+    })
+    .join("");
+}
+
 async function spotifyOpenAlbumSearchDetail(prefix, meta) {
   const resultsEl = document.getElementById(`${prefix}-spotify-results`);
   if (!resultsEl) return;
@@ -1737,34 +1769,24 @@ async function spotifyOpenArtistSearchDetail(prefix, meta) {
   const arid = spotifyEntityIdFromUri(artistUri, "artist");
   if (!arid) return;
   resultsEl.innerHTML = `<p class="spotify-results-hint">Loading…</p>`;
-  const fn = window.VeraSpotify?.getArtistTopTracks;
+  const fn = window.VeraSpotify?.getArtistAlbums;
   if (typeof fn !== "function") {
-    resultsEl.innerHTML = `<p class="spotify-results-error">Artist top tracks API unavailable.</p>`;
+    resultsEl.innerHTML = `<p class="spotify-results-error">Artist albums API unavailable.</p>`;
     return;
   }
-  let tracks;
+  let albums;
   try {
-    tracks = await fn(arid);
+    albums = await fn(arid);
   } catch (err) {
     resultsEl.innerHTML = `<p class="spotify-results-error">${escapeHtml(String(err?.message ?? err))}</p>`;
     return;
   }
-  const list = Array.isArray(tracks) ? tracks : [];
-  window.__veraSpotifyArtistTopTracks ||= {};
-  window.__veraSpotifyArtistTopTracks[prefix] = list;
-  /* Spotify “top” is typically ≤10 tracks — show them all at once (no redundant “Next 5” after the last track). */
-  const pageSize = 5;
-  const showAllAtOnce = list.length <= 10;
-  const firstCount = showAllAtOnce ? list.length : Math.min(pageSize, list.length);
-  const first = spotifyDetailTrackRowsHtml(list, 0, firstCount);
+  const list = Array.isArray(albums) ? albums : [];
+  const rows = spotifyArtistAlbumRowsHtml(list);
   const thumb = thumbUrl
     ? `<img class="spotify-search-detail-cover" src="${escapeHtml(thumbUrl)}" alt="" loading="lazy" />`
     : `<div class="spotify-search-detail-cover spotify-search-detail-cover--ph" aria-hidden="true"></div>`;
   const titleEsc = escapeHtml(title);
-  const moreButtonHtml =
-    showAllAtOnce || list.length <= pageSize
-      ? ""
-      : `<button type="button" class="spotify-artist-top-more" aria-label="Show five more tracks"><span class="spotify-artist-more-arrow" aria-hidden="true">→</span><span>Next 5</span></button>`;
   resultsEl.innerHTML = `
     <div class="spotify-search-detail" data-spotify-detail="artist">
       <button type="button" class="spotify-search-back">← Results</button>
@@ -1772,26 +1794,11 @@ async function spotifyOpenArtistSearchDetail(prefix, meta) {
         ${thumb}
         <div class="spotify-search-detail-meta">
           <div class="spotify-search-detail-title">${titleEsc}</div>
-          <div class="spotify-search-detail-sub">Popular on Spotify</div>
+          <div class="spotify-search-detail-sub">Albums</div>
         </div>
       </div>
-      <div class="spotify-detail-tracklist" id="${prefix}-spotify-artist-track-list">${first || `<p class="spotify-results-hint">No top tracks.</p>`}</div>
-      ${moreButtonHtml}
+      <div class="spotify-detail-tracklist">${rows || `<p class="spotify-results-hint">No albums found.</p>`}</div>
     </div>`;
-}
-
-function spotifyAppendArtistTopTracksPage(prefix) {
-  const list = window.__veraSpotifyArtistTopTracks?.[prefix];
-  const wrap = document.getElementById(`${prefix}-spotify-artist-track-list`);
-  const detailRoot = wrap?.closest(".spotify-search-detail");
-  const moreBtn = detailRoot?.querySelector(".spotify-artist-top-more");
-  if (!Array.isArray(list) || !wrap || !moreBtn) return;
-  const cur = wrap.querySelectorAll(".spotify-detail-track-row").length;
-  const next = spotifyDetailTrackRowsHtml(list, cur, Math.min(cur + 5, list.length));
-  if (next) wrap.insertAdjacentHTML("beforeend", next);
-  if (wrap.querySelectorAll(".spotify-detail-track-row").length >= list.length) {
-    moreBtn.remove();
-  }
 }
 
 function spotifyFormatArtists(item) {
@@ -2524,9 +2531,16 @@ function wireProductivityPanelEvents(prefix) {
       }
       return;
     }
-    if (t.closest(".spotify-artist-top-more")) {
+    const artistAlbumRow = t.closest(".spotify-artist-album-row");
+    if (artistAlbumRow instanceof HTMLElement) {
       e.preventDefault();
-      spotifyAppendArtistTopTracksPage(prefix);
+      const albumUri = artistAlbumRow.dataset.spotifyAlbumUri || "";
+      const title = artistAlbumRow.dataset.displayTitle || "";
+      const sub = artistAlbumRow.dataset.displaySub || "";
+      const thumbUrl = artistAlbumRow.dataset.thumbUrl || "";
+      if (albumUri) {
+        void spotifyOpenAlbumSearchDetail(prefix, { albumUri, title, sub, thumbUrl });
+      }
       return;
     }
     const drow = t.closest(".spotify-detail-track-row");
@@ -8450,6 +8464,25 @@ window.VeraSpotify = {
     const res = await fetch(u.href, { cache: "no-store" });
     if (!res.ok) {
       let msg = `Artist top tracks failed (${res.status})`;
+      try {
+        const err = await res.json();
+        if (typeof err.detail === "string") msg = err.detail;
+      } catch (_) {
+        /* ignore */
+      }
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  },
+  async getArtistAlbums(artistId) {
+    const id = String(artistId || "").trim();
+    if (!id) return [];
+    const u = new URL(authApiUrl(`/api/spotify/artists/${encodeURIComponent(id)}/albums`));
+    u.searchParams.set("limit", "200");
+    const res = await fetch(u.href, { cache: "no-store" });
+    if (!res.ok) {
+      let msg = `Artist albums failed (${res.status})`;
       try {
         const err = await res.json();
         if (typeof err.detail === "string") msg = err.detail;
