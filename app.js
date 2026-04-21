@@ -2010,7 +2010,7 @@ function spotifyFormatTimeMs(ms) {
   return `${m}:${sec}`;
 }
 
-const SPOTIFY_VOLUME_DEFAULT = 0.2;
+const SPOTIFY_VOLUME_DEFAULT = 0.1;
 const SPOTIFY_VOLUME_MAX = 0.35;
 
 function spotifyGetVolume() {
@@ -2847,7 +2847,7 @@ function renderProductivityPanel() {
           <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-next" aria-label="Next" disabled title="Queue not implemented yet">⏭</button>
           <div class="spotify-volume-wrap" title="Volume">
             <span class="spotify-volume-icon" aria-hidden="true">🔊</span>
-            <input type="range" class="spotify-volume" id="${prefix}-spotify-volume" min="0" max="35" step="1" value="20" aria-label="Volume" />
+            <input type="range" class="spotify-volume" id="${prefix}-spotify-volume" min="0" max="35" step="1" value="10" aria-label="Volume" />
           </div>
         </div>
       </div>
