@@ -2326,6 +2326,14 @@ async function waitForSpotifyDeviceId(maxMs = 20000) {
 async function ensureSpotifyWebPlayer(prefix) {
   const base = localBackendBase();
   if (window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId) {
+    // Rebind panel updates to the currently visible app (vera/bmo) when reusing the same Web Playback instance.
+    const s = spotifyEnsureNowState();
+    spotifyApplyNowStateToPanel(prefix);
+    if (!s.paused && (Number(s.duration_ms) > 0 || String(s.title || "").trim())) {
+      spotifyStartWebPlaybackUiTick(prefix);
+    } else if (window.__veraSpotifyUiTickPrefix !== prefix) {
+      window.__veraSpotifyUiTickPrefix = prefix;
+    }
     return;
   }
   const tokRes = await fetch(`${base}/api/spotify/player-token`, {
