@@ -2199,6 +2199,39 @@ document.addEventListener("click", () => {
     </section>
 
     <section class="vera-settings-section">
+      <h3>ASR Tuning (Experimental)</h3>
+
+      <div class="vera-settings-row">
+        <label for="vera-setting-interrupt-min-words" class="vera-settings-label">Interrupt min words</label>
+        <select id="vera-setting-interrupt-min-words">
+          <option value="1">1 word (aggressive)</option>
+          <option value="2" selected>2 words (balanced)</option>
+          <option value="3">3 words (conservative)</option>
+        </select>
+      </div>
+
+      <div class="vera-settings-row">
+        <label for="vera-setting-interrupt-sustain" class="vera-settings-label">Interrupt sustain (ms)</label>
+        <select id="vera-setting-interrupt-sustain">
+          <option value="250">250</option>
+          <option value="300">300</option>
+          <option value="350" selected>350</option>
+          <option value="450">450</option>
+        </select>
+      </div>
+
+      <div class="vera-settings-row">
+        <label for="vera-setting-interrupt-gap" class="vera-settings-label">Interrupt gap reset (ms)</label>
+        <select id="vera-setting-interrupt-gap">
+          <option value="90">90</option>
+          <option value="120" selected>120</option>
+          <option value="160">160</option>
+          <option value="220">220</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="vera-settings-section">
       <h3>Work Mode</h3>
       <div class="vera-settings-row vera-settings-toggle-row">
         <span class="vera-settings-label">Mute VERA in work mode</span>

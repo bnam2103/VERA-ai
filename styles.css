@@ -4504,6 +4504,16 @@ body.chat-started .input-bar {
   opacity: 0.72;
 }
 
+.vera-settings-row select {
+  width: min(560px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 13px;
+}
+
 .vera-settings-radio-row {
   display: flex;
   flex-wrap: wrap;

@@ -547,11 +547,11 @@ const DEFAULT_STREAM_TTS = true;
 /** Browser Web Speech API: live partials, then 1.3s stable transcript → /infer without server ASR. */
 let browserAsrMainSilenceMs = 1300;
 /** Min accumulated ms of changing partial transcript to count as interrupt (vs VAD on audio). */
-const BROWSER_ASR_INTERRUPT_SUSTAIN_MS = 350;
+let browserAsrInterruptSustainMs = 350;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
-const BROWSER_ASR_INTERRUPT_GAP_MS = 120;
-/** Fire interrupt when browser partial ASR reaches this many words, or when partial text is stable long enough (see BROWSER_ASR_INTERRUPT_SUSTAIN_MS). */
-const INTERRUPT_BROWSER_MIN_WORDS = 2;
+let browserAsrInterruptGapMs = 120;
+/** Fire interrupt when browser partial ASR reaches this many words, or when partial text is stable long enough. */
+let interruptBrowserMinWords = 2;
 
 function browserAsrSupported() {
   return typeof (window.SpeechRecognition || window.webkitSpeechRecognition) === "function";
@@ -573,6 +573,9 @@ const BROWSER_ASR_MAIN_NETWORK_RETRY_MAX = 2;
 const VERA_SETTING_ASR_SILENCE_MS_KEY = "vera_setting_asr_silence_ms_v1";
 const VERA_SETTING_ASR_MODE_KEY = "vera_setting_asr_mode_v1";
 const VERA_SETTING_WORKMODE_MUTE_KEY = "vera_setting_workmode_mute_v1";
+const VERA_SETTING_INTERRUPT_MIN_WORDS_KEY = "vera_setting_interrupt_min_words_v1";
+const VERA_SETTING_INTERRUPT_SUSTAIN_MS_KEY = "vera_setting_interrupt_sustain_ms_v1";
+const VERA_SETTING_INTERRUPT_GAP_MS_KEY = "vera_setting_interrupt_gap_ms_v1";
 
 function logVeraSettings(event, data = {}) {
   try {
@@ -679,6 +682,62 @@ function setVeraAsrMode(mode) {
   } catch (_) {}
   logVeraSettings("save_asr_mode", { value: next });
 }
+
+function getInterruptBrowserMinWords() {
+  try {
+    const v = Number(localStorage.getItem(VERA_SETTING_INTERRUPT_MIN_WORDS_KEY));
+    if (v === 1 || v === 2 || v === 3) return v;
+  } catch (_) {}
+  return 2;
+}
+
+function setInterruptBrowserMinWords(v) {
+  const next = v === 1 || v === 2 || v === 3 ? v : 2;
+  interruptBrowserMinWords = next;
+  try {
+    localStorage.setItem(VERA_SETTING_INTERRUPT_MIN_WORDS_KEY, String(next));
+  } catch (_) {}
+  logVeraSettings("save_interrupt_min_words", { value: next });
+}
+
+function getBrowserAsrInterruptSustainMs() {
+  try {
+    const v = Number(localStorage.getItem(VERA_SETTING_INTERRUPT_SUSTAIN_MS_KEY));
+    if (v === 250 || v === 300 || v === 350 || v === 450) return v;
+  } catch (_) {}
+  return 350;
+}
+
+function setBrowserAsrInterruptSustainMs(v) {
+  const next = v === 250 || v === 300 || v === 350 || v === 450 ? v : 350;
+  browserAsrInterruptSustainMs = next;
+  try {
+    localStorage.setItem(VERA_SETTING_INTERRUPT_SUSTAIN_MS_KEY, String(next));
+  } catch (_) {}
+  logVeraSettings("save_interrupt_sustain_ms", { value: next });
+}
+
+function getBrowserAsrInterruptGapMs() {
+  try {
+    const v = Number(localStorage.getItem(VERA_SETTING_INTERRUPT_GAP_MS_KEY));
+    if (v === 90 || v === 120 || v === 160 || v === 220) return v;
+  } catch (_) {}
+  return 120;
+}
+
+function setBrowserAsrInterruptGapMs(v) {
+  const next = v === 90 || v === 120 || v === 160 || v === 220 ? v : 120;
+  browserAsrInterruptGapMs = next;
+  try {
+    localStorage.setItem(VERA_SETTING_INTERRUPT_GAP_MS_KEY, String(next));
+  } catch (_) {}
+  logVeraSettings("save_interrupt_gap_ms", { value: next });
+}
+
+/* Load persisted ASR tuning at startup. */
+setInterruptBrowserMinWords(getInterruptBrowserMinWords());
+setBrowserAsrInterruptSustainMs(getBrowserAsrInterruptSustainMs());
+setBrowserAsrInterruptGapMs(getBrowserAsrInterruptGapMs());
 
 function isWorkModeMuteEnabled() {
   try {
@@ -7431,7 +7490,7 @@ function startInterruptBrowserPartialDetection() {
     if (combined.length < 1) {
       if (
         interruptPartialLastChangeAt &&
-        now - interruptPartialLastChangeAt > BROWSER_ASR_INTERRUPT_GAP_MS
+        now - interruptPartialLastChangeAt > browserAsrInterruptGapMs
       ) {
         interruptPartialAccumMs = 0;
         interruptPartialLastText = "";
@@ -7459,14 +7518,14 @@ function startInterruptBrowserPartialDetection() {
         interruptGate: "browser_partial_asr_words",
         interruptReason: "browser_partial_asr_words",
         wordCount: wc,
-        minWords: INTERRUPT_BROWSER_MIN_WORDS,
+        minWords: interruptBrowserMinWords,
         partialAccumMs: interruptPartialAccumMs,
-        sustainMs: BROWSER_ASR_INTERRUPT_SUSTAIN_MS,
+        sustainMs: browserAsrInterruptSustainMs,
         partialText: combined,
       };
 
-      const wordGate = wc >= INTERRUPT_BROWSER_MIN_WORDS;
-      const sustainGate = wc >= 1 && interruptPartialAccumMs >= BROWSER_ASR_INTERRUPT_SUSTAIN_MS;
+      const wordGate = wc >= interruptBrowserMinWords;
+      const sustainGate = wc >= 1 && interruptPartialAccumMs >= browserAsrInterruptSustainMs;
       if (wordGate || sustainGate) {
         onBrowserInterruptBargeInFromDetect(event);
         interruptPartialRafTime = now;
@@ -7474,7 +7533,7 @@ function startInterruptBrowserPartialDetection() {
       }
     } else if (
       interruptPartialLastChangeAt &&
-      now - interruptPartialLastChangeAt > BROWSER_ASR_INTERRUPT_GAP_MS
+      now - interruptPartialLastChangeAt > browserAsrInterruptGapMs
     ) {
       interruptPartialAccumMs = 0;
     }
@@ -7628,9 +7687,9 @@ async function finalizeInterruptBrowserTranscript(text) {
       probe: lastInterruptProbe,
       browser_partial_asr: true,
       thresholds: {
-        INTERRUPT_BROWSER_MIN_WORDS,
-        BROWSER_ASR_INTERRUPT_SUSTAIN_MS,
-        BROWSER_ASR_INTERRUPT_GAP_MS,
+        INTERRUPT_BROWSER_MIN_WORDS: interruptBrowserMinWords,
+        BROWSER_ASR_INTERRUPT_SUSTAIN_MS: browserAsrInterruptSustainMs,
+        BROWSER_ASR_INTERRUPT_GAP_MS: browserAsrInterruptGapMs,
       },
     })
   );
@@ -8565,6 +8624,9 @@ function wireVeraSettingsPanel() {
   const silenceSlider = document.getElementById("vera-setting-silence");
   const asrStreamingBtn = document.getElementById("vera-setting-asr-streaming");
   const asrSingleBtn = document.getElementById("vera-setting-asr-single");
+  const interruptMinWordsSel = document.getElementById("vera-setting-interrupt-min-words");
+  const interruptSustainSel = document.getElementById("vera-setting-interrupt-sustain");
+  const interruptGapSel = document.getElementById("vera-setting-interrupt-gap");
   const resetSessionBtn = document.getElementById("vera-setting-reset-session");
   const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
   const saveBtn = document.getElementById("vera-settings-save");
@@ -8574,6 +8636,9 @@ function wireVeraSettingsPanel() {
   let draftSilenceMs = getVeraAsrSilenceMs();
   let draftAsrMode = getVeraAsrMode();
   let draftWorkModeMute = isWorkModeMuteEnabled();
+  let draftInterruptMinWords = getInterruptBrowserMinWords();
+  let draftInterruptSustainMs = getBrowserAsrInterruptSustainMs();
+  let draftInterruptGapMs = getBrowserAsrInterruptGapMs();
   const silenceToIndex = (ms) => {
     const idx = silenceOptions.indexOf(ms);
     return idx >= 0 ? idx : 1;
@@ -8609,8 +8674,20 @@ function wireVeraSettingsPanel() {
     draftSilenceMs = getVeraAsrSilenceMs();
     draftAsrMode = getVeraAsrMode();
     draftWorkModeMute = isWorkModeMuteEnabled();
+    draftInterruptMinWords = getInterruptBrowserMinWords();
+    draftInterruptSustainMs = getBrowserAsrInterruptSustainMs();
+    draftInterruptGapMs = getBrowserAsrInterruptGapMs();
     if (silenceSlider instanceof HTMLInputElement) {
       silenceSlider.value = String(silenceToIndex(draftSilenceMs));
+    }
+    if (interruptMinWordsSel instanceof HTMLSelectElement) {
+      interruptMinWordsSel.value = String(draftInterruptMinWords);
+    }
+    if (interruptSustainSel instanceof HTMLSelectElement) {
+      interruptSustainSel.value = String(draftInterruptSustainMs);
+    }
+    if (interruptGapSel instanceof HTMLSelectElement) {
+      interruptGapSel.value = String(draftInterruptGapMs);
     }
     applyAsrModeUi(draftAsrMode);
     applyMuteUi();
@@ -8622,7 +8699,10 @@ function wireVeraSettingsPanel() {
     logVeraSettings("open_modal", {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
-      workmode_mute: draftWorkModeMute ? 1 : 0
+      workmode_mute: draftWorkModeMute ? 1 : 0,
+      interrupt_min_words: draftInterruptMinWords,
+      interrupt_sustain_ms: draftInterruptSustainMs,
+      interrupt_gap_ms: draftInterruptGapMs,
     });
     modal.removeAttribute("hidden");
   };
@@ -8653,6 +8733,18 @@ function wireVeraSettingsPanel() {
     applyAsrModeUi("single");
     logVeraSettings("draft_asr_mode", { value: draftAsrMode });
   });
+  interruptMinWordsSel?.addEventListener("change", () => {
+    draftInterruptMinWords = Number(interruptMinWordsSel.value) || 2;
+    logVeraSettings("draft_interrupt_min_words", { value: draftInterruptMinWords });
+  });
+  interruptSustainSel?.addEventListener("change", () => {
+    draftInterruptSustainMs = Number(interruptSustainSel.value) || 350;
+    logVeraSettings("draft_interrupt_sustain_ms", { value: draftInterruptSustainMs });
+  });
+  interruptGapSel?.addEventListener("change", () => {
+    draftInterruptGapMs = Number(interruptGapSel.value) || 120;
+    logVeraSettings("draft_interrupt_gap_ms", { value: draftInterruptGapMs });
+  });
   workModeMuteBtn?.addEventListener("click", () => {
     draftWorkModeMute = !draftWorkModeMute;
     applyMuteUi();
@@ -8663,10 +8755,16 @@ function wireVeraSettingsPanel() {
     logVeraSettings("save_click", {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
-      workmode_mute: draftWorkModeMute ? 1 : 0
+      workmode_mute: draftWorkModeMute ? 1 : 0,
+      interrupt_min_words: draftInterruptMinWords,
+      interrupt_sustain_ms: draftInterruptSustainMs,
+      interrupt_gap_ms: draftInterruptGapMs,
     });
     setVeraAsrSilenceMs(draftSilenceMs);
     setVeraAsrMode(draftAsrMode);
+    setInterruptBrowserMinWords(draftInterruptMinWords);
+    setBrowserAsrInterruptSustainMs(draftInterruptSustainMs);
+    setBrowserAsrInterruptGapMs(draftInterruptGapMs);
     setWorkModeMuteEnabled(draftWorkModeMute);
     close();
   });
