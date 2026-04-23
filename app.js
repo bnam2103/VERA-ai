@@ -546,6 +546,10 @@ const DEFAULT_STREAM_TTS = true;
 
 /** Browser Web Speech API: live partials, then 1.3s stable transcript → /infer without server ASR. */
 let browserAsrMainSilenceMs = 1300;
+/** Main browser-ASR only: extra settling wait after silence timer fires before finalizing. */
+let mainAsrSettleMs = 140;
+/** Main browser-ASR only: minimum visible chars before showing partial bubble. */
+let mainAsrPartialMinChars = 3;
 /** Min accumulated ms of changing partial transcript to count as interrupt (vs VAD on audio). */
 let browserAsrInterruptSustainMs = 350;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
@@ -573,9 +577,8 @@ const BROWSER_ASR_MAIN_NETWORK_RETRY_MAX = 2;
 const VERA_SETTING_ASR_SILENCE_MS_KEY = "vera_setting_asr_silence_ms_v1";
 const VERA_SETTING_ASR_MODE_KEY = "vera_setting_asr_mode_v1";
 const VERA_SETTING_WORKMODE_MUTE_KEY = "vera_setting_workmode_mute_v1";
-const VERA_SETTING_INTERRUPT_MIN_WORDS_KEY = "vera_setting_interrupt_min_words_v1";
-const VERA_SETTING_INTERRUPT_SUSTAIN_MS_KEY = "vera_setting_interrupt_sustain_ms_v1";
-const VERA_SETTING_INTERRUPT_GAP_MS_KEY = "vera_setting_interrupt_gap_ms_v1";
+const VERA_SETTING_MAIN_ASR_SETTLE_MS_KEY = "vera_setting_main_asr_settle_ms_v1";
+const VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY = "vera_setting_main_asr_partial_min_chars_v1";
 
 function logVeraSettings(event, data = {}) {
   try {
@@ -683,61 +686,39 @@ function setVeraAsrMode(mode) {
   logVeraSettings("save_asr_mode", { value: next });
 }
 
-function getInterruptBrowserMinWords() {
+function getMainAsrSettleMs() {
   try {
-    const v = Number(localStorage.getItem(VERA_SETTING_INTERRUPT_MIN_WORDS_KEY));
-    if (v === 1 || v === 2 || v === 3) return v;
+    const v = Number(localStorage.getItem(VERA_SETTING_MAIN_ASR_SETTLE_MS_KEY));
+    if (v === 0 || v === 80 || v === 140 || v === 220) return v;
   } catch (_) {}
-  return 2;
+  return 140;
 }
 
-function setInterruptBrowserMinWords(v) {
-  const next = v === 1 || v === 2 || v === 3 ? v : 2;
-  interruptBrowserMinWords = next;
+function setMainAsrSettleMs(v) {
+  const next = v === 0 || v === 80 || v === 140 || v === 220 ? v : 140;
+  mainAsrSettleMs = next;
   try {
-    localStorage.setItem(VERA_SETTING_INTERRUPT_MIN_WORDS_KEY, String(next));
+    localStorage.setItem(VERA_SETTING_MAIN_ASR_SETTLE_MS_KEY, String(next));
   } catch (_) {}
-  logVeraSettings("save_interrupt_min_words", { value: next });
+  logVeraSettings("save_main_asr_settle_ms", { value: next });
 }
 
-function getBrowserAsrInterruptSustainMs() {
+function getMainAsrPartialMinChars() {
   try {
-    const v = Number(localStorage.getItem(VERA_SETTING_INTERRUPT_SUSTAIN_MS_KEY));
-    if (v === 250 || v === 300 || v === 350 || v === 450) return v;
+    const v = Number(localStorage.getItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY));
+    if (v === 1 || v === 3 || v === 6 || v === 10) return v;
   } catch (_) {}
-  return 350;
+  return 3;
 }
 
-function setBrowserAsrInterruptSustainMs(v) {
-  const next = v === 250 || v === 300 || v === 350 || v === 450 ? v : 350;
-  browserAsrInterruptSustainMs = next;
+function setMainAsrPartialMinChars(v) {
+  const next = v === 1 || v === 3 || v === 6 || v === 10 ? v : 3;
+  mainAsrPartialMinChars = next;
   try {
-    localStorage.setItem(VERA_SETTING_INTERRUPT_SUSTAIN_MS_KEY, String(next));
+    localStorage.setItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY, String(next));
   } catch (_) {}
-  logVeraSettings("save_interrupt_sustain_ms", { value: next });
+  logVeraSettings("save_main_asr_partial_min_chars", { value: next });
 }
-
-function getBrowserAsrInterruptGapMs() {
-  try {
-    const v = Number(localStorage.getItem(VERA_SETTING_INTERRUPT_GAP_MS_KEY));
-    if (v === 90 || v === 120 || v === 160 || v === 220) return v;
-  } catch (_) {}
-  return 120;
-}
-
-function setBrowserAsrInterruptGapMs(v) {
-  const next = v === 90 || v === 120 || v === 160 || v === 220 ? v : 120;
-  browserAsrInterruptGapMs = next;
-  try {
-    localStorage.setItem(VERA_SETTING_INTERRUPT_GAP_MS_KEY, String(next));
-  } catch (_) {}
-  logVeraSettings("save_interrupt_gap_ms", { value: next });
-}
-
-/* Load persisted ASR tuning at startup. */
-setInterruptBrowserMinWords(getInterruptBrowserMinWords());
-setBrowserAsrInterruptSustainMs(getBrowserAsrInterruptSustainMs());
-setBrowserAsrInterruptGapMs(getBrowserAsrInterruptGapMs());
 
 function isWorkModeMuteEnabled() {
   try {
@@ -787,6 +768,8 @@ function shouldStreamTts() {
 }
 
 browserAsrMainSilenceMs = getVeraAsrSilenceMs();
+mainAsrSettleMs = getMainAsrSettleMs();
+mainAsrPartialMinChars = getMainAsrPartialMinChars();
 
 function disableBrowserAsrForSession(reason) {
   browserAsrPermanentlyDisabled = true;
@@ -7222,14 +7205,23 @@ function scheduleMainBrowserEndOfUtterance() {
       }
       return;
     }
-    logPartialAsrUtteranceDone(cur, {
-      reason: "silence-timer",
-      mode: mainBrowserFinalizeKind === "interrupt" ? "interrupt" : "main"
-    });
-    if (mainBrowserFinalizeKind === "interrupt") {
-      void finalizeInterruptBrowserTranscript(cur);
+    const finalizeNow = () => {
+      const cur2 = (mainBrowserFinalTranscript + "").trim();
+      if (cur2.length === 0) return;
+      logPartialAsrUtteranceDone(cur2, {
+        reason: "silence-timer",
+        mode: mainBrowserFinalizeKind === "interrupt" ? "interrupt" : "main"
+      });
+      if (mainBrowserFinalizeKind === "interrupt") {
+        void finalizeInterruptBrowserTranscript(cur2);
+      } else {
+        void finalizeMainBrowserTranscript(cur2);
+      }
+    };
+    if (mainBrowserFinalizeKind === "main" && mainAsrSettleMs > 0) {
+      setTimeout(finalizeNow, mainAsrSettleMs);
     } else {
-      void finalizeMainBrowserTranscript(cur);
+      finalizeNow();
     }
   }, browserAsrMainSilenceMs);
   logVeraSettings("schedule_asr_silence_timer", {
@@ -7242,6 +7234,8 @@ function updateMainBrowserLiveBubble(fullText, interim) {
   const convo = uiEl("conversation");
   if (!convo) return;
   const line = (fullText + interim).trim();
+  const hasFinal = String(fullText || "").trim().length > 0;
+  if (!hasFinal && line.length < mainAsrPartialMinChars) return;
   if (!line) return;
   if (!mainBrowserLiveBubble || !mainBrowserLiveBubble.isConnected) {
     mainBrowserLiveBubble = addBubble(line, "user", { path: "main-browser-partial" });
@@ -8624,9 +8618,8 @@ function wireVeraSettingsPanel() {
   const silenceSlider = document.getElementById("vera-setting-silence");
   const asrStreamingBtn = document.getElementById("vera-setting-asr-streaming");
   const asrSingleBtn = document.getElementById("vera-setting-asr-single");
-  const interruptMinWordsSel = document.getElementById("vera-setting-interrupt-min-words");
-  const interruptSustainSel = document.getElementById("vera-setting-interrupt-sustain");
-  const interruptGapSel = document.getElementById("vera-setting-interrupt-gap");
+  const mainSettleSel = document.getElementById("vera-setting-main-settle");
+  const mainPartialMinSel = document.getElementById("vera-setting-main-partial-min");
   const resetSessionBtn = document.getElementById("vera-setting-reset-session");
   const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
   const saveBtn = document.getElementById("vera-settings-save");
@@ -8636,9 +8629,8 @@ function wireVeraSettingsPanel() {
   let draftSilenceMs = getVeraAsrSilenceMs();
   let draftAsrMode = getVeraAsrMode();
   let draftWorkModeMute = isWorkModeMuteEnabled();
-  let draftInterruptMinWords = getInterruptBrowserMinWords();
-  let draftInterruptSustainMs = getBrowserAsrInterruptSustainMs();
-  let draftInterruptGapMs = getBrowserAsrInterruptGapMs();
+  let draftMainAsrSettleMs = getMainAsrSettleMs();
+  let draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
   const silenceToIndex = (ms) => {
     const idx = silenceOptions.indexOf(ms);
     return idx >= 0 ? idx : 1;
@@ -8674,20 +8666,16 @@ function wireVeraSettingsPanel() {
     draftSilenceMs = getVeraAsrSilenceMs();
     draftAsrMode = getVeraAsrMode();
     draftWorkModeMute = isWorkModeMuteEnabled();
-    draftInterruptMinWords = getInterruptBrowserMinWords();
-    draftInterruptSustainMs = getBrowserAsrInterruptSustainMs();
-    draftInterruptGapMs = getBrowserAsrInterruptGapMs();
+    draftMainAsrSettleMs = getMainAsrSettleMs();
+    draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
     if (silenceSlider instanceof HTMLInputElement) {
       silenceSlider.value = String(silenceToIndex(draftSilenceMs));
     }
-    if (interruptMinWordsSel instanceof HTMLSelectElement) {
-      interruptMinWordsSel.value = String(draftInterruptMinWords);
+    if (mainSettleSel instanceof HTMLSelectElement) {
+      mainSettleSel.value = String(draftMainAsrSettleMs);
     }
-    if (interruptSustainSel instanceof HTMLSelectElement) {
-      interruptSustainSel.value = String(draftInterruptSustainMs);
-    }
-    if (interruptGapSel instanceof HTMLSelectElement) {
-      interruptGapSel.value = String(draftInterruptGapMs);
+    if (mainPartialMinSel instanceof HTMLSelectElement) {
+      mainPartialMinSel.value = String(draftMainAsrPartialMinChars);
     }
     applyAsrModeUi(draftAsrMode);
     applyMuteUi();
@@ -8700,9 +8688,8 @@ function wireVeraSettingsPanel() {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
       workmode_mute: draftWorkModeMute ? 1 : 0,
-      interrupt_min_words: draftInterruptMinWords,
-      interrupt_sustain_ms: draftInterruptSustainMs,
-      interrupt_gap_ms: draftInterruptGapMs,
+      main_asr_settle_ms: draftMainAsrSettleMs,
+      main_asr_partial_min_chars: draftMainAsrPartialMinChars,
     });
     modal.removeAttribute("hidden");
   };
@@ -8733,17 +8720,13 @@ function wireVeraSettingsPanel() {
     applyAsrModeUi("single");
     logVeraSettings("draft_asr_mode", { value: draftAsrMode });
   });
-  interruptMinWordsSel?.addEventListener("change", () => {
-    draftInterruptMinWords = Number(interruptMinWordsSel.value) || 2;
-    logVeraSettings("draft_interrupt_min_words", { value: draftInterruptMinWords });
+  mainSettleSel?.addEventListener("change", () => {
+    draftMainAsrSettleMs = Number(mainSettleSel.value) || 140;
+    logVeraSettings("draft_main_asr_settle_ms", { value: draftMainAsrSettleMs });
   });
-  interruptSustainSel?.addEventListener("change", () => {
-    draftInterruptSustainMs = Number(interruptSustainSel.value) || 350;
-    logVeraSettings("draft_interrupt_sustain_ms", { value: draftInterruptSustainMs });
-  });
-  interruptGapSel?.addEventListener("change", () => {
-    draftInterruptGapMs = Number(interruptGapSel.value) || 120;
-    logVeraSettings("draft_interrupt_gap_ms", { value: draftInterruptGapMs });
+  mainPartialMinSel?.addEventListener("change", () => {
+    draftMainAsrPartialMinChars = Number(mainPartialMinSel.value) || 3;
+    logVeraSettings("draft_main_asr_partial_min_chars", { value: draftMainAsrPartialMinChars });
   });
   workModeMuteBtn?.addEventListener("click", () => {
     draftWorkModeMute = !draftWorkModeMute;
@@ -8756,15 +8739,13 @@ function wireVeraSettingsPanel() {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
       workmode_mute: draftWorkModeMute ? 1 : 0,
-      interrupt_min_words: draftInterruptMinWords,
-      interrupt_sustain_ms: draftInterruptSustainMs,
-      interrupt_gap_ms: draftInterruptGapMs,
+      main_asr_settle_ms: draftMainAsrSettleMs,
+      main_asr_partial_min_chars: draftMainAsrPartialMinChars,
     });
     setVeraAsrSilenceMs(draftSilenceMs);
     setVeraAsrMode(draftAsrMode);
-    setInterruptBrowserMinWords(draftInterruptMinWords);
-    setBrowserAsrInterruptSustainMs(draftInterruptSustainMs);
-    setBrowserAsrInterruptGapMs(draftInterruptGapMs);
+    setMainAsrSettleMs(draftMainAsrSettleMs);
+    setMainAsrPartialMinChars(draftMainAsrPartialMinChars);
     setWorkModeMuteEnabled(draftWorkModeMute);
     close();
   });
