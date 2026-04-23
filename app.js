@@ -4253,6 +4253,80 @@ function createWorkChecklistDragHandle() {
   return handle;
 }
 
+const WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX = 26;
+let workChecklistDragSession = { id: "", startX: 0, lastX: 0 };
+
+function readChecklistItemsFromStorageSafe() {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeChecklistItemsToStorageSafe(items) {
+  try {
+    markWorkChecklistLocalMutation();
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    queueWorkChecklistSyncToServer();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isChecklistDescendant(items, maybeChildId, maybeAncestorId) {
+  const map = new Map(items.map((x) => [String(x?.id || ""), String(x?.parent_id || "")]));
+  let cur = String(maybeChildId || "");
+  const ancestor = String(maybeAncestorId || "");
+  if (!cur || !ancestor) return false;
+  let guard = 0;
+  while (guard < 200) {
+    const p = map.get(cur);
+    if (!p) return false;
+    if (p === ancestor) return true;
+    cur = p;
+    guard += 1;
+  }
+  return false;
+}
+
+function applyChecklistNestingFromDrag(draggedId) {
+  const sid = String(draggedId || "");
+  if (!sid) return false;
+  const dx = Number(workChecklistDragSession.lastX) - Number(workChecklistDragSession.startX);
+  if (!Number.isFinite(dx) || Math.abs(dx) < WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX) return false;
+  const items = readChecklistItemsFromStorageSafe();
+  const idx = items.findIndex((x) => String(x?.id || "") === sid);
+  if (idx < 0) return false;
+  const dragged = items[idx];
+  if (!dragged || typeof dragged.text !== "string") return false;
+
+  if (dx <= -WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX) {
+    if (!dragged.parent_id) return false;
+    items[idx] = { ...dragged, parent_id: null };
+    return writeChecklistItemsToStorageSafe(items);
+  }
+
+  let parentCandidate = null;
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    const prev = items[i];
+    if (!prev || String(prev.id || "") === sid) continue;
+    if (Boolean(prev.done) !== Boolean(dragged.done)) continue;
+    if (prev.parent_id) continue;
+    parentCandidate = prev;
+    break;
+  }
+  if (!parentCandidate?.id) return false;
+  const pid = String(parentCandidate.id);
+  if (pid === sid) return false;
+  if (isChecklistDescendant(items, pid, sid)) return false;
+  items[idx] = { ...dragged, parent_id: pid };
+  return writeChecklistItemsToStorageSafe(items);
+}
+
 function workChecklistInsertBeforeFromY(container, clientY) {
   const dragging = container.querySelector(":scope > li.vera-wm-checklist-dragging");
   const lis = [...container.querySelectorAll(":scope > li")].filter((el) => el !== dragging);
@@ -4321,6 +4395,7 @@ function ensureWorkChecklistListDnD() {
     const ul = e.currentTarget;
     if (!(ul instanceof HTMLElement)) return;
     e.preventDefault();
+    workChecklistDragSession.lastX = Number(e.clientX) || workChecklistDragSession.lastX;
     try {
       e.dataTransfer.dropEffect = "move";
     } catch (_) {}
@@ -4404,9 +4479,9 @@ function ensureWorkChecklistTrailingEmptyOngoing() {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     /* When there are no ongoing rows yet, append at list end — never splice(0,0) or the empty slot sits above completed items in storage order. */
     if (lastOngoingIndex < 0) {
-      items.push({ id, text: "", done: false });
+      items.push({ id, text: "", done: false, parent_id: null });
     } else {
-      items.splice(lastOngoingIndex + 1, 0, { id, text: "", done: false });
+      items.splice(lastOngoingIndex + 1, 0, { id, text: "", done: false, parent_id: null });
     }
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
     queueWorkChecklistSyncToServer();
@@ -4427,7 +4502,7 @@ function insertWorkChecklistEmptyOngoingAfter(afterId) {
     const row = items[idx];
     if (!row || typeof row.text !== "string" || Boolean(row.done)) return null;
     const nid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    items.splice(idx + 1, 0, { id: nid, text: "", done: false });
+    items.splice(idx + 1, 0, { id: nid, text: "", done: false, parent_id: null });
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
     queueWorkChecklistSyncToServer();
     return nid;
@@ -4456,6 +4531,27 @@ function loadWorkChecklistItems() {
   } catch {
     items = [];
   }
+  const idMap = new Map(items.map((x) => [String(x?.id || ""), x]));
+  const depthCache = new Map();
+  const getDepth = (id) => {
+    const sid = String(id || "");
+    if (!sid) return 0;
+    if (depthCache.has(sid)) return depthCache.get(sid);
+    let depth = 0;
+    let cur = idMap.get(sid);
+    const visited = new Set([sid]);
+    while (cur && cur.parent_id && depth < 1) {
+      const pid = String(cur.parent_id || "");
+      if (!pid || visited.has(pid)) break;
+      const parent = idMap.get(pid);
+      if (!parent || Boolean(parent.done) !== Boolean(cur.done)) break;
+      visited.add(pid);
+      depth += 1;
+      cur = parent;
+    }
+    depthCache.set(sid, depth);
+    return depth;
+  };
   ongoingUl.replaceChildren();
   completedUl.replaceChildren();
   items.forEach((it) => {
@@ -4465,6 +4561,7 @@ function loadWorkChecklistItems() {
     li.className = "vera-wm-checklist-li";
     if (it.done) li.classList.add("is-done");
     li.dataset.id = id;
+    li.style.setProperty("--checklist-depth", String(getDepth(id)));
     li.draggable = false;
 
     const handle = createWorkChecklistDragHandle();
@@ -4491,6 +4588,11 @@ function loadWorkChecklistItems() {
     handle.addEventListener("dragstart", (e) => {
       e.stopPropagation();
       li.classList.add("vera-wm-checklist-dragging");
+      workChecklistDragSession = {
+        id,
+        startX: Number(e.clientX) || 0,
+        lastX: Number(e.clientX) || 0,
+      };
       e.dataTransfer.effectAllowed = "move";
       try {
         e.dataTransfer.setData("text/plain", id);
@@ -4503,9 +4605,12 @@ function loadWorkChecklistItems() {
     handle.addEventListener("dragend", () => {
       li.classList.remove("vera-wm-checklist-dragging");
       persistWorkChecklistOrderFromDom();
+      applyChecklistNestingFromDrag(id);
+      workChecklistDragSession = { id: "", startX: 0, lastX: 0 };
       const pruned = pruneInteriorEmptyOngoingItems();
       const ensured = ensureWorkChecklistTrailingEmptyOngoing();
       if (pruned || ensured) loadWorkChecklistItems();
+      else loadWorkChecklistItems();
     });
 
     btnDel.addEventListener("click", () => {
