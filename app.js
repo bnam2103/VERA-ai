@@ -546,10 +546,8 @@ const DEFAULT_STREAM_TTS = true;
 
 /** Browser Web Speech API: live partials, then 1.3s stable transcript → /infer without server ASR. */
 let browserAsrMainSilenceMs = 1300;
-/** Main browser-ASR only: extra settling wait after silence timer fires before finalizing. */
-let mainAsrSettleMs = 140;
 /** Main browser-ASR only: minimum visible chars before showing partial bubble. */
-let mainAsrPartialMinChars = 3;
+let mainAsrPartialMinChars = 10;
 /** Min accumulated ms of changing partial transcript to count as interrupt (vs VAD on audio). */
 let browserAsrInterruptSustainMs = 350;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
@@ -577,7 +575,6 @@ const BROWSER_ASR_MAIN_NETWORK_RETRY_MAX = 2;
 const VERA_SETTING_ASR_SILENCE_MS_KEY = "vera_setting_asr_silence_ms_v1";
 const VERA_SETTING_ASR_MODE_KEY = "vera_setting_asr_mode_v1";
 const VERA_SETTING_WORKMODE_MUTE_KEY = "vera_setting_workmode_mute_v1";
-const VERA_SETTING_MAIN_ASR_SETTLE_MS_KEY = "vera_setting_main_asr_settle_ms_v1";
 const VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY = "vera_setting_main_asr_partial_min_chars_v1";
 
 function logVeraSettings(event, data = {}) {
@@ -686,33 +683,16 @@ function setVeraAsrMode(mode) {
   logVeraSettings("save_asr_mode", { value: next });
 }
 
-function getMainAsrSettleMs() {
-  try {
-    const v = Number(localStorage.getItem(VERA_SETTING_MAIN_ASR_SETTLE_MS_KEY));
-    if (v === 0 || v === 80 || v === 140 || v === 220) return v;
-  } catch (_) {}
-  return 140;
-}
-
-function setMainAsrSettleMs(v) {
-  const next = v === 0 || v === 80 || v === 140 || v === 220 ? v : 140;
-  mainAsrSettleMs = next;
-  try {
-    localStorage.setItem(VERA_SETTING_MAIN_ASR_SETTLE_MS_KEY, String(next));
-  } catch (_) {}
-  logVeraSettings("save_main_asr_settle_ms", { value: next });
-}
-
 function getMainAsrPartialMinChars() {
   try {
     const v = Number(localStorage.getItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY));
-    if (v === 1 || v === 3 || v === 6 || v === 10) return v;
+    if (v === 5 || v === 10 || v === 13 || v === 18) return v;
   } catch (_) {}
-  return 3;
+  return 10;
 }
 
 function setMainAsrPartialMinChars(v) {
-  const next = v === 1 || v === 3 || v === 6 || v === 10 ? v : 3;
+  const next = v === 5 || v === 10 || v === 13 || v === 18 ? v : 10;
   mainAsrPartialMinChars = next;
   try {
     localStorage.setItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY, String(next));
@@ -768,7 +748,6 @@ function shouldStreamTts() {
 }
 
 browserAsrMainSilenceMs = getVeraAsrSilenceMs();
-mainAsrSettleMs = getMainAsrSettleMs();
 mainAsrPartialMinChars = getMainAsrPartialMinChars();
 
 function disableBrowserAsrForSession(reason) {
@@ -7218,11 +7197,7 @@ function scheduleMainBrowserEndOfUtterance() {
         void finalizeMainBrowserTranscript(cur2);
       }
     };
-    if (mainBrowserFinalizeKind === "main" && mainAsrSettleMs > 0) {
-      setTimeout(finalizeNow, mainAsrSettleMs);
-    } else {
-      finalizeNow();
-    }
+    finalizeNow();
   }, browserAsrMainSilenceMs);
   logVeraSettings("schedule_asr_silence_timer", {
     ms: browserAsrMainSilenceMs,
@@ -8618,7 +8593,6 @@ function wireVeraSettingsPanel() {
   const silenceSlider = document.getElementById("vera-setting-silence");
   const asrStreamingBtn = document.getElementById("vera-setting-asr-streaming");
   const asrSingleBtn = document.getElementById("vera-setting-asr-single");
-  const mainSettleSel = document.getElementById("vera-setting-main-settle");
   const mainPartialMinSel = document.getElementById("vera-setting-main-partial-min");
   const resetSessionBtn = document.getElementById("vera-setting-reset-session");
   const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
@@ -8629,7 +8603,6 @@ function wireVeraSettingsPanel() {
   let draftSilenceMs = getVeraAsrSilenceMs();
   let draftAsrMode = getVeraAsrMode();
   let draftWorkModeMute = isWorkModeMuteEnabled();
-  let draftMainAsrSettleMs = getMainAsrSettleMs();
   let draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
   const silenceToIndex = (ms) => {
     const idx = silenceOptions.indexOf(ms);
@@ -8666,13 +8639,9 @@ function wireVeraSettingsPanel() {
     draftSilenceMs = getVeraAsrSilenceMs();
     draftAsrMode = getVeraAsrMode();
     draftWorkModeMute = isWorkModeMuteEnabled();
-    draftMainAsrSettleMs = getMainAsrSettleMs();
     draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
     if (silenceSlider instanceof HTMLInputElement) {
       silenceSlider.value = String(silenceToIndex(draftSilenceMs));
-    }
-    if (mainSettleSel instanceof HTMLSelectElement) {
-      mainSettleSel.value = String(draftMainAsrSettleMs);
     }
     if (mainPartialMinSel instanceof HTMLSelectElement) {
       mainPartialMinSel.value = String(draftMainAsrPartialMinChars);
@@ -8688,7 +8657,6 @@ function wireVeraSettingsPanel() {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
       workmode_mute: draftWorkModeMute ? 1 : 0,
-      main_asr_settle_ms: draftMainAsrSettleMs,
       main_asr_partial_min_chars: draftMainAsrPartialMinChars,
     });
     modal.removeAttribute("hidden");
@@ -8720,12 +8688,8 @@ function wireVeraSettingsPanel() {
     applyAsrModeUi("single");
     logVeraSettings("draft_asr_mode", { value: draftAsrMode });
   });
-  mainSettleSel?.addEventListener("change", () => {
-    draftMainAsrSettleMs = Number(mainSettleSel.value) || 140;
-    logVeraSettings("draft_main_asr_settle_ms", { value: draftMainAsrSettleMs });
-  });
   mainPartialMinSel?.addEventListener("change", () => {
-    draftMainAsrPartialMinChars = Number(mainPartialMinSel.value) || 3;
+    draftMainAsrPartialMinChars = Number(mainPartialMinSel.value) || 10;
     logVeraSettings("draft_main_asr_partial_min_chars", { value: draftMainAsrPartialMinChars });
   });
   workModeMuteBtn?.addEventListener("click", () => {
@@ -8739,12 +8703,10 @@ function wireVeraSettingsPanel() {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
       workmode_mute: draftWorkModeMute ? 1 : 0,
-      main_asr_settle_ms: draftMainAsrSettleMs,
       main_asr_partial_min_chars: draftMainAsrPartialMinChars,
     });
     setVeraAsrSilenceMs(draftSilenceMs);
     setVeraAsrMode(draftAsrMode);
-    setMainAsrSettleMs(draftMainAsrSettleMs);
     setMainAsrPartialMinChars(draftMainAsrPartialMinChars);
     setWorkModeMuteEnabled(draftWorkModeMute);
     close();
