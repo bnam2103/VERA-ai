@@ -123,10 +123,17 @@ function resetVeraSessionAndUi() {
   flashWorkChecklistPlanHint("");
   workModeReasoningConfirmPending = null;
   workModeReasoningAttachment = null;
+  for (const ctl of workModeReasoningAbortControllers.values()) {
+    try {
+      ctl.abort();
+    } catch (_) {}
+  }
+  workModeReasoningAbortControllers.clear();
   workModeReasoningLaneWaitQueue.length = 0;
   workModeTypedTurnQueue.length = 0;
   workModeTypedQueueDraining = false;
   WORK_MODE_REASONING_LANES.forEach((lane) => workModeReasoningLaneBusy.set(lane.idx, false));
+  syncWorkModeReasoningCancelButton();
   setWorkModeAttachmentMeta("");
 
   hideSidePanel();
@@ -953,6 +960,18 @@ function setStatus(text, cls) {
       window.cancelStartupTypingForVoiceEntry();
     }
     syncVeraFlowVoiceDockLayoutClass();
+  }
+}
+
+function applyClientUiAction(actionName) {
+  const action = String(actionName || "").trim().toLowerCase();
+  if (!action) return;
+  if (action === "work_mode_on") {
+    if (typeof window.setVeraWorkMode === "function") window.setVeraWorkMode(true);
+    return;
+  }
+  if (action === "work_mode_off") {
+    if (typeof window.setVeraWorkMode === "function") window.setVeraWorkMode(false);
   }
 }
 
@@ -2021,6 +2040,51 @@ function spotifyEnsureNowState() {
     };
   }
   return window.__veraSpotifyNowState;
+}
+
+function buildClientContextSnapshot() {
+  const prefix = appModePrefix();
+  const inWorkMode = prefix === "vera" && isVeraWorkModeOn();
+  const now = spotifyEnsureNowState();
+  const musicTitleDom = document.getElementById(`${prefix}-spotify-track-title`)?.textContent || "";
+  const musicArtistDom = document.getElementById(`${prefix}-spotify-track-artist`)?.textContent || "";
+
+  let checklistItems = [];
+  if (inWorkMode) {
+    try {
+      const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) checklistItems = parsed;
+    } catch (_) {}
+  }
+  const ongoing = checklistItems
+    .filter((x) => x && !Boolean(x.done))
+    .map((x) => String(x.text || "").trim())
+    .filter(Boolean);
+  const completed = checklistItems
+    .filter((x) => x && Boolean(x.done))
+    .map((x) => String(x.text || "").trim())
+    .filter(Boolean);
+
+  return {
+    mode: inWorkMode ? "work" : "flow",
+    app: prefix,
+    music: {
+      title: String(now.title || musicTitleDom || "").trim(),
+      artist: String(now.artist || musicArtistDom || "").trim(),
+      is_playing: Boolean(now.active) && !Boolean(now.paused),
+      paused: Boolean(now.paused),
+      position_ms: Number(now.position_ms) || 0,
+      duration_ms: Number(now.duration_ms) || 0,
+    },
+    checklist: inWorkMode
+      ? {
+          ongoing_count: ongoing.length,
+          completed_count: completed.length,
+          ongoing_items: ongoing.slice(0, 8),
+        }
+      : null,
+  };
 }
 
 function spotifyUpdateNowState(partial = {}) {
@@ -3324,6 +3388,7 @@ function activateReasoningTab(index) {
     p.classList.toggle("is-active", Number(p.dataset.tabIndex) === index);
   });
   renderReasoningTabStrip();
+  syncWorkModeReasoningCancelButton();
 }
 
 function addReasoningTab() {
@@ -3457,13 +3522,46 @@ let workModeReasoningConfirmPending = null;
 let workModeReasoningAttachment = null;
 const workModeReasoningLaneBusy = new Map(WORK_MODE_REASONING_LANES.map((lane) => [lane.idx, false]));
 const workModeReasoningLaneWaitQueue = [];
+const workModeReasoningAbortControllers = new Map();
 const workModeTypedTurnQueue = [];
 let workModeTypedQueueDraining = false;
+
+function syncWorkModeReasoningCancelButton() {
+  const btn = document.getElementById("vera-reasoning-cancel");
+  if (!btn) return;
+  const activeIdx = getActiveReasoningLaneIndex();
+  btn.hidden = activeIdx == null || !workModeReasoningAbortControllers.has(Number(activeIdx));
+}
+
+function getActiveReasoningLaneIndex() {
+  const panel = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active");
+  if (!(panel instanceof HTMLElement)) return null;
+  const idx = Number(panel.dataset.tabIndex);
+  return Number.isFinite(idx) ? idx : null;
+}
+
+function cancelWorkModeReasoningLane(idx) {
+  const laneIdx = Number(idx);
+  const ctl = workModeReasoningAbortControllers.get(laneIdx);
+  if (!ctl) return false;
+  try {
+    ctl.abort();
+  } catch (_) {}
+  setWorkModeAttachmentMeta(`Reasoning cancelled for ${getWorkModeReasoningLaneLabel(laneIdx)}.`);
+  return true;
+}
+
+function endWorkModeReasoningLaneRun(idx) {
+  workModeReasoningAbortControllers.delete(Number(idx));
+  releaseWorkModeReasoningLane(idx);
+  syncWorkModeReasoningCancelButton();
+}
 
 function acquireWorkModeReasoningLane() {
   const idleLane = WORK_MODE_REASONING_LANES.find((lane) => !workModeReasoningLaneBusy.get(lane.idx));
   if (idleLane) {
     workModeReasoningLaneBusy.set(idleLane.idx, true);
+    syncWorkModeReasoningCancelButton();
     return Promise.resolve(idleLane.idx);
   }
   return new Promise((resolve) => {
@@ -3476,10 +3574,12 @@ function releaseWorkModeReasoningLane(idx) {
   const next = workModeReasoningLaneWaitQueue.shift();
   if (typeof next === "function") {
     workModeReasoningLaneBusy.set(laneIdx, true);
+    syncWorkModeReasoningCancelButton();
     next(laneIdx);
     return;
   }
   workModeReasoningLaneBusy.set(laneIdx, false);
+  syncWorkModeReasoningCancelButton();
 }
 
 function enqueueWorkModeTypedTurn(text, opts = {}) {
@@ -3614,16 +3714,8 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
     return applyInlineMath(t);
   };
 
-  const summaryLines = String(summaryText || "")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  let html = summaryLines.length
-    ? summaryLines
-      .map((line) => `<div class="vera-reasoning-summary-line">${applyInlineMath(escapeHtml(line))}</div>`)
-      .join("")
-    : "";
+  // Keep summaryText for voice/history plumbing, but do not render it in the reasoning panel UI.
+  let html = "";
   let inCode = false;
   let listType = "";
   let para = [];
@@ -3835,9 +3927,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const laneIdx = await acquireWorkModeReasoningLane();
   const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
   const laneId = getWorkModeReasoningLaneId(laneIdx);
+  const laneAbortController = new AbortController();
+  workModeReasoningAbortControllers.set(laneIdx, laneAbortController);
+  syncWorkModeReasoningCancelButton();
   const scrollEl = getReasoningScrollElByLane(laneIdx);
   if (!scrollEl) {
-    releaseWorkModeReasoningLane(laneIdx);
+    endWorkModeReasoningLaneRun(laneIdx);
     return;
   }
   activateReasoningTab(laneIdx);
@@ -3852,7 +3947,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       fd.append("file", attachment);
       sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
         method: "POST",
-        body: fd
+        body: fd,
+        signal: laneAbortController.signal
       });
       if (!sr.ok) {
         let msg = `Upload failed (${sr.status})`;
@@ -3863,33 +3959,34 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           /* ignore */
         }
         setWorkModeAttachmentMeta(msg);
-        releaseWorkModeReasoningLane(laneIdx);
+        endWorkModeReasoningLaneRun(laneIdx);
         return "reasoning-upload-failed";
       }
       if (!sr.body) {
         setWorkModeAttachmentMeta("Upload failed: empty response body.");
-        releaseWorkModeReasoningLane(laneIdx);
+        endWorkModeReasoningLaneRun(laneIdx);
         return "reasoning-upload-failed";
       }
     } else {
       sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: getSessionId(), text: trimmed, lane_id: laneId })
+        body: JSON.stringify({ session_id: getSessionId(), text: trimmed, lane_id: laneId }),
+        signal: laneAbortController.signal
       });
       if (!sr.ok || !sr.body) {
-        releaseWorkModeReasoningLane(laneIdx);
+        endWorkModeReasoningLaneRun(laneIdx);
         return;
       }
     }
   } catch (err) {
-    releaseWorkModeReasoningLane(laneIdx);
+    endWorkModeReasoningLaneRun(laneIdx);
     throw err;
   }
 
   const turnEl = appendReasoningTurnMount(scrollEl);
   if (!turnEl) {
-    releaseWorkModeReasoningLane(laneIdx);
+    endWorkModeReasoningLaneRun(laneIdx);
     return;
   }
   turnEl.dataset.markdownAcc = "";
@@ -3898,32 +3995,34 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const decoder = new TextDecoder();
   let lineBuf = "";
   let foundSummary = false;
-  while (!foundSummary) {
-    const { done, value } = await reader.read();
-    if (done && !value) break;
-    if (value) lineBuf += decoder.decode(value, { stream: true });
-    for (;;) {
-      const n = lineBuf.indexOf("\n");
-      if (n < 0) break;
-      const line = lineBuf.slice(0, n).trim();
-      lineBuf = lineBuf.slice(n + 1);
-      if (!line) continue;
-      let o;
-      try {
-        o = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (o.type === "error") break;
-      if (o.type === "summary" && o.text) {
-        const normalizedSummary = normalizeWorkModeReasoningSummary(String(o.text), laneLabel);
-        turnEl.dataset.summaryText = normalizedSummary.text;
-        formData.append("reasoning_voice_coach", normalizedSummary.text);
-        foundSummary = true;
-        break;
+  try {
+    while (!foundSummary) {
+      const { done, value } = await reader.read();
+      if (done && !value) break;
+      if (value) lineBuf += decoder.decode(value, { stream: true });
+      for (;;) {
+        const n = lineBuf.indexOf("\n");
+        if (n < 0) break;
+        const line = lineBuf.slice(0, n).trim();
+        lineBuf = lineBuf.slice(n + 1);
+        if (!line) continue;
+        let o;
+        try {
+          o = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (o.type === "error") break;
+        if (o.type === "summary" && o.text) {
+          const normalizedSummary = normalizeWorkModeReasoningSummary(String(o.text), laneLabel);
+          turnEl.dataset.summaryText = normalizedSummary.text;
+          formData.append("reasoning_voice_coach", normalizedSummary.text);
+          foundSummary = true;
+          break;
+        }
       }
     }
-  }
+  } catch (_) {}
   if (foundSummary) {
     void drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder, {
       onDone: ({ markdownAcc, summaryText }) => {
@@ -3932,11 +4031,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           markdownText: markdownAcc,
           userPrompt: trimmed
         });
-        releaseWorkModeReasoningLane(laneIdx);
+        endWorkModeReasoningLaneRun(laneIdx);
       }
     });
   } else {
-    releaseWorkModeReasoningLane(laneIdx);
+    endWorkModeReasoningLaneRun(laneIdx);
   }
   scrollEl.scrollTop = scrollEl.scrollHeight;
 }
@@ -3952,83 +4051,87 @@ async function streamWorkModeReasoningComposer(text, signal) {
   const laneIdx = await acquireWorkModeReasoningLane();
   const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
   const laneId = getWorkModeReasoningLaneId(laneIdx);
+  const laneAbortController = new AbortController();
+  workModeReasoningAbortControllers.set(laneIdx, laneAbortController);
+  syncWorkModeReasoningCancelButton();
   const scrollEl = getReasoningScrollElByLane(laneIdx);
   if (!scrollEl) {
-    releaseWorkModeReasoningLane(laneIdx);
+    endWorkModeReasoningLaneRun(laneIdx);
     return;
   }
   activateReasoningTab(laneIdx);
   let summaryText = "";
   let markdownAcc = "";
-  const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: getSessionId(), text, lane_id: laneId })
-  });
-  if (!sr.ok) {
-    let msg = `Reasoning failed (${sr.status})`;
-    try {
-      const err = await sr.json();
-      if (err?.detail) msg = String(err.detail);
-    } catch {
-      /* ignore */
-    }
-    setWorkModeAttachmentMeta(msg);
-    releaseWorkModeReasoningLane(laneIdx);
-    return;
-  }
-  if (!sr.body) {
-    setWorkModeAttachmentMeta("Reasoning failed: empty response body.");
-    releaseWorkModeReasoningLane(laneIdx);
-    return;
-  }
-
-  const turnEl = appendReasoningTurnMount(scrollEl);
-  if (!turnEl) {
-    releaseWorkModeReasoningLane(laneIdx);
-    return;
-  }
-  turnEl.dataset.markdownAcc = "";
-  turnEl.dataset.summaryText = "";
-
-  const reader = sr.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (value) buf += decoder.decode(value, { stream: true });
-    for (;;) {
-      const n = buf.indexOf("\n");
-      if (n < 0) break;
-      const line = buf.slice(0, n).trim();
-      buf = buf.slice(n + 1);
-      if (!line) continue;
-      let o;
+  try {
+    const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: getSessionId(), text, lane_id: laneId }),
+      signal: laneAbortController.signal
+    });
+    if (!sr.ok) {
+      let msg = `Reasoning failed (${sr.status})`;
       try {
-        o = JSON.parse(line);
+        const err = await sr.json();
+        if (err?.detail) msg = String(err.detail);
       } catch {
-        continue;
+        /* ignore */
       }
-      if (o.type === "summary" && o.text) {
-        summaryText = normalizeWorkModeReasoningSummary(String(o.text), laneLabel).text;
-        turnEl.dataset.summaryText = summaryText;
-        renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
-      }
-      if (o.type === "markdown" && o.text) {
-        markdownAcc += String(o.text);
-        turnEl.dataset.markdownAcc = markdownAcc;
-        renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
-      }
+      setWorkModeAttachmentMeta(msg);
+      return;
     }
-    if (done) break;
+    if (!sr.body) {
+      setWorkModeAttachmentMeta("Reasoning failed: empty response body.");
+      return;
+    }
+
+    const turnEl = appendReasoningTurnMount(scrollEl);
+    if (!turnEl) return;
+    turnEl.dataset.markdownAcc = "";
+    turnEl.dataset.summaryText = "";
+
+    const reader = sr.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buf += decoder.decode(value, { stream: true });
+        for (;;) {
+          const n = buf.indexOf("\n");
+          if (n < 0) break;
+          const line = buf.slice(0, n).trim();
+          buf = buf.slice(n + 1);
+          if (!line) continue;
+          let o;
+          try {
+            o = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (o.type === "summary" && o.text) {
+            summaryText = normalizeWorkModeReasoningSummary(String(o.text), laneLabel).text;
+            turnEl.dataset.summaryText = summaryText;
+            renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
+          }
+          if (o.type === "markdown" && o.text) {
+            markdownAcc += String(o.text);
+            turnEl.dataset.markdownAcc = markdownAcc;
+            renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
+          }
+        }
+        if (done) break;
+      }
+    } catch (_) {}
+    setReasoningTabTopicFromFinal(turnEl, {
+      summaryText: extractWorkModeReasoningSummaryAnswerLine(summaryText),
+      markdownText: markdownAcc,
+      userPrompt: text
+    });
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+  } finally {
+    endWorkModeReasoningLaneRun(laneIdx);
   }
-  setReasoningTabTopicFromFinal(turnEl, {
-    summaryText: extractWorkModeReasoningSummaryAnswerLine(summaryText),
-    markdownText: markdownAcc,
-    userPrompt: text
-  });
-  scrollEl.scrollTop = scrollEl.scrollHeight;
-  releaseWorkModeReasoningLane(laneIdx);
 }
 
 function createWorkChecklistDragHandle() {
@@ -4645,6 +4748,7 @@ function wireWorkModeChecklistAndComposer() {
   wireWorkModeLeftPaneLayout();
   applyWorkModeLeftPaneLayoutFromStorage();
   const rs = document.getElementById("vera-reasoning-send");
+  const cancelBtn = document.getElementById("vera-reasoning-cancel");
   const ri = document.getElementById("vera-reasoning-input");
   const attachBtn = document.getElementById("vera-reasoning-attach-btn");
   const fileInput = document.getElementById("vera-reasoning-file");
@@ -4706,6 +4810,12 @@ function wireWorkModeChecklistAndComposer() {
   rs?.addEventListener("click", () => {
     void submitWorkModeReasoningComposer();
   });
+  cancelBtn?.addEventListener("click", () => {
+    const activeIdx = getActiveReasoningLaneIndex();
+    if (activeIdx == null) return;
+    cancelWorkModeReasoningLane(activeIdx);
+  });
+  syncWorkModeReasoningCancelButton();
   ri?.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" || e.shiftKey) return;
     e.preventDefault();
@@ -5674,6 +5784,7 @@ async function handleInterruptUtterance(blob) {
   formData.append("audio", blob);
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
+  formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
   formData.append("mode", "interrupt"); // backend can branch if desired
   formData.append(
     "interrupt_debug",
@@ -7016,6 +7127,7 @@ async function finalizeMainBrowserTranscript(text) {
   formData.append("use_browser_asr", "1");
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
+  formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
   if (listeningMode === "ptt") {
     formData.append("mode", "ptt");
   }
@@ -7384,6 +7496,7 @@ async function finalizeInterruptBrowserTranscript(text) {
   formData.append("use_browser_asr", "1");
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
+  formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
   formData.append("mode", "interrupt");
   formData.append(
     "interrupt_debug",
@@ -7572,6 +7685,7 @@ async function runInferMainPipeline(formData, opts = {}) {
       setContinuousInputMuted(true);
       return;
     }
+    applyClientUiAction(data.client_action);
 
     commitServerUserTranscriptBubble(data.transcript, "main-json");
     const playMainAnswer = () => {
@@ -7711,6 +7825,7 @@ async function runInferInterruptPipeline(formData) {
       setContinuousInputMuted(true);
       return;
     }
+    applyClientUiAction(data.client_action);
 
     commitServerUserTranscriptBubble(data.transcript, "interrupt-json");
 
@@ -7782,6 +7897,7 @@ async function handleUtterance() {
   formData.append("audio", blob);
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
+  formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
 
   // 🔑 ADD THIS
   if (listeningMode === "ptt") {
@@ -7836,6 +7952,7 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   formData.append("use_browser_asr", "1");
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
+  formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
   formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
   if (opts.reasoningAttachment instanceof File && opts.reasoningAttachment.size > 0) {
     const f = opts.reasoningAttachment;
@@ -7928,7 +8045,8 @@ async function sendTextMessage() {
         text,
         session_id: getSessionId(),
         client: appModePrefix(),
-        stream_tts: shouldStreamTts()
+        stream_tts: shouldStreamTts(),
+        context_snapshot: buildClientContextSnapshot()
       }),
       signal: attachPipelineAbortSignal()
     });
@@ -7980,6 +8098,7 @@ async function sendTextMessage() {
     logInferLatency(data, "text", textTtfbMs);
 
     requestInFlight = false;
+    applyClientUiAction(data.client_action);
 
     const playReply = () => {
       resetAudioHandlers();
@@ -8099,6 +8218,7 @@ async function onPttClick() {
     formData.append("use_browser_asr", "1");
     formData.append("session_id", getSessionId());
     formData.append("client", appModePrefix());
+    formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
     formData.append("mode", "ptt");
     formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
     logVoiceTranscript("final", text, { path: "ptt-browser-asr" });

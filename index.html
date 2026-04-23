@@ -748,9 +748,14 @@
             autocomplete="off"
             spellcheck="true"
           />
-          <button type="button" id="vera-reasoning-send" class="vera-reasoning-send">
-            Send
-          </button>
+          <div class="vera-reasoning-compose-actions">
+            <button type="button" id="vera-reasoning-cancel" class="vera-reasoning-cancel" hidden>
+              Cancel
+            </button>
+            <button type="button" id="vera-reasoning-send" class="vera-reasoning-send">
+              Send
+            </button>
+          </div>
         </div>
         <div class="vera-reasoning-attach-meta" id="vera-reasoning-attach-meta" aria-live="polite"></div>
         <p class="vera-reasoning-typed-note">
@@ -1511,6 +1516,13 @@ function startTyping() {
       window.syncVeraHeaderDateTimeForWorkMode();
     }
   }
+
+  window.setVeraWorkMode = function setVeraWorkMode(on) {
+    if (!veraApp || veraApp.hidden) return false;
+    if (on) enterVeraWorkMode();
+    else exitVeraWorkMode();
+    return true;
+  };
 
   if (window.matchMedia("(max-width: 768px)").matches) {
     veraWorkModeBtn?.setAttribute("hidden", "");

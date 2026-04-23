@@ -4183,6 +4183,30 @@ body.chat-started .input-bar {
   cursor: pointer;
 }
 
+#vera-app.work-mode .vera-reasoning-compose-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#vera-app.work-mode .vera-reasoning-cancel {
+  border-radius: 8px;
+  border: 1px solid rgba(255, 130, 130, 0.45);
+  background: rgba(200, 70, 70, 0.2);
+  color: rgba(255, 255, 255, 0.95);
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+#vera-app.work-mode .vera-reasoning-cancel[hidden] {
+  display: none;
+}
+
 #vera-app.work-mode .vera-reasoning-attach-meta {
   min-height: 16px;
   padding: 0 12px 8px;
