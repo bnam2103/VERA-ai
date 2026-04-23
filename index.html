@@ -2203,12 +2203,8 @@ document.addEventListener("click", () => {
 
       <div class="vera-settings-row">
         <label for="vera-setting-main-partial-min" class="vera-settings-label">Min chars before showing partial</label>
-        <select id="vera-setting-main-partial-min">
-          <option value="5">5</option>
-          <option value="10" selected>10</option>
-          <option value="13">13</option>
-          <option value="18">18</option>
-        </select>
+        <input id="vera-setting-main-partial-min" type="range" min="0" max="4" step="1" value="2" />
+        <div class="vera-settings-range-labels"><span>5</span><span>8</span><span>10</span><span>12</span><span>15</span></div>
       </div>
     </section>
 

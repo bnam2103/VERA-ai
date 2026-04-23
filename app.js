@@ -686,13 +686,13 @@ function setVeraAsrMode(mode) {
 function getMainAsrPartialMinChars() {
   try {
     const v = Number(localStorage.getItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY));
-    if (v === 5 || v === 10 || v === 13 || v === 18) return v;
+    if (v === 5 || v === 8 || v === 10 || v === 12 || v === 15) return v;
   } catch (_) {}
   return 10;
 }
 
 function setMainAsrPartialMinChars(v) {
-  const next = v === 5 || v === 10 || v === 13 || v === 18 ? v : 10;
+  const next = v === 5 || v === 8 || v === 10 || v === 12 || v === 15 ? v : 10;
   mainAsrPartialMinChars = next;
   try {
     localStorage.setItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY, String(next));
@@ -8604,6 +8604,7 @@ function wireVeraSettingsPanel() {
   let draftAsrMode = getVeraAsrMode();
   let draftWorkModeMute = isWorkModeMuteEnabled();
   let draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
+  const partialMinCharOptions = [5, 8, 10, 12, 15];
   const silenceToIndex = (ms) => {
     const idx = silenceOptions.indexOf(ms);
     return idx >= 0 ? idx : 1;
@@ -8613,6 +8614,16 @@ function wireVeraSettingsPanel() {
     const raw = Number(silenceSlider.value);
     const idx = Number.isFinite(raw) ? Math.max(0, Math.min(2, raw)) : 1;
     return silenceOptions[idx];
+  };
+  const partialMinCharsToIndex = (n) => {
+    const idx = partialMinCharOptions.indexOf(n);
+    return idx >= 0 ? idx : 2;
+  };
+  const readSliderPartialMinChars = () => {
+    if (!(mainPartialMinSel instanceof HTMLInputElement)) return draftMainAsrPartialMinChars;
+    const raw = Number(mainPartialMinSel.value);
+    const idx = Number.isFinite(raw) ? Math.max(0, Math.min(partialMinCharOptions.length - 1, raw)) : 2;
+    return partialMinCharOptions[idx];
   };
 
   const applyAsrModeUi = (mode) => {
@@ -8643,8 +8654,8 @@ function wireVeraSettingsPanel() {
     if (silenceSlider instanceof HTMLInputElement) {
       silenceSlider.value = String(silenceToIndex(draftSilenceMs));
     }
-    if (mainPartialMinSel instanceof HTMLSelectElement) {
-      mainPartialMinSel.value = String(draftMainAsrPartialMinChars);
+    if (mainPartialMinSel instanceof HTMLInputElement) {
+      mainPartialMinSel.value = String(partialMinCharsToIndex(draftMainAsrPartialMinChars));
     }
     applyAsrModeUi(draftAsrMode);
     applyMuteUi();
@@ -8688,10 +8699,12 @@ function wireVeraSettingsPanel() {
     applyAsrModeUi("single");
     logVeraSettings("draft_asr_mode", { value: draftAsrMode });
   });
-  mainPartialMinSel?.addEventListener("change", () => {
-    draftMainAsrPartialMinChars = Number(mainPartialMinSel.value) || 10;
+  const syncDraftPartialMinChars = () => {
+    draftMainAsrPartialMinChars = readSliderPartialMinChars();
     logVeraSettings("draft_main_asr_partial_min_chars", { value: draftMainAsrPartialMinChars });
-  });
+  };
+  mainPartialMinSel?.addEventListener("input", syncDraftPartialMinChars);
+  mainPartialMinSel?.addEventListener("change", syncDraftPartialMinChars);
   workModeMuteBtn?.addEventListener("click", () => {
     draftWorkModeMute = !draftWorkModeMute;
     applyMuteUi();
@@ -8699,6 +8712,7 @@ function wireVeraSettingsPanel() {
   });
   saveBtn?.addEventListener("click", () => {
     draftSilenceMs = readSliderSilenceMs();
+    draftMainAsrPartialMinChars = readSliderPartialMinChars();
     logVeraSettings("save_click", {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
