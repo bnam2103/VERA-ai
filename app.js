@@ -3045,6 +3045,7 @@ function queueWorkChecklistSyncToServer() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          session_id: getSessionId(),
           items,
           completed_collapsed: completedCollapsed
         })
@@ -3058,7 +3059,10 @@ async function hydrateWorkChecklistFromServer(force = false) {
   const startVersion = workChecklistLocalMutationVersion;
   workChecklistHydrationPromise = (async () => {
     try {
-      const res = await fetch(authApiUrl("/api/work-mode/checklist"), { method: "GET" });
+      const res = await fetch(
+        `${authApiUrl("/api/work-mode/checklist")}?session_id=${encodeURIComponent(getSessionId())}`,
+        { method: "GET" }
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(data.items)) return;
       if (!force && startVersion !== workChecklistLocalMutationVersion) return;
