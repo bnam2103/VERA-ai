@@ -550,8 +550,8 @@ let browserAsrMainSilenceMs = 1300;
 const BROWSER_ASR_INTERRUPT_SUSTAIN_MS = 350;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
 const BROWSER_ASR_INTERRUPT_GAP_MS = 120;
-/** Fire interrupt when browser partial ASR has more than two words (i.e. at least this many). */
-const INTERRUPT_BROWSER_MIN_WORDS = 3;
+/** Fire interrupt when browser partial ASR reaches this many words, or when partial text is stable long enough (see BROWSER_ASR_INTERRUPT_SUSTAIN_MS). */
+const INTERRUPT_BROWSER_MIN_WORDS = 2;
 
 function browserAsrSupported() {
   return typeof (window.SpeechRecognition || window.webkitSpeechRecognition) === "function";
@@ -3941,8 +3941,20 @@ function normalizeWorkModeReasoningSummary(summaryText, laneLabel = "") {
   };
 }
 
+function isLikelyWorkChecklistEditIntent(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return false;
+  const hasChecklist = /\bcheck\s*list|checklist\b/.test(t);
+  if (hasChecklist && /\b(add|remove)\b/.test(t)) return true;
+  if (/\b(update|replace)\b/.test(t) && (/\bwith\b/.test(t) || /\bitem\s+\d+\b/.test(t))) {
+    return true;
+  }
+  return false;
+}
+
 async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {}) {
   if (!isVeraWorkModeOn()) return;
+  if (isLikelyWorkChecklistEditIntent(trimmed)) return;
   const attachment = opts?.attachment;
   const hasUpload = attachment instanceof File && attachment.size > 0;
 
@@ -7417,11 +7429,24 @@ function startInterruptBrowserPartialDetection() {
     const combined = (finalP + interim).trim();
     const now = performance.now();
     if (combined.length < 1) {
+      if (
+        interruptPartialLastChangeAt &&
+        now - interruptPartialLastChangeAt > BROWSER_ASR_INTERRUPT_GAP_MS
+      ) {
+        interruptPartialAccumMs = 0;
+        interruptPartialLastText = "";
+      }
       interruptPartialRafTime = now;
       return;
     }
 
     if (combined !== lastCombined) {
+      if (interruptPartialLastChangeAt > 0) {
+        const d = Math.min(Math.max(now - interruptPartialLastChangeAt, 0), 250);
+        interruptPartialAccumMs += d;
+      } else {
+        interruptPartialAccumMs = 0;
+      }
       interruptPartialLastChangeAt = now;
       lastCombined = combined;
       interruptPartialLastText = combined;
@@ -7435,14 +7460,23 @@ function startInterruptBrowserPartialDetection() {
         interruptReason: "browser_partial_asr_words",
         wordCount: wc,
         minWords: INTERRUPT_BROWSER_MIN_WORDS,
+        partialAccumMs: interruptPartialAccumMs,
+        sustainMs: BROWSER_ASR_INTERRUPT_SUSTAIN_MS,
         partialText: combined,
       };
 
-      if (wc >= INTERRUPT_BROWSER_MIN_WORDS) {
+      const wordGate = wc >= INTERRUPT_BROWSER_MIN_WORDS;
+      const sustainGate = wc >= 1 && interruptPartialAccumMs >= BROWSER_ASR_INTERRUPT_SUSTAIN_MS;
+      if (wordGate || sustainGate) {
         onBrowserInterruptBargeInFromDetect(event);
         interruptPartialRafTime = now;
         return;
       }
+    } else if (
+      interruptPartialLastChangeAt &&
+      now - interruptPartialLastChangeAt > BROWSER_ASR_INTERRUPT_GAP_MS
+    ) {
+      interruptPartialAccumMs = 0;
     }
     interruptPartialRafTime = now;
   };
