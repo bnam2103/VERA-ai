@@ -4868,31 +4868,36 @@ function wireWorkModeChecklistAndComposer() {
   const ri = document.getElementById("vera-reasoning-input");
   const attachBtn = document.getElementById("vera-reasoning-attach-btn");
   const fileInput = document.getElementById("vera-reasoning-file");
-  attachBtn?.addEventListener("click", () => fileInput?.click());
-  fileInput?.addEventListener("change", () => {
-    const f = fileInput.files?.[0] || null;
+  const applyReasoningAttachmentFile = (f) => {
     if (!f) {
       workModeReasoningAttachment = null;
+      if (fileInput) fileInput.value = "";
       setWorkModeAttachmentMeta("");
-      return;
+      return false;
     }
     const name = (f.name || "").toLowerCase();
     const isPdf = name.endsWith(".pdf") || (f.type || "").includes("pdf");
     const isImage = (f.type || "").startsWith("image/") || /\.(png|jpe?g|webp)$/.test(name);
     if (!isPdf && !isImage) {
       workModeReasoningAttachment = null;
-      fileInput.value = "";
+      if (fileInput) fileInput.value = "";
       setWorkModeAttachmentMeta("Unsupported file. Use one PDF or image.");
-      return;
+      return false;
     }
     if (f.size > 25 * 1024 * 1024) {
       workModeReasoningAttachment = null;
-      fileInput.value = "";
+      if (fileInput) fileInput.value = "";
       setWorkModeAttachmentMeta("File too large. Max 25MB.");
-      return;
+      return false;
     }
     workModeReasoningAttachment = f;
     setWorkModeAttachmentMeta(`Attached: ${f.name}`);
+    return true;
+  };
+  attachBtn?.addEventListener("click", () => fileInput?.click());
+  fileInput?.addEventListener("change", () => {
+    const f = fileInput.files?.[0] || null;
+    applyReasoningAttachmentFile(f);
   });
 
   const submitWorkModeReasoningComposer = async () => {
@@ -4936,6 +4941,29 @@ function wireWorkModeChecklistAndComposer() {
     if (e.key !== "Enter" || e.shiftKey) return;
     e.preventDefault();
     void submitWorkModeReasoningComposer();
+  });
+  ri?.addEventListener("paste", (e) => {
+    const cd = e.clipboardData;
+    if (!cd?.items?.length) return;
+    let imageFile = null;
+    for (const item of cd.items) {
+      if (!item || item.kind !== "file") continue;
+      if ((item.type || "").startsWith("image/")) {
+        imageFile = item.getAsFile();
+        if (imageFile) break;
+      }
+    }
+    if (!imageFile) return;
+    const ext = (imageFile.type || "").includes("png")
+      ? "png"
+      : (imageFile.type || "").includes("webp")
+      ? "webp"
+      : "jpg";
+    const stamped = new File([imageFile], `pasted-image-${Date.now()}.${ext}`, {
+      type: imageFile.type || "image/png",
+    });
+    const ok = applyReasoningAttachmentFile(stamped);
+    if (ok) e.preventDefault();
   });
 
   const ongoingUlPlan = document.getElementById("vera-wm-checklist-ongoing");
