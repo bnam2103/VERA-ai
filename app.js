@@ -2996,6 +2996,11 @@ const VERA_CHAT_STATE_STORAGE_KEY_PREFIX = "vera_chat_state_v1";
 let chatStateHydrating = false;
 let workChecklistSyncTimer = null;
 let workChecklistHydrationPromise = null;
+let workChecklistLocalMutationVersion = 0;
+
+function markWorkChecklistLocalMutation() {
+  workChecklistLocalMutationVersion += 1;
+}
 
 function readChecklistItemsFromStorage() {
   try {
@@ -3008,6 +3013,7 @@ function readChecklistItemsFromStorage() {
 }
 
 function queueWorkChecklistSyncToServer() {
+  markWorkChecklistLocalMutation();
   if (workChecklistSyncTimer) window.clearTimeout(workChecklistSyncTimer);
   workChecklistSyncTimer = window.setTimeout(async () => {
     workChecklistSyncTimer = null;
@@ -3028,11 +3034,13 @@ function queueWorkChecklistSyncToServer() {
 
 async function hydrateWorkChecklistFromServer(force = false) {
   if (!force && workChecklistHydrationPromise) return workChecklistHydrationPromise;
+  const startVersion = workChecklistLocalMutationVersion;
   workChecklistHydrationPromise = (async () => {
     try {
       const res = await fetch(authApiUrl("/api/work-mode/checklist"), { method: "GET" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(data.items)) return;
+      if (!force && startVersion !== workChecklistLocalMutationVersion) return;
       localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(data.items));
       if (typeof data.completed_collapsed === "boolean") {
         localStorage.setItem(
@@ -5102,6 +5110,24 @@ function applyActionPayload(data) {
 
   if (payload?.panel_type === "finance_chart") {
     renderFinanceChartPanel(payload);
+    return;
+  }
+
+  if (payload?.panel_type === "checklist_control") {
+    try {
+      markWorkChecklistLocalMutation();
+      if (Array.isArray(payload.items)) {
+        localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(payload.items));
+      }
+      if (typeof payload.completed_collapsed === "boolean") {
+        localStorage.setItem(
+          WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
+          payload.completed_collapsed ? "1" : "0"
+        );
+      }
+      loadWorkChecklistItems();
+      syncWorkChecklistHelpPlanButton();
+    } catch (_) {}
     return;
   }
 
