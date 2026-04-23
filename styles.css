@@ -4496,6 +4496,11 @@ body.chat-started .input-bar {
   accent-color: #8cb6ff;
 }
 
+#vera-setting-main-partial-min {
+  width: min(560px, 100%);
+  accent-color: #8cb6ff;
+}
+
 .vera-settings-range-labels {
   width: min(560px, 100%);
   display: flex;
