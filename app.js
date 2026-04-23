@@ -2981,6 +2981,7 @@ wireProductivityModeButtons();
 
 const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
 const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
+const VERA_TAB_ACTIVE_USER_KEY = "vera_active_user_tab_v1";
 const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
 const REASONING_TABS_MAX = 3;
 const REASONING_UNTITLED_TAB_NAME = "Untitled";
@@ -2993,6 +2994,59 @@ const WORK_MODE_REASONING_LANES = [
 const WORK_MODE_STATE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERA_CHAT_STATE_STORAGE_KEY_PREFIX = "vera_chat_state_v1";
 let chatStateHydrating = false;
+let workChecklistSyncTimer = null;
+let workChecklistHydrationPromise = null;
+
+function readChecklistItemsFromStorage() {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function queueWorkChecklistSyncToServer() {
+  if (workChecklistSyncTimer) window.clearTimeout(workChecklistSyncTimer);
+  workChecklistSyncTimer = window.setTimeout(async () => {
+    workChecklistSyncTimer = null;
+    try {
+      const items = readChecklistItemsFromStorage();
+      const completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
+      await fetch(authApiUrl("/api/work-mode/checklist"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items,
+          completed_collapsed: completedCollapsed
+        })
+      });
+    } catch (_) {}
+  }, 180);
+}
+
+async function hydrateWorkChecklistFromServer(force = false) {
+  if (!force && workChecklistHydrationPromise) return workChecklistHydrationPromise;
+  workChecklistHydrationPromise = (async () => {
+    try {
+      const res = await fetch(authApiUrl("/api/work-mode/checklist"), { method: "GET" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.items)) return;
+      localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(data.items));
+      if (typeof data.completed_collapsed === "boolean") {
+        localStorage.setItem(
+          WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
+          data.completed_collapsed ? "1" : "0"
+        );
+      }
+      loadWorkChecklistItems();
+    } catch (_) {
+      /* keep local storage fallback */
+    }
+  })();
+  await workChecklistHydrationPromise;
+}
 
 /** Same id source as `getSessionId()` for VERA — must never return "" or chat restore/save keys drift apart. */
 function ensureVeraSessionIdForPersistence() {
@@ -4170,6 +4224,7 @@ function persistWorkChecklistOrderFromDom() {
     const next = [...ongoingIds, ...completedIds].map((id) => map.get(id)).filter(Boolean);
     if (next.length !== items.length) return;
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(next));
+    queueWorkChecklistSyncToServer();
   } catch (_) {}
 }
 
@@ -4197,6 +4252,7 @@ function wireWorkChecklistCompletedCollapse() {
     btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     try {
       localStorage.setItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY, collapsed ? "1" : "0");
+      queueWorkChecklistSyncToServer();
     } catch (_) {}
   });
 }
@@ -4242,6 +4298,7 @@ function normalizeWorkChecklistLeadingPlaceholderInStorage() {
     if (!items.slice(1).some((x) => x && Boolean(x.done))) return false;
     const [head, ...rest] = items;
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify([...rest, head]));
+    queueWorkChecklistSyncToServer();
     return true;
   } catch (_) {
     return false;
@@ -4269,6 +4326,7 @@ function pruneInteriorEmptyOngoingItems() {
     toRemove.sort((a, b) => b - a);
     for (const i of toRemove) items.splice(i, 1);
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    queueWorkChecklistSyncToServer();
     return true;
   } catch (_) {
     return false;
@@ -4298,6 +4356,7 @@ function ensureWorkChecklistTrailingEmptyOngoing() {
       items.splice(lastOngoingIndex + 1, 0, { id, text: "", done: false });
     }
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    queueWorkChecklistSyncToServer();
     return true;
   } catch (_) {
     return false;
@@ -4317,6 +4376,7 @@ function insertWorkChecklistEmptyOngoingAfter(afterId) {
     const nid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     items.splice(idx + 1, 0, { id: nid, text: "", done: false });
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    queueWorkChecklistSyncToServer();
     return nid;
   } catch (_) {
     return null;
@@ -4602,6 +4662,7 @@ function persistWorkChecklistToggle(id, done) {
       String(x.id) === id ? { ...x, done: Boolean(done) } : x
     );
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    queueWorkChecklistSyncToServer();
   } catch (_) {}
 }
 
@@ -4612,6 +4673,7 @@ function persistWorkChecklistUpdateText(id, text) {
     if (!Array.isArray(items)) items = [];
     items = items.map((x) => (String(x.id) === id ? { ...x, text: String(text) } : x));
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    queueWorkChecklistSyncToServer();
   } catch (_) {}
 }
 
@@ -4622,6 +4684,7 @@ function persistWorkChecklistRemove(id) {
     if (!Array.isArray(items)) items = [];
     items = items.filter((x) => String(x.id) !== id);
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    queueWorkChecklistSyncToServer();
   } catch (_) {}
 }
 
@@ -4847,6 +4910,7 @@ function wireWorkModeChecklistAndComposer() {
 wireWorkModeChecklistAndComposer();
 loadWorkChecklistItems();
 window.loadWorkModeChecklist = loadWorkChecklistItems;
+window.hydrateWorkModeChecklistFromServer = hydrateWorkChecklistFromServer;
 migrateLegacyVeraChatStorageKey();
 restoreVeraChatState();
 wireReasoningTabStrip();
@@ -8411,6 +8475,14 @@ function setVeraActiveUserLabel(usernameOrNull) {
 }
 
 async function refreshVeraActiveUserLabel() {
+  const tabUser = sessionStorage.getItem(VERA_TAB_ACTIVE_USER_KEY) || "";
+  if (!tabUser) {
+    setVeraActiveUserLabel(null);
+    try {
+      await fetch(authApiUrl("/api/user/sign-out"), { method: "POST" });
+    } catch {}
+    return;
+  }
   try {
     const res = await fetch(authApiUrl("/api/user/active"), { method: "GET" });
     const data = await res.json().catch(() => ({}));
@@ -8418,9 +8490,10 @@ async function refreshVeraActiveUserLabel() {
       setVeraActiveUserLabel(null);
       return;
     }
-    setVeraActiveUserLabel(data.username ?? null);
+    const activeName = data.username != null && data.username !== "" ? String(data.username) : tabUser;
+    setVeraActiveUserLabel(activeName || null);
   } catch {
-    setVeraActiveUserLabel(null);
+    setVeraActiveUserLabel(tabUser || null);
   }
 }
 
@@ -8679,11 +8752,13 @@ function wireVeraUserSignInHoldAndModal() {
         return;
       }
       const name = data.username != null && data.username !== "" ? String(data.username) : null;
+      if (name) sessionStorage.setItem(VERA_TAB_ACTIVE_USER_KEY, name);
       setVeraActiveUserLabel(name);
       /* Start a fresh VERA session on successful user sign-in. */
       if (typeof window.resetVeraSessionAndUi === "function") {
         window.resetVeraSessionAndUi();
       }
+      await hydrateWorkChecklistFromServer(true);
       closeModal();
       if (passEl) passEl.value = "";
     } catch {

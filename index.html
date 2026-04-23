@@ -1506,6 +1506,9 @@ function startTyping() {
     if (typeof window.loadWorkModeChecklist === "function") {
       window.loadWorkModeChecklist();
     }
+    if (typeof window.hydrateWorkModeChecklistFromServer === "function") {
+      void window.hydrateWorkModeChecklistFromServer();
+    }
     if (typeof window.ensureVeraVoiceUiActive === "function") {
       void window.ensureVeraVoiceUiActive();
     }
