@@ -3611,6 +3611,7 @@ const workModeReasoningLaneBusy = new Map(WORK_MODE_REASONING_LANES.map((lane) =
 const workModeReasoningLaneWaitQueue = [];
 const workModeReasoningAbortControllers = new Map();
 const workModeTypedTurnQueue = [];
+const WORK_MODE_TYPED_TURN_QUEUE_MAX = 3;
 let workModeTypedQueueDraining = false;
 
 function syncWorkModeReasoningCancelButton() {
@@ -3670,10 +3671,17 @@ function releaseWorkModeReasoningLane(idx) {
 }
 
 function enqueueWorkModeTypedTurn(text, opts = {}) {
+  if (workModeTypedTurnQueue.length >= WORK_MODE_TYPED_TURN_QUEUE_MAX) {
+    console.warn("[WorkMode] typed queue full; dropping new request", {
+      max: WORK_MODE_TYPED_TURN_QUEUE_MAX
+    });
+    return false;
+  }
   workModeTypedTurnQueue.push({
     text: String(text || ""),
     opts: { ...opts, __fromQueue: true }
   });
+  return true;
 }
 
 function isWorkModeTypedTurnBlocked() {
@@ -8088,7 +8096,10 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   }
 
   if (isWorkModeTypedTurnBlocked()) {
-    if (!fromQueue) enqueueWorkModeTypedTurn(trimmed, opts);
+    if (!fromQueue) {
+      const queued = enqueueWorkModeTypedTurn(trimmed, opts);
+      if (!queued) setStatus("Work queue full (max 3)", "idle");
+    }
     return;
   }
 
@@ -8173,6 +8184,29 @@ async function sendTextMessage() {
   if (inVeraWorkMode) {
     if (textInput) textInput.value = "";
     await sendVeraWorkModeTypedInferTurn(text, { path: "typed-text" });
+    return;
+  }
+  const consecutiveUserTail = (() => {
+    const convo = uiEl("conversation");
+    if (!convo) return 0;
+    const rows = [...convo.querySelectorAll(".message-row")];
+    let count = 0;
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const row = rows[i];
+      if (!(row instanceof HTMLElement)) continue;
+      const bubble = row.querySelector(".bubble");
+      if (bubble instanceof HTMLElement && bubble.classList.contains("interrupt-preview")) continue;
+      if (row.classList.contains("user")) {
+        count += 1;
+        continue;
+      }
+      break;
+    }
+    return count;
+  })();
+  if (consecutiveUserTail >= 3) {
+    setStatus("Wait for VERA response before sending more", "idle");
+    console.warn("[Keyboard] blocked after 3 pending user turns");
     return;
   }
   if (isServerPipelineBusy() && isFlowModeKeyboardInterruptAllowed()) {
