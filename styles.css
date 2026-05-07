@@ -393,8 +393,10 @@ body.vera-mode {
   padding: 96px 64px 64px;
 
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 18px;
 
   text-align: center;
 }
@@ -410,6 +412,75 @@ body.vera-mode {
 
   max-width: 1100px;
   line-height: 1.3;
+}
+
+.home-launch-btn {
+  border: none;
+  background: transparent;
+  color: rgba(236, 244, 255, 0.96);
+  padding: 6px 0;
+  border-radius: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  cursor: pointer;
+  position: relative;
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+  transition:
+    opacity 0.55s ease,
+    transform 0.55s ease,
+    color 0.28s ease,
+    text-shadow 0.28s ease;
+}
+
+.home-launch-btn.visible {
+  opacity: 0.96;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.home-launch-btn::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -4px;
+  width: 100%;
+  height: 1px;
+  background: rgba(190, 225, 255, 0.85);
+  transform: scaleX(0.22);
+  transform-origin: center;
+  transition: transform 0.28s ease, background 0.28s ease, opacity 0.28s ease;
+  opacity: 0.85;
+}
+
+.home-launch-btn:hover {
+  opacity: 1;
+  color: #ffffff;
+  text-shadow: 0 0 8px rgba(170, 215, 255, 0.4);
+}
+
+.home-launch-btn:hover::after {
+  transform: scaleX(1);
+  background: rgba(212, 236, 255, 0.95);
+  opacity: 1;
+}
+
+.home-launch-btn:active {
+  transform: translateY(1px);
+}
+
+.home-launch-btn:focus-visible {
+  outline: none;
+  color: #ffffff;
+}
+
+.home-launch-btn:focus-visible::after {
+  transform: scaleX(1);
+  background: rgba(212, 236, 255, 0.95);
+  opacity: 1;
 }
 
 /* subtle scroll hint */
@@ -1139,6 +1210,11 @@ body.vera-mode {
   opacity: 1;
   transform: translateY(0);
 }
+
+.patch-collapse[data-closing="true"],
+.patch-version[data-closing="true"] {
+  pointer-events: none;
+}
 .patch-version .patch-content {
   opacity: 0;
   transform: translateY(-25px);
@@ -1809,9 +1885,8 @@ body.vera-mode {
   line-height: 1.35;
 }
 
-/* BMO: hide intro / startup lines; center face in the main viewport band */
-#bmo-page .bmo-intro-caption,
-#bmo-page #bmo-startup-text {
+/* BMO: hide intro line; center face in the main viewport band */
+#bmo-page .bmo-intro-caption {
   display: none !important;
 }
 
@@ -2395,11 +2470,15 @@ body.chat-started .input-toggle-btn {
 .input-container {
   position: fixed;
   inset: 0;
+  --dock-inset: max(40px, calc(32px + env(safe-area-inset-bottom, 0px)));
+  --dock-bar-height: 64px;
+  --dock-rotator-gap: 34px;
 
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
   gap: 14px;
+  padding-bottom: var(--dock-inset);
 
   pointer-events: none;
 }
@@ -2434,33 +2513,32 @@ body.chat-started .input-toggle-btn {
   transition: all 0.4s ease;
 }
 
-/* =========================
-   STARTUP TYPING TEXT
-========================= */
-
-.startup-text {
+.ask-rotator {
   position: absolute;
-  top: calc(50% - 110px);
+  bottom: calc(var(--dock-inset) + var(--dock-bar-height) + var(--dock-rotator-gap));
   left: 50%;
   transform: translateX(-50%);
-
-  max-width: 600px;
+  width: min(760px, calc(100vw - 56px));
+  display: flex;
+  align-items: center;
+  justify-content: center;
   text-align: center;
-
-  font-size: 22px;
-  font-weight: 600;
-  line-height: 1.5;
-  letter-spacing: 0.04em;
-
-  color: rgba(255,255,255,0.85);
-
-  transition: opacity 0.6s ease, transform 0.6s ease;
-}
-/* hide after first message */
-body.chat-started .startup-text {
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0.03em;
+  color: rgba(236, 242, 255, 0.78);
   opacity: 0;
-  transform: translate(-50%, -12px);
   pointer-events: none;
+  z-index: 1012;
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.ask-rotator.visible {
+  opacity: 0.92;
+}
+body.bmo-open .ask-rotator {
+  color: rgba(24, 49, 39, 0.82);
 }
 /* =========================
    CHAT STARTED MODE
@@ -2468,7 +2546,7 @@ body.chat-started .startup-text {
 
 body.chat-started .input-container {
   align-items: flex-end;
-  padding-bottom: 40px;   /* 🔥 was 40px */
+  padding-bottom: var(--dock-inset);
 }
 
 /* Bottom-right: productivity (music) + optional signed-in user label */
@@ -2492,8 +2570,8 @@ body.chat-started .input-container {
   left: 20px;
   z-index: 120;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-direction: row;
+  align-items: flex-end;
   gap: 10px;
   pointer-events: none;
 }
@@ -2570,6 +2648,130 @@ body.chat-started .input-container {
 
 .vera-settings-fab:active {
   transform: scale(0.98);
+}
+
+.bmo-mode-guide {
+  position: relative;
+  pointer-events: auto;
+  width: 340px;
+  max-width: 340px;
+  flex: 0 0 340px;
+  padding: 10px 12px;
+  border: 1px solid rgba(20, 61, 46, 0.28);
+  border-radius: 12px;
+  background: rgba(231, 248, 236, 0.9);
+  box-shadow: 0 8px 22px rgba(11, 46, 34, 0.14);
+  color: rgba(20, 61, 46, 0.92);
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0;
+  transform: translateY(8px);
+  visibility: hidden;
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.vera-mode-guide {
+  border-color: rgba(68, 102, 140, 0.38);
+  background: rgba(16, 24, 40, 0.82);
+  box-shadow: 0 8px 22px rgba(2, 8, 20, 0.36);
+  color: rgba(231, 241, 255, 0.94);
+}
+
+.bmo-mode-guide-minimize,
+.bmo-mode-guide-restore {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  min-width: 24px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(20, 120, 86, 0.55);
+  background: transparent;
+  color: rgba(20, 61, 46, 0.9);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 5px 14px rgba(26, 109, 77, 0.24);
+  transition: filter 0.2s ease, transform 0.15s ease;
+}
+
+.vera-mode-guide .bmo-mode-guide-minimize,
+.vera-mode-guide .bmo-mode-guide-restore {
+  border-color: rgba(128, 186, 255, 0.62);
+  background: transparent;
+  color: rgba(231, 241, 255, 0.94);
+  box-shadow: 0 5px 14px rgba(16, 58, 112, 0.34);
+}
+
+.bmo-mode-guide-minimize:hover,
+.bmo-mode-guide-restore:hover {
+  filter: brightness(1.05);
+}
+
+.bmo-mode-guide-minimize:active,
+.bmo-mode-guide-restore:active {
+  transform: translateY(1px);
+}
+
+.bmo-mode-guide-minimize {
+  font-size: 11px;
+}
+
+.bmo-mode-guide-restore {
+  display: none;
+  font-size: 13px;
+}
+
+.bmo-mode-guide.is-collapsed {
+  width: auto;
+  max-width: none;
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.bmo-mode-guide.is-collapsed p {
+  display: none;
+}
+
+.bmo-mode-guide.is-collapsed .bmo-mode-guide-minimize {
+  display: none;
+}
+
+.bmo-mode-guide.is-collapsed .bmo-mode-guide-restore {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: static;
+  min-width: 44px;
+  height: 30px;
+  padding: 0 10px;
+}
+
+.bmo-mode-guide p {
+  margin: 0 0 8px;
+}
+
+.bmo-mode-guide p:last-child {
+  margin-bottom: 0;
+}
+
+body.bmo-open #bmo-page.bmo-animate-in .bmo-mode-guide:not(.vera-mode-guide) {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 4.2s;
+}
+
+body.app-open:not(.bmo-open) #vera-app.fade-in .vera-mode-guide {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 0.9s;
 }
 
 /* Signed-in user name (POST /api/user/sign-in) */
@@ -3304,13 +3506,6 @@ body.chat-started .input-bar {
   padding-bottom: max(40px, calc(32px + env(safe-area-inset-bottom, 0px)));
 }
 
-/* Same fade-out as post–first-message layout while voice chrome is docked */
-#vera-app:not(.work-mode).vera-flow-voice-docked #vera-startup-text {
-  opacity: 0;
-  transform: translate(-50%, -12px);
-  pointer-events: none;
-}
-
 /* Bottom fade ~900 — any time voice or keyboard bar is visible in flow mode, not only listening */
 #vera-app:not(.work-mode).vera-flow-input-active .vera-bottom-right-tools {
   z-index: 1010;
@@ -3917,7 +4112,7 @@ body.chat-started .input-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 0;
+  padding: 6px 0 6px calc(var(--checklist-depth, 0) * 16px);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   font-size: 14px;
   color: rgba(255, 255, 255, 0.88);
@@ -4273,10 +4468,6 @@ body.chat-started .input-bar {
   padding: 8px 10px 52px !important;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.35);
-}
-
-#vera-app.work-mode .vera-wm-right .startup-text {
-  display: none !important;
 }
 
 #vera-app.work-mode .vera-wm-right .input-bar,
@@ -5420,6 +5611,10 @@ body.chat-started .vera-guide {
     display: none;
   }
 
+  .bmo-mode-guide {
+    display: none;
+  }
+
   /* 🔑 REST OF YOUR EXISTING MOBILE STYLES */
   .title-text {
     letter-spacing: 0.2em;
@@ -5588,13 +5783,10 @@ body.chat-started .vera-guide {
   body.server-online #bmo-ptt {
     display: flex;
   }
-  .startup-text {
-    white-space: nowrap;
-    font-size: clamp(13px, 4vw, 16px);
-    top: calc(50% - 90px);
-  }
   .input-container {
-    padding: 8px 12px;
+    padding: 8px 12px max(28px, calc(20px + env(safe-area-inset-bottom, 0px)));
+    --dock-bar-height: 44px;
+    --dock-rotator-gap: 30px;
   }
 
   /* 🔹 Shrink the input bar */
@@ -5663,10 +5855,6 @@ body.bmo-open .input-bar {
   background: rgba(255, 255, 255, 0.42);
   border: 1px solid rgba(24, 49, 39, 0.14);
   backdrop-filter: blur(14px);
-}
-
-body.bmo-open .startup-text {
-  color: rgba(24, 49, 39, 0.88);
 }
 
 body.bmo-open .chat-logo,
@@ -5969,10 +6157,13 @@ body.bmo-open #bmo-send-text:hover {
 
 /* BMO: dock pinned to bottom, group centered horizontally; toggle + bar aligned in a row. */
 body.bmo-open #bmo-page .input-container {
+  --dock-inset: 40px;
+  --dock-bar-height: 64px;
+  --dock-rotator-gap: 34px;
   flex-direction: column !important;
   justify-content: flex-end !important;
   align-items: center !important;
-  padding-bottom: 40px;
+  padding-bottom: var(--dock-inset);
   padding-right: 20px;
   box-sizing: border-box;
 }
