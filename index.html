@@ -1126,6 +1126,9 @@
   ========================= */
 
   const intro = document.getElementById("intro");
+  if (intro) {
+    document.body.classList.add("intro-lock");
+  }
   const introVideo = document.getElementById("intro-video");
   const skipBtn = document.getElementById("skip-intro");
   const soundBtn = document.getElementById("enable-sound");
@@ -1295,6 +1298,7 @@ function hideIntro() {
 
   setTimeout(() => {
     intro.remove();
+    document.body.classList.remove("intro-lock");
     sessionStorage.setItem(INTRO_SEEN_KEY, "true");
     showHomeLanding();
   }, 800);
@@ -1318,6 +1322,7 @@ introVideo.onended = hideIntro;
 
 if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
   intro.remove();
+  document.body.classList.remove("intro-lock");
 
   // 🔑 slight delay ensures layout + CSS are ready
   setTimeout(showHomeLanding, 60);

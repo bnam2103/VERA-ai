@@ -19,6 +19,10 @@ body {
   overflow-y: auto;
 }
 
+body.intro-lock {
+  overflow: hidden;
+}
+
 body.app-open {
   overflow: hidden;
 }
