@@ -3008,9 +3008,9 @@ const REASONING_TABS_MAX = 3;
 const REASONING_UNTITLED_TAB_NAME = "Untitled";
 const REASONING_TABS_STATE_STORAGE_KEY_PREFIX = "vera_reasoning_tabs_state_v2";
 const WORK_MODE_REASONING_LANES = [
-  { idx: 0, label: "Thread 1 (atlas)" },
-  { idx: 1, label: "Thread 2 (echo)" },
-  { idx: 2, label: "Thread 3 (nova)" }
+  { idx: 0, label: "Panel 1" },
+  { idx: 1, label: "Panel 2" },
+  { idx: 2, label: "Panel 3" }
 ];
 const WORK_MODE_STATE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERA_CHAT_STATE_STORAGE_KEY_PREFIX = "vera_chat_state_v1";
@@ -3185,7 +3185,7 @@ function getReasoningTabsStateStorageKey() {
 
 function getWorkModeReasoningLaneLabel(idx) {
   const lane = WORK_MODE_REASONING_LANES.find((x) => x.idx === Number(idx));
-  return lane?.label || `Thread ${Number(idx) + 1}`;
+  return lane?.label || `Panel ${Number(idx) + 1}`;
 }
 
 function getWorkModeReasoningLaneId(idx) {
@@ -3205,7 +3205,7 @@ function createReasoningLanePanel(idx, html = "", isActive = false) {
   panel.dataset.laneLabel = getWorkModeReasoningLaneLabel(idx);
   panel.id = `vera-reasoning-tab-panel-${idx}`;
   panel.setAttribute("role", "tabpanel");
-  panel.setAttribute("aria-label", `Reasoning lane ${idx + 1}`);
+  panel.setAttribute("aria-label", `Panel ${idx + 1}`);
   const scroll = document.createElement("div");
   scroll.className = "vera-reasoning-scroll vera-reasoning-md-panel";
   if (idx === 0) scroll.id = "vera-reasoning-md";
@@ -3492,7 +3492,7 @@ function addReasoningTab() {
   panel.dataset.tabTopicSet = "0";
   panel.id = `vera-reasoning-tab-panel-${idx}`;
   panel.setAttribute("role", "tabpanel");
-  panel.setAttribute("aria-label", `Reasoning space ${panels.length + 1}`);
+  panel.setAttribute("aria-label", `Panel ${panels.length + 1}`);
   const scroll = document.createElement("div");
   scroll.className = "vera-reasoning-scroll vera-reasoning-md-panel";
   scroll.setAttribute("aria-live", "polite");
@@ -3951,15 +3951,37 @@ function extractWorkModeReasoningSummaryAnswerLine(summaryText) {
   return first || "";
 }
 
+function stripLegacyReasoningLaneNamesInSummary(text) {
+  let s = String(text || "");
+  const subs = [
+    [/\bthread\s*1\s*\(\s*atlas\s*\)/gi, "Panel 1"],
+    [/\bthread\s*2\s*\(\s*echo\s*\)/gi, "Panel 2"],
+    [/\bthread\s*3\s*\(\s*nova\s*\)/gi, "Panel 3"],
+    [/\bin\s+atlas\b/gi, "in Panel 1"],
+    [/\bin\s+echo\b/gi, "in Panel 2"],
+    [/\bin\s+nova\b/gi, "in Panel 3"],
+    [/\bto\s+atlas\b/gi, "to Panel 1"],
+    [/\bto\s+echo\b/gi, "to Panel 2"],
+    [/\bto\s+nova\b/gi, "to Panel 3"],
+    [/\bon\s+atlas\b/gi, "on Panel 1"],
+    [/\bon\s+echo\b/gi, "on Panel 2"],
+    [/\bon\s+nova\b/gi, "on Panel 3"]
+  ];
+  for (const [re, rep] of subs) s = s.replace(re, rep);
+  return s;
+}
+
 function normalizeWorkModeReasoningSummary(summaryText, laneLabel = "") {
   const handoffLine = laneLabel
     ? `Opening full explanation in ${laneLabel}.`
     : "Opening full explanation now.";
-  const firstRawLine = String(summaryText || "")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .find(Boolean) || "";
+  const firstRawLine = stripLegacyReasoningLaneNamesInSummary(
+    String(summaryText || "")
+      .replace(/\r/g, "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean) || ""
+  );
   let answerLine = firstRawLine.replace(/\s+/g, " ").trim();
   answerLine = answerLine.replace(/^["']+|["']+$/g, "").trim();
   answerLine = answerLine.replace(/\bI'm opening .*/i, "").trim();
@@ -3972,6 +3994,76 @@ function normalizeWorkModeReasoningSummary(summaryText, laneLabel = "") {
     handoffLine,
     text: `${answerLine}\n${handoffLine}`
   };
+}
+
+/** Multi-item planning / scheduling — route to reasoning and enable checklist Sync from markdown. */
+function isLikelyWorkModePlanningIntent(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return false;
+  if (/\b(help me plan|can you help me plan|help\s+us\s+plan|need a plan|make a plan|create a plan|come up with a plan)\b/.test(t)) {
+    return true;
+  }
+  if (/\b(plan my|plan the|plan our|plan this week|plan my week|plan my day|weekly plan|study plan)\b/.test(t)) {
+    return true;
+  }
+  const planningCue = /\b(plan|planning|roadmap|schedule|priorit|organi[sz]e|break\s+it\s+down|time\s*block|balance my)\b/.test(t);
+  const multiWork =
+    /\b(i have|i've got|i am juggling|working on|need to do|need to finish|due|homework|assignments?)\b/.test(t) &&
+    /\b(and|plus|also|,)\b/.test(t);
+  const workload = /\b(essay|essays|math|science|reading|paper|papers|exam|exams|problem sets?|projects?|classes?|courses?)\b/.test(
+    t
+  );
+  if (planningCue && (multiWork || workload)) return true;
+  if (/\bhow\s+(can|do|should)\s+i\b.*\b(schedule|plan|balance|fit\s+in|organize)\b/.test(t)) return true;
+  return false;
+}
+
+const WORK_MODE_PLANNING_REASONING_INSTRUCTION_SUFFIX =
+  "[Planning mode. Produce an ordered plan (blocks, days, or sessions as fits the user). " +
+  "After the main plan, add a markdown heading exactly: ## SYNC CHECKLIST\n" +
+  "Under that heading use only checklist-style bullets: each top-level line must match `[start-end]: specific action` " +
+  "(realistic times or dayparts, e.g. `[4:00pm-5:30pm]: Outline intro`). " +
+  "Each top-level item needs 1–3 indented sub-bullets with concrete next steps. " +
+  "In SYNC CHECKLIST do not include questions, question headings, or lines ending in `?`.]";
+
+/** Matches server `app.py` `_is_generic_example_request` so short follow-ups carry Voice UI topic into reasoning. */
+function isGenericExampleFollowUpText(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return false;
+  if (
+    /\b(show(\s+me)?\s+an?\s+example|give(\s+me)?\s+an?\s+example|(can|could)\s+you\s+(show|give)(\s+me)?\s+an?\s+example|example\s+of\s+that|example\s+please|(another|one more)\s+example)\b/.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  return /\b(need|want|got)\s+an?\s+example\b/.test(t);
+}
+
+/** Last few Voice UI lines so reasoning can answer "give me an example" in-topic without relying on server memory alone. */
+function buildVoiceUiRecentContextBlock(maxRows = 8) {
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return "";
+  const convo = document.getElementById("vera-conversation");
+  if (!(convo instanceof HTMLElement)) return "";
+  const rows = [...convo.querySelectorAll(".message-row")].filter(
+    (row) => row.classList.contains("user") || row.classList.contains("vera")
+  );
+  const tail = rows.slice(-Math.max(2, maxRows));
+  const lines = [];
+  for (const row of tail) {
+    const bubble = row.querySelector(".bubble");
+    if (!(bubble instanceof HTMLElement)) continue;
+    if (bubble.classList.contains("interrupt-preview")) continue;
+    const role = row.classList.contains("user") ? "User" : "Assistant";
+    let text = String(bubble.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    if (text.length > 1400) text = `${text.slice(0, 1400)}…`;
+    lines.push(`${role}: ${text}`);
+  }
+  if (lines.length < 2) return "";
+  return (
+    "[Recent voice chat — the example request refers to the topic below, not a new unrelated task]\n" + lines.join("\n")
+  );
 }
 
 function isLikelyWorkChecklistEditIntent(text) {
@@ -3988,6 +4080,15 @@ function isLikelyWorkChecklistEditIntent(text) {
 async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {}) {
   if (!isVeraWorkModeOn()) return;
   if (isLikelyWorkChecklistEditIntent(trimmed)) return;
+  const planningIntent = isLikelyWorkModePlanningIntent(trimmed);
+  const textForReasoningStream = planningIntent
+    ? `${String(trimmed || "").trim()}\n\n${WORK_MODE_PLANNING_REASONING_INSTRUCTION_SUFFIX}`
+    : trimmed;
+  let reasoningStreamText = textForReasoningStream;
+  if (isGenericExampleFollowUpText(trimmed) && appModePrefix() === "vera") {
+    const voiceCtx = buildVoiceUiRecentContextBlock(8);
+    if (voiceCtx) reasoningStreamText = `${reasoningStreamText}\n\n${voiceCtx}`;
+  }
   const attachment = opts?.attachment;
   const hasUpload = attachment instanceof File && attachment.size > 0;
 
@@ -3998,6 +4099,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     const heuristicReasoning = (() => {
       const t = String(trimmed || "").toLowerCase();
       if (!t) return false;
+      if (planningIntent) return true;
       const conceptWords = /\b(explain|how does|how do|derive|proof|theorem|compare|trade-?off|framework|architecture|mechanism|intuition)\b/;
       const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
       const multiPart = /(\b(step by step|in detail|deep dive|from scratch)\b)|([,:;].+[,:;])/;
@@ -4049,7 +4151,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     if (hasUpload) {
       const fd = new FormData();
       fd.append("session_id", getSessionId());
-      fd.append("text", trimmed);
+      fd.append("text", reasoningStreamText);
       fd.append("lane_id", laneId);
       fd.append("file", attachment);
       sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
@@ -4078,7 +4180,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: getSessionId(), text: trimmed, lane_id: laneId }),
+        body: JSON.stringify({
+          session_id: getSessionId(),
+          text: reasoningStreamText,
+          lane_id: laneId
+        }),
         signal: laneAbortController.signal
       });
       if (!sr.ok || !sr.body) {
@@ -4138,6 +4244,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           markdownText: markdownAcc,
           userPrompt: trimmed
         });
+        if (planningIntent && String(markdownAcc || "").trim()) {
+          workChecklistSyncPlanVersion += 1;
+          workChecklistSyncConsumedPlanVersion = 0;
+          syncWorkChecklistSyncPlanButton();
+          flashWorkChecklistPlanHint("Plan is in reasoning — tap Sync to load checklist bullets.");
+        }
         endWorkModeReasoningLaneRun(laneIdx);
       }
     });
@@ -4847,6 +4959,10 @@ function persistWorkChecklistRemove(id) {
 }
 
 const WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS = 24;
+const WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS = 12000;
+let workChecklistSyncPreviewEditing = false;
+let workChecklistSyncPlanVersion = 0;
+let workChecklistSyncConsumedPlanVersion = 0;
 
 function collectWorkChecklistOngoingTexts() {
   const ul = document.getElementById("vera-wm-checklist-ongoing");
@@ -4866,6 +4982,207 @@ function syncWorkChecklistHelpPlanButton() {
   const btn = document.getElementById("vera-wm-checklist-help-plan");
   if (!btn) return;
   btn.disabled = collectWorkChecklistOngoingTexts().length === 0;
+}
+
+function syncWorkChecklistSyncPlanButton() {
+  const btn = document.getElementById("vera-wm-checklist-sync-plan");
+  if (!(btn instanceof HTMLButtonElement)) return;
+  const canUseSync = workChecklistSyncPlanVersion > workChecklistSyncConsumedPlanVersion;
+  btn.disabled = !canUseSync;
+}
+
+function getLatestWorkModeReasoningMarkdown() {
+  const scroll = getActiveReasoningScrollEl();
+  if (!(scroll instanceof HTMLElement)) return "";
+  const turns = [...scroll.querySelectorAll(".vera-reasoning-turn")];
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const md = String(turns[i]?.dataset?.markdownAcc || "").trim();
+    if (md) return md;
+  }
+  return "";
+}
+
+function normalizeChecklistLineText(text) {
+  return String(text || "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[(.*?)\]\((.*?)\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildChecklistProposalFromMarkdown(markdown) {
+  const full = String(markdown || "").replace(/\r/g, "");
+  const syncBlockMatch = full.match(
+    /(?:^|\n)#{1,6}\s*SYNC CHECKLIST\s*\n([\s\S]*?)(?=\n#{1,6}\s+|\s*$)/i
+  );
+  const source = syncBlockMatch ? syncBlockMatch[1] : full;
+  const rawLines = source.split("\n");
+  const proposals = [];
+  let currentTop = "";
+  let inCode = false;
+  let inQuestionsSection = false;
+  const timeTitlePattern =
+    /^\s*\[\s*(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|[a-z]+)\s*-\s*(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|[a-z]+)\s*\]\s*:\s*.+$/i;
+  const subCountByTopText = new Map();
+  for (const raw of rawLines) {
+    const line = String(raw || "");
+    if (line.trimStart().startsWith("```")) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) continue;
+    const heading = line.match(/^\s*#{1,6}\s+(.+)$/);
+    if (heading) {
+      const text = normalizeChecklistLineText(heading[1]).toLowerCase();
+      inQuestionsSection = /\b(question|questions|clarif|narrow)\b/.test(text);
+      continue;
+    }
+    const listMatch = line.match(/^(\s*)(?:[-*+]\s+|\d+[.)]\s+)(.+)$/);
+    if (listMatch) {
+      const indent = (listMatch[1] || "").replace(/\t/g, "  ").length;
+      const text = normalizeChecklistLineText(listMatch[2]);
+      if (!text) continue;
+      if (inQuestionsSection) continue;
+      if (/\?$/.test(text) || /^(question|questions)[:\s-]/i.test(text)) continue;
+      if (indent >= 2 && currentTop) {
+        const topKey = currentTop.toLowerCase();
+        const cur = subCountByTopText.get(topKey) || 0;
+        if (cur >= 3) continue;
+        proposals.push({ depth: 1, text });
+        subCountByTopText.set(topKey, cur + 1);
+      } else {
+        if (!timeTitlePattern.test(text)) continue;
+        proposals.push({ depth: 0, text });
+        currentTop = text;
+        subCountByTopText.set(text.toLowerCase(), 0);
+      }
+      continue;
+    }
+  }
+  const cleaned = [];
+  const seen = new Set();
+  for (const row of proposals) {
+    const key = `${row.depth}|${row.text.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push(row);
+  }
+  return cleaned.slice(0, 80);
+}
+
+function formatChecklistProposalText(rows) {
+  return rows
+    .map((row) => `${row.depth > 0 ? "  " : ""}- ${row.text}`)
+    .join("\n");
+}
+
+function parseChecklistProposalText(text) {
+  const lines = String(text || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.replace(/\t/g, "  "));
+  const rows = [];
+  for (const line of lines) {
+    const m = line.match(/^(\s*)(?:[-*+]\s+)(.+)$/);
+    if (!m) continue;
+    const indent = (m[1] || "").length;
+    const clean = normalizeChecklistLineText(m[2]);
+    if (!clean) continue;
+    rows.push({ depth: indent >= 2 ? 1 : 0, text: clean });
+  }
+  if (!rows.length) return [];
+  const out = [];
+  let parentId = null;
+  for (const row of rows) {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (row.depth === 0) parentId = id;
+    out.push({
+      id,
+      text: row.text,
+      done: false,
+      parent_id: row.depth > 0 ? parentId : null
+    });
+  }
+  out.push({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    text: "",
+    done: false,
+    parent_id: null
+  });
+  return out;
+}
+
+function setWorkChecklistSyncPreviewEditing(editing) {
+  const textarea = document.getElementById("vera-wm-checklist-sync-preview-text");
+  const editBtn = document.getElementById("vera-wm-checklist-sync-edit");
+  workChecklistSyncPreviewEditing = Boolean(editing);
+  if (textarea instanceof HTMLTextAreaElement) {
+    textarea.readOnly = !workChecklistSyncPreviewEditing;
+    textarea.classList.toggle("is-editing", workChecklistSyncPreviewEditing);
+    if (workChecklistSyncPreviewEditing) textarea.focus();
+  }
+  if (editBtn instanceof HTMLButtonElement) {
+    editBtn.textContent = workChecklistSyncPreviewEditing ? "Lock" : "Edit";
+  }
+}
+
+function showWorkChecklistSyncPreview(text) {
+  const panel = document.getElementById("vera-wm-checklist-sync-preview");
+  const textarea = document.getElementById("vera-wm-checklist-sync-preview-text");
+  if (!(panel instanceof HTMLElement) || !(textarea instanceof HTMLTextAreaElement)) return;
+  textarea.value = String(text || "").slice(0, WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS);
+  panel.hidden = false;
+  setWorkChecklistSyncPreviewEditing(false);
+}
+
+function hideWorkChecklistSyncPreview() {
+  const panel = document.getElementById("vera-wm-checklist-sync-preview");
+  if (panel instanceof HTMLElement) panel.hidden = true;
+  setWorkChecklistSyncPreviewEditing(false);
+}
+
+function applyWorkChecklistSyncPreview() {
+  const textarea = document.getElementById("vera-wm-checklist-sync-preview-text");
+  if (!(textarea instanceof HTMLTextAreaElement)) return false;
+  const items = parseChecklistProposalText(textarea.value);
+  if (!items.length) {
+    flashWorkChecklistPlanHint("Nothing to apply. Keep '-' bullets in the proposal.");
+    return false;
+  }
+  try {
+    markWorkChecklistLocalMutation();
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    queueWorkChecklistSyncToServer();
+    loadWorkChecklistItems();
+    hideWorkChecklistSyncPreview();
+    flashWorkChecklistPlanHint("Checklist updated from plan.");
+    return true;
+  } catch (_) {
+    flashWorkChecklistPlanHint("Could not update checklist from plan.");
+    return false;
+  }
+}
+
+function runWorkChecklistSyncFromLatestPlan() {
+  if (workChecklistSyncPlanVersion <= workChecklistSyncConsumedPlanVersion) {
+    flashWorkChecklistPlanHint("Run Plan again to generate a new checklist sync.");
+    return;
+  }
+  const markdown = getLatestWorkModeReasoningMarkdown();
+  if (!markdown) {
+    flashWorkChecklistPlanHint("No plan found yet. Run Plan first.");
+    return;
+  }
+  const rows = buildChecklistProposalFromMarkdown(markdown);
+  if (!rows.length) {
+    flashWorkChecklistPlanHint("Could not parse checklist bullets from latest plan.");
+    return;
+  }
+  showWorkChecklistSyncPreview(formatChecklistProposalText(rows));
+  workChecklistSyncConsumedPlanVersion = workChecklistSyncPlanVersion;
+  syncWorkChecklistSyncPlanButton();
 }
 
 let workChecklistPlanHintTimer = null;
@@ -4891,7 +5208,7 @@ function buildWorkChecklistHelpPlanUserMessage(lines) {
       ? `\n… (${lines.length - WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS} more items not shown)\n`
       : "";
   return (
-    "[Planning help — keep the reply concise. Use short bullets: sensible order or prep, easy-to-miss details (fuel, timing, gear, transitions). End with a short numbered list of specific questions to narrow things down (goals, time windows, cuisine, muscle focus, equipment, budget, constraints).]\n\n" +
+    "[Planning help. Be detailed in your reasoning output. First provide a concise plan explanation and practical tips. Then include a dedicated markdown heading exactly: '## SYNC CHECKLIST'. Under that heading, output checklist-ready bullets only with strict format: top-level bullet must be [time-time]: specific task title, and each top-level task must have 1 to 3 indented substeps (never 0, never more than 3). Substeps should be concrete and short, like focused work chunks. In the SYNC CHECKLIST section do NOT include questions, question sections, or question marks.]\n\n" +
     "Ongoing checklist (in order):\n" +
     body +
     more
@@ -4927,6 +5244,9 @@ async function runWorkChecklistHelpPlan({ signal } = {}) {
       reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
     await streamWorkModeReasoningComposer(text, signal);
+    workChecklistSyncPlanVersion += 1;
+    workChecklistSyncConsumedPlanVersion = 0;
+    syncWorkChecklistSyncPlanButton();
   } finally {
     workChecklistPlanRequestInFlight = false;
     syncWorkChecklistHelpPlanButton();
@@ -5090,7 +5410,44 @@ function wireWorkModeChecklistAndComposer() {
       }
     });
   }
+  const syncPlanBtn = document.getElementById("vera-wm-checklist-sync-plan");
+  const syncCancelBtn = document.getElementById("vera-wm-checklist-sync-cancel");
+  const syncEditBtn = document.getElementById("vera-wm-checklist-sync-edit");
+  const syncAcceptBtn = document.getElementById("vera-wm-checklist-sync-accept");
+  const syncTextarea = document.getElementById("vera-wm-checklist-sync-preview-text");
+  if (syncPlanBtn && syncPlanBtn.dataset.wiredSyncPlan !== "1") {
+    syncPlanBtn.dataset.wiredSyncPlan = "1";
+    syncPlanBtn.addEventListener("click", () => {
+      runWorkChecklistSyncFromLatestPlan();
+    });
+  }
+  if (syncCancelBtn && syncCancelBtn.dataset.wiredSyncCancel !== "1") {
+    syncCancelBtn.dataset.wiredSyncCancel = "1";
+    syncCancelBtn.addEventListener("click", () => {
+      hideWorkChecklistSyncPreview();
+      flashWorkChecklistPlanHint("Checklist update canceled.");
+    });
+  }
+  if (syncEditBtn && syncEditBtn.dataset.wiredSyncEdit !== "1") {
+    syncEditBtn.dataset.wiredSyncEdit = "1";
+    syncEditBtn.addEventListener("click", () => {
+      setWorkChecklistSyncPreviewEditing(!workChecklistSyncPreviewEditing);
+    });
+  }
+  if (syncAcceptBtn && syncAcceptBtn.dataset.wiredSyncAccept !== "1") {
+    syncAcceptBtn.dataset.wiredSyncAccept = "1";
+    syncAcceptBtn.addEventListener("click", () => {
+      applyWorkChecklistSyncPreview();
+    });
+  }
+  if (syncTextarea instanceof HTMLTextAreaElement && syncTextarea.dataset.wiredSyncTextarea !== "1") {
+    syncTextarea.dataset.wiredSyncTextarea = "1";
+    syncTextarea.addEventListener("click", () => {
+      if (!workChecklistSyncPreviewEditing) setWorkChecklistSyncPreviewEditing(true);
+    });
+  }
   syncWorkChecklistHelpPlanButton();
+  syncWorkChecklistSyncPlanButton();
 }
 
 wireWorkModeChecklistAndComposer();
@@ -7879,7 +8236,8 @@ async function runInferMainPipeline(formData, opts = {}) {
     logVoicePipe("POST /infer starting (main, upload in flight)");
     const inferFetchStart = performance.now();
     const inferSignal = opts.signal ?? attachPipelineAbortSignal();
-    const serializeTtsPlayback = Boolean(opts.serializeTtsPlayback);
+    /* Default true: consecutive voice/work-mode turns must not start NDJSON TTS until the prior reply finishes. */
+    const serializeTtsPlayback = opts.serializeTtsPlayback !== false;
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData,
@@ -8278,7 +8636,7 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
       setStatus("Ready", "idle");
       return;
     }
-    await runInferMainPipeline(formData, { signal: pipelineSig, serializeTtsPlayback: true });
+    await runInferMainPipeline(formData, { signal: pipelineSig });
   } catch (err) {
     if (err?.name === "AbortError") {
       processing = false;
