@@ -706,8 +706,39 @@
               >
                 Plan
               </button>
+              <button
+                type="button"
+                id="vera-wm-checklist-sync-plan"
+                class="vera-wm-checklist-help-plan-btn"
+                title="Sync checklist from latest plan in Reasoning"
+                aria-label="Sync checklist from plan"
+              >
+                Sync
+              </button>
             </div>
             <span class="vera-wm-checklist-plan-hint" id="vera-wm-checklist-plan-hint" aria-live="polite"></span>
+            <div
+              id="vera-wm-checklist-sync-preview"
+              class="vera-wm-checklist-sync-preview"
+              hidden
+              aria-live="polite"
+            >
+              <div class="vera-wm-checklist-sync-preview-head">
+                <span class="vera-wm-checklist-sync-preview-title">Proposed checklist</span>
+                <span class="vera-wm-checklist-sync-preview-note">Based on latest plan</span>
+              </div>
+              <textarea
+                id="vera-wm-checklist-sync-preview-text"
+                class="vera-wm-checklist-sync-preview-text"
+                spellcheck="true"
+                readonly
+              ></textarea>
+              <div class="vera-wm-checklist-sync-actions">
+                <button type="button" id="vera-wm-checklist-sync-cancel" class="vera-wm-checklist-sync-btn">Cancel</button>
+                <button type="button" id="vera-wm-checklist-sync-edit" class="vera-wm-checklist-sync-btn">Edit</button>
+                <button type="button" id="vera-wm-checklist-sync-accept" class="vera-wm-checklist-sync-btn vera-wm-checklist-sync-btn--primary">Accept</button>
+              </div>
+            </div>
             <div class="vera-wm-checklist-ongoing-wrap">
               <div class="vera-wm-checklist-ongoing-scroll">
                 <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-ongoing" aria-label="Ongoing checklist items"></ul>
@@ -756,7 +787,7 @@
               id="vera-reasoning-tab-panel-0"
               data-tab-index="0"
               role="tabpanel"
-              aria-label="Reasoning space 1"
+              aria-label="Panel 1"
             >
               <div class="vera-reasoning-scroll vera-reasoning-md-panel" id="vera-reasoning-md" aria-live="polite"></div>
             </div>
@@ -852,6 +883,15 @@
     <audio id="vera-audio" preload="auto" crossorigin="anonymous"></audio>
   </main>
   <div class="vera-bottom-right-tools" aria-label="Quick tools">
+    <button
+      type="button"
+      id="vera-work-mode"
+      class="vera-work-mode-btn"
+      title="Toggle work mode"
+      aria-pressed="false"
+    >
+      Work
+    </button>
     <button
       type="button"
       id="vera-productivity-mode"
@@ -1425,6 +1465,7 @@ const ASK_ROTATOR_LINES = [
 
 let askRotatorIndex = 0;
 let askRotatorTimer = null;
+let askRotatorEnabled = true;
 
 function renderAskRotatorLine() {
   const entry = ASK_ROTATOR_LINES[askRotatorIndex];
@@ -1439,6 +1480,7 @@ function renderAskRotatorLine() {
 }
 
 function startAskRotator() {
+  if (!askRotatorEnabled) return;
   if (askRotatorTimer) return;
   renderAskRotatorLine();
   askRotatorTimer = setInterval(() => {
@@ -1454,6 +1496,12 @@ function restartAskRotatorFromFirstLine() {
   }
   askRotatorIndex = 0;
   startAskRotator();
+}
+
+function stopAskRotator() {
+  if (!askRotatorTimer) return;
+  clearInterval(askRotatorTimer);
+  askRotatorTimer = null;
 }
 
 let headlineIndex = 0;
@@ -2205,6 +2253,13 @@ function revealAskRotatorAfterBarAnimation(prefix, options = {}) {
   const pageEl = document.getElementById(prefix === "bmo" ? "bmo-page" : "vera-app");
   const activeBar = getActiveInputBar(prefix);
   if (!askEl || !activeBar || !pageEl || pageEl.hidden) return;
+  if (!askRotatorEnabled) {
+    const oldTimer = askRotatorRevealTimers.get(prefix);
+    if (oldTimer) clearTimeout(oldTimer);
+    askRotatorRevealTimers.delete(prefix);
+    askEl.classList.remove("visible");
+    return;
+  }
 
   if (resetSequence) {
     askRotatorHasRevealed.set(prefix, false);
@@ -2262,10 +2317,34 @@ function revealAskRotatorAfterBarAnimation(prefix, options = {}) {
 }
 
 function syncAskRotatorVisibility(options = {}) {
+  if (!askRotatorEnabled) {
+    stopAskRotator();
+    ["vera", "bmo"].forEach((prefix) => {
+      const askEl = document.getElementById(`${prefix}-ask-rotator`);
+      if (askEl) askEl.classList.remove("visible");
+      const oldTimer = askRotatorRevealTimers.get(prefix);
+      if (oldTimer) clearTimeout(oldTimer);
+      askRotatorRevealTimers.delete(prefix);
+    });
+    return;
+  }
   ["vera", "bmo"].forEach((prefix) => {
     revealAskRotatorAfterBarAnimation(prefix, options);
   });
 }
+
+window.setAskRotatorEnabled = function setAskRotatorEnabled(on) {
+  askRotatorEnabled = on !== false;
+  if (!askRotatorEnabled) {
+    syncAskRotatorVisibility();
+    return;
+  }
+  syncAskRotatorVisibility({ resetSequence: true });
+};
+
+window.isAskRotatorEnabled = function isAskRotatorEnabled() {
+  return askRotatorEnabled;
+};
 
 function scheduleAskRotatorLayoutSync() {
   requestAnimationFrame(() => {
@@ -2448,6 +2527,12 @@ document.addEventListener("click", () => {
 
     <section class="vera-settings-section">
       <h3>Work Mode</h3>
+      <div class="vera-settings-row vera-settings-toggle-row">
+        <span class="vera-settings-label">Text guide rotator</span>
+        <button type="button" id="vera-setting-text-guide-rotator" class="vera-settings-toggle" aria-pressed="true" title="Show rotating text guide above input">
+          <span class="knob"></span>
+        </button>
+      </div>
       <div class="vera-settings-row vera-settings-toggle-row">
         <span class="vera-settings-label">Mute VERA in work mode</span>
         <button type="button" id="vera-setting-workmode-mute" class="vera-settings-toggle" aria-pressed="false" title="Mute VERA in work mode only">

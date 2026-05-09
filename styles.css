@@ -4112,6 +4112,88 @@ body.chat-started .input-bar {
   color: rgba(255, 200, 120, 0.85);
 }
 
+#vera-app.work-mode .vera-wm-checklist-sync-preview {
+  flex: 0 0 auto;
+  margin: 0 10px 8px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(150, 210, 255, 0.26);
+  background: rgba(22, 35, 55, 0.55);
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-preview[hidden] {
+  display: none !important;
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-preview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-preview-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(238, 247, 255, 0.9);
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-preview-note {
+  font-size: 9px;
+  color: rgba(185, 215, 255, 0.82);
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-preview-text {
+  width: 100%;
+  min-height: 108px;
+  max-height: 210px;
+  resize: vertical;
+  padding: 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(7, 12, 20, 0.62);
+  color: rgba(244, 248, 255, 0.95);
+  font: 500 12px/1.45 "Inter", "Segoe UI", system-ui, sans-serif;
+  outline: none;
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-preview-text:not(.is-editing) {
+  cursor: text;
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-preview-text.is-editing {
+  border-color: rgba(150, 214, 255, 0.54);
+  box-shadow: 0 0 0 1px rgba(150, 214, 255, 0.2);
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-btn {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(50, 75, 108, 0.34);
+  color: rgba(238, 246, 255, 0.92);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+#vera-app.work-mode .vera-wm-checklist-sync-btn--primary {
+  border-color: rgba(150, 214, 255, 0.44);
+  background: rgba(63, 125, 214, 0.35);
+}
+
 #vera-app.work-mode .vera-wm-checklist-li {
   display: flex;
   align-items: center;
@@ -4492,6 +4574,10 @@ body.chat-started .input-bar {
 
 #vera-app.work-mode .vera-wm-right #vera-voice-bar {
   display: flex !important;
+}
+
+#vera-app.work-mode #vera-ask-rotator {
+  display: none !important;
 }
 
 #vera-app.work-mode .vera-bottom-right-tools {

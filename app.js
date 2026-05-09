@@ -132,6 +132,17 @@ function resetVeraSessionAndUi() {
   workModeReasoningLaneWaitQueue.length = 0;
   workModeTypedTurnQueue.length = 0;
   workModeTypedQueueDraining = false;
+  workModeLastSubstantiveUserText = "";
+  workModeLastSubstantiveLaneIdx = null;
+  laneTopicSeedByIdx[0] = "";
+  laneTopicSeedByIdx[1] = "";
+  laneTopicSeedByIdx[2] = "";
+  laneReasoningTurnCountByIdx[0] = 0;
+  laneReasoningTurnCountByIdx[1] = 0;
+  laneReasoningTurnCountByIdx[2] = 0;
+  laneReasoningChainTail.clear();
+  workModeTypedVoiceInferTail = Promise.resolve();
+  workModeTypedVoiceInferDepth = 0;
   WORK_MODE_REASONING_LANES.forEach((lane) => workModeReasoningLaneBusy.set(lane.idx, false));
   syncWorkModeReasoningCancelButton();
   setWorkModeAttachmentMeta("");
@@ -576,6 +587,7 @@ const VERA_SETTING_ASR_SILENCE_MS_KEY = "vera_setting_asr_silence_ms_v1";
 const VERA_SETTING_ASR_MODE_KEY = "vera_setting_asr_mode_v1";
 const VERA_SETTING_WORKMODE_MUTE_KEY = "vera_setting_workmode_mute_v1";
 const VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY = "vera_setting_main_asr_partial_min_chars_v1";
+const VERA_SETTING_TEXT_GUIDE_ROTATOR_KEY = "vera_setting_text_guide_rotator_v1";
 
 function logVeraSettings(event, data = {}) {
   try {
@@ -714,6 +726,39 @@ function setWorkModeMuteEnabled(on) {
   } catch (_) {}
   logVeraSettings("save_workmode_mute", { value: on ? 1 : 0 });
   applyVeraWorkModeMuteSetting();
+}
+
+function isTextGuideRotatorEnabled() {
+  try {
+    const raw = localStorage.getItem(VERA_SETTING_TEXT_GUIDE_ROTATOR_KEY);
+    if (raw == null) return true;
+    return raw === "1";
+  } catch (_) {
+    return true;
+  }
+}
+
+function applyTextGuideRotatorSetting() {
+  const on = isTextGuideRotatorEnabled();
+  if (typeof window.setAskRotatorEnabled === "function") {
+    window.setAskRotatorEnabled(on);
+  } else {
+    ["vera", "bmo"].forEach((prefix) => {
+      const el = document.getElementById(`${prefix}-ask-rotator`);
+      if (!el) return;
+      if (on) el.classList.add("visible");
+      else el.classList.remove("visible");
+    });
+  }
+  logVeraSettings("apply_text_guide_rotator", { enabled: on ? 1 : 0 });
+}
+
+function setTextGuideRotatorEnabled(on) {
+  try {
+    localStorage.setItem(VERA_SETTING_TEXT_GUIDE_ROTATOR_KEY, on ? "1" : "0");
+  } catch (_) {}
+  logVeraSettings("save_text_guide_rotator", { value: on ? 1 : 0 });
+  applyTextGuideRotatorSetting();
 }
 
 function applyVeraWorkModeMuteSetting() {
@@ -3611,7 +3656,22 @@ const workModeReasoningLaneBusy = new Map(WORK_MODE_REASONING_LANES.map((lane) =
 const workModeReasoningLaneWaitQueue = [];
 const workModeReasoningAbortControllers = new Map();
 const workModeTypedTurnQueue = [];
-const WORK_MODE_TYPED_TURN_QUEUE_MAX = 3;
+const WORK_MODE_TYPED_TURN_QUEUE_MAX = 8;
+/** Last non–example-request user text in work mode (typed or voice); steers generic “example” reasoning. */
+let workModeLastSubstantiveUserText = "";
+/** Panel index (0–2) for the last substantive reasoning turn — generic “example” chains here. */
+let workModeLastSubstantiveLaneIdx = null;
+/** Per-lane topic seed for categorical routing (same topic → same panel, queued). */
+const laneTopicSeedByIdx = { 0: "", 1: "", 2: "" };
+/** How many reasoning turns have been placed on each panel (load balance new topics across 1→2→3). */
+const laneReasoningTurnCountByIdx = { 0: 0, 1: 0, 2: 0 };
+/** Serialize reasoning streams per panel; unrelated topics run on different lanes concurrently. */
+const laneReasoningChainTail = new Map();
+/** Serialize work-mode typed `/infer`+TTS while reasoning runs in parallel across lanes. */
+let workModeTypedVoiceInferTail = Promise.resolve();
+let workModeTypedVoiceInferDepth = 0;
+const WORK_MODE_TOPIC_SIMILARITY_MERGE = 0.26;
+const WORK_MODE_TYPED_VOICE_CHAIN_MAX = 12;
 let workModeTypedQueueDraining = false;
 
 function syncWorkModeReasoningCancelButton() {
@@ -3645,25 +3705,46 @@ function endWorkModeReasoningLaneRun(idx) {
   syncWorkModeReasoningCancelButton();
 }
 
-function acquireWorkModeReasoningLane() {
-  const idleLane = WORK_MODE_REASONING_LANES.find((lane) => !workModeReasoningLaneBusy.get(lane.idx));
-  if (idleLane) {
-    workModeReasoningLaneBusy.set(idleLane.idx, true);
+/**
+ * Pick which idle panel gets a *new* topic (no merge with existing lane): the panel with the fewest reasoning
+ * turns so far; ties go Panel 1 → 2 → 3 (lowest index). Categorical / similarity / thread continuation still
+ * route to the same panel before this runs.
+ */
+function pickIdleReasoningLaneIdx() {
+  const idle = WORK_MODE_REASONING_LANES.filter((lane) => !workModeReasoningLaneBusy.get(lane.idx));
+  if (!idle.length) return null;
+  let bestIdx = idle[0].idx;
+  let bestCount = laneReasoningTurnCountByIdx[bestIdx] ?? 0;
+  for (const lane of idle) {
+    const c = laneReasoningTurnCountByIdx[lane.idx] ?? 0;
+    if (c < bestCount || (c === bestCount && lane.idx < bestIdx)) {
+      bestCount = c;
+      bestIdx = lane.idx;
+    }
+  }
+  return bestIdx;
+}
+
+function acquireWorkModeReasoningLane(_forTopicText = "") {
+  const picked = pickIdleReasoningLaneIdx();
+  if (picked != null) {
+    workModeReasoningLaneBusy.set(picked, true);
     syncWorkModeReasoningCancelButton();
-    return Promise.resolve(idleLane.idx);
+    return Promise.resolve(picked);
   }
   return new Promise((resolve) => {
-    workModeReasoningLaneWaitQueue.push(resolve);
+    workModeReasoningLaneWaitQueue.push({ resolve, forTopicText: String(forTopicText || "") });
   });
 }
 
 function releaseWorkModeReasoningLane(idx) {
   const laneIdx = Number(idx);
   const next = workModeReasoningLaneWaitQueue.shift();
-  if (typeof next === "function") {
+  if (next != null) {
+    const resolve = typeof next === "function" ? next : next.resolve;
     workModeReasoningLaneBusy.set(laneIdx, true);
     syncWorkModeReasoningCancelButton();
-    next(laneIdx);
+    resolve(laneIdx);
     return;
   }
   workModeReasoningLaneBusy.set(laneIdx, false);
@@ -3685,8 +3766,8 @@ function enqueueWorkModeTypedTurn(text, opts = {}) {
 }
 
 function isWorkModeTypedTurnBlocked() {
-  /* Work-mode typed should not barge-in TTS; only block on active request. */
-  return requestInFlight;
+  /* Typed lines queue only when the voice `/infer` chain is saturated; reasoning runs in parallel per panel. */
+  return workModeTypedVoiceInferDepth >= WORK_MODE_TYPED_VOICE_CHAIN_MAX;
 }
 
 async function drainWorkModeTypedTurnQueue() {
@@ -4018,11 +4099,33 @@ function isLikelyWorkModePlanningIntent(text) {
   return false;
 }
 
+/** Browser-local date/time so planning / SYNC CHECKLIST blocks are not placed in the past. */
+function formatWorkModePlanningWallClockNow() {
+  try {
+    const d = new Date();
+    const weekday = d.toLocaleDateString(undefined, { weekday: "long" });
+    const datePart = d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    const timePart = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true });
+    let tz = "local";
+    try {
+      tz = new Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+    } catch (_) {}
+    return `${weekday}, ${datePart} — ${timePart} (${tz})`;
+  } catch (_) {
+    return new Date().toString();
+  }
+}
+
+function workModePlanningTimeInjectionPrefix() {
+  return `[CURRENT LOCAL TIME (trust this as "now" for scheduling): ${formatWorkModePlanningWallClockNow()}]\n\n`;
+}
+
 const WORK_MODE_PLANNING_REASONING_INSTRUCTION_SUFFIX =
   "[Planning mode. Produce an ordered plan (blocks, days, or sessions as fits the user). " +
+  "If CURRENT LOCAL TIME appears above, treat it as the earliest moment you may schedule work: every `[start-end]` range in ## SYNC CHECKLIST must lie entirely at or after that moment (no blocks wholly in the past), while still honoring explicit deadlines the user gave (e.g. due at 8pm). " +
   "After the main plan, add a markdown heading exactly: ## SYNC CHECKLIST\n" +
   "Under that heading use only checklist-style bullets: each top-level line must match `[start-end]: specific action` " +
-  "(realistic times or dayparts, e.g. `[4:00pm-5:30pm]: Outline intro`). " +
+  "(realistic times or dayparts, e.g. `[6:50pm-7:20pm]: Outline intro`). " +
   "Each top-level item needs 1–3 indented sub-bullets with concrete next steps. " +
   "In SYNC CHECKLIST do not include questions, question headings, or lines ending in `?`.]";
 
@@ -4040,27 +4143,52 @@ function isGenericExampleFollowUpText(text) {
   return /\b(need|want|got)\s+an?\s+example\b/.test(t);
 }
 
-/** Last few Voice UI lines so reasoning can answer "give me an example" in-topic without relying on server memory alone. */
-function buildVoiceUiRecentContextBlock(maxRows = 8) {
+/** Prior user line for `/infer` when this turn continues that topic (router + vague pronouns like “the north”). */
+function computeWorkModeInferThreadAnchor(trimmed, priorThreadAnchor, continuePriorLane) {
+  const cur = String(trimmed || "").trim();
+  const prior = String(priorThreadAnchor || "").trim();
+  if (!prior || prior === cur) return "";
+  if (continuePriorLane) return prior;
+  if (isGenericExampleFollowUpText(cur)) return prior;
+  return "";
+}
+
+function workModeReasoningPrepOutcome(chainPromise, inferThreadAnchor) {
+  return {
+    chain: chainPromise || Promise.resolve(),
+    inferThreadAnchor: String(inferThreadAnchor || "").trim()
+  };
+}
+
+/** Last few Voice UI lines (+ queued typed turns) so “example” requests track the latest topic. */
+function buildVoiceUiRecentContextBlock(maxRows = 8, includePendingTypedQueue = false) {
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return "";
-  const convo = document.getElementById("vera-conversation");
-  if (!(convo instanceof HTMLElement)) return "";
-  const rows = [...convo.querySelectorAll(".message-row")].filter(
-    (row) => row.classList.contains("user") || row.classList.contains("vera")
-  );
-  const tail = rows.slice(-Math.max(2, maxRows));
   const lines = [];
-  for (const row of tail) {
-    const bubble = row.querySelector(".bubble");
-    if (!(bubble instanceof HTMLElement)) continue;
-    if (bubble.classList.contains("interrupt-preview")) continue;
-    const role = row.classList.contains("user") ? "User" : "Assistant";
-    let text = String(bubble.textContent || "").replace(/\s+/g, " ").trim();
-    if (!text) continue;
-    if (text.length > 1400) text = `${text.slice(0, 1400)}…`;
-    lines.push(`${role}: ${text}`);
+  if (includePendingTypedQueue && workModeTypedTurnQueue.length) {
+    for (const item of workModeTypedTurnQueue) {
+      const q = String(item?.text || "").trim();
+      if (q) lines.push(`User (queued next): ${q}`);
+    }
   }
-  if (lines.length < 2) return "";
+  const convo = document.getElementById("vera-conversation");
+  if (convo instanceof HTMLElement) {
+    const rows = [...convo.querySelectorAll(".message-row")].filter(
+      (row) => row.classList.contains("user") || row.classList.contains("vera")
+    );
+    const tail = rows.slice(-Math.max(2, maxRows));
+    for (const row of tail) {
+      const bubble = row.querySelector(".bubble");
+      if (!(bubble instanceof HTMLElement)) continue;
+      if (bubble.classList.contains("interrupt-preview")) continue;
+      const role = row.classList.contains("user") ? "User" : "Assistant";
+      let text = String(bubble.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text) continue;
+      if (text.length > 1400) text = `${text.slice(0, 1400)}…`;
+      lines.push(`${role}: ${text}`);
+    }
+  }
+  if (lines.length < 1) return "";
+  if (lines.length === 1 && !includePendingTypedQueue) return "";
   return (
     "[Recent voice chat — the example request refers to the topic below, not a new unrelated task]\n" + lines.join("\n")
   );
@@ -4077,186 +4205,316 @@ function isLikelyWorkChecklistEditIntent(text) {
   return false;
 }
 
+const WORK_MODE_TOPIC_STOPWORDS = new Set([
+  "tell", "about", "explain", "what", "when", "where", "which", "how", "does", "with", "from", "into",
+  "your", "you", "please", "help", "need", "want", "give", "show", "some", "more", "this", "that",
+  "can", "could", "would", "should", "just", "like", "very", "much", "also", "into", "over", "after",
+  "before", "during", "each", "other", "another", "example", "examples", "question", "answer"
+]);
+
+function topicTokensForWorkModeTopic(text) {
+  const raw = String(text || "")
+    .toLowerCase()
+    .match(/[a-z][a-z0-9']{2,}/g);
+  if (!raw) return [];
+  return raw.filter((w) => !WORK_MODE_TOPIC_STOPWORDS.has(w));
+}
+
+function topicSimilarityScore(aText, bText) {
+  const a = new Set(topicTokensForWorkModeTopic(aText));
+  const b = new Set(topicTokensForWorkModeTopic(bText));
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const x of a) {
+    if (b.has(x)) inter += 1;
+  }
+  const union = new Set([...a, ...b]);
+  return union.size ? inter / union.size : 0;
+}
+
+function runOnLaneReasoningChain(laneIdx, task) {
+  const key = Number(laneIdx);
+  const prev = laneReasoningChainTail.get(key) || Promise.resolve();
+  const next = prev.then(() => task());
+  laneReasoningChainTail.set(key, next.catch(() => {}));
+  return next;
+}
+
+async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
+  const t = String(trimmed || "").trim();
+  if (!t) return await acquireWorkModeReasoningLane("");
+  if (isGenericExampleFollowUpText(t) && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
+    return Number(workModeLastSubstantiveLaneIdx);
+  }
+  if (opts.continuePriorLane === true && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
+    return Number(workModeLastSubstantiveLaneIdx);
+  }
+  let bestLane = -1;
+  let bestScore = 0;
+  for (const lane of WORK_MODE_REASONING_LANES) {
+    const seed = String(laneTopicSeedByIdx[lane.idx] || "").trim();
+    if (!seed) continue;
+    const sc = topicSimilarityScore(t, seed);
+    if (sc > bestScore) {
+      bestScore = sc;
+      bestLane = lane.idx;
+    }
+  }
+  if (bestScore >= WORK_MODE_TOPIC_SIMILARITY_MERGE && bestLane >= 0) {
+    return bestLane;
+  }
+  return await acquireWorkModeReasoningLane(t);
+}
+
+function enqueueWorkModeTypedVoiceInfer(run) {
+  if (workModeTypedVoiceInferDepth >= WORK_MODE_TYPED_VOICE_CHAIN_MAX) return false;
+  workModeTypedVoiceInferDepth += 1;
+  workModeTypedVoiceInferTail = workModeTypedVoiceInferTail
+    .then(() => run())
+    .catch((err) => {
+      if (err?.name !== "AbortError") console.warn("[WorkMode] typed voice infer chain", err);
+    })
+    .finally(() => {
+      workModeTypedVoiceInferDepth -= 1;
+      if (workModeTypedTurnQueue.length > 0 && !isWorkModeTypedTurnBlocked()) {
+        scheduleWorkModeTypedQueueDrain();
+      }
+    });
+  return true;
+}
+
 async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {}) {
-  if (!isVeraWorkModeOn()) return;
-  if (isLikelyWorkChecklistEditIntent(trimmed)) return;
+  if (!isVeraWorkModeOn()) return workModeReasoningPrepOutcome(Promise.resolve(), "");
+  if (isLikelyWorkChecklistEditIntent(trimmed)) return workModeReasoningPrepOutcome(Promise.resolve(), "");
+  /* Snapshot before this turn mutates it — used so /classify thread anchor is the *prior* user line, not the current one. */
+  const priorThreadAnchor = String(workModeLastSubstantiveUserText || "").trim();
   const planningIntent = isLikelyWorkModePlanningIntent(trimmed);
   const textForReasoningStream = planningIntent
-    ? `${String(trimmed || "").trim()}\n\n${WORK_MODE_PLANNING_REASONING_INSTRUCTION_SUFFIX}`
+    ? `${workModePlanningTimeInjectionPrefix()}${String(trimmed || "").trim()}\n\n${WORK_MODE_PLANNING_REASONING_INSTRUCTION_SUFFIX}`
     : trimmed;
   let reasoningStreamText = textForReasoningStream;
   if (isGenericExampleFollowUpText(trimmed) && appModePrefix() === "vera") {
-    const voiceCtx = buildVoiceUiRecentContextBlock(8);
-    if (voiceCtx) reasoningStreamText = `${reasoningStreamText}\n\n${voiceCtx}`;
+    const parts = [];
+    const anchor = String(workModeLastSubstantiveUserText || "").trim();
+    if (anchor && !isGenericExampleFollowUpText(anchor)) {
+      parts.push(`User (most recent substantive request before this example): ${anchor}`);
+    }
+    const voiceCtx = buildVoiceUiRecentContextBlock(8, true);
+    if (voiceCtx) parts.push(voiceCtx);
+    if (parts.length) reasoningStreamText = `${reasoningStreamText}\n\n${parts.join("\n\n")}`;
   }
   const attachment = opts?.attachment;
   const hasUpload = attachment instanceof File && attachment.size > 0;
 
-  let routeReasoning = false;
-  if (hasUpload) {
-    routeReasoning = true;
-  } else {
+  let classifyRoute = false;
+  let continuePriorLane = false;
+  try {
+    const classifyBody = { session_id: getSessionId(), text: trimmed };
+    if (
+      priorThreadAnchor &&
+      priorThreadAnchor !== trimmed &&
+      !isGenericExampleFollowUpText(trimmed)
+    ) {
+      classifyBody.anchor_for_thread = priorThreadAnchor;
+    }
+    const cr = await fetch(`${API_URL}/work_mode/classify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(classifyBody),
+      signal
+    });
+    if (cr.ok) {
+      const cj = await cr.json();
+      classifyRoute = Boolean(cj.prompt_reasoning || cj.reasoning);
+      continuePriorLane = Boolean(cj.continue_prior_lane);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  let routeReasoning = Boolean(hasUpload);
+  if (!hasUpload) {
     const heuristicReasoning = (() => {
       const t = String(trimmed || "").toLowerCase();
       if (!t) return false;
       if (planningIntent) return true;
       const conceptWords = /\b(explain|how does|how do|derive|proof|theorem|compare|trade-?off|framework|architecture|mechanism|intuition)\b/;
       const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
+      const codeProblemWords =
+        /\b(code|coding|program|debug|bug|error|exception|stack trace|traceback|refactor|compile|build|runtime|test failing|unit test|integration test|typescript|javascript|python|java|c\+\+|sql|api endpoint|null pointer|undefined)\b/;
       const multiPart = /(\b(step by step|in detail|deep dive|from scratch)\b)|([,:;].+[,:;])/;
       const writingTask =
         /\b(write|draft|compose|polish|rewrite)\b/.test(t) &&
         /\b(email|essay|script|speech|letter|cover letter|proposal|statement|outline)\b/.test(t);
+      const hasCodeSnippet =
+        /```/.test(t) ||
+        /\b(function|class|import|const|let|var|def|return)\b/.test(t) ||
+        /[{}();]{2,}/.test(t);
       return (
         (conceptWords.test(t) && domainWords.test(t)) ||
         domainWords.test(t) ||
+        codeProblemWords.test(t) ||
+        hasCodeSnippet ||
         multiPart.test(t) ||
         writingTask
       );
     })();
-
-    try {
-      const cr = await fetch(`${API_URL}/work_mode/classify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: getSessionId(), text: trimmed }),
-        signal
-      });
-      if (cr.ok) {
-        const cj = await cr.json();
-        routeReasoning = Boolean(cj.prompt_reasoning || cj.reasoning);
+    routeReasoning = classifyRoute || heuristicReasoning;
+    if (!routeReasoning) {
+      if (!isGenericExampleFollowUpText(trimmed)) {
+        workModeLastSubstantiveUserText = trimmed;
       }
-    } catch {
-      /* fall through to heuristic */
+      return workModeReasoningPrepOutcome(
+        Promise.resolve(),
+        computeWorkModeInferThreadAnchor(trimmed, priorThreadAnchor, continuePriorLane)
+      );
     }
-    routeReasoning = routeReasoning || heuristicReasoning;
-    if (!routeReasoning) return;
   }
+
+  const inferThreadAnchor = computeWorkModeInferThreadAnchor(
+    trimmed,
+    priorThreadAnchor,
+    continuePriorLane
+  );
 
   workModeReasoningConfirmPending = null;
-  const laneIdx = await acquireWorkModeReasoningLane();
-  const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
-  const laneId = getWorkModeReasoningLaneId(laneIdx);
-  const laneAbortController = new AbortController();
-  workModeReasoningAbortControllers.set(laneIdx, laneAbortController);
-  syncWorkModeReasoningCancelButton();
-  const scrollEl = getReasoningScrollElByLane(laneIdx);
-  if (!scrollEl) {
-    endWorkModeReasoningLaneRun(laneIdx);
-    return;
+  const laneIdx = await selectLaneForWorkModeReasoningTurn(trimmed, { continuePriorLane });
+  if (!isGenericExampleFollowUpText(trimmed)) {
+    laneTopicSeedByIdx[laneIdx] = trimmed;
+    workModeLastSubstantiveLaneIdx = laneIdx;
+    workModeLastSubstantiveUserText = trimmed;
   }
-  activateReasoningTab(laneIdx);
-
-  let sr;
-  try {
-    if (hasUpload) {
-      const fd = new FormData();
-      fd.append("session_id", getSessionId());
-      fd.append("text", reasoningStreamText);
-      fd.append("lane_id", laneId);
-      fd.append("file", attachment);
-      sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
-        method: "POST",
-        body: fd,
-        signal: laneAbortController.signal
-      });
-      if (!sr.ok) {
-        let msg = `Upload failed (${sr.status})`;
-        try {
-          const err = await sr.json();
-          if (err?.detail) msg = String(err.detail);
-        } catch {
-          /* ignore */
-        }
-        setWorkModeAttachmentMeta(msg);
-        endWorkModeReasoningLaneRun(laneIdx);
-        return "reasoning-upload-failed";
-      }
-      if (!sr.body) {
-        setWorkModeAttachmentMeta("Upload failed: empty response body.");
-        endWorkModeReasoningLaneRun(laneIdx);
-        return "reasoning-upload-failed";
-      }
-    } else {
-      sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: getSessionId(),
-          text: reasoningStreamText,
-          lane_id: laneId
-        }),
-        signal: laneAbortController.signal
-      });
-      if (!sr.ok || !sr.body) {
-        endWorkModeReasoningLaneRun(laneIdx);
-        return;
-      }
+  return workModeReasoningPrepOutcome(
+    runOnLaneReasoningChain(laneIdx, async () => {
+    workModeReasoningLaneBusy.set(laneIdx, true);
+    syncWorkModeReasoningCancelButton();
+    const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
+    const laneId = getWorkModeReasoningLaneId(laneIdx);
+    const laneAbortController = new AbortController();
+    workModeReasoningAbortControllers.set(laneIdx, laneAbortController);
+    syncWorkModeReasoningCancelButton();
+    const scrollEl = getReasoningScrollElByLane(laneIdx);
+    if (!scrollEl) {
+      endWorkModeReasoningLaneRun(laneIdx);
+      return;
     }
-  } catch (err) {
-    endWorkModeReasoningLaneRun(laneIdx);
-    throw err;
-  }
+    laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
+    activateReasoningTab(laneIdx);
 
-  const turnEl = appendReasoningTurnMount(scrollEl);
-  if (!turnEl) {
-    endWorkModeReasoningLaneRun(laneIdx);
-    return;
-  }
-  turnEl.dataset.markdownAcc = "";
-  turnEl.dataset.summaryText = "";
-  const reader = sr.body.getReader();
-  const decoder = new TextDecoder();
-  let lineBuf = "";
-  let foundSummary = false;
-  try {
-    while (!foundSummary) {
-      const { done, value } = await reader.read();
-      if (done && !value) break;
-      if (value) lineBuf += decoder.decode(value, { stream: true });
-      for (;;) {
-        const n = lineBuf.indexOf("\n");
-        if (n < 0) break;
-        const line = lineBuf.slice(0, n).trim();
-        lineBuf = lineBuf.slice(n + 1);
-        if (!line) continue;
-        let o;
-        try {
-          o = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (o.type === "error") break;
-        if (o.type === "summary" && o.text) {
-          const normalizedSummary = normalizeWorkModeReasoningSummary(String(o.text), laneLabel);
-          turnEl.dataset.summaryText = normalizedSummary.text;
-          formData.append("reasoning_voice_coach", normalizedSummary.text);
-          foundSummary = true;
-          break;
-        }
-      }
-    }
-  } catch (_) {}
-  if (foundSummary) {
-    void drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder, {
-      onDone: ({ markdownAcc, summaryText }) => {
-        setReasoningTabTopicFromFinal(turnEl, {
-          summaryText: extractWorkModeReasoningSummaryAnswerLine(summaryText),
-          markdownText: markdownAcc,
-          userPrompt: trimmed
+    let sr;
+    try {
+      if (hasUpload) {
+        const fd = new FormData();
+        fd.append("session_id", getSessionId());
+        fd.append("text", reasoningStreamText);
+        fd.append("lane_id", laneId);
+        fd.append("file", attachment);
+        sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
+          method: "POST",
+          body: fd,
+          signal: laneAbortController.signal
         });
-        if (planningIntent && String(markdownAcc || "").trim()) {
-          workChecklistSyncPlanVersion += 1;
-          workChecklistSyncConsumedPlanVersion = 0;
-          syncWorkChecklistSyncPlanButton();
-          flashWorkChecklistPlanHint("Plan is in reasoning — tap Sync to load checklist bullets.");
+        if (!sr.ok) {
+          let msg = `Upload failed (${sr.status})`;
+          try {
+            const err = await sr.json();
+            if (err?.detail) msg = String(err.detail);
+          } catch {
+            /* ignore */
+          }
+          setWorkModeAttachmentMeta(msg);
+          endWorkModeReasoningLaneRun(laneIdx);
+          return "reasoning-upload-failed";
         }
-        endWorkModeReasoningLaneRun(laneIdx);
+        if (!sr.body) {
+          setWorkModeAttachmentMeta("Upload failed: empty response body.");
+          endWorkModeReasoningLaneRun(laneIdx);
+          return "reasoning-upload-failed";
+        }
+      } else {
+        sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: getSessionId(),
+            text: reasoningStreamText,
+            lane_id: laneId
+          }),
+          signal: laneAbortController.signal
+        });
+        if (!sr.ok || !sr.body) {
+          endWorkModeReasoningLaneRun(laneIdx);
+          return;
+        }
       }
-    });
-  } else {
-    endWorkModeReasoningLaneRun(laneIdx);
-  }
-  scrollEl.scrollTop = scrollEl.scrollHeight;
+    } catch (err) {
+      endWorkModeReasoningLaneRun(laneIdx);
+      throw err;
+    }
+
+    const turnEl = appendReasoningTurnMount(scrollEl);
+    if (!turnEl) {
+      endWorkModeReasoningLaneRun(laneIdx);
+      return;
+    }
+    turnEl.dataset.markdownAcc = "";
+    turnEl.dataset.summaryText = "";
+    const reader = sr.body.getReader();
+    const decoder = new TextDecoder();
+    let lineBuf = "";
+    let foundSummary = false;
+    try {
+      while (!foundSummary) {
+        const { done, value } = await reader.read();
+        if (done && !value) break;
+        if (value) lineBuf += decoder.decode(value, { stream: true });
+        for (;;) {
+          const n = lineBuf.indexOf("\n");
+          if (n < 0) break;
+          const line = lineBuf.slice(0, n).trim();
+          lineBuf = lineBuf.slice(n + 1);
+          if (!line) continue;
+          let o;
+          try {
+            o = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (o.type === "error") break;
+          if (o.type === "summary" && o.text) {
+            const normalizedSummary = normalizeWorkModeReasoningSummary(String(o.text), laneLabel);
+            turnEl.dataset.summaryText = normalizedSummary.text;
+            formData.append("reasoning_voice_coach", normalizedSummary.text);
+            foundSummary = true;
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+    if (foundSummary) {
+      void drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder, {
+        onDone: ({ markdownAcc, summaryText }) => {
+          setReasoningTabTopicFromFinal(turnEl, {
+            summaryText: extractWorkModeReasoningSummaryAnswerLine(summaryText),
+            markdownText: markdownAcc,
+            userPrompt: trimmed
+          });
+          if (planningIntent && String(markdownAcc || "").trim()) {
+            workChecklistSyncPlanVersion += 1;
+            workChecklistSyncConsumedPlanVersion = 0;
+            syncWorkChecklistSyncPlanButton();
+            flashWorkChecklistPlanHint("Plan is in reasoning — tap Sync to load checklist bullets.");
+          }
+          endWorkModeReasoningLaneRun(laneIdx);
+        }
+      });
+    } else {
+      endWorkModeReasoningLaneRun(laneIdx);
+    }
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+    }),
+    inferThreadAnchor
+  );
 }
 
 function setWorkModeAttachmentMeta(message) {
@@ -4267,7 +4525,7 @@ function setWorkModeAttachmentMeta(message) {
 
 /** Text-only reasoning stream into the reasoning panel (no `/infer`). File uploads use `maybePrepareWorkModeReasoning` + typed infer instead. */
 async function streamWorkModeReasoningComposer(text, signal) {
-  const laneIdx = await acquireWorkModeReasoningLane();
+  const laneIdx = await acquireWorkModeReasoningLane(text);
   const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
   const laneId = getWorkModeReasoningLaneId(laneIdx);
   const laneAbortController = new AbortController();
@@ -4278,6 +4536,7 @@ async function streamWorkModeReasoningComposer(text, signal) {
     endWorkModeReasoningLaneRun(laneIdx);
     return;
   }
+  laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
   activateReasoningTab(laneIdx);
   let summaryText = "";
   let markdownAcc = "";
@@ -5208,7 +5467,8 @@ function buildWorkChecklistHelpPlanUserMessage(lines) {
       ? `\n… (${lines.length - WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS} more items not shown)\n`
       : "";
   return (
-    "[Planning help. Be detailed in your reasoning output. First provide a concise plan explanation and practical tips. Then include a dedicated markdown heading exactly: '## SYNC CHECKLIST'. Under that heading, output checklist-ready bullets only with strict format: top-level bullet must be [time-time]: specific task title, and each top-level task must have 1 to 3 indented substeps (never 0, never more than 3). Substeps should be concrete and short, like focused work chunks. In the SYNC CHECKLIST section do NOT include questions, question sections, or question marks.]\n\n" +
+    workModePlanningTimeInjectionPrefix() +
+    "[Planning help. Be detailed in your reasoning output. First provide a concise plan explanation and practical tips. Then include a dedicated markdown heading exactly: '## SYNC CHECKLIST'. Under that heading, output checklist-ready bullets only with strict format: top-level bullet must be [time-time]: specific task title, and each top-level task must have 1 to 3 indented substeps (never 0, never more than 3). Substeps should be concrete and short, like focused work chunks. Schedule only at or after CURRENT LOCAL TIME unless the user implies otherwise. In the SYNC CHECKLIST section do NOT include questions, question sections, or question marks.]\n\n" +
     "Ongoing checklist (in order):\n" +
     body +
     more
@@ -7769,7 +8029,9 @@ async function finalizeMainBrowserTranscript(text) {
   logFinalTranscriptSentToLlm("main-browser-asr", trimmed);
   attachPipelineAbortSignal();
   const pipelineSig = activePipelineAbort.signal;
-  await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig);
+  const prep = await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig);
+  if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
+  await prep.chain;
   await runInferMainPipeline(formData, { signal: pipelineSig });
 }
 
@@ -8231,11 +8493,84 @@ function startListening() {
    INFER PIPELINE (shared: recorded audio or browser transcript)
 ========================= */
 
+/** Completed non-NDJSON `/infer` JSON body for the main (non-interrupt) voice pipeline. */
+async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
+  const awaitStreamingPlayback = opts.awaitStreamingPlayback !== false;
+  const serializeTtsPlayback = opts.serializeTtsPlayback !== false;
+  logInferLatency(data, "main", inferTtfbMs);
+  requestInFlight = false;
+
+  if (data.skip) {
+    hideSidePanel();
+    processing = false;
+    getAudioEl()?.pause();
+
+    if (listeningMode === "ptt") {
+      setStatus("No voice detected", "idle");
+    } else if (listeningMode === "continuous") {
+      startListening();
+    }
+
+    return;
+  }
+
+  if (data.client_action === "mute_input") {
+    hideSidePanel();
+    voiceUxTurn = null;
+    getAudioEl()?.pause();
+    processing = false;
+    setContinuousInputMuted(true);
+    return;
+  }
+  applyClientUiAction(data.client_action);
+
+  commitServerUserTranscriptBubble(data.transcript, "main-json");
+  const playMainAnswerPromise = (async () => {
+    resetAudioHandlers();
+    try {
+      const playTask = async () => {
+        const playbackEnd = await waitForAssistantPlaybackEnd(() => {
+          resumeAfterAssistantReplyPlayback();
+        });
+        await playTtsFromApi(data, {
+          onPlayStart: () => {
+            logVoiceFirstAudio("main-reply");
+            logVoiceMainReplyAudio();
+            applyAssistantReplyAndPanels(data);
+            waveState = "speaking";
+            audioStartedAt = performance.now();
+            setStatus(
+              listeningMode === "ptt"
+                ? "Speaking"
+                : "Speaking… (Interruptible)",
+              "speaking"
+            );
+            startInterruptCapture();
+          },
+          onPlayEnd: () => {
+            playbackEnd.wrappedOnFinish();
+          }
+        });
+        await playbackEnd.donePromise;
+      };
+      if (serializeTtsPlayback) await enqueueAssistantTtsPlayback(playTask);
+      else await playTask();
+    } catch (e) {
+      console.warn(e);
+    }
+  })();
+
+  if (awaitStreamingPlayback) await playMainAnswerPromise;
+  else void playMainAnswerPromise;
+}
+
 async function runInferMainPipeline(formData, opts = {}) {
   try {
     logVoicePipe("POST /infer starting (main, upload in flight)");
     const inferFetchStart = performance.now();
     const inferSignal = opts.signal ?? attachPipelineAbortSignal();
+    /* Default on: wait for NDJSON / sentence TTS to finish so the next infer cannot start playback on top (pass false to opt out). */
+    const awaitStreamingPlayback = opts.awaitStreamingPlayback !== false;
     /* Default true: consecutive voice/work-mode turns must not start NDJSON TTS until the prior reply finishes. */
     const serializeTtsPlayback = opts.serializeTtsPlayback !== false;
     const res = await fetch(`${API_URL}/infer`, {
@@ -8251,7 +8586,7 @@ async function runInferMainPipeline(formData, opts = {}) {
 
       let ndjsonMeta = null;
       const streamReplyState = createNdjsonStreamingReplyState();
-      void (async () => {
+      const ndjsonPlaybackPromise = (async () => {
         try {
           console.log("[UX][TTS] NDJSON streaming (main)");
           const playTask = async () => {
@@ -8311,76 +8646,16 @@ async function runInferMainPipeline(formData, opts = {}) {
           }
         }
       })();
+      if (awaitStreamingPlayback) await ndjsonPlaybackPromise;
+      else void ndjsonPlaybackPromise;
       return;
     }
 
     const data = await res.json();
-    logInferLatency(data, "main", inferTtfbMs);
-    requestInFlight = false;
-
-    if (data.skip) {
-      hideSidePanel();
-      processing = false;
-      getAudioEl()?.pause();
-
-      if (listeningMode === "ptt") {
-        setStatus("No voice detected", "idle");
-      } else if (listeningMode === "continuous") {
-        startListening();
-      }
-
-      return;
-    }
-
-    if (data.client_action === "mute_input") {
-      hideSidePanel();
-      voiceUxTurn = null;
-      getAudioEl()?.pause();
-      processing = false;
-      setContinuousInputMuted(true);
-      return;
-    }
-    applyClientUiAction(data.client_action);
-
-    commitServerUserTranscriptBubble(data.transcript, "main-json");
-    const playMainAnswer = () => {
-      resetAudioHandlers();
-      void (async () => {
-        try {
-          const playTask = async () => {
-            const playbackEnd = await waitForAssistantPlaybackEnd(() => {
-              resumeAfterAssistantReplyPlayback();
-            });
-            await playTtsFromApi(data, {
-              onPlayStart: () => {
-                logVoiceFirstAudio("main-reply");
-                logVoiceMainReplyAudio();
-                applyAssistantReplyAndPanels(data);
-                waveState = "speaking";
-                audioStartedAt = performance.now();
-                setStatus(
-                  listeningMode === "ptt"
-                    ? "Speaking"
-                    : "Speaking… (Interruptible)",
-                  "speaking"
-                );
-                startInterruptCapture();
-              },
-              onPlayEnd: () => {
-                playbackEnd.wrappedOnFinish();
-              }
-            });
-            await playbackEnd.donePromise;
-          };
-          if (serializeTtsPlayback) await enqueueAssistantTtsPlayback(playTask);
-          else await playTask();
-        } catch (e) {
-          console.warn(e);
-        }
-      })();
-    };
-
-    playMainAnswer();
+    await processInferMainJsonPayload(data, inferTtfbMs, {
+      awaitStreamingPlayback,
+      serializeTtsPlayback
+    });
   } catch (e) {
     if (e?.name === "AbortError") {
       hideSidePanel();
@@ -8554,11 +8829,152 @@ async function handleUtterance() {
   formData.append("client", appModePrefix());
   formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
 
-  // 🔑 ADD THIS
   if (listeningMode === "ptt") {
     formData.append("mode", "ptt");
   }
   formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
+
+  /* Server ASR (MediaRecorder) path had no transcript before `/infer`, so work-mode reasoning prep
+     never ran. Preflight ASR (transcribe_only), then reuse the browser-transcript + reasoning pipeline. */
+  const useWorkModeServerAsrPreflight = isVeraWorkModeOn() && appModePrefix() === "vera";
+  if (useWorkModeServerAsrPreflight) {
+    try {
+      attachPipelineAbortSignal();
+      const pipelineSig = activePipelineAbort.signal;
+
+      const preForm = new FormData();
+      preForm.append("audio", blob);
+      preForm.append("session_id", getSessionId());
+      preForm.append("client", appModePrefix());
+      preForm.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
+      if (listeningMode === "ptt") {
+        preForm.append("mode", "ptt");
+      }
+      preForm.append("stream_tts", "0");
+      preForm.append("transcribe_only", "1");
+
+      const preFetchStart = performance.now();
+      const preRes = await fetch(`${API_URL}/infer`, {
+        method: "POST",
+        body: preForm,
+        signal: pipelineSig
+      });
+      const preTtfbMs = performance.now() - preFetchStart;
+
+      if (!preRes.ok) {
+        hideSidePanel();
+        processing = false;
+        requestInFlight = false;
+        voiceUxTurn = null;
+        setStatus("Server error", "offline");
+        if (listeningMode === "continuous" && listening && !inputMuted) {
+          startListening();
+        }
+        return;
+      }
+
+      const ct = (preRes.headers.get("content-type") || "").toLowerCase();
+      if (ct.includes("ndjson") || ct.includes("x-ndjson")) {
+        try {
+          await preRes.body?.cancel?.();
+        } catch (_) {}
+        await runInferMainPipeline(formData, { signal: pipelineSig });
+        return;
+      }
+
+      let preData;
+      try {
+        preData = await preRes.json();
+      } catch (_) {
+        hideSidePanel();
+        processing = false;
+        requestInFlight = false;
+        voiceUxTurn = null;
+        setStatus("Server error", "offline");
+        if (listeningMode === "continuous" && listening && !inputMuted) {
+          startListening();
+        }
+        return;
+      }
+
+      if (!preData.preflight_only) {
+        await processInferMainJsonPayload(preData, preTtfbMs);
+        return;
+      }
+
+      const trimmed = String(preData.transcript || "").trim();
+      if (!trimmed) {
+        requestInFlight = false;
+        processing = false;
+        voiceUxTurn = null;
+        if (listeningMode === "continuous" && listening && !inputMuted) {
+          startListening();
+        } else {
+          setStatus("Ready", "idle");
+        }
+        return;
+      }
+
+      if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
+        requestInFlight = false;
+        processing = false;
+        voiceUxTurn = null;
+        setStatus("Ready", "idle");
+        updateMuteInputButton();
+        return;
+      }
+
+      ensureChatStartedLayout();
+      beginVoiceUxTurn();
+
+      const formData2 = new FormData();
+      formData2.append("transcript", trimmed);
+      formData2.append("use_browser_asr", "1");
+      formData2.append("session_id", getSessionId());
+      formData2.append("client", appModePrefix());
+      formData2.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
+      formData2.append("stream_tts", shouldStreamTts() ? "1" : "0");
+      if (listeningMode === "ptt") {
+        formData2.append("mode", "ptt");
+      }
+
+      logVoiceTranscript("final", trimmed, { path: "work-mode-server-asr" });
+      logFinalTranscriptSentToLlm("work-mode-server-asr", trimmed);
+
+      const prepWrap = await maybePrepareWorkModeReasoning(formData2, trimmed, pipelineSig);
+      if (prepWrap?.inferThreadAnchor) {
+        formData2.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
+      }
+      const prepOutcome = await prepWrap.chain;
+      if (prepOutcome === "reasoning-upload-failed") {
+        processing = false;
+        requestInFlight = false;
+        voiceUxTurn = null;
+        setStatus("Ready", "idle");
+        return;
+      }
+
+      await runInferMainPipeline(formData2, { signal: pipelineSig });
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        hideSidePanel();
+        processing = false;
+        requestInFlight = false;
+        voiceUxTurn = null;
+        return;
+      }
+      console.warn("[WorkMode] server-asr preflight", err);
+      hideSidePanel();
+      processing = false;
+      requestInFlight = false;
+      voiceUxTurn = null;
+      setStatus("Server error", "offline");
+      if (listeningMode === "continuous" && listening && !inputMuted) {
+        startListening();
+      }
+    }
+    return;
+  }
 
   await runInferMainPipeline(formData);
 }
@@ -8576,7 +8992,6 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   const path = opts.path || "work-typed";
   const fromQueue = Boolean(opts.__fromQueue);
   if (!trimmed || !isVeraWorkModeOn() || appModePrefix() !== "vera") return;
-  if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) return;
 
   const statusLine = uiEl("status");
   if (statusLine?.classList.contains("offline")) {
@@ -8586,10 +9001,14 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     setStatus("Ready", "idle");
   }
 
+  if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
+    return;
+  }
+
   if (isWorkModeTypedTurnBlocked()) {
     if (!fromQueue) {
       const queued = enqueueWorkModeTypedTurn(trimmed, opts);
-      if (!queued) setStatus("Work queue full (max 3)", "idle");
+      if (!queued) setStatus(`Work queue full (max ${WORK_MODE_TYPED_TURN_QUEUE_MAX})`, "idle");
     }
     return;
   }
@@ -8597,13 +9016,6 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   /* User bubble: do not addBubble here — /infer NDJSON first `asr` line calls commitServerUserTranscriptBubble
      (same as voice). A prior addBubble would duplicate the row in Voice UI. */
   ensureChatStartedLayout();
-
-  listening = false;
-  processing = true;
-  requestInFlight = true;
-  waveState = "idle";
-  setStatus("Thinking", "thinking");
-  beginVoiceUxTurn();
 
   const formData = new FormData();
   formData.append("transcript", trimmed);
@@ -8624,35 +9036,52 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
 
   logFinalTranscriptSentToLlm(path, trimmed);
 
-  const pipelineSig = attachPipelineAbortSignal();
-  try {
-    const prep = await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig, {
-      attachment: opts.reasoningAttachment || null
-    });
-    if (prep === "reasoning-upload-failed") {
+  /* Reasoning: parallel across panels (lane chains); voice `/infer`: one chain, does not wait on other lanes' reasoning. */
+  const reasoningPrepP = maybePrepareWorkModeReasoning(formData, trimmed, undefined, {
+    attachment: opts.reasoningAttachment || null
+  });
+
+  const enqueued = enqueueWorkModeTypedVoiceInfer(async () => {
+    try {
+      listening = false;
+      waveState = "idle";
+      processing = true;
+      requestInFlight = true;
+      setStatus("Thinking", "thinking");
+      beginVoiceUxTurn();
+
+      const prepWrap = await reasoningPrepP;
+      if (prepWrap?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
+      const prep = await prepWrap.chain;
+      if (prep === "reasoning-upload-failed") {
+        processing = false;
+        requestInFlight = false;
+        voiceUxTurn = null;
+        setStatus("Ready", "idle");
+        return;
+      }
+      const inferSig = attachPipelineAbortSignal();
+      await runInferMainPipeline(formData, { signal: inferSig });
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        processing = false;
+        requestInFlight = false;
+        voiceUxTurn = null;
+        return;
+      }
+      console.warn("[WorkMode] typed infer", err);
+      hideSidePanel();
       processing = false;
       requestInFlight = false;
       voiceUxTurn = null;
-      setStatus("Ready", "idle");
-      return;
+      setStatus("Server error", "offline");
     }
-    await runInferMainPipeline(formData, { signal: pipelineSig });
-  } catch (err) {
-    if (err?.name === "AbortError") {
-      processing = false;
-      requestInFlight = false;
-      voiceUxTurn = null;
-      return;
-    }
-    console.warn("[WorkMode] typed infer", err);
-    hideSidePanel();
-    processing = false;
-    requestInFlight = false;
-    voiceUxTurn = null;
-    setStatus("Server error", "offline");
-  } finally {
-    if (workModeTypedTurnQueue.length > 0 && !isWorkModeTypedTurnBlocked()) {
-      scheduleWorkModeTypedQueueDrain();
+  });
+
+  if (!enqueued) {
+    if (!fromQueue) enqueueWorkModeTypedTurn(trimmed, opts);
+    if (!fromQueue) {
+      setStatus(`Voice queue full (max ${WORK_MODE_TYPED_VOICE_CHAIN_MAX}) — try again shortly`, "idle");
     }
   }
 }
@@ -8908,7 +9337,9 @@ async function onPttClick() {
       try {
         attachPipelineAbortSignal();
         const pipelineSig = activePipelineAbort.signal;
-        await maybePrepareWorkModeReasoning(formData, text, pipelineSig);
+        const prep = await maybePrepareWorkModeReasoning(formData, text, pipelineSig);
+        if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
+        await prep.chain;
         await runInferMainPipeline(formData, { signal: pipelineSig });
       } catch (err) {
         if (err?.name !== "AbortError") {
@@ -9124,6 +9555,7 @@ function wireVeraSettingsPanel() {
   const asrSingleBtn = document.getElementById("vera-setting-asr-single");
   const mainPartialMinSel = document.getElementById("vera-setting-main-partial-min");
   const resetSessionBtn = document.getElementById("vera-setting-reset-session");
+  const textGuideRotatorBtn = document.getElementById("vera-setting-text-guide-rotator");
   const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
   const saveBtn = document.getElementById("vera-settings-save");
   if (!(modal instanceof HTMLElement)) return;
@@ -9131,6 +9563,7 @@ function wireVeraSettingsPanel() {
   const silenceOptions = [1000, 1300, 1600];
   let draftSilenceMs = getVeraAsrSilenceMs();
   let draftAsrMode = getVeraAsrMode();
+  let draftTextGuideRotator = isTextGuideRotatorEnabled();
   let draftWorkModeMute = isWorkModeMuteEnabled();
   let draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
   const partialMinCharOptions = [5, 8, 10, 12, 15];
@@ -9174,10 +9607,18 @@ function wireVeraSettingsPanel() {
       workModeMuteBtn.setAttribute("aria-pressed", on ? "true" : "false");
     }
   };
+  const applyTextGuideRotatorUi = () => {
+    const on = draftTextGuideRotator;
+    if (textGuideRotatorBtn instanceof HTMLButtonElement) {
+      textGuideRotatorBtn.classList.toggle("is-on", on);
+      textGuideRotatorBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  };
 
   const hydrate = () => {
     draftSilenceMs = getVeraAsrSilenceMs();
     draftAsrMode = getVeraAsrMode();
+    draftTextGuideRotator = isTextGuideRotatorEnabled();
     draftWorkModeMute = isWorkModeMuteEnabled();
     draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
     if (silenceSlider instanceof HTMLInputElement) {
@@ -9187,8 +9628,10 @@ function wireVeraSettingsPanel() {
       mainPartialMinSel.value = String(partialMinCharsToIndex(draftMainAsrPartialMinChars));
     }
     applyAsrModeUi(draftAsrMode);
+    applyTextGuideRotatorUi();
     applyMuteUi();
     applyVeraWorkModeMuteSetting();
+    applyTextGuideRotatorSetting();
   };
 
   const open = () => {
@@ -9196,6 +9639,7 @@ function wireVeraSettingsPanel() {
     logVeraSettings("open_modal", {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
+      text_guide_rotator: draftTextGuideRotator ? 1 : 0,
       workmode_mute: draftWorkModeMute ? 1 : 0,
       main_asr_partial_min_chars: draftMainAsrPartialMinChars,
     });
@@ -9234,6 +9678,11 @@ function wireVeraSettingsPanel() {
   };
   mainPartialMinSel?.addEventListener("input", syncDraftPartialMinChars);
   mainPartialMinSel?.addEventListener("change", syncDraftPartialMinChars);
+  textGuideRotatorBtn?.addEventListener("click", () => {
+    draftTextGuideRotator = !draftTextGuideRotator;
+    applyTextGuideRotatorUi();
+    logVeraSettings("draft_text_guide_rotator", { value: draftTextGuideRotator ? 1 : 0 });
+  });
   workModeMuteBtn?.addEventListener("click", () => {
     draftWorkModeMute = !draftWorkModeMute;
     applyMuteUi();
@@ -9245,12 +9694,14 @@ function wireVeraSettingsPanel() {
     logVeraSettings("save_click", {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
+      text_guide_rotator: draftTextGuideRotator ? 1 : 0,
       workmode_mute: draftWorkModeMute ? 1 : 0,
       main_asr_partial_min_chars: draftMainAsrPartialMinChars,
     });
     setVeraAsrSilenceMs(draftSilenceMs);
     setVeraAsrMode(draftAsrMode);
     setMainAsrPartialMinChars(draftMainAsrPartialMinChars);
+    setTextGuideRotatorEnabled(draftTextGuideRotator);
     setWorkModeMuteEnabled(draftWorkModeMute);
     close();
   });
