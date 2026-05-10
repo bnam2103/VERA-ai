@@ -4101,6 +4101,17 @@ body.chat-started .input-bar {
   cursor: not-allowed;
 }
 
+#vera-app.work-mode .vera-wm-checklist-erase-btn {
+  border-color: rgba(255, 140, 120, 0.38);
+  background: rgba(180, 60, 55, 0.22);
+  color: rgba(255, 230, 225, 0.95);
+}
+
+#vera-app.work-mode .vera-wm-checklist-erase-btn:hover:not(:disabled) {
+  border-color: rgba(255, 170, 150, 0.52);
+  background: rgba(200, 75, 65, 0.32);
+}
+
 #vera-app.work-mode .vera-wm-checklist-plan-hint {
   display: block;
   flex: 0 0 auto;

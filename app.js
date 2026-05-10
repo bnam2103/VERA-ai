@@ -146,6 +146,11 @@ function resetVeraSessionAndUi() {
   WORK_MODE_REASONING_LANES.forEach((lane) => workModeReasoningLaneBusy.set(lane.idx, false));
   syncWorkModeReasoningCancelButton();
   setWorkModeAttachmentMeta("");
+  hideWorkChecklistSyncPreview();
+  workChecklistSyncPlanVersion = 0;
+  workChecklistSyncConsumedPlanVersion = 0;
+  workChecklistSyncPendingMarkdown = "";
+  syncWorkChecklistSyncPlanButton();
 
   hideSidePanel();
 }
@@ -4153,10 +4158,14 @@ function computeWorkModeInferThreadAnchor(trimmed, priorThreadAnchor, continuePr
   return "";
 }
 
-function workModeReasoningPrepOutcome(chainPromise, inferThreadAnchor) {
+function workModeReasoningPrepOutcome(chainPromise, inferThreadAnchor, inferGatePromise, meta = {}) {
+  const chain = chainPromise || Promise.resolve();
+  const inferGate = inferGatePromise != null ? inferGatePromise : chain;
   return {
-    chain: chainPromise || Promise.resolve(),
-    inferThreadAnchor: String(inferThreadAnchor || "").trim()
+    chain,
+    inferGate,
+    inferThreadAnchor: String(inferThreadAnchor || "").trim(),
+    reasoningHadFileUpload: Boolean(meta.reasoningHadFileUpload)
   };
 }
 
@@ -4201,6 +4210,41 @@ function isLikelyWorkChecklistEditIntent(text) {
   if (hasChecklist && /\b(add|remove)\b/.test(t)) return true;
   if (/\b(update|replace)\b/.test(t) && (/\bwith\b/.test(t) || /\bitem\s+\d+\b/.test(t))) {
     return true;
+  }
+  return false;
+}
+
+function isBanalWorkModeAckOnly(text) {
+  const s = String(text || "").trim();
+  if (!s || s.length > 56) return false;
+  return /^(thanks|thank\s+you|thx|ty|ok|okay|k\.?|cool|nice|great|perfect|sounds\s+good|got\s+it|bye|goodbye)\b/i.test(
+    s
+  );
+}
+
+/**
+ * True when the user is clearly continuing the prior work-mode thread (short or question-like follow-up).
+ * Used so reasoning still runs when /classify says prompt_reasoning=false but the turn is still about ANCHOR.
+ */
+function workModeAnchoredFollowUpReasoning(trimmed, priorThreadAnchor) {
+  const cur = String(trimmed || "").trim();
+  const prior = String(priorThreadAnchor || "").trim();
+  if (!cur || !prior) return false;
+  if (cur.toLowerCase() === prior.toLowerCase()) return false;
+  if (isGenericExampleFollowUpText(cur)) return false;
+  if (isBanalWorkModeAckOnly(cur)) return false;
+  const sim = topicSimilarityScore(cur, prior);
+  if (sim >= 0.11) return true;
+  const continuationCue =
+    /\b(it|its|it's|that|this|these|those|there|your (answer|reply|response|explanation|point)|the (above|previous)|same (thing|topic)|more detail|in more detail|go deeper|elaborate|clarify|follow[- ]?up|you (said|mentioned|meant))\b/i.test(
+      cur
+    );
+  if (continuationCue && cur.length <= 140) return true;
+  if (/\?/.test(cur) && cur.length <= 160 && (continuationCue || sim >= 0.04)) return true;
+  if (cur.length > 160) {
+    return /\b(why|how|what|when|where|who|which|explain|elaborate|detail|more|continue|clarify|example|examples?|next|then|because|although|however|actually|can you|could you|would you|help|unsure|confused|follow\s*up)\b/i.test(
+      cur
+    );
   }
   return false;
 }
@@ -4308,6 +4352,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
 
   let classifyRoute = false;
   let continuePriorLane = false;
+  let anchoredFollowUpReasoning = false;
   try {
     const classifyBody = { session_id: getSessionId(), text: trimmed };
     if (
@@ -4346,6 +4391,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       const writingTask =
         /\b(write|draft|compose|polish|rewrite)\b/.test(t) &&
         /\b(email|essay|script|speech|letter|cover letter|proposal|statement|outline)\b/.test(t);
+      const guideWritingTask =
+        /\b(guide|guidance|walk\s+me\s+through|coach\s+me(?:\s+on)?)\b/.test(t) &&
+        /\b(writ(?:e|ing|es|er|ten)?|essay|paper|draft|paragraph|piece|composition|story|article|blog|email|script|thesis|outline|proofread|edit)\b/.test(
+          t
+        );
       const hasCodeSnippet =
         /```/.test(t) ||
         /\b(function|class|import|const|let|var|def|return)\b/.test(t) ||
@@ -4356,36 +4406,63 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         codeProblemWords.test(t) ||
         hasCodeSnippet ||
         multiPart.test(t) ||
-        writingTask
+        writingTask ||
+        guideWritingTask
       );
     })();
-    routeReasoning = classifyRoute || heuristicReasoning;
+    anchoredFollowUpReasoning = workModeAnchoredFollowUpReasoning(trimmed, priorThreadAnchor);
+    routeReasoning =
+      classifyRoute || heuristicReasoning || continuePriorLane || anchoredFollowUpReasoning;
     if (!routeReasoning) {
       if (!isGenericExampleFollowUpText(trimmed)) {
         workModeLastSubstantiveUserText = trimmed;
       }
       return workModeReasoningPrepOutcome(
         Promise.resolve(),
-        computeWorkModeInferThreadAnchor(trimmed, priorThreadAnchor, continuePriorLane)
+        computeWorkModeInferThreadAnchor(
+          trimmed,
+          priorThreadAnchor,
+          Boolean(continuePriorLane || anchoredFollowUpReasoning)
+        )
       );
     }
   }
 
+  const continueLaneForThisTurn = Boolean(continuePriorLane || anchoredFollowUpReasoning);
   const inferThreadAnchor = computeWorkModeInferThreadAnchor(
     trimmed,
     priorThreadAnchor,
-    continuePriorLane
+    continueLaneForThisTurn
   );
 
   workModeReasoningConfirmPending = null;
-  const laneIdx = await selectLaneForWorkModeReasoningTurn(trimmed, { continuePriorLane });
+  const laneIdx = await selectLaneForWorkModeReasoningTurn(trimmed, {
+    continuePriorLane: continueLaneForThisTurn
+  });
   if (!isGenericExampleFollowUpText(trimmed)) {
     laneTopicSeedByIdx[laneIdx] = trimmed;
     workModeLastSubstantiveLaneIdx = laneIdx;
     workModeLastSubstantiveUserText = trimmed;
   }
-  return workModeReasoningPrepOutcome(
-    runOnLaneReasoningChain(laneIdx, async () => {
+  const useEarlyInferGate = !hasUpload;
+  let inferGateEarlyResolve = null;
+  const inferGateEarlyP = useEarlyInferGate
+    ? new Promise((resolve) => {
+        inferGateEarlyResolve = resolve;
+      })
+    : null;
+  let inferGateEarlySignaled = false;
+  const signalInferGateEarly = () => {
+    if (!useEarlyInferGate || inferGateEarlySignaled) return;
+    inferGateEarlySignaled = true;
+    try {
+      inferGateEarlyResolve?.();
+    } catch {
+      /* ignore */
+    }
+  };
+  const chainP = runOnLaneReasoningChain(laneIdx, async () => {
+    try {
     workModeReasoningLaneBusy.set(laneIdx, true);
     syncWorkModeReasoningCancelButton();
     const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
@@ -4486,24 +4563,34 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             turnEl.dataset.summaryText = normalizedSummary.text;
             formData.append("reasoning_voice_coach", normalizedSummary.text);
             foundSummary = true;
+            signalInferGateEarly();
             break;
           }
         }
       }
     } catch (_) {}
     if (foundSummary) {
-      void drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder, {
+      await drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder, {
         onDone: ({ markdownAcc, summaryText }) => {
+          const mdFromDom = String(turnEl?.dataset?.markdownAcc || "").trim();
+          const mdDone = mdFromDom || String(markdownAcc || "").trim();
           setReasoningTabTopicFromFinal(turnEl, {
             summaryText: extractWorkModeReasoningSummaryAnswerLine(summaryText),
-            markdownText: markdownAcc,
+            markdownText: mdDone,
             userPrompt: trimmed
           });
-          if (planningIntent && String(markdownAcc || "").trim()) {
-            workChecklistSyncPlanVersion += 1;
-            workChecklistSyncConsumedPlanVersion = 0;
-            syncWorkChecklistSyncPlanButton();
-            flashWorkChecklistPlanHint("Plan is in reasoning — tap Sync to load checklist bullets.");
+          if (mdDone) {
+            const hasSyncHeading = /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdDone);
+            if (planningIntent || hasSyncHeading) {
+              workChecklistSyncPlanVersion += 1;
+              workChecklistSyncPendingMarkdown = mdDone;
+              syncWorkChecklistSyncPlanButton();
+              flashWorkChecklistPlanHint(
+                planningIntent
+                  ? "Plan is in reasoning — tap Sync to load checklist bullets."
+                  : "Updated plan in reasoning — tap Sync to refresh checklist bullets."
+              );
+            }
           }
           endWorkModeReasoningLaneRun(laneIdx);
         }
@@ -4512,9 +4599,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       endWorkModeReasoningLaneRun(laneIdx);
     }
     scrollEl.scrollTop = scrollEl.scrollHeight;
-    }),
-    inferThreadAnchor
-  );
+    } finally {
+      signalInferGateEarly();
+    }
+    });
+  const inferGate =
+    useEarlyInferGate && inferGateEarlyP
+      ? Promise.race([inferGateEarlyP, chainP]).then(() => {})
+      : chainP;
+  return workModeReasoningPrepOutcome(chainP, inferThreadAnchor, inferGate, {
+    reasoningHadFileUpload: hasUpload
+  });
 }
 
 function setWorkModeAttachmentMeta(message) {
@@ -5179,6 +5274,7 @@ function loadWorkChecklistItems() {
       applyWorkChecklistCompletedCollapseFromStorage();
     }
   }
+  syncWorkChecklistEraseButton();
   syncWorkChecklistHelpPlanButton();
 }
 
@@ -5220,8 +5316,12 @@ function persistWorkChecklistRemove(id) {
 const WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS = 24;
 const WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS = 12000;
 let workChecklistSyncPreviewEditing = false;
+/** Bumps when reasoning finishes with a checklist-capable plan (see onDone). */
 let workChecklistSyncPlanVersion = 0;
+/** Last `workChecklistSyncPlanVersion` successfully applied to the checklist (Apply / voice sync); preview alone does not advance this. */
 let workChecklistSyncConsumedPlanVersion = 0;
+/** Markdown snapshot for the latest unsynced plan (with checklist). Survives later non-plan reasoning turns; replaced when a newer plan arrives; cleared on successful Apply. */
+let workChecklistSyncPendingMarkdown = "";
 
 function collectWorkChecklistOngoingTexts() {
   const ul = document.getElementById("vera-wm-checklist-ongoing");
@@ -5235,6 +5335,22 @@ function collectWorkChecklistOngoingTexts() {
     }
   }
   return out;
+}
+
+function workChecklistHasAnyStoredItems() {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const items = raw ? JSON.parse(raw) : [];
+    return Array.isArray(items) && items.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function syncWorkChecklistEraseButton() {
+  const btn = document.getElementById("vera-wm-checklist-erase-all");
+  if (!(btn instanceof HTMLButtonElement)) return;
+  btn.disabled = !workChecklistHasAnyStoredItems();
 }
 
 function syncWorkChecklistHelpPlanButton() {
@@ -5259,6 +5375,18 @@ function getLatestWorkModeReasoningMarkdown() {
     if (md) return md;
   }
   return "";
+}
+
+/** Markdown used for checklist Sync: saved plan if it still parses; else latest turn that parses; else raw fallback. */
+function getWorkChecklistSyncSourceMarkdown() {
+  const pending = String(workChecklistSyncPendingMarkdown || "").trim();
+  const latest = getLatestWorkModeReasoningMarkdown();
+  const pendingRows = pending ? buildChecklistProposalFromMarkdown(pending).length : 0;
+  const latestRows = latest ? buildChecklistProposalFromMarkdown(latest).length : 0;
+  if (pendingRows > 0) return pending;
+  if (latestRows > 0) return latest;
+  if (pending) return pending;
+  return latest;
 }
 
 function normalizeChecklistLineText(text) {
@@ -5416,6 +5544,9 @@ function applyWorkChecklistSyncPreview() {
     queueWorkChecklistSyncToServer();
     loadWorkChecklistItems();
     hideWorkChecklistSyncPreview();
+    workChecklistSyncConsumedPlanVersion = workChecklistSyncPlanVersion;
+    workChecklistSyncPendingMarkdown = "";
+    syncWorkChecklistSyncPlanButton();
     flashWorkChecklistPlanHint("Checklist updated from plan.");
     return true;
   } catch (_) {
@@ -5424,24 +5555,46 @@ function applyWorkChecklistSyncPreview() {
   }
 }
 
+function eraseEntireWorkChecklist() {
+  if (!workChecklistHasAnyStoredItems()) {
+    flashWorkChecklistPlanHint("Checklist is already empty.");
+    return;
+  }
+  const ok = window.confirm(
+    "Erase the entire checklist? All ongoing and completed items will be removed. This cannot be undone."
+  );
+  if (!ok) return;
+  try {
+    markWorkChecklistLocalMutation();
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify([]));
+    queueWorkChecklistSyncToServer();
+    hideWorkChecklistSyncPreview();
+    loadWorkChecklistItems();
+    flashWorkChecklistPlanHint("Checklist cleared.");
+    syncWorkChecklistSyncPlanButton();
+  } catch (_) {
+    flashWorkChecklistPlanHint("Could not erase checklist.");
+  }
+}
+
 function runWorkChecklistSyncFromLatestPlan() {
   if (workChecklistSyncPlanVersion <= workChecklistSyncConsumedPlanVersion) {
     flashWorkChecklistPlanHint("Run Plan again to generate a new checklist sync.");
-    return;
+    return false;
   }
-  const markdown = getLatestWorkModeReasoningMarkdown();
+  const markdown = getWorkChecklistSyncSourceMarkdown();
   if (!markdown) {
     flashWorkChecklistPlanHint("No plan found yet. Run Plan first.");
-    return;
+    return false;
   }
   const rows = buildChecklistProposalFromMarkdown(markdown);
   if (!rows.length) {
-    flashWorkChecklistPlanHint("Could not parse checklist bullets from latest plan.");
-    return;
+    flashWorkChecklistPlanHint("Could not parse checklist bullets from saved plan.");
+    return false;
   }
   showWorkChecklistSyncPreview(formatChecklistProposalText(rows));
-  workChecklistSyncConsumedPlanVersion = workChecklistSyncPlanVersion;
   syncWorkChecklistSyncPlanButton();
+  return true;
 }
 
 let workChecklistPlanHintTimer = null;
@@ -5486,6 +5639,38 @@ function isWorkChecklistPlanShortcutIntent(text) {
   return (hasPlanVerb && hasChecklistNoun) || (directPhrase && hasChecklistNoun);
 }
 
+/** Voice/typed: sync checklist from latest reasoning plan (## SYNC CHECKLIST etc.). Checked before plan shortcut. */
+function isWorkChecklistSyncCommandIntent(text) {
+  const t = String(text || "").toLowerCase().trim();
+  if (!t) return false;
+  if (!/\b(sync|synced|synchroniz(?:e|ed|ing))\b/.test(t)) return false;
+  const compact = t.replace(/\s+/g, " ");
+  if (
+    /^(hey\s+vera[,!\s]+)?(please\s+|can\s+you\s+|will\s+you\s+|could\s+you\s+|would\s+you\s+)?(just\s+)?sync(\s+(it|that|this|now))?\s*[.?!]*$/i.test(
+      compact
+    )
+  ) {
+    return true;
+  }
+  if (/^sync(\s+(it|that|this|now))?\s*[.?!]*$/i.test(compact)) return true;
+  if (/\bsync\s+(that|it|this)\b/.test(t)) return true;
+  const checklistWord = /\b(check\s*list|checklist|to-?do|todo|task\s*list|my\s+tasks?)\b/;
+  if (checklistWord.test(t)) return true;
+  if (/\b(sync|synchroniz).{0,160}\b(from|with)\s+(my\s+)?(plan|reasoning)\b/.test(t)) return true;
+  if (/\b(sync|synchroniz).{0,120}\b(the\s+)?plan\b/.test(t)) return true;
+  return false;
+}
+
+async function maybeHandleWorkChecklistSyncShortcut(text) {
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
+  if (!isWorkChecklistSyncCommandIntent(text)) return false;
+  const ok = runWorkChecklistSyncFromLatestPlan();
+  if (ok) {
+    applyWorkChecklistSyncPreview();
+  }
+  return true;
+}
+
 async function runWorkChecklistHelpPlan({ signal } = {}) {
   if (!isVeraWorkModeOn()) return false;
   if (workChecklistPlanRequestInFlight) return true;
@@ -5504,9 +5689,12 @@ async function runWorkChecklistHelpPlan({ signal } = {}) {
       reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
     await streamWorkModeReasoningComposer(text, signal);
-    workChecklistSyncPlanVersion += 1;
-    workChecklistSyncConsumedPlanVersion = 0;
-    syncWorkChecklistSyncPlanButton();
+    const mdAfterHelp = getLatestWorkModeReasoningMarkdown();
+    if (mdAfterHelp && /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdAfterHelp)) {
+      workChecklistSyncPlanVersion += 1;
+      workChecklistSyncPendingMarkdown = mdAfterHelp;
+      syncWorkChecklistSyncPlanButton();
+    }
   } finally {
     workChecklistPlanRequestInFlight = false;
     syncWorkChecklistHelpPlanButton();
@@ -5659,6 +5847,13 @@ function wireWorkModeChecklistAndComposer() {
     });
   }
 
+  const eraseAllBtn = document.getElementById("vera-wm-checklist-erase-all");
+  if (eraseAllBtn && eraseAllBtn.dataset.wiredEraseAll !== "1") {
+    eraseAllBtn.dataset.wiredEraseAll = "1";
+    eraseAllBtn.addEventListener("click", () => {
+      eraseEntireWorkChecklist();
+    });
+  }
   const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
   if (helpPlanBtn && helpPlanBtn.dataset.wiredHelpPlan !== "1") {
     helpPlanBtn.dataset.wiredHelpPlan = "1";
@@ -5706,6 +5901,7 @@ function wireWorkModeChecklistAndComposer() {
       if (!workChecklistSyncPreviewEditing) setWorkChecklistSyncPreviewEditing(true);
     });
   }
+  syncWorkChecklistEraseButton();
   syncWorkChecklistHelpPlanButton();
   syncWorkChecklistSyncPlanButton();
 }
@@ -7989,6 +8185,24 @@ function removeMainBrowserLiveBubble() {
   mainBrowserLiveBubble = null;
 }
 
+/**
+ * Work-mode `/infer` after optional reasoning: file-upload reasoning waits for the full chain (and
+ * skips infer on upload failure). Text-only reasoning unblocks infer once the summary/coach line is
+ * ready so TTS can overlap the tail markdown stream.
+ */
+async function runInferAfterWorkModeReasoningPrep(formData, prep, inferOpts = {}) {
+  const p = prep || {};
+  if (p.reasoningHadFileUpload) {
+    const prepOutcome = await p.chain;
+    if (prepOutcome === "reasoning-upload-failed") return "reasoning-upload-failed";
+    await runInferMainPipeline(formData, inferOpts);
+    return;
+  }
+  await p.inferGate;
+  await runInferMainPipeline(formData, inferOpts);
+  await p.chain;
+}
+
 async function finalizeMainBrowserTranscript(text) {
   const trimmed = (text || "").trim();
   if (!trimmed) {
@@ -7998,6 +8212,9 @@ async function finalizeMainBrowserTranscript(text) {
     if (listeningMode === "continuous" && listening && !inputMuted) {
       startListening();
     }
+    return;
+  }
+  if (await maybeHandleWorkChecklistSyncShortcut(trimmed)) {
     return;
   }
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
@@ -8031,8 +8248,7 @@ async function finalizeMainBrowserTranscript(text) {
   const pipelineSig = activePipelineAbort.signal;
   const prep = await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig);
   if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
-  await prep.chain;
-  await runInferMainPipeline(formData, { signal: pipelineSig });
+  await runInferAfterWorkModeReasoningPrep(formData, prep, { signal: pipelineSig });
 }
 
 function startMainBrowserRecognitionContinuous() {
@@ -8915,6 +9131,14 @@ async function handleUtterance() {
         return;
       }
 
+      if (await maybeHandleWorkChecklistSyncShortcut(trimmed)) {
+        requestInFlight = false;
+        processing = false;
+        voiceUxTurn = null;
+        setStatus("Ready", "idle");
+        updateMuteInputButton();
+        return;
+      }
       if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
         requestInFlight = false;
         processing = false;
@@ -8945,16 +9169,16 @@ async function handleUtterance() {
       if (prepWrap?.inferThreadAnchor) {
         formData2.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
       }
-      const prepOutcome = await prepWrap.chain;
-      if (prepOutcome === "reasoning-upload-failed") {
+      const prepFail = await runInferAfterWorkModeReasoningPrep(formData2, prepWrap, {
+        signal: pipelineSig
+      });
+      if (prepFail === "reasoning-upload-failed") {
         processing = false;
         requestInFlight = false;
         voiceUxTurn = null;
         setStatus("Ready", "idle");
         return;
       }
-
-      await runInferMainPipeline(formData2, { signal: pipelineSig });
     } catch (err) {
       if (err?.name === "AbortError") {
         hideSidePanel();
@@ -9001,6 +9225,9 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     setStatus("Ready", "idle");
   }
 
+  if (await maybeHandleWorkChecklistSyncShortcut(trimmed)) {
+    return;
+  }
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
     return;
   }
@@ -9052,16 +9279,15 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
 
       const prepWrap = await reasoningPrepP;
       if (prepWrap?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
-      const prep = await prepWrap.chain;
-      if (prep === "reasoning-upload-failed") {
+      const inferSig = attachPipelineAbortSignal();
+      const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prepWrap, { signal: inferSig });
+      if (prepFail === "reasoning-upload-failed") {
         processing = false;
         requestInFlight = false;
         voiceUxTurn = null;
         setStatus("Ready", "idle");
         return;
       }
-      const inferSig = attachPipelineAbortSignal();
-      await runInferMainPipeline(formData, { signal: inferSig });
     } catch (err) {
       if (err?.name === "AbortError") {
         processing = false;
@@ -9312,6 +9538,11 @@ async function onPttClick() {
       updateMuteInputButton();
       return;
     }
+    if (await maybeHandleWorkChecklistSyncShortcut(text)) {
+      setStatus("Ready", "idle");
+      updateMuteInputButton();
+      return;
+    }
     if (await maybeHandleWorkChecklistPlanShortcut(text)) {
       setStatus("Ready", "idle");
       updateMuteInputButton();
@@ -9339,8 +9570,7 @@ async function onPttClick() {
         const pipelineSig = activePipelineAbort.signal;
         const prep = await maybePrepareWorkModeReasoning(formData, text, pipelineSig);
         if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
-        await prep.chain;
-        await runInferMainPipeline(formData, { signal: pipelineSig });
+        await runInferAfterWorkModeReasoningPrep(formData, prep, { signal: pipelineSig });
       } catch (err) {
         if (err?.name !== "AbortError") {
           console.warn("[PTT][browser-asr] infer", err);
