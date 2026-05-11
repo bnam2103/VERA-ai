@@ -1858,6 +1858,72 @@ body.vera-mode {
   display: block;
 }
 
+/* Two mouth stacks: happy/neutral (1–3) vs sad (4–6). Sad hidden unless TTS + face-track sad. */
+.bmo-mouth-track--sad {
+  display: none;
+}
+
+.bmo-page.bmo-mouth-active .bmo-mouth-track--sad {
+  display: none;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"] .bmo-mouth-track--happy {
+  display: none;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"] .bmo-mouth-track--sad {
+  display: block;
+}
+
+.bmo-sad-smile-path {
+  stroke-width: 3.35;
+  vector-effect: non-scaling-stroke;
+  transition: opacity 0.22s ease;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-sad-smile-path {
+  transition: none;
+}
+
+.bmo-sad-mouth-inner {
+  transform: none;
+  transform-origin: 0 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+
+.bmo-sad-mouth-layer {
+  display: none;
+}
+
+/* Sad TTS: idle = frown stroke; surprised = O; "happy" waveform state = worried bean */
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"][data-bmo-tts-emotion="idle"] .bmo-sad-mouth-inner {
+  opacity: 0;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"][data-bmo-tts-emotion="idle"] .bmo-sad-smile-path {
+  opacity: 1;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"][data-bmo-tts-emotion="surprised"] .bmo-sad-mouth-inner,
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"][data-bmo-tts-emotion="happy"] .bmo-sad-mouth-inner {
+  opacity: 1;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"][data-bmo-tts-emotion="surprised"] .bmo-sad-smile-path,
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"][data-bmo-tts-emotion="happy"] .bmo-sad-smile-path {
+  opacity: 0;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"][data-bmo-tts-emotion="surprised"] .bmo-sad-mouth-layer--surprised {
+  display: block;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-smile[data-bmo-tts-face-track="sad"][data-bmo-tts-emotion="happy"] .bmo-sad-mouth-layer--worried {
+  display: block;
+}
+
 .bmo-page.bmo-mouth-active .bmo-mouth-inner path,
 .bmo-page.bmo-mouth-active .bmo-mouth-inner ellipse,
 .bmo-page.bmo-tts-mouth .bmo-mouth-inner path,
@@ -1873,6 +1939,20 @@ body.vera-mode {
 /* Tongue: no outline (matches emotion test) */
 .bmo-page.bmo-mouth-active .bmo-mouth-inner .bmo-mouth-tongue,
 .bmo-page.bmo-tts-mouth .bmo-mouth-inner .bmo-mouth-tongue {
+  stroke: none;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-sad-mouth-inner path,
+.bmo-page.bmo-tts-mouth .bmo-sad-mouth-inner ellipse {
+  stroke: #0a0a0a;
+  stroke-width: 4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  paint-order: stroke fill;
+  vector-effect: non-scaling-stroke;
+}
+
+.bmo-page.bmo-tts-mouth .bmo-sad-mouth-inner ellipse[fill="#5fbf7e"] {
   stroke: none;
 }
 

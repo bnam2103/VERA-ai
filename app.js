@@ -76,6 +76,7 @@ function resetBmoSessionAndUi() {
 
   document.getElementById("bmo-page")?.classList.remove("bmo-tts-mouth");
   document.getElementById("bmo-smile-svg")?.removeAttribute("data-bmo-tts-emotion");
+  document.getElementById("bmo-smile-svg")?.removeAttribute("data-bmo-tts-face-track");
 
   hideSidePanel();
 }
@@ -7235,6 +7236,182 @@ function wrapLastChunkForBmoMouth(onLastEnd) {
   };
 }
 
+/** Mirrors `split_sentences_for_tts` / TTS.py: paragraphs, then `.!?` or newlines. */
+function splitSentencesForTtsClient(text) {
+  let t = (text || "").trim();
+  if (!t) return [];
+  t = t.replace(/\u201c/g, '"').replace(/\u201d/g, '"').replace(/\u2019/g, "'");
+  t = t.replace(/\u3002/g, ".");
+  t = t.replace(/(?<=[a-z])\.(?=[A-Z])/g, ". ");
+  const paragraphs = t.split(/\n\s*\n+/);
+  const out = [];
+  for (const para of paragraphs) {
+    const p = para.trim();
+    if (!p) continue;
+    const parts = p.split(/(?<=[.!?])\s+|\n+/);
+    for (const part of parts) {
+      const x = part.trim();
+      if (x) out.push(x);
+    }
+  }
+  return out.length ? out : [t];
+}
+
+const BMO_TTS_SAD_HINTS =
+  /\b(sorry|sad|sorrow|cry|tears|tearful|afraid|scared|fear|worried|worry|anxious|anxiety|depress|lonely|alone|hurt|hurts|pain|aching|hate|hatred|angry|rage|terrible|awful|horrible|worst|tragic|unfortunately|regret|guilt|ashamed|loss|lose|lost|die|death|dead|dying|kill|never\s+again|hopeless|despair|upset|disappoint|failed?|failure|breakdown|grief|mourn)\b/i;
+const BMO_TTS_HAPPY_HINTS =
+  /\b(happy|happiness|joy|joyful|great|wonderful|awesome|amazing|love|loved|celebrat|excit|excited|fun|funny|laugh|smile|cheer|yay|best|lucky|glad|proud|relief|relieved|good\s+news|victory|won|win|beautiful|perfect)\b/i;
+
+function normalizeBmoTtsMood(x) {
+  const s = String(x || "neutral").trim().toLowerCase();
+  if (s === "sad" || s === "neutral" || s === "happy") return s;
+  return "neutral";
+}
+
+function classifyBmoTtsSegmentHeuristic(seg) {
+  const s = (seg || "").trim();
+  if (!s) return "neutral";
+  if (BMO_TTS_SAD_HINTS.test(s) && !BMO_TTS_HAPPY_HINTS.test(s)) return "sad";
+  if (BMO_TTS_HAPPY_HINTS.test(s) && !BMO_TTS_SAD_HINTS.test(s)) return "happy";
+  if (BMO_TTS_SAD_HINTS.test(s)) return "sad";
+  if (BMO_TTS_HAPPY_HINTS.test(s)) return "happy";
+  if (/\b(unfortunately|however,\s+i\s+am\s+afraid|i\s+am\s+sorry)\b/i.test(s)) return "sad";
+  return "neutral";
+}
+
+/** Apology / commiseration → sad mouth stack, independent of LLM “neutral” labels. */
+function bmoAssistantSegmentPrefersSadFace(seg) {
+  const s = String(seg || "").trim();
+  if (!s) return false;
+  if (/\b(sorry|apologi[sz]e|apologies|my condolences|condolences)\b/i.test(s)) return true;
+  if (/\b(i\s*'?m\s+sorry|i\s+am\s+sorry|we\s*'?re\s+sorry|so\s+sorry|really\s+sorry|deeply\s+sorry)\b/i.test(s))
+    return true;
+  if (/\b(sorry\s+you'?re|sorry\s+to\s+hear|sorry\s+about|sorry\s+for)\b/i.test(s)) return true;
+  if (/\b(that\s+sounds\s+(?:really\s+)?(?:hard|rough|awful|tough|difficult)|hearing\s+that|wish\s+i\s+could)\b/i.test(s))
+    return true;
+  return false;
+}
+
+/**
+ * If TTS is one file for many sentences, any apology in the reply still deserves the sad mouth.
+ * Otherwise align per-sentence modes to each chunk index.
+ */
+function applyBmoSadFaceLexiconOverride(sentences, faceModes) {
+  if (!Array.isArray(sentences) || !Array.isArray(faceModes) || !faceModes.length) return faceModes;
+  if (faceModes.length === 1 && sentences.length > 1) {
+    if (sentences.some((t) => bmoAssistantSegmentPrefersSadFace(t))) return ["sad"];
+    return faceModes;
+  }
+  return faceModes.map((mode, i) =>
+    bmoAssistantSegmentPrefersSadFace(sentences[i]) ? "sad" : mode
+  );
+}
+
+function bmoMoodToFaceMode(mood) {
+  return normalizeBmoTtsMood(mood) === "sad" ? "sad" : "happy";
+}
+
+/** When the user sounded distressed, do not keep empathy/apology sentences as neutral (LLM often does). */
+function boostBmoMoodsForUserDistress(userText, sentences, moods) {
+  const ut = (userText || "").trim();
+  if (!ut || !Array.isArray(sentences) || !Array.isArray(moods) || moods.length !== sentences.length) {
+    return moods;
+  }
+  if (
+    !/\b(sad|depressed|depressing|feeling\s+down|feel\s+down|down|blue|empty|numb|anxious|anxiety|worried|worry|worries|lonely|alone|hurt|hurting|pain|cry|crying|grief|upset|struggl|hopeless|overwhelmed|not\s+ok(?:ay)?)\b/i.test(
+      ut
+    )
+  ) {
+    return moods;
+  }
+  return moods.map((m, i) => {
+    const lab = normalizeBmoTtsMood(m);
+    if (lab === "sad" || lab === "happy") return lab;
+    const s = String(sentences[i] || "");
+    if (
+      /\b(i\s*'?m\s+sorry|i\s+am\s+sorry|sorry\s+you'?re|sorry\s+to\s+hear|that\s+sounds\s+(?:really\s+)?(?:hard|rough|awful))\b/i.test(
+        s
+      ) ||
+      /\bsorry\b/i.test(s)
+    ) {
+      return "sad";
+    }
+    return lab;
+  });
+}
+
+function alignBmoFaceModesToChunkCount(modes, chunkCount) {
+  const n = Math.max(0, chunkCount | 0);
+  if (!n) return [];
+  const m = Array.isArray(modes) ? modes.slice(0, n) : [];
+  const last = m.length ? m[m.length - 1] : "happy";
+  while (m.length < n) m.push(last);
+  for (let i = 0; i < m.length; i++) {
+    m[i] = m[i] === "sad" ? "sad" : "happy";
+  }
+  return m;
+}
+
+function bmoNewSegmentFromCumulativeReply(prevCum, newCum) {
+  const p = (prevCum || "").trimEnd();
+  const c = (newCum || "").trim();
+  if (!c) return "";
+  if (!p) return c;
+  if (c === p) return "";
+  if (c.startsWith(p)) return c.slice(p.length).trimStart();
+  return c;
+}
+
+function setBmoTtsFaceTrack(track) {
+  const svg = document.getElementById("bmo-smile-svg");
+  if (!svg) return;
+  if (track === "sad") svg.setAttribute("data-bmo-tts-face-track", "sad");
+  else svg.removeAttribute("data-bmo-tts-face-track");
+}
+
+async function fetchBmoTtsEmotionLabels(userText, sentences) {
+  const res = await fetch(`${API_URL}/tts_emotion_route`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: getSessionId(),
+      user_text: userText || "",
+      sentences
+    })
+  });
+  if (!res.ok) throw new Error(`emotion route HTTP ${res.status}`);
+  const data = await res.json();
+  const raw = data.labels;
+  if (!Array.isArray(raw)) throw new Error("emotion route: missing labels");
+  return sentences.map((_, i) => normalizeBmoTtsMood(raw[i]));
+}
+
+async function resolveBmoTtsSegmentFaceModesForPlayback(data, urlCount) {
+  if (!document.body.classList.contains("bmo-open")) return null;
+  const n = Math.max(0, urlCount | 0);
+  if (!n) return null;
+  const reply = String(data?.reply ?? "").trim();
+  const userText = String(
+    data?.transcript ?? data?.user_text ?? data?.text ?? ""
+  ).trim();
+  if (!reply) return alignBmoFaceModesToChunkCount([], n);
+  const sentences = splitSentencesForTtsClient(reply);
+  if (!sentences.length) return alignBmoFaceModesToChunkCount([], n);
+  let labels;
+  try {
+    labels = await fetchBmoTtsEmotionLabels(userText, sentences);
+    labels = boostBmoMoodsForUserDistress(userText, sentences, labels);
+  } catch (e) {
+    console.warn("[BMO][TTS] emotion route", e);
+    labels = sentences.map((s) => classifyBmoTtsSegmentHeuristic(s));
+    labels = boostBmoMoodsForUserDistress(userText, sentences, labels);
+  }
+  let modes = sentences.map((_, i) => bmoMoodToFaceMode(labels[i]));
+  modes = alignBmoFaceModesToChunkCount(modes, n);
+  modes = applyBmoSadFaceLexiconOverride(sentences, modes);
+  return modes;
+}
+
 /**
  * Schedule decoded buffers back-to-back on one AudioContext (minimal gaps vs chained <audio>).
  * Prefetches the next HTTP response while decoding/playing the current chunk.
@@ -7242,7 +7419,7 @@ function wrapLastChunkForBmoMouth(onLastEnd) {
 async function playTtsUrlSequenceGapless(
   baseUrl,
   relativeUrls,
-  { onFirstStart, onLastEnd, sessionToken } = {}
+  { onFirstStart, onLastEnd, sessionToken, segmentFaceModes } = {}
 ) {
   if (!relativeUrls?.length) return;
   if (!audioCtx) {
@@ -7288,6 +7465,13 @@ async function playTtsUrlSequenceGapless(
     src.buffer = audBuf;
     connectBufferSourceToTtsGraph(src);
     const startAt = Math.max(t, audioCtx.currentTime + 0.02);
+    if (document.body.classList.contains("bmo-open")) {
+      const face =
+        segmentFaceModes != null && segmentFaceModes.length
+          ? segmentFaceModes[Math.min(i, segmentFaceModes.length - 1)]
+          : "happy";
+      setBmoTtsFaceTrack(face);
+    }
     src.start(startAt);
     /* BMO mouth before onFirstStart: onPlayStart applies news side panel (heavy innerHTML); blocking first would let TTS chunks finish before RAF starts — generic headlines path is slower than “breaking news”. */
     if (document.body.classList.contains("bmo-open")) {
@@ -7322,6 +7506,11 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
   const urls = resolveAudioUrls(data);
   if (!urls.length) return;
 
+  let segmentFaceModes = null;
+  if (document.body.classList.contains("bmo-open")) {
+    segmentFaceModes = await resolveBmoTtsSegmentFaceModesForPlayback(data, urls.length);
+  }
+
   if (urls.length > 1) {
     console.log(
       `[UX][TTS] ${urls.length} segments — one /text or /infer response; next: ${urls.length} GETs to /audio/...`,
@@ -7344,6 +7533,11 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
       () => {
         mainTtsPlaybackActive = true;
         if (document.body.classList.contains("bmo-open")) {
+          const face =
+            segmentFaceModes != null && segmentFaceModes.length
+              ? segmentFaceModes[0]
+              : "happy";
+          setBmoTtsFaceTrack(face);
           void startBmoTtsMouthAnimation();
         }
         runPlayStart();
@@ -7365,7 +7559,8 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
   await playTtsUrlSequenceGapless(API_URL, urls, {
     onFirstStart: runPlayStart,
     onLastEnd: onPlayEnd,
-    sessionToken
+    sessionToken,
+    segmentFaceModes
   });
 }
 
@@ -7397,8 +7592,18 @@ function createTtsUrlQueue() {
 async function playTtsUrlSequenceIncremental(
   baseUrl,
   nextRelFn,
-  { onBeforeFirstPlay, onFirstStart, onLastEnd, sessionToken } = {}
+  {
+    onBeforeFirstPlay,
+    onFirstStart,
+    onLastEnd,
+    sessionToken,
+    segmentFaceModes,
+    /** NDJSON fills this array after playback starts — call each chunk instead of freezing `segmentFaceModes`. */
+    getSegmentFaceModes
+  } = {}
 ) {
+  const currentFaceModes = () =>
+    typeof getSegmentFaceModes === "function" ? getSegmentFaceModes() : segmentFaceModes;
   if (!audioCtx) {
     audioCtx = new AudioContext({ sampleRate: 16000 });
   }
@@ -7426,6 +7631,7 @@ async function playTtsUrlSequenceIncremental(
     if (!r.ok) throw new Error(`TTS HTTP ${r.status}`);
     return r.arrayBuffer();
   });
+  let chunkPlayIndex = 0;
 
   try {
   for (;;) {
@@ -7462,7 +7668,16 @@ async function playTtsUrlSequenceIncremental(
     src.buffer = audBuf;
     connectBufferSourceToTtsGraph(src);
     const startAt = Math.max(t, audioCtx.currentTime + 0.02);
+    if (document.body.classList.contains("bmo-open")) {
+      const modesList = currentFaceModes();
+      const face =
+        modesList != null && modesList.length
+          ? modesList[Math.min(chunkPlayIndex, modesList.length - 1)]
+          : "happy";
+      setBmoTtsFaceTrack(face);
+    }
     src.start(startAt);
+    chunkPlayIndex++;
     /* Same order as gapless: mouth before onPlayStart so heavy news panel does not block first tick. */
     if (document.body.classList.contains("bmo-open")) {
       void startBmoTtsMouthAnimation();
@@ -7518,6 +7733,10 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
   let deferFirstReply = true;
   /** Latest reply_so_far already applied via onReplyProgress (avoids onBeforeFirstPlay overwriting with shorter pending). */
   let lastEmittedReplySoFar = null;
+  /** BMO: per-chunk face stack (happy vs sad); built from meta (full reply) or per chunk (LLM streaming + heuristic). */
+  let ndjsonBmoFaceModes = null;
+  let ndjsonBmoStreamingTts = false;
+  let ndjsonBmoCumulativeForSeg = "";
 
   async function readAll() {
     try {
@@ -7554,6 +7773,38 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
           } else if (obj.type === "meta") {
             wrapOnMeta(obj);
             logVoicePipe("NDJSON meta line (UI can attach transcript)");
+            if (document.body.classList.contains("bmo-open")) {
+              ndjsonBmoStreamingTts = Boolean(obj.llm_streaming);
+              const reply = String(obj.reply || "").trim();
+              if (reply && !ndjsonBmoStreamingTts) {
+                ndjsonBmoCumulativeForSeg = "";
+                try {
+                  const sentences = splitSentencesForTtsClient(reply);
+                  const n = Math.max(1, Number(obj.tts_segment_count) || sentences.length);
+                  let labels;
+                  const ut = String(obj.transcript || obj.user_text || "");
+                  try {
+                    labels = await fetchBmoTtsEmotionLabels(ut, sentences);
+                    labels = boostBmoMoodsForUserDistress(ut, sentences, labels);
+                  } catch (e) {
+                    console.warn("[BMO][TTS] NDJSON meta emotion route", e);
+                    labels = sentences.map((s) => classifyBmoTtsSegmentHeuristic(s));
+                    labels = boostBmoMoodsForUserDistress(ut, sentences, labels);
+                  }
+                  let modes = sentences.map((_, i) => bmoMoodToFaceMode(labels[i]));
+                  modes = alignBmoFaceModesToChunkCount(modes, n);
+                  ndjsonBmoFaceModes = applyBmoSadFaceLexiconOverride(sentences, modes);
+                } catch (e) {
+                  console.warn("[BMO][TTS] NDJSON meta face modes", e);
+                  ndjsonBmoFaceModes = null;
+                }
+              } else if (ndjsonBmoStreamingTts) {
+                ndjsonBmoFaceModes = [];
+                ndjsonBmoCumulativeForSeg = "";
+              } else {
+                ndjsonBmoFaceModes = null;
+              }
+            }
           } else if (obj.type === "chunk" && obj.url) {
             if (mainTtsPlaybackToken !== sessionToken) {
               queue.end();
@@ -7562,6 +7813,19 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
             if (!loggedFirstChunk) {
               loggedFirstChunk = true;
               logVoicePipe("NDJSON first chunk URL queued (GET /audio/... next)");
+            }
+            if (
+              document.body.classList.contains("bmo-open") &&
+              ndjsonBmoStreamingTts &&
+              Array.isArray(ndjsonBmoFaceModes)
+            ) {
+              const cur = String(obj.reply_so_far || "").trim();
+              const delta = bmoNewSegmentFromCumulativeReply(ndjsonBmoCumulativeForSeg, cur);
+              ndjsonBmoCumulativeForSeg = cur;
+              const segFor = (delta || cur).trim();
+              let mood = classifyBmoTtsSegmentHeuristic(segFor);
+              if (bmoAssistantSegmentPrefersSadFace(segFor)) mood = "sad";
+              ndjsonBmoFaceModes.push(bmoMoodToFaceMode(mood));
             }
             queue.push(obj.url);
             if (obj.reply_so_far != null && onReplyProgress) {
@@ -7604,7 +7868,8 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
         },
         onFirstStart: onPlayStart,
         onLastEnd: onPlayEnd,
-        sessionToken
+        sessionToken,
+        getSegmentFaceModes: () => ndjsonBmoFaceModes
       }),
       readTask
     ]);
@@ -7885,6 +8150,7 @@ function stopBmoTtsMouthAnimation() {
   }
   bmoPageForTts?.classList.remove("bmo-tts-mouth");
   document.getElementById("bmo-smile-svg")?.removeAttribute("data-bmo-tts-emotion");
+  document.getElementById("bmo-smile-svg")?.removeAttribute("data-bmo-tts-face-track");
   bmoTtsBaseline = 0;
   bmoTtsExcessPeak = 0;
   bmoTtsSpeechBody = 0;
