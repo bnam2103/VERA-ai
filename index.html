@@ -6,8 +6,9 @@
   <!-- Optional: override user auth backend (otherwise localhost = same origin; GitHub Pages = Worker below) -->
   <meta name="vera-local-backend-origin" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=5">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
 
 <body>
@@ -660,7 +661,11 @@
           <path d="M12 12V7M12 12h4.2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
         </svg>
         <span class="vera-datetime-time" id="vera-datetime-time"></span>
-        <span class="vera-datetime-sep" aria-hidden="true"></span>
+        <span class="vera-work-mode-timer-wrap" id="vera-work-mode-timer-wrap" hidden>
+          <span class="vera-datetime-sep vera-datetime-sep--timer" aria-hidden="true"></span>
+          <span class="vera-work-mode-timer" id="vera-work-mode-timer" aria-live="polite"></span>
+        </span>
+        <span class="vera-datetime-sep" id="vera-datetime-sep-date" aria-hidden="true" hidden></span>
         <span class="vera-datetime-date" id="vera-datetime-date"></span>
       </div>
       <div class="vera-header-right">
@@ -832,7 +837,14 @@
             </button>
           </div>
         </div>
+        <div class="vera-reasoning-attach-wrap" id="vera-reasoning-attach-wrap">
         <div class="vera-reasoning-attach-meta" id="vera-reasoning-attach-meta" aria-live="polite"></div>
+        <div id="vera-attachment-preview-popover" class="vera-attachment-preview-popover" hidden>
+          <div class="vera-attachment-preview-dialog" role="dialog" aria-label="Attachment preview">
+            <div id="vera-attachment-preview-inner" class="vera-attachment-preview-inner"></div>
+          </div>
+        </div>
+        </div>
         <p class="vera-reasoning-typed-note">
           VERA will speak aloud unless you mute (same behavior as Voice UI). In-app mute for typed replies is coming soon; for now use system volume or your device mute when you need silence.
         </p>
@@ -1735,6 +1747,9 @@ function startTyping() {
     if (typeof window.clearWorkModeReasoningPending === "function") {
       window.clearWorkModeReasoningPending();
     }
+    if (typeof window.clearVeraWorkModeClientTimer === "function") {
+      window.clearVeraWorkModeClientTimer();
+    }
     veraApp?.classList.remove("work-mode");
     veraWorkModeBtn?.setAttribute("aria-pressed", "false");
     if (typeof window.syncVeraHeaderDateTimeForWorkMode === "function") {
@@ -2604,6 +2619,12 @@ document.addEventListener("click", () => {
           <span class="knob"></span>
         </button>
       </div>
+      <div class="vera-settings-row vera-settings-toggle-row">
+        <span class="vera-settings-label">Timer for explicit due-in plans</span>
+        <button type="button" id="vera-setting-planning-deadline-timer" class="vera-settings-toggle is-on" aria-pressed="true" title="When on, due-in phrases start a countdown that ends 10 minutes before the time you gave">
+          <span class="knob"></span>
+        </button>
+      </div>
     </section>
     <div class="vera-settings-actions">
       <button type="button" id="vera-settings-save" class="vera-settings-save-btn">Save settings</button>
@@ -2629,7 +2650,8 @@ document.addEventListener("click", () => {
 })();
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script src="app.js?v=22"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<script src="app.js?v=35"></script>
 </body>
 </html>
 

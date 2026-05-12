@@ -123,7 +123,10 @@ function resetVeraSessionAndUi() {
   loadWorkChecklistItems();
   flashWorkChecklistPlanHint("");
   workModeReasoningConfirmPending = null;
+  revokeWorkModeReasoningAttachmentPreviewUrl();
+  hideWorkModeAttachmentPreviewImmediate();
   workModeReasoningAttachment = null;
+  if (typeof clearVeraWorkModeClientTimer === "function") clearVeraWorkModeClientTimer();
   for (const ctl of workModeReasoningAbortControllers.values()) {
     try {
       ctl.abort();
@@ -594,6 +597,7 @@ const VERA_SETTING_ASR_MODE_KEY = "vera_setting_asr_mode_v1";
 const VERA_SETTING_WORKMODE_MUTE_KEY = "vera_setting_workmode_mute_v1";
 const VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY = "vera_setting_main_asr_partial_min_chars_v1";
 const VERA_SETTING_TEXT_GUIDE_ROTATOR_KEY = "vera_setting_text_guide_rotator_v1";
+const VERA_SETTING_PLANNING_DEADLINE_TIMER_KEY = "vera_setting_planning_deadline_timer_v1";
 
 function logVeraSettings(event, data = {}) {
   try {
@@ -767,6 +771,23 @@ function setTextGuideRotatorEnabled(on) {
   applyTextGuideRotatorSetting();
 }
 
+function isPlanningDeadlineTimerEnabled() {
+  try {
+    const raw = localStorage.getItem(VERA_SETTING_PLANNING_DEADLINE_TIMER_KEY);
+    if (raw == null) return true;
+    return raw === "1";
+  } catch (_) {
+    return true;
+  }
+}
+
+function setPlanningDeadlineTimerEnabled(on) {
+  try {
+    localStorage.setItem(VERA_SETTING_PLANNING_DEADLINE_TIMER_KEY, on ? "1" : "0");
+  } catch (_) {}
+  logVeraSettings("save_planning_deadline_timer", { value: on ? 1 : 0 });
+}
+
 function applyVeraWorkModeMuteSetting() {
   const veraAudio = document.getElementById("vera-audio");
   const inWork = Boolean(document.getElementById("vera-app")?.classList.contains("work-mode"));
@@ -791,6 +812,10 @@ function applyVeraWorkModeMuteSetting() {
 function shouldStreamTts() {
   if (getVeraAsrMode() === "single") return false;
   if (!DEFAULT_STREAM_TTS) return false;
+  if (listeningMode === "continuous" && inputMuted) {
+    logVeraSettings("stream_tts_off_continuous_input_muted", { value: 0 });
+    return false;
+  }
   if (appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled()) {
     logVeraSettings("stream_tts_forced_off_workmode_mute", { value: 0 });
     return false;
@@ -984,7 +1009,7 @@ setInterval(checkServer, 30_000);
 
 /**
  * Flow (non–work) mode: dock input row (voice or keyboard) + lift corner tools when the voice bar
- * is in a docked state (listening / input muted) or the keyboard bar is visible.
+ * is in a docked state (listening / input-output muted) or the keyboard bar is visible.
  */
 function syncVeraFlowVoiceDockLayoutClass() {
   const veraApp = document.getElementById("vera-app");
@@ -1047,6 +1072,120 @@ function applyClientUiAction(actionName) {
   }
 }
 
+let veraWorkModeTimerTimeoutId = null;
+let veraLastWorkModeTimerClientId = null;
+/** When set, header pill shows countdown until this epoch ms (work mode). */
+let veraWorkModeTimerFireAtMs = null;
+let veraWorkModeTimerUiIntervalId = null;
+
+function formatWorkModeTimerCountdown(remainingMs) {
+  const left = Math.max(0, Number(remainingMs) || 0);
+  if (left < 60000) {
+    return `${(left / 1000).toFixed(1)}s`;
+  }
+  const t = Math.floor(left / 1000);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  const pad2 = (n) => String(n).padStart(2, "0");
+  if (h > 0) return `${h}:${pad2(m)}:${pad2(s)}`;
+  return `${m}:${pad2(s)}`;
+}
+
+function updateWorkModeTimerHeaderFromState() {
+  const wrap = document.getElementById("vera-work-mode-timer-wrap");
+  const el = document.getElementById("vera-work-mode-timer");
+  const dateSep = document.getElementById("vera-datetime-sep-date");
+  if (!wrap || !el) return;
+  const end = veraWorkModeTimerFireAtMs;
+  if (end == null || !Number.isFinite(end)) {
+    wrap.hidden = true;
+    if (dateSep) dateSep.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  const left = end - Date.now();
+  wrap.hidden = false;
+  if (dateSep) dateSep.hidden = false;
+  el.textContent = left <= 0 ? "0.0s" : formatWorkModeTimerCountdown(left);
+}
+
+function stopWorkModeTimerUiFastRefresh() {
+  if (veraWorkModeTimerUiIntervalId != null) {
+    clearInterval(veraWorkModeTimerUiIntervalId);
+    veraWorkModeTimerUiIntervalId = null;
+  }
+}
+
+/** Sub-second updates while a short countdown is active (header clock ticks once per second). */
+function startWorkModeTimerUiFastRefreshIfNeeded() {
+  stopWorkModeTimerUiFastRefresh();
+  const end = veraWorkModeTimerFireAtMs;
+  if (end == null || !Number.isFinite(end)) return;
+  const left = end - Date.now();
+  if (left <= 0 || left > 120000) return;
+  veraWorkModeTimerUiIntervalId = window.setInterval(() => {
+    updateWorkModeTimerHeaderFromState();
+    if (veraWorkModeTimerFireAtMs == null) {
+      stopWorkModeTimerUiFastRefresh();
+      return;
+    }
+    if (Date.now() >= veraWorkModeTimerFireAtMs) stopWorkModeTimerUiFastRefresh();
+  }, 100);
+}
+
+function clearVeraWorkModeClientTimer() {
+  stopWorkModeTimerUiFastRefresh();
+  if (veraWorkModeTimerTimeoutId != null) {
+    clearTimeout(veraWorkModeTimerTimeoutId);
+    veraWorkModeTimerTimeoutId = null;
+  }
+  veraLastWorkModeTimerClientId = null;
+  veraWorkModeTimerFireAtMs = null;
+  updateWorkModeTimerHeaderFromState();
+}
+
+/** Server `/infer` + `/text` short-circuit: schedule a one-shot reminder in work mode only. */
+function applyWorkModeTimerPayload(wm) {
+  if (!wm || typeof wm !== "object") return;
+  if (typeof isVeraWorkModeOn !== "function" || !isVeraWorkModeOn()) return;
+  if (appModePrefix() !== "vera") return;
+  if (wm.cancel === true) {
+    clearVeraWorkModeClientTimer();
+    return;
+  }
+  const id = String(wm.id || "");
+  const fireMs = Number(wm.fire_at_epoch_ms);
+  const message = String(wm.message || "Your work mode timer is up.");
+  if (!Number.isFinite(fireMs)) return;
+  if (id && id === veraLastWorkModeTimerClientId) return;
+  clearVeraWorkModeClientTimer();
+  veraLastWorkModeTimerClientId = id || String(fireMs);
+  veraWorkModeTimerFireAtMs = fireMs;
+  updateWorkModeTimerHeaderFromState();
+  startWorkModeTimerUiFastRefreshIfNeeded();
+  const delay = Math.max(0, fireMs - Date.now());
+  veraWorkModeTimerTimeoutId = window.setTimeout(() => {
+    veraWorkModeTimerTimeoutId = null;
+    clearVeraWorkModeClientTimer();
+    if (typeof isVeraWorkModeOn === "function" && !isVeraWorkModeOn()) return;
+    if (appModePrefix() !== "vera") return;
+    try {
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(message);
+        u.rate = 1.0;
+        window.speechSynthesis.speak(u);
+      }
+    } catch (_) {}
+    try {
+      setStatus("Timer", "idle");
+    } catch (_) {}
+  }, delay);
+}
+
+window.clearVeraWorkModeClientTimer = clearVeraWorkModeClientTimer;
+
 function updateMuteInputButton() {
   const continuousMicReady = listeningMode === "continuous" && !!micStream;
   const label = !continuousMicReady
@@ -1073,7 +1212,7 @@ function showMutedStatusIfIdle() {
   if (processing || !getAudioEl()?.paused) return;
 
   waveState = "idle";
-  setStatus("Input muted", "idle");
+  setStatus("Input/output muted", "idle");
 }
 
 function setContinuousInputMuted(nextMuted) {
@@ -2114,6 +2253,57 @@ function spotifyEnsureNowState() {
   return window.__veraSpotifyNowState;
 }
 
+/** Plain-text-ish excerpt from the active reasoning panel for /infer grounding (follow-ups, code requests). */
+function collectWorkModeReasoningExcerptForContext(maxChars = 12000) {
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return "";
+  const activePanel = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active");
+  const turns = activePanel
+    ? [...activePanel.querySelectorAll(".vera-reasoning-turn")]
+    : [...document.querySelectorAll("#vera-reasoning-tab-panels .vera-reasoning-turn")];
+  if (!turns.length) return "";
+  const chunks = [];
+  const start = Math.max(0, turns.length - 4);
+  for (let i = start; i < turns.length; i += 1) {
+    const el = turns[i];
+    const md = String(el?.dataset?.markdownAcc || "").trim();
+    if (md) {
+      chunks.push(md);
+      continue;
+    }
+    const plain = String(el?.textContent || "").replace(/\s+/g, " ").trim();
+    if (plain) chunks.push(plain);
+  }
+  let out = chunks.join("\n\n---\n\n");
+  if (out.length > maxChars) out = `${out.slice(0, maxChars)}\n…`;
+  return out;
+}
+
+/** Recent visible Voice UI exchanges for deictic follow-ups like "this problem". */
+function collectWorkModeVoiceExcerptForContext(maxChars = 3500, maxRows = 8) {
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return "";
+  const convo = document.getElementById("vera-conversation");
+  if (!(convo instanceof HTMLElement)) return "";
+  const rows = [...convo.querySelectorAll(".message-row")].filter(
+    (row) => row.classList.contains("user") || row.classList.contains("vera")
+  );
+  if (!rows.length) return "";
+  const tail = rows.slice(-Math.max(2, maxRows));
+  const lines = [];
+  for (const row of tail) {
+    const bubble = row.querySelector(".bubble");
+    if (!(bubble instanceof HTMLElement)) continue;
+    if (bubble.classList.contains("interrupt-preview")) continue;
+    const role = row.classList.contains("user") ? "User" : "Assistant";
+    const text = String(bubble.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    lines.push(`${role}: ${text}`);
+  }
+  if (!lines.length) return "";
+  let out = lines.join("\n");
+  if (out.length > maxChars) out = `${out.slice(0, maxChars)}\n…`;
+  return out;
+}
+
 function buildClientContextSnapshot() {
   const prefix = appModePrefix();
   const inWorkMode = prefix === "vera" && isVeraWorkModeOn();
@@ -2138,6 +2328,13 @@ function buildClientContextSnapshot() {
     .map((x) => String(x.text || "").trim())
     .filter(Boolean);
 
+  const activeLaneIdx = inWorkMode ? getActiveReasoningLaneIndex() : null;
+  const reasoningExcerpt = inWorkMode ? collectWorkModeReasoningExcerptForContext() : "";
+  const voiceExcerpt = inWorkMode ? collectWorkModeVoiceExcerptForContext() : "";
+  const combinedProblemExcerpt = [reasoningExcerpt, voiceExcerpt]
+    .filter((s) => String(s || "").trim())
+    .join("\n\n---\n\n");
+
   return {
     mode: inWorkMode ? "work" : "flow",
     app: prefix,
@@ -2156,6 +2353,20 @@ function buildClientContextSnapshot() {
           ongoing_items: ongoing.slice(0, 8),
         }
       : null,
+    reasoning:
+      inWorkMode && combinedProblemExcerpt
+        ? {
+            active_panel_index: activeLaneIdx,
+            active_panel_label:
+              activeLaneIdx != null && Number.isFinite(Number(activeLaneIdx))
+                ? getWorkModeReasoningLaneLabel(Number(activeLaneIdx))
+                : "",
+            recent_problem_excerpt: combinedProblemExcerpt,
+            excerpt_chars: combinedProblemExcerpt.length,
+            recent_voice_excerpt: voiceExcerpt || "",
+          }
+        : null,
+    planning_deadline_timer: isPlanningDeadlineTimerEnabled(),
   };
 }
 
@@ -3571,6 +3782,7 @@ function closeReasoningTab(index) {
 }
 
 function wireReasoningTabStrip() {
+  wireReasoningMarkdownCodeCopy();
   const tabsEl = document.getElementById("vera-reasoning-tabs");
   const addBtn = document.getElementById("vera-reasoning-tab-add");
   if (!tabsEl || tabsEl.dataset.wiredReasoningTabs === "1") return;
@@ -3605,6 +3817,35 @@ function wireReasoningTabStrip() {
     window.addEventListener("beforeunload", persistVeraClientStateOnUnload);
     window.addEventListener("pagehide", persistVeraClientStateOnUnload);
   }
+}
+
+let __veraReasoningCodeCopyDelegation = false;
+function wireReasoningMarkdownCodeCopy() {
+  if (__veraReasoningCodeCopyDelegation) return;
+  __veraReasoningCodeCopyDelegation = true;
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".vera-md-code-copy");
+    if (!btn) return;
+    if (!document.getElementById("vera-app")?.contains(btn)) return;
+    e.preventDefault();
+    const frame = btn.closest(".vera-md-code-frame");
+    const codeEl = frame?.querySelector("pre code");
+    const text = codeEl ? String(codeEl.textContent ?? "") : "";
+    const reset = (label, html) => {
+      btn.innerHTML = html;
+      btn.setAttribute("aria-label", label);
+    };
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        reset("Copied", VERA_REASONING_CODE_COPIED_ICON);
+        window.setTimeout(() => reset("Copy code", VERA_REASONING_CODE_COPY_ICON), 1600);
+      } catch (_) {
+        reset("Copy failed", VERA_REASONING_CODE_COPY_ICON);
+        window.setTimeout(() => reset("Copy code", VERA_REASONING_CODE_COPY_ICON), 1600);
+      }
+    })();
+  });
 }
 
 function getWorkModeLeftPaneLayout() {
@@ -3658,6 +3899,238 @@ function wireWorkModeLeftPaneLayout() {
 }
 let workModeReasoningConfirmPending = null;
 let workModeReasoningAttachment = null;
+/** Blob URL for reasoning attachment hover preview; revoked when attachment clears. */
+let workModeAttachmentPreviewUrl = null;
+let workModeAttachmentPreviewHideTimer = null;
+
+function revokeWorkModeReasoningAttachmentPreviewUrl() {
+  if (workModeAttachmentPreviewUrl) {
+    try {
+      URL.revokeObjectURL(workModeAttachmentPreviewUrl);
+    } catch (_) {}
+    workModeAttachmentPreviewUrl = null;
+  }
+}
+
+function hideWorkModeAttachmentPreviewImmediate() {
+  window.clearTimeout(workModeAttachmentPreviewHideTimer);
+  workModeAttachmentPreviewHideTimer = null;
+  const pop = document.getElementById("vera-attachment-preview-popover");
+  if (pop) {
+    pop.hidden = true;
+    clearWorkModeAttachmentPreviewPopoverLayout(pop);
+    detachWorkModeAttachmentPreviewPositionListeners();
+  }
+}
+
+function scheduleHideWorkModeAttachmentPreview() {
+  window.clearTimeout(workModeAttachmentPreviewHideTimer);
+  workModeAttachmentPreviewHideTimer = window.setTimeout(() => {
+    workModeAttachmentPreviewHideTimer = null;
+    hideWorkModeAttachmentPreviewImmediate();
+  }, 220);
+}
+
+const workModePreviewLayout = { fn: null, attached: false, centerEl: null };
+
+function clearWorkModeAttachmentPreviewPopoverLayout(pop) {
+  if (!pop) return;
+  for (const k of ["position", "zIndex", "left", "right", "width", "maxHeight", "top", "bottom"]) {
+    pop.style[k] = "";
+  }
+}
+
+function ensureWorkModePreviewLayoutFn() {
+  if (!workModePreviewLayout.fn) {
+    workModePreviewLayout.fn = () => positionWorkModeAttachmentPreviewPopover();
+  }
+  return workModePreviewLayout.fn;
+}
+
+function attachWorkModeAttachmentPreviewPositionListeners() {
+  if (workModePreviewLayout.attached) return;
+  const fn = ensureWorkModePreviewLayoutFn();
+  window.addEventListener("scroll", fn, true);
+  window.addEventListener("resize", fn);
+  const centerEl = document.getElementById("vera-wm-center");
+  if (centerEl) centerEl.addEventListener("scroll", fn, true);
+  workModePreviewLayout.centerEl = centerEl;
+  workModePreviewLayout.attached = true;
+}
+
+function detachWorkModeAttachmentPreviewPositionListeners() {
+  if (!workModePreviewLayout.attached || !workModePreviewLayout.fn) return;
+  const fn = workModePreviewLayout.fn;
+  window.removeEventListener("scroll", fn, true);
+  window.removeEventListener("resize", fn);
+  workModePreviewLayout.centerEl?.removeEventListener("scroll", fn, true);
+  workModePreviewLayout.centerEl = null;
+  workModePreviewLayout.attached = false;
+}
+
+/**
+ * `#vera-wm-center` uses `backdrop-filter`, which creates a fixed-position containing block.
+ * Keeping the popover inside that subtree makes `left`/`bottom` disagree with `getBoundingClientRect()`.
+ */
+function ensureWorkModeAttachmentPreviewPopoverOnBody() {
+  const pop = document.getElementById("vera-attachment-preview-popover");
+  if (pop && pop.parentElement !== document.body) {
+    document.body.appendChild(pop);
+  }
+}
+
+/** Fixed overlay above the filename; viewport coords; left edge aligned with the filename. */
+function positionWorkModeAttachmentPreviewPopover() {
+  const pop = document.getElementById("vera-attachment-preview-popover");
+  const meta = document.getElementById("vera-reasoning-attach-meta");
+  const center = document.getElementById("vera-wm-center");
+  if (!pop || !meta || pop.hidden) return;
+  if (typeof isVeraWorkModeOn === "function" && !isVeraWorkModeOn()) return;
+  const r = meta.getBoundingClientRect();
+  if (r.width <= 0 && r.height <= 0) return;
+  const nameEl = meta.querySelector(".vera-reasoning-attach-name");
+  const ar = nameEl instanceof HTMLElement ? nameEl.getBoundingClientRect() : r;
+  const cr = center instanceof HTMLElement ? center.getBoundingClientRect() : ar;
+  const margin = 10;
+  const gap = 8;
+  const anchorTop = ar.top - gap;
+  const vwTop = margin;
+  const maxH = Math.max(100, anchorTop - vwTop);
+  const colLeft = cr.left + margin;
+  const colRight = cr.right - margin;
+  let w = Math.min(520, Math.max(200, colRight - colLeft));
+  w = Math.min(w, Math.max(200, window.innerWidth - 2 * margin));
+  let left = Math.round(ar.left);
+  left = Math.max(colLeft, Math.min(left, colRight - w));
+  left = Math.max(margin, Math.min(left, window.innerWidth - margin - w));
+  if (left + w > window.innerWidth - margin) {
+    w = Math.max(200, window.innerWidth - margin - left);
+  }
+  const capH = Math.min(480, window.innerHeight * 0.58, maxH);
+  pop.style.position = "fixed";
+  pop.style.zIndex = "12050";
+  pop.style.left = `${left}px`;
+  pop.style.width = `${Math.round(w)}px`;
+  pop.style.maxHeight = `${Math.round(capH)}px`;
+  pop.style.top = "auto";
+  pop.style.right = "auto";
+  pop.style.bottom = `${Math.round(window.innerHeight - anchorTop)}px`;
+}
+
+function showWorkModeAttachmentPreviewIfPossible() {
+  if (!workModeAttachmentPreviewUrl || !(workModeReasoningAttachment instanceof File)) return;
+  const pop = document.getElementById("vera-attachment-preview-popover");
+  const inner = document.getElementById("vera-attachment-preview-inner");
+  if (!pop || !inner) return;
+  window.clearTimeout(workModeAttachmentPreviewHideTimer);
+  workModeAttachmentPreviewHideTimer = null;
+  const f = workModeReasoningAttachment;
+  const name = (f.name || "").toLowerCase();
+  const isPdf = name.endsWith(".pdf") || (f.type || "").includes("pdf");
+  const isImage = (f.type || "").startsWith("image/") || /\.(png|jpe?g|webp)$/.test(name);
+  const url = workModeAttachmentPreviewUrl;
+  if (isImage) {
+    inner.innerHTML = `<img class="vera-attachment-preview-img" src="${url}" alt="">`;
+  } else if (isPdf) {
+    inner.innerHTML = `<iframe class="vera-attachment-preview-iframe" title="PDF preview" src="${url}"></iframe>`;
+  } else {
+    inner.innerHTML = `<p class="vera-attachment-preview-fallback">Preview not available for this file type.</p>`;
+  }
+  ensureWorkModeAttachmentPreviewPopoverOnBody();
+  pop.hidden = false;
+  attachWorkModeAttachmentPreviewPositionListeners();
+  const relayout = () => {
+    positionWorkModeAttachmentPreviewPopover();
+  };
+  requestAnimationFrame(() => {
+    relayout();
+    requestAnimationFrame(relayout);
+  });
+  const img = inner.querySelector("img");
+  if (img) {
+    img.addEventListener("load", relayout, { passive: true, once: true });
+    if (img.complete) relayout();
+  }
+}
+
+function ensureWorkModeAttachmentPreviewPopoverHoverWired() {
+  const pop = document.getElementById("vera-attachment-preview-popover");
+  if (!pop || pop.dataset.attachPreviewPopoverHoverWired === "1") return;
+  pop.dataset.attachPreviewPopoverHoverWired = "1";
+  pop.addEventListener("pointerenter", () => {
+    window.clearTimeout(workModeAttachmentPreviewHideTimer);
+    workModeAttachmentPreviewHideTimer = null;
+  });
+  pop.addEventListener("pointerleave", () => {
+    if (!workModeAttachmentPreviewUrl) return;
+    scheduleHideWorkModeAttachmentPreview();
+  });
+}
+
+function wireWorkModeReasoningAttachPreviewHover() {
+  const wrap = document.getElementById("vera-reasoning-attach-wrap");
+  if (!wrap || wrap.dataset.attachPreviewWired === "1") return;
+  wrap.dataset.attachPreviewWired = "1";
+  ensureWorkModeAttachmentPreviewPopoverOnBody();
+  ensureWorkModeAttachmentPreviewPopoverHoverWired();
+  wrap.addEventListener("pointerover", (e) => {
+    if (e.target.closest(".vera-reasoning-attach-remove")) return;
+    const nameEl = e.target.closest(".vera-reasoning-attach-name");
+    if (!nameEl) return;
+    if (!workModeAttachmentPreviewUrl) return;
+    showWorkModeAttachmentPreviewIfPossible();
+  });
+  wrap.addEventListener("pointerleave", (e) => {
+    if (!workModeAttachmentPreviewUrl) return;
+    const rel = e.relatedTarget;
+    const pop = document.getElementById("vera-attachment-preview-popover");
+    if (rel instanceof Node && pop?.contains(rel)) return;
+    scheduleHideWorkModeAttachmentPreview();
+  });
+  wrap.addEventListener("click", (e) => {
+    const rm = e.target.closest(".vera-reasoning-attach-remove");
+    if (!rm) return;
+    e.preventDefault();
+    applyWorkModeReasoningAttachmentFile(null);
+  });
+}
+
+function applyWorkModeReasoningAttachmentFile(f) {
+  const fileInput = document.getElementById("vera-reasoning-file");
+  if (!f) {
+    revokeWorkModeReasoningAttachmentPreviewUrl();
+    hideWorkModeAttachmentPreviewImmediate();
+    workModeReasoningAttachment = null;
+    if (fileInput) fileInput.value = "";
+    setWorkModeAttachmentMeta("");
+    return false;
+  }
+  const name = (f.name || "").toLowerCase();
+  const isPdf = name.endsWith(".pdf") || (f.type || "").includes("pdf");
+  const isImage = (f.type || "").startsWith("image/") || /\.(png|jpe?g|webp)$/.test(name);
+  if (!isPdf && !isImage) {
+    revokeWorkModeReasoningAttachmentPreviewUrl();
+    hideWorkModeAttachmentPreviewImmediate();
+    workModeReasoningAttachment = null;
+    if (fileInput) fileInput.value = "";
+    setWorkModeAttachmentMeta("Unsupported file. Use one PDF or image.");
+    return false;
+  }
+  if (f.size > 25 * 1024 * 1024) {
+    revokeWorkModeReasoningAttachmentPreviewUrl();
+    hideWorkModeAttachmentPreviewImmediate();
+    workModeReasoningAttachment = null;
+    if (fileInput) fileInput.value = "";
+    setWorkModeAttachmentMeta("File too large. Max 25MB.");
+    return false;
+  }
+  revokeWorkModeReasoningAttachmentPreviewUrl();
+  workModeReasoningAttachment = f;
+  workModeAttachmentPreviewUrl = URL.createObjectURL(f);
+  setWorkModeAttachmentMeta(`Attached: ${f.name}`);
+  return true;
+}
+
 const workModeReasoningLaneBusy = new Map(WORK_MODE_REASONING_LANES.map((lane) => [lane.idx, false]));
 const workModeReasoningLaneWaitQueue = [];
 const workModeReasoningAbortControllers = new Map();
@@ -3800,6 +4273,7 @@ function scheduleWorkModeTypedQueueDrain() {
 
 window.clearWorkModeReasoningPending = function clearWorkModeReasoningPending() {
   workModeReasoningConfirmPending = null;
+  clearVeraWorkModeClientTimer();
 };
 
 function isVeraWorkModeOn() {
@@ -3858,15 +4332,187 @@ function escapeHtml(s) {
     .replaceAll(">", "&gt;");
 }
 
+/** Map ```fence language id to highlight.js grammar id when registered. */
+function mapReasoningFenceLangToHljs(raw) {
+  const k = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (!k) return null;
+  const aliases = {
+    js: "javascript",
+    mjs: "javascript",
+    cjs: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    jsx: "javascript",
+    py: "python",
+    rb: "ruby",
+    rs: "rust",
+    sh: "bash",
+    zsh: "bash",
+    shell: "bash",
+    yml: "yaml",
+    md: "markdown",
+    cpp: "cpp",
+    cxx: "cpp",
+    h: "c",
+    hpp: "cpp",
+    cs: "csharp",
+    fs: "fsharp",
+    kt: "kotlin",
+    ps1: "powershell",
+    ps: "powershell"
+  };
+  const mapped = aliases[k] || k;
+  try {
+    if (typeof hljs !== "undefined" && typeof hljs.getLanguage === "function" && hljs.getLanguage(mapped)) {
+      return mapped;
+    }
+  } catch (_) {}
+  try {
+    if (typeof hljs !== "undefined" && typeof hljs.getLanguage === "function" && hljs.getLanguage(k)) {
+      return k;
+    }
+  } catch (_) {}
+  return null;
+}
+
+/** SVG: overlapping rectangles (standard “copy” affordance). */
+const VERA_REASONING_CODE_COPY_ICON =
+  '<svg class="vera-md-code-copy-icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+const VERA_REASONING_CODE_COPIED_ICON =
+  '<svg class="vera-md-code-copy-icon vera-md-code-copy-icon--ok" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>';
+
+function formatReasoningCodeBlock(code, langHint) {
+  const raw = String(code ?? "");
+  const esc = escapeHtml(raw);
+  let inner = esc;
+  let codeClass = "vera-md-code";
+  try {
+    if (typeof hljs !== "undefined" && raw.length > 0) {
+      const lang = mapReasoningFenceLangToHljs(langHint);
+      if (lang) {
+        const r = hljs.highlight(raw, { language: lang, ignoreIllegals: true });
+        inner = r.value;
+        codeClass = `hljs vera-md-code language-${lang}`;
+      } else {
+        const r = hljs.highlightAuto(raw, [
+          "javascript",
+          "typescript",
+          "python",
+          "json",
+          "bash",
+          "html",
+          "xml",
+          "css",
+          "java",
+          "go",
+          "rust",
+          "cpp",
+          "csharp",
+          "sql",
+          "php",
+          "ruby",
+          "kotlin",
+          "swift"
+        ]);
+        inner = r.value;
+        codeClass = `hljs vera-md-code language-${r.language || "plaintext"}`;
+      }
+    }
+  } catch (_) {
+    inner = esc;
+  }
+  const labelRaw = String(langHint || "").trim();
+  const toolbarLabel = labelRaw ? labelRaw : "auto";
+  return (
+    `<div class="vera-md-code-frame">` +
+    `<div class="vera-md-code-toolbar">` +
+    `<span class="vera-md-code-lang">${escapeHtml(toolbarLabel)}</span>` +
+    `<button type="button" class="vera-md-code-copy" title="Copy code" aria-label="Copy code">${VERA_REASONING_CODE_COPY_ICON}</button></div>` +
+    `<pre class="vera-md-pre"><code class="${codeClass}">${inner}</code></pre></div>`
+  );
+}
+
+/** LaTeX / model habit: `\$` or `\\$` before currency — show a normal dollar in HTML. */
+function unwrapTexDollars(s) {
+  return String(s || "").replace(/\\+\$/g, "$");
+}
+
+/**
+ * Replace `\boxed{ ... }` (balanced braces) with private-use placeholders so inner `$` does not
+ * break `$...$` math splitting. Full `\boxed{...}` strings are appended to `outLatex`.
+ * Extraction runs on the full markdown before paragraph/list splitting so placeholders are never orphaned.
+ */
+const VERA_BOXED_PH_OPEN = "\uE000";
+const VERA_BOXED_PH_CLOSE = "\uE001";
+
+/** `\boxed{...}` is math-mode; bare `$` before digits is currency and breaks KaTeX — emit `\$…`. */
+function normalizeCurrencyDollarsInBoxedInner(inner) {
+  return String(inner || "").replace(/\$(?=\d)/g, "\\$");
+}
+
+function extractLatexBoxedPlaceholders(s, outLatex) {
+  const src = String(s || "");
+  let out = "";
+  let i = 0;
+  const re = /\\boxed(?:\s*)\{/g;
+  while (i < src.length) {
+    re.lastIndex = i;
+    const m = re.exec(src);
+    if (!m) {
+      out += src.slice(i);
+      break;
+    }
+    const k = m.index;
+    out += src.slice(i, k);
+    const bodyStart = m.index + m[0].length;
+    let depth = 1;
+    let p = bodyStart;
+    while (p < src.length && depth > 0) {
+      const c = src[p++];
+      if (c === "{") depth += 1;
+      else if (c === "}") depth -= 1;
+    }
+    if (depth !== 0) {
+      out += src.slice(k, Math.min(k + m[0].length, src.length));
+      i = k + m[0].length;
+      continue;
+    }
+    const inner = normalizeCurrencyDollarsInBoxedInner(src.slice(bodyStart, p - 1));
+    const full = `\\boxed{${inner}}`;
+    const id = outLatex.length;
+    outLatex.push(full);
+    out += `${VERA_BOXED_PH_OPEN}BOX${id}${VERA_BOXED_PH_CLOSE}`;
+    i = p;
+  }
+  return out;
+}
+
 function renderWorkModeMarkdown(el, markdown, summaryText = "") {
   if (!el) return;
-  const lines = String(markdown || "").replace(/\r/g, "").split("\n");
+  const globalBoxed = [];
+  const mdWithBoxPh = extractLatexBoxedPlaceholders(String(markdown || "").replace(/\r/g, ""), globalBoxed);
+  const lines = mdWithBoxPh.split("\n");
+  let olItemSeq = 0;
+  const katexRenderOpts = (displayMode) => ({
+    throwOnError: false,
+    displayMode,
+    strict: "ignore",
+    trust: true,
+  });
   const renderMath = (src, displayMode) => {
+    const normalized = String(src || "")
+      .replace(/\u2019/g, "'")
+      .replace(/\u2018/g, "'")
+      .replace(/\u201c/g, '"')
+      .replace(/\u201d/g, '"');
+    const cleaned = unwrapTexDollars(normalized);
     try {
       if (window.katex && typeof window.katex.renderToString === "function") {
-        return window.katex.renderToString(src, { throwOnError: false, displayMode });
+        return window.katex.renderToString(cleaned, katexRenderOpts(displayMode));
       }
-    } catch {}
+    } catch (_) {}
     return null;
   };
   const applyInlineMath = (escapedHtml) => {
@@ -3890,15 +4536,24 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
   };
   const inline = (text) => {
     let t = escapeHtml(text);
-    t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
+    const codes = [];
+    t = t.replace(/`([^`]+)`/g, (_, c) => {
+      codes.push(`<code>${c}</code>`);
+      return `@@CODE${codes.length - 1}@@`;
+    });
+    t = unwrapTexDollars(t);
     t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    return applyInlineMath(t);
+    t = applyInlineMath(t);
+    t = t.replace(/@@CODE(\d+)@@/g, (_, idx) => codes[Number(idx)] ?? "");
+    return t;
   };
 
   // Keep summaryText for voice/history plumbing, but do not render it in the reasoning panel UI.
   let html = "";
   let inCode = false;
+  let codeFenceLang = "";
+  const codeLines = [];
   let listType = "";
   let para = [];
   const flushPara = () => {
@@ -3914,22 +4569,27 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
     }
   };
 
-  for (const raw of lines) {
-    const line = raw ?? "";
-    if (line.trimStart().startsWith("```")) {
+  for (let li = 0; li < lines.length; li += 1) {
+    const raw = lines[li] ?? "";
+    const line = raw;
+    const fenceTrim = line.trim();
+    if (fenceTrim.startsWith("```")) {
       flushPara();
       closeList();
       if (!inCode) {
         inCode = true;
-        html += "<pre><code>";
+        codeFenceLang = fenceTrim.slice(3).trim();
+        codeLines.length = 0;
       } else {
         inCode = false;
-        html += "</code></pre>";
+        html += formatReasoningCodeBlock(codeLines.join("\n"), codeFenceLang);
+        codeFenceLang = "";
+        codeLines.length = 0;
       }
       continue;
     }
     if (inCode) {
-      html += `${escapeHtml(line)}\n`;
+      codeLines.push(line);
       continue;
     }
     const dispDollar = line.match(/^\s*\$\$(.+?)\$\$\s*$/);
@@ -3937,7 +4597,7 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
       flushPara();
       closeList();
       const block = renderMath(dispDollar[1], true);
-      html += block || `<pre><code>${escapeHtml(dispDollar[1])}</code></pre>`;
+      html += block || `<pre><code>${escapeHtml(unwrapTexDollars(dispDollar[1]))}</code></pre>`;
       continue;
     }
     const dispBracket = line.match(/^\s*\\\[(.+?)\\\]\s*$/);
@@ -3945,7 +4605,7 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
       flushPara();
       closeList();
       const block = renderMath(dispBracket[1], true);
-      html += block || `<pre><code>${escapeHtml(dispBracket[1])}</code></pre>`;
+      html += block || `<pre><code>${escapeHtml(unwrapTexDollars(dispBracket[1]))}</code></pre>`;
       continue;
     }
     const h = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
@@ -3962,8 +4622,10 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
       if (listType && listType !== "ol") closeList();
       if (!listType) {
         listType = "ol";
-        html += "<ol>";
+        const startAttr = olItemSeq > 0 ? ` start="${olItemSeq + 1}"` : "";
+        html += `<ol${startAttr}>`;
       }
+      olItemSeq += 1;
       html += `<li>${inline(ol[1])}</li>`;
       continue;
     }
@@ -3980,15 +4642,51 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
     }
     if (!line.trim()) {
       flushPara();
-      closeList();
+      let continuesList = false;
+      if (listType) {
+        for (let j = li + 1; j < lines.length; j += 1) {
+          const rawNext = lines[j] ?? "";
+          const nextTrim = String(rawNext).trim();
+          if (!nextTrim) continue;
+          continuesList =
+            listType === "ol"
+              ? /^\s*\d+\.\s+/.test(rawNext)
+              : listType === "ul"
+                ? /^\s*[-*]\s+/.test(rawNext)
+                : false;
+          break;
+        }
+      }
+      if (!continuesList) closeList();
       continue;
     }
+    if (listType) closeList();
     para.push(line.trim());
   }
   flushPara();
   closeList();
-  if (inCode) html += "</code></pre>";
+  if (inCode) {
+    html += formatReasoningCodeBlock(codeLines.join("\n"), codeFenceLang);
+  }
+  for (let bi = 0; bi < globalBoxed.length; bi += 1) {
+    const ph = `${VERA_BOXED_PH_OPEN}BOX${bi}${VERA_BOXED_PH_CLOSE}`;
+    const rendered =
+      renderMath(globalBoxed[bi], false) || escapeHtml(globalBoxed[bi]);
+    html = html.split(ph).join(rendered);
+  }
+  html = html.replace(/@@BOX\d+@@/g, "");
   el.innerHTML = html;
+}
+
+/** Only scroll to the latest content if the user is already near the bottom (so they can read upward while streaming). */
+function maybeReasoningScrollToLatest(scrollHost, opts = {}) {
+  const el = scrollHost;
+  if (!(el instanceof HTMLElement)) return;
+  const threshold = Number.isFinite(Number(opts.thresholdPx)) ? Number(opts.thresholdPx) : 96;
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+  if (distanceFromBottom <= threshold) {
+    el.scrollTop = el.scrollHeight;
+  }
 }
 
 async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decoder, opts = {}) {
@@ -4016,7 +4714,7 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
           mdEl.dataset.markdownAcc = markdownAcc;
           renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
           const scrollHost = mdEl.closest(".vera-reasoning-scroll") || mdEl;
-          scrollHost.scrollTop = scrollHost.scrollHeight;
+          maybeReasoningScrollToLatest(scrollHost);
         }
       }
       if (done) break;
@@ -4058,10 +4756,18 @@ function stripLegacyReasoningLaneNamesInSummary(text) {
   return s;
 }
 
-function normalizeWorkModeReasoningSummary(summaryText, laneLabel = "") {
-  const handoffLine = laneLabel
-    ? `Opening full explanation in ${laneLabel}.`
-    : "Opening full explanation now.";
+function normalizeWorkModeReasoningSummary(summaryText, laneLabel = "", opts = {}) {
+  const outputLaneIdx = opts.outputLaneIdx;
+  const focusLaneIdx = opts.focusLaneIdx;
+  const samePanel =
+    outputLaneIdx != null &&
+    focusLaneIdx != null &&
+    Number(outputLaneIdx) === Number(focusLaneIdx);
+  const handoffLine = samePanel
+    ? ""
+    : laneLabel
+      ? `Opening full explanation in ${laneLabel}.`
+      : "Opening full explanation now.";
   const firstRawLine = stripLegacyReasoningLaneNamesInSummary(
     String(summaryText || "")
       .replace(/\r/g, "\n")
@@ -4076,10 +4782,11 @@ function normalizeWorkModeReasoningSummary(summaryText, laneLabel = "") {
   if (sentenceMatch?.[1]) answerLine = sentenceMatch[1].trim();
   if (!answerLine) answerLine = "Here is the key idea in one line.";
   if (!/[.!?]$/.test(answerLine)) answerLine += ".";
+  const text = handoffLine ? `${answerLine}\n${handoffLine}` : answerLine;
   return {
     answerLine,
     handoffLine,
-    text: `${answerLine}\n${handoffLine}`
+    text
   };
 }
 
@@ -4166,7 +4873,8 @@ function workModeReasoningPrepOutcome(chainPromise, inferThreadAnchor, inferGate
     chain,
     inferGate,
     inferThreadAnchor: String(inferThreadAnchor || "").trim(),
-    reasoningHadFileUpload: Boolean(meta.reasoningHadFileUpload)
+    reasoningHadFileUpload: Boolean(meta.reasoningHadFileUpload),
+    reasoningUploadState: meta.reasoningUploadState || null
   };
 }
 
@@ -4211,41 +4919,6 @@ function isLikelyWorkChecklistEditIntent(text) {
   if (hasChecklist && /\b(add|remove)\b/.test(t)) return true;
   if (/\b(update|replace)\b/.test(t) && (/\bwith\b/.test(t) || /\bitem\s+\d+\b/.test(t))) {
     return true;
-  }
-  return false;
-}
-
-function isBanalWorkModeAckOnly(text) {
-  const s = String(text || "").trim();
-  if (!s || s.length > 56) return false;
-  return /^(thanks|thank\s+you|thx|ty|ok|okay|k\.?|cool|nice|great|perfect|sounds\s+good|got\s+it|bye|goodbye)\b/i.test(
-    s
-  );
-}
-
-/**
- * True when the user is clearly continuing the prior work-mode thread (short or question-like follow-up).
- * Used so reasoning still runs when /classify says prompt_reasoning=false but the turn is still about ANCHOR.
- */
-function workModeAnchoredFollowUpReasoning(trimmed, priorThreadAnchor) {
-  const cur = String(trimmed || "").trim();
-  const prior = String(priorThreadAnchor || "").trim();
-  if (!cur || !prior) return false;
-  if (cur.toLowerCase() === prior.toLowerCase()) return false;
-  if (isGenericExampleFollowUpText(cur)) return false;
-  if (isBanalWorkModeAckOnly(cur)) return false;
-  const sim = topicSimilarityScore(cur, prior);
-  if (sim >= 0.11) return true;
-  const continuationCue =
-    /\b(it|its|it's|that|this|these|those|there|your (answer|reply|response|explanation|point)|the (above|previous)|same (thing|topic)|more detail|in more detail|go deeper|elaborate|clarify|follow[- ]?up|you (said|mentioned|meant))\b/i.test(
-      cur
-    );
-  if (continuationCue && cur.length <= 140) return true;
-  if (/\?/.test(cur) && cur.length <= 160 && (continuationCue || sim >= 0.04)) return true;
-  if (cur.length > 160) {
-    return /\b(why|how|what|when|where|who|which|explain|elaborate|detail|more|continue|clarify|example|examples?|next|then|because|although|however|actually|can you|could you|would you|help|unsure|confused|follow\s*up)\b/i.test(
-      cur
-    );
   }
   return false;
 }
@@ -4353,7 +5026,6 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
 
   let classifyRoute = false;
   let continuePriorLane = false;
-  let anchoredFollowUpReasoning = false;
   try {
     const classifyBody = { session_id: getSessionId(), text: trimmed };
     if (
@@ -4411,25 +5083,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         guideWritingTask
       );
     })();
-    anchoredFollowUpReasoning = workModeAnchoredFollowUpReasoning(trimmed, priorThreadAnchor);
-    routeReasoning =
-      classifyRoute || heuristicReasoning || continuePriorLane || anchoredFollowUpReasoning;
+    routeReasoning = classifyRoute || heuristicReasoning;
     if (!routeReasoning) {
       if (!isGenericExampleFollowUpText(trimmed)) {
         workModeLastSubstantiveUserText = trimmed;
       }
       return workModeReasoningPrepOutcome(
         Promise.resolve(),
-        computeWorkModeInferThreadAnchor(
-          trimmed,
-          priorThreadAnchor,
-          Boolean(continuePriorLane || anchoredFollowUpReasoning)
-        )
+        computeWorkModeInferThreadAnchor(trimmed, priorThreadAnchor, Boolean(continuePriorLane))
       );
     }
   }
 
-  const continueLaneForThisTurn = Boolean(continuePriorLane || anchoredFollowUpReasoning);
+  const continueLaneForThisTurn = Boolean(continuePriorLane);
   const inferThreadAnchor = computeWorkModeInferThreadAnchor(
     trimmed,
     priorThreadAnchor,
@@ -4437,6 +5103,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   );
 
   workModeReasoningConfirmPending = null;
+  const reasoningUserFocusLaneIdx = getActiveReasoningLaneIndex();
+  const reasoningUploadState = hasUpload ? { failed: false } : null;
   const laneIdx = await selectLaneForWorkModeReasoningTurn(trimmed, {
     continuePriorLane: continueLaneForThisTurn
   });
@@ -4445,7 +5113,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     workModeLastSubstantiveLaneIdx = laneIdx;
     workModeLastSubstantiveUserText = trimmed;
   }
-  const useEarlyInferGate = !hasUpload;
+  const useEarlyInferGate = true;
   let inferGateEarlyResolve = null;
   const inferGateEarlyP = useEarlyInferGate
     ? new Promise((resolve) => {
@@ -4501,11 +5169,13 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             /* ignore */
           }
           setWorkModeAttachmentMeta(msg);
+          if (reasoningUploadState) reasoningUploadState.failed = true;
           endWorkModeReasoningLaneRun(laneIdx);
           return "reasoning-upload-failed";
         }
         if (!sr.body) {
           setWorkModeAttachmentMeta("Upload failed: empty response body.");
+          if (reasoningUploadState) reasoningUploadState.failed = true;
           endWorkModeReasoningLaneRun(laneIdx);
           return "reasoning-upload-failed";
         }
@@ -4526,6 +5196,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         }
       }
     } catch (err) {
+      if (reasoningUploadState) reasoningUploadState.failed = true;
       endWorkModeReasoningLaneRun(laneIdx);
       throw err;
     }
@@ -4560,7 +5231,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           }
           if (o.type === "error") break;
           if (o.type === "summary" && o.text) {
-            const normalizedSummary = normalizeWorkModeReasoningSummary(String(o.text), laneLabel);
+            const normalizedSummary = normalizeWorkModeReasoningSummary(String(o.text), laneLabel, {
+              outputLaneIdx: laneIdx,
+              focusLaneIdx: reasoningUserFocusLaneIdx
+            });
             turnEl.dataset.summaryText = normalizedSummary.text;
             formData.append("reasoning_voice_coach", normalizedSummary.text);
             foundSummary = true;
@@ -4599,7 +5273,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     } else {
       endWorkModeReasoningLaneRun(laneIdx);
     }
-    scrollEl.scrollTop = scrollEl.scrollHeight;
+    maybeReasoningScrollToLatest(scrollEl);
     } finally {
       signalInferGateEarly();
     }
@@ -4609,18 +5283,33 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       ? Promise.race([inferGateEarlyP, chainP]).then(() => {})
       : chainP;
   return workModeReasoningPrepOutcome(chainP, inferThreadAnchor, inferGate, {
-    reasoningHadFileUpload: hasUpload
+    reasoningHadFileUpload: hasUpload,
+    reasoningUploadState
   });
 }
 
 function setWorkModeAttachmentMeta(message) {
   const meta = document.getElementById("vera-reasoning-attach-meta");
   if (!meta) return;
-  meta.textContent = message || "";
+  hideWorkModeAttachmentPreviewImmediate();
+  const m = String(message || "");
+  const att = workModeReasoningAttachment;
+  if (
+    att instanceof File &&
+    att.size > 0 &&
+    workModeAttachmentPreviewUrl &&
+    /^Attached:\s+/i.test(m)
+  ) {
+    const nameEsc = escapeHtml(att.name);
+    meta.innerHTML = `<span class="vera-reasoning-attach-line vera-reasoning-attach-line--has-file"><span class="vera-reasoning-attach-prefix">Attached:</span><span class="vera-reasoning-attach-name" tabindex="0" role="button" title="Hover for large preview">${nameEsc}</span><button type="button" class="vera-reasoning-attach-remove" aria-label="Remove attachment" title="Remove file">×</button></span>`;
+    return;
+  }
+  meta.textContent = m;
 }
 
 /** Text-only reasoning stream into the reasoning panel (no `/infer`). File uploads use `maybePrepareWorkModeReasoning` + typed infer instead. */
 async function streamWorkModeReasoningComposer(text, signal) {
+  const reasoningUserFocusLaneIdx = getActiveReasoningLaneIndex();
   const laneIdx = await acquireWorkModeReasoningLane(text);
   const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
   const laneId = getWorkModeReasoningLaneId(laneIdx);
@@ -4684,14 +5373,19 @@ async function streamWorkModeReasoningComposer(text, signal) {
             continue;
           }
           if (o.type === "summary" && o.text) {
-            summaryText = normalizeWorkModeReasoningSummary(String(o.text), laneLabel).text;
+            summaryText = normalizeWorkModeReasoningSummary(String(o.text), laneLabel, {
+              outputLaneIdx: laneIdx,
+              focusLaneIdx: reasoningUserFocusLaneIdx
+            }).text;
             turnEl.dataset.summaryText = summaryText;
             renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
+            maybeReasoningScrollToLatest(scrollEl);
           }
           if (o.type === "markdown" && o.text) {
             markdownAcc += String(o.text);
             turnEl.dataset.markdownAcc = markdownAcc;
             renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
+            maybeReasoningScrollToLatest(scrollEl);
           }
         }
         if (done) break;
@@ -4702,7 +5396,7 @@ async function streamWorkModeReasoningComposer(text, signal) {
       markdownText: markdownAcc,
       userPrompt: text
     });
-    scrollEl.scrollTop = scrollEl.scrollHeight;
+    maybeReasoningScrollToLatest(scrollEl);
   } finally {
     endWorkModeReasoningLaneRun(laneIdx);
   }
@@ -5737,41 +6431,16 @@ function wireWorkModeChecklistAndComposer() {
   wireWorkChecklistCompletedCollapse();
   wireWorkModeLeftPaneLayout();
   applyWorkModeLeftPaneLayoutFromStorage();
+  wireWorkModeReasoningAttachPreviewHover();
   const rs = document.getElementById("vera-reasoning-send");
   const cancelBtn = document.getElementById("vera-reasoning-cancel");
   const ri = document.getElementById("vera-reasoning-input");
   const attachBtn = document.getElementById("vera-reasoning-attach-btn");
   const fileInput = document.getElementById("vera-reasoning-file");
-  const applyReasoningAttachmentFile = (f) => {
-    if (!f) {
-      workModeReasoningAttachment = null;
-      if (fileInput) fileInput.value = "";
-      setWorkModeAttachmentMeta("");
-      return false;
-    }
-    const name = (f.name || "").toLowerCase();
-    const isPdf = name.endsWith(".pdf") || (f.type || "").includes("pdf");
-    const isImage = (f.type || "").startsWith("image/") || /\.(png|jpe?g|webp)$/.test(name);
-    if (!isPdf && !isImage) {
-      workModeReasoningAttachment = null;
-      if (fileInput) fileInput.value = "";
-      setWorkModeAttachmentMeta("Unsupported file. Use one PDF or image.");
-      return false;
-    }
-    if (f.size > 25 * 1024 * 1024) {
-      workModeReasoningAttachment = null;
-      if (fileInput) fileInput.value = "";
-      setWorkModeAttachmentMeta("File too large. Max 25MB.");
-      return false;
-    }
-    workModeReasoningAttachment = f;
-    setWorkModeAttachmentMeta(`Attached: ${f.name}`);
-    return true;
-  };
   attachBtn?.addEventListener("click", () => fileInput?.click());
   fileInput?.addEventListener("change", () => {
     const f = fileInput.files?.[0] || null;
-    applyReasoningAttachmentFile(f);
+    applyWorkModeReasoningAttachmentFile(f);
   });
 
   const submitWorkModeReasoningComposer = async () => {
@@ -5789,6 +6458,8 @@ function wireWorkModeChecklistAndComposer() {
       } catch (err) {
         console.warn("[WorkMode] reasoning composer upload", err);
       } finally {
+        revokeWorkModeReasoningAttachmentPreviewUrl();
+        hideWorkModeAttachmentPreviewImmediate();
         workModeReasoningAttachment = null;
         if (fileInput) fileInput.value = "";
         setWorkModeAttachmentMeta("");
@@ -5836,7 +6507,7 @@ function wireWorkModeChecklistAndComposer() {
     const stamped = new File([imageFile], `pasted-image-${Date.now()}.${ext}`, {
       type: imageFile.type || "image/png",
     });
-    const ok = applyReasoningAttachmentFile(stamped);
+    const ok = applyWorkModeReasoningAttachmentFile(stamped);
     if (ok) e.preventDefault();
   });
 
@@ -5905,6 +6576,52 @@ function wireWorkModeChecklistAndComposer() {
   syncWorkChecklistEraseButton();
   syncWorkChecklistHelpPlanButton();
   syncWorkChecklistSyncPlanButton();
+  wireWorkModeGlobalImagePaste();
+}
+
+function wireWorkModeGlobalImagePaste() {
+  if (window.__veraWorkModeGlobalImagePaste === "1") return;
+  window.__veraWorkModeGlobalImagePaste = "1";
+  document.addEventListener(
+    "paste",
+    (e) => {
+      if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
+      const t = e.target;
+      if (t instanceof Node && t instanceof HTMLElement) {
+        if (t.closest("#vera-reasoning-input, #vera-reasoning-compose, #vera-reasoning-file")) return;
+        if (
+          t instanceof HTMLInputElement ||
+          t instanceof HTMLTextAreaElement ||
+          (typeof t.isContentEditable === "boolean" && t.isContentEditable)
+        ) {
+          return;
+        }
+      }
+      const cd = e.clipboardData;
+      if (!cd?.items?.length) return;
+      let imageFile = null;
+      for (const item of cd.items) {
+        if (!item || item.kind !== "file") continue;
+        if ((item.type || "").startsWith("image/")) {
+          imageFile = item.getAsFile();
+          if (imageFile) break;
+        }
+      }
+      if (!imageFile) return;
+      const ext = (imageFile.type || "").includes("png")
+        ? "png"
+        : (imageFile.type || "").includes("webp")
+        ? "webp"
+        : "jpg";
+      const stamped = new File([imageFile], `pasted-image-${Date.now()}.${ext}`, {
+        type: imageFile.type || "image/png",
+      });
+      if (!applyWorkModeReasoningAttachmentFile(stamped)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    true
+  );
 }
 
 wireWorkModeChecklistAndComposer();
@@ -5942,6 +6659,7 @@ function wireVeraHeaderDateTime() {
       day: "numeric",
       year: "numeric",
     });
+    updateWorkModeTimerHeaderFromState();
   };
   tick();
   veraHeaderDateTimeTimer = setInterval(tick, 1000);
@@ -6254,6 +6972,9 @@ function applyActionPayload(data) {
 /** News/finance side panel + assistant bubble — call when main reply audio actually starts (not when LLM JSON/meta arrives). */
 function applyAssistantReplyAndPanels(data) {
   if (!data) return;
+  if (data.work_mode_timer) {
+    applyWorkModeTimerPayload(data.work_mode_timer);
+  }
   applyActionPayload(data);
   if (data.reply == null || data.reply === "") return;
   addBubble(data.reply, "vera");
@@ -7503,6 +8224,17 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
     if (typeof onPlayEnd === "function") onPlayEnd();
     return;
   }
+  if (listeningMode === "continuous" && inputMuted) {
+    logVeraSettings("tts_play_suppressed_continuous_input_muted", { mode: "playTtsFromApi" });
+    mainTtsPlaybackActive = false;
+    if (typeof onPlayStart === "function") onPlayStart();
+    waveState = "idle";
+    processing = false;
+    requestInFlight = false;
+    showMutedStatusIfIdle();
+    if (typeof onPlayEnd === "function") onPlayEnd();
+    return;
+  }
   const urls = resolveAudioUrls(data);
   if (!urls.length) return;
 
@@ -7697,6 +8429,55 @@ async function playTtsUrlSequenceIncremental(
   } catch (e) {
     mainTtsPlaybackActive = false;
     throw e;
+  }
+}
+
+/**
+ * When NDJSON playback is queued behind prior TTS, `runNdjsonTtsPlayback` may not start until later,
+ * delaying `meta` and leaving work-mode timers disarmed. Read a cloned body until `meta` and apply
+ * `work_mode_timer` immediately (main infer still consumes the original `res` body).
+ */
+async function tryPeekApplyWorkModeTimerFromNdjsonClone(res) {
+  if (!res?.body || !res.ok) return;
+  let c;
+  try {
+    c = res.clone();
+  } catch {
+    return;
+  }
+  const reader = c.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t) continue;
+        let obj;
+        try {
+          obj = JSON.parse(t);
+        } catch {
+          continue;
+        }
+        if (obj.type === "asr") continue;
+        if (obj.type === "meta") {
+          if (obj.work_mode_timer) applyWorkModeTimerPayload(obj.work_mode_timer);
+          return;
+        }
+        if (obj.type === "chunk" || obj.type === "done") return;
+      }
+    }
+  } catch {
+    /* ignore */
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch (_) {}
   }
 }
 
@@ -8452,19 +9233,13 @@ function removeMainBrowserLiveBubble() {
 }
 
 /**
- * Work-mode `/infer` after optional reasoning: file-upload reasoning waits for the full chain (and
- * skips infer on upload failure). Text-only reasoning unblocks infer once the summary/coach line is
- * ready so TTS can overlap the tail markdown stream.
+ * Work-mode `/infer` after optional reasoning: infer starts once the reasoning summary (voice coach)
+ * is ready, overlapping the markdown tail. Upload failures skip `/infer` after the gate opens.
  */
 async function runInferAfterWorkModeReasoningPrep(formData, prep, inferOpts = {}) {
   const p = prep || {};
-  if (p.reasoningHadFileUpload) {
-    const prepOutcome = await p.chain;
-    if (prepOutcome === "reasoning-upload-failed") return "reasoning-upload-failed";
-    await runInferMainPipeline(formData, inferOpts);
-    return;
-  }
   await p.inferGate;
+  if (p.reasoningUploadState?.failed) return "reasoning-upload-failed";
   await runInferMainPipeline(formData, inferOpts);
   await p.chain;
 }
@@ -8508,13 +9283,39 @@ async function finalizeMainBrowserTranscript(text) {
   }
   formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
 
+  const voiceAttach =
+    workModeReasoningAttachment instanceof File && workModeReasoningAttachment.size > 0
+      ? workModeReasoningAttachment
+      : null;
+  if (voiceAttach) {
+    const forInfer = voiceAttach.slice(0, voiceAttach.size, voiceAttach.type || undefined);
+    formData.append("context_file", forInfer, voiceAttach.name || "upload");
+  }
+
   logVoiceTranscript("final", trimmed, { path: "main-browser-asr" });
   logFinalTranscriptSentToLlm("main-browser-asr", trimmed);
   attachPipelineAbortSignal();
   const pipelineSig = activePipelineAbort.signal;
-  const prep = await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig);
-  if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
-  await runInferAfterWorkModeReasoningPrep(formData, prep, { signal: pipelineSig });
+  let clearedVoiceAttach = false;
+  const clearVoiceReasoningAttach = () => {
+    if (!voiceAttach || clearedVoiceAttach) return;
+    clearedVoiceAttach = true;
+    revokeWorkModeReasoningAttachmentPreviewUrl();
+    hideWorkModeAttachmentPreviewImmediate();
+    workModeReasoningAttachment = null;
+    const fin = document.getElementById("vera-reasoning-file");
+    if (fin) fin.value = "";
+    setWorkModeAttachmentMeta("");
+  };
+  try {
+    const prep = await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig, {
+      attachment: voiceAttach
+    });
+    if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
+    await runInferAfterWorkModeReasoningPrep(formData, prep, { signal: pipelineSig });
+  } finally {
+    clearVoiceReasoningAttach();
+  }
 }
 
 function startMainBrowserRecognitionContinuous() {
@@ -9007,6 +9808,9 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
   applyClientUiAction(data.client_action);
 
   commitServerUserTranscriptBubble(data.transcript, "main-json");
+  if (data.work_mode_timer) {
+    applyWorkModeTimerPayload(data.work_mode_timer);
+  }
   const playMainAnswerPromise = (async () => {
     resetAudioHandlers();
     try {
@@ -9071,6 +9875,7 @@ async function runInferMainPipeline(formData, opts = {}) {
       const ndjsonPlaybackPromise = (async () => {
         try {
           console.log("[UX][TTS] NDJSON streaming (main)");
+          await tryPeekApplyWorkModeTimerFromNdjsonClone(res);
           const playTask = async () => {
             const playbackEnd = await waitForAssistantPlaybackEnd(() => {
               resumeAfterAssistantReplyPlayback();
@@ -9079,6 +9884,9 @@ async function runInferMainPipeline(formData, opts = {}) {
             await runNdjsonTtsPlayback(res, {
               onMeta: (meta) => {
                 ndjsonMeta = { ...ndjsonMeta, ...meta };
+                if (meta.work_mode_timer) {
+                  applyWorkModeTimerPayload(meta.work_mode_timer);
+                }
                 if (meta.transcript) {
                   applyNdjsonUserTranscriptBubble(meta.transcript, "main-ndjson");
                 }
@@ -9175,6 +9983,9 @@ async function runInferInterruptPipeline(formData) {
           await runNdjsonTtsPlayback(res, {
             onMeta: (meta) => {
               ndjsonMeta = { ...ndjsonMeta, ...meta };
+              if (meta.work_mode_timer) {
+                applyWorkModeTimerPayload(meta.work_mode_timer);
+              }
               if (meta.transcript) {
                 applyNdjsonUserTranscriptBubble(meta.transcript, "interrupt-ndjson");
               }
@@ -9240,6 +10051,9 @@ async function runInferInterruptPipeline(formData) {
     applyClientUiAction(data.client_action);
 
     commitServerUserTranscriptBubble(data.transcript, "interrupt-json");
+    if (data.work_mode_timer) {
+      applyWorkModeTimerPayload(data.work_mode_timer);
+    }
 
     await playInterruptAnswer(data);
   } catch (e) {
@@ -9428,22 +10242,48 @@ async function handleUtterance() {
         formData2.append("mode", "ptt");
       }
 
+      const voiceAttach2 =
+        workModeReasoningAttachment instanceof File && workModeReasoningAttachment.size > 0
+          ? workModeReasoningAttachment
+          : null;
+      if (voiceAttach2) {
+        const forInfer2 = voiceAttach2.slice(0, voiceAttach2.size, voiceAttach2.type || undefined);
+        formData2.append("context_file", forInfer2, voiceAttach2.name || "upload");
+      }
+
       logVoiceTranscript("final", trimmed, { path: "work-mode-server-asr" });
       logFinalTranscriptSentToLlm("work-mode-server-asr", trimmed);
 
-      const prepWrap = await maybePrepareWorkModeReasoning(formData2, trimmed, pipelineSig);
-      if (prepWrap?.inferThreadAnchor) {
-        formData2.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
-      }
-      const prepFail = await runInferAfterWorkModeReasoningPrep(formData2, prepWrap, {
-        signal: pipelineSig
-      });
-      if (prepFail === "reasoning-upload-failed") {
-        processing = false;
-        requestInFlight = false;
-        voiceUxTurn = null;
-        setStatus("Ready", "idle");
-        return;
+      let clearedVoiceAttach2 = false;
+      const clearVoiceReasoningAttach2 = () => {
+        if (!voiceAttach2 || clearedVoiceAttach2) return;
+        clearedVoiceAttach2 = true;
+        revokeWorkModeReasoningAttachmentPreviewUrl();
+        hideWorkModeAttachmentPreviewImmediate();
+        workModeReasoningAttachment = null;
+        const fin = document.getElementById("vera-reasoning-file");
+        if (fin) fin.value = "";
+        setWorkModeAttachmentMeta("");
+      };
+      try {
+        const prepWrap = await maybePrepareWorkModeReasoning(formData2, trimmed, pipelineSig, {
+          attachment: voiceAttach2
+        });
+        if (prepWrap?.inferThreadAnchor) {
+          formData2.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
+        }
+        const prepFail = await runInferAfterWorkModeReasoningPrep(formData2, prepWrap, {
+          signal: pipelineSig
+        });
+        if (prepFail === "reasoning-upload-failed") {
+          processing = false;
+          requestInFlight = false;
+          voiceUxTurn = null;
+          setStatus("Ready", "idle");
+          return;
+        }
+      } finally {
+        clearVoiceReasoningAttach2();
       }
     } catch (err) {
       if (err?.name === "AbortError") {
@@ -9666,6 +10506,9 @@ async function sendTextMessage() {
           await runNdjsonTtsPlayback(res, {
             onMeta: (meta) => {
               ndjsonMeta = { ...ndjsonMeta, ...meta };
+              if (meta.work_mode_timer) {
+                applyWorkModeTimerPayload(meta.work_mode_timer);
+              }
             },
             onReplyProgress: (replySoFar) => {
               applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
@@ -10053,6 +10896,7 @@ function wireVeraSettingsPanel() {
   const resetSessionBtn = document.getElementById("vera-setting-reset-session");
   const textGuideRotatorBtn = document.getElementById("vera-setting-text-guide-rotator");
   const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
+  const planningDeadlineTimerBtn = document.getElementById("vera-setting-planning-deadline-timer");
   const saveBtn = document.getElementById("vera-settings-save");
   if (!(modal instanceof HTMLElement)) return;
 
@@ -10061,6 +10905,7 @@ function wireVeraSettingsPanel() {
   let draftAsrMode = getVeraAsrMode();
   let draftTextGuideRotator = isTextGuideRotatorEnabled();
   let draftWorkModeMute = isWorkModeMuteEnabled();
+  let draftPlanningDeadlineTimer = isPlanningDeadlineTimerEnabled();
   let draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
   const partialMinCharOptions = [5, 8, 10, 12, 15];
   const silenceToIndex = (ms) => {
@@ -10110,12 +10955,20 @@ function wireVeraSettingsPanel() {
       textGuideRotatorBtn.setAttribute("aria-pressed", on ? "true" : "false");
     }
   };
+  const applyPlanningDeadlineTimerUi = () => {
+    const on = draftPlanningDeadlineTimer;
+    if (planningDeadlineTimerBtn instanceof HTMLButtonElement) {
+      planningDeadlineTimerBtn.classList.toggle("is-on", on);
+      planningDeadlineTimerBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  };
 
   const hydrate = () => {
     draftSilenceMs = getVeraAsrSilenceMs();
     draftAsrMode = getVeraAsrMode();
     draftTextGuideRotator = isTextGuideRotatorEnabled();
     draftWorkModeMute = isWorkModeMuteEnabled();
+    draftPlanningDeadlineTimer = isPlanningDeadlineTimerEnabled();
     draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
     if (silenceSlider instanceof HTMLInputElement) {
       silenceSlider.value = String(silenceToIndex(draftSilenceMs));
@@ -10126,6 +10979,7 @@ function wireVeraSettingsPanel() {
     applyAsrModeUi(draftAsrMode);
     applyTextGuideRotatorUi();
     applyMuteUi();
+    applyPlanningDeadlineTimerUi();
     applyVeraWorkModeMuteSetting();
     applyTextGuideRotatorSetting();
   };
@@ -10137,6 +10991,7 @@ function wireVeraSettingsPanel() {
       asr_mode: draftAsrMode,
       text_guide_rotator: draftTextGuideRotator ? 1 : 0,
       workmode_mute: draftWorkModeMute ? 1 : 0,
+      planning_deadline_timer: draftPlanningDeadlineTimer ? 1 : 0,
       main_asr_partial_min_chars: draftMainAsrPartialMinChars,
     });
     modal.removeAttribute("hidden");
@@ -10184,6 +11039,11 @@ function wireVeraSettingsPanel() {
     applyMuteUi();
     logVeraSettings("draft_workmode_mute", { value: draftWorkModeMute ? 1 : 0 });
   });
+  planningDeadlineTimerBtn?.addEventListener("click", () => {
+    draftPlanningDeadlineTimer = !draftPlanningDeadlineTimer;
+    applyPlanningDeadlineTimerUi();
+    logVeraSettings("draft_planning_deadline_timer", { value: draftPlanningDeadlineTimer ? 1 : 0 });
+  });
   saveBtn?.addEventListener("click", () => {
     draftSilenceMs = readSliderSilenceMs();
     draftMainAsrPartialMinChars = readSliderPartialMinChars();
@@ -10192,6 +11052,7 @@ function wireVeraSettingsPanel() {
       asr_mode: draftAsrMode,
       text_guide_rotator: draftTextGuideRotator ? 1 : 0,
       workmode_mute: draftWorkModeMute ? 1 : 0,
+      planning_deadline_timer: draftPlanningDeadlineTimer ? 1 : 0,
       main_asr_partial_min_chars: draftMainAsrPartialMinChars,
     });
     setVeraAsrSilenceMs(draftSilenceMs);
@@ -10199,6 +11060,7 @@ function wireVeraSettingsPanel() {
     setMainAsrPartialMinChars(draftMainAsrPartialMinChars);
     setTextGuideRotatorEnabled(draftTextGuideRotator);
     setWorkModeMuteEnabled(draftWorkModeMute);
+    setPlanningDeadlineTimerEnabled(draftPlanningDeadlineTimer);
     close();
   });
 
