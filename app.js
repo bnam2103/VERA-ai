@@ -7520,13 +7520,26 @@ function applyNdjsonStreamingReplySoFar(replySoFar, state) {
 /** After NDJSON done: sync bubble to final reply, or add bubble if no streaming partials. */
 function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   if (!done?.reply) return;
+  const merged = {
+    ...(ndjsonMeta && typeof ndjsonMeta === "object" ? ndjsonMeta : {}),
+    ...done,
+    reply: done.reply
+  };
+  const pay = merged?.action_payload;
+  const op = pay?.op;
+  if (
+    pay?.panel_type === "music_control" &&
+    (op === "skip_next" || op === "skip_previous")
+  ) {
+    applyActionPayload(merged);
+  }
   if (state.bubble?.isConnected) {
     state.bubble.textContent = done.reply;
     persistVeraChatState();
     return;
   }
   /* Must assign state.bubble so applyNdjsonStreamingReplySoFar doesn't add a second bubble if done arrives before first audio (defer path). */
-  applyActionPayload({ ...ndjsonMeta, reply: done.reply });
+  applyActionPayload(merged);
   state.bubble = addBubble(done.reply, "vera", { path: "ndjson-final" });
   persistVeraChatState();
 }
