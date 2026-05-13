@@ -2297,6 +2297,20 @@ function spotifyEnsureNowState() {
   return window.__veraSpotifyNowState;
 }
 
+/** Same rules as the music panel next/prev buttons (for context_snapshot + voice routing). */
+function veraSpotifyTransportEligibility() {
+  const s = spotifyEnsureNowState();
+  const webReady = Boolean(window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId);
+  if (!webReady) return { next: false, prev: false };
+  const prevCount = Number(s.queue_previous_count) || 0;
+  const pos = Math.max(0, Number(s.position_ms) || 0);
+  const blockPrev = s.disallow_skip_prev === true;
+  return {
+    next: Boolean(s.queue_next_available),
+    prev: pos > SPOTIFY_PREVIOUS_RESTART_MS || (prevCount > 0 && !blockPrev)
+  };
+}
+
 /** Plain-text-ish excerpt from the active reasoning panel for /infer grounding (follow-ups, code requests). */
 function collectWorkModeReasoningExcerptForContext(maxChars = 12000) {
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return "";
@@ -2348,6 +2362,25 @@ function collectWorkModeVoiceExcerptForContext(maxChars = 3500, maxRows = 8) {
   return out;
 }
 
+/** Tab list for /infer routing (work mode reasoning spaces). */
+function collectWorkModeReasoningPanelsSnapshot() {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) {
+    return { panels: [], panel_count: 0, max_panels: REASONING_TABS_MAX };
+  }
+  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")]
+    .map((p) => {
+      const idx = Number(p.dataset.tabIndex);
+      return {
+        index: Number.isFinite(idx) ? idx : 0,
+        label: getReasoningTabTopicLabel(p)
+      };
+    })
+    .filter((x) => Number.isFinite(x.index))
+    .sort((a, b) => a.index - b.index);
+  return { panels, panel_count: panels.length, max_panels: REASONING_TABS_MAX };
+}
+
 function buildClientContextSnapshot() {
   const prefix = appModePrefix();
   const inWorkMode = prefix === "vera" && isVeraWorkModeOn();
@@ -2379,17 +2412,29 @@ function buildClientContextSnapshot() {
     .filter((s) => String(s || "").trim())
     .join("\n\n---\n\n");
 
+  const wmReasoningPanels =
+    inWorkMode && prefix === "vera" ? collectWorkModeReasoningPanelsSnapshot() : null;
+
+  const transportEl = veraSpotifyTransportEligibility();
+  const webReady = Boolean(window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId);
+  const music = {
+    title: String(now.title || musicTitleDom || "").trim(),
+    artist: String(now.artist || musicArtistDom || "").trim(),
+    is_playing: Boolean(now.active) && !Boolean(now.paused),
+    paused: Boolean(now.paused),
+    position_ms: Number(now.position_ms) || 0,
+    duration_ms: Number(now.duration_ms) || 0
+  };
+  /* Only send skip hints when Web Playback is active; otherwise false looks like "no next track" to the server. */
+  if (webReady) {
+    music.skip_next_available = transportEl.next;
+    music.skip_prev_available = transportEl.prev;
+  }
+
   return {
     mode: inWorkMode ? "work" : "flow",
     app: prefix,
-    music: {
-      title: String(now.title || musicTitleDom || "").trim(),
-      artist: String(now.artist || musicArtistDom || "").trim(),
-      is_playing: Boolean(now.active) && !Boolean(now.paused),
-      paused: Boolean(now.paused),
-      position_ms: Number(now.position_ms) || 0,
-      duration_ms: Number(now.duration_ms) || 0,
-    },
+    music,
     checklist: inWorkMode
       ? {
           ongoing_count: ongoing.length,
@@ -2398,7 +2443,7 @@ function buildClientContextSnapshot() {
         }
       : null,
     reasoning:
-      inWorkMode && combinedProblemExcerpt
+      inWorkMode && prefix === "vera" && wmReasoningPanels
         ? {
             active_panel_index: activeLaneIdx,
             active_panel_label:
@@ -2408,6 +2453,9 @@ function buildClientContextSnapshot() {
             recent_problem_excerpt: combinedProblemExcerpt,
             excerpt_chars: combinedProblemExcerpt.length,
             recent_voice_excerpt: voiceExcerpt || "",
+            panels: wmReasoningPanels.panels,
+            panel_count: wmReasoningPanels.panel_count,
+            max_panels: wmReasoningPanels.max_panels
           }
         : null,
     planning_deadline_timer: isPlanningDeadlineTimerEnabled(),
@@ -2621,11 +2669,9 @@ function spotifyApplyNowStateToPanel(prefix) {
   const prevBtn = document.getElementById(`${prefix}-spotify-prev`);
   const nextBtn = document.getElementById(`${prefix}-spotify-next`);
   const webReady = Boolean(window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId);
-  const prevCount = Number(s.queue_previous_count) || 0;
-  const pos = Math.max(0, Number(s.position_ms) || 0);
-  const blockPrev = s.disallow_skip_prev === true;
-  const canNext = webReady && Boolean(s.queue_next_available);
-  const canPrev = webReady && (pos > SPOTIFY_PREVIOUS_RESTART_MS || (prevCount > 0 && !blockPrev));
+  const { next: canNextElig, prev: canPrevElig } = veraSpotifyTransportEligibility();
+  const canNext = webReady && canNextElig;
+  const canPrev = webReady && canPrevElig;
   if (nextBtn instanceof HTMLButtonElement) {
     nextBtn.disabled = !canNext;
     nextBtn.title = canNext
@@ -2636,6 +2682,7 @@ function spotifyApplyNowStateToPanel(prefix) {
   }
   if (prevBtn instanceof HTMLButtonElement) {
     prevBtn.disabled = !canPrev;
+    const pos = Math.max(0, Number(s.position_ms) || 0);
     if (canPrev) {
       prevBtn.title =
         pos > SPOTIFY_PREVIOUS_RESTART_MS ? "Restart from beginning" : "Previous track";
@@ -7158,7 +7205,7 @@ function runFlowModeSidePaneContentCrossfade(sidePaneEl, renderCallback) {
   fallbackOut = window.setTimeout(finishOut, 420);
 }
 
-/** NDJSON can call ``applyActionPayload`` from ``finalizeNdjsonStreamingReply`` before first audio and again from ``onPlayStart`` — duplicate Spotify starts twitch the UI. */
+/** NDJSON can call ``applyActionPayload`` from ``finalizeNdjsonStreamingReply`` before first audio and again from ``onPlayStart`` — duplicate Spotify starts / skips twitch the UI. */
 function musicPlaybackDedupeKey(payload, op) {
   if (!payload || payload.panel_type !== "music_control") return "";
   if (op === "play_track" && payload.uri) return `play_track:${String(payload.uri).trim()}`;
@@ -7177,6 +7224,17 @@ function isRecentSameMusicPlay(payload, op) {
   return !!(prev && prev.key === key && performance.now() - prev.at < 7000);
 }
 
+/** Collapse NDJSON double ``applyActionPayload`` (finalize + first audio) for skip only — short window so real repeat skips still work. */
+function shouldApplyMusicTransportAction(payload, op) {
+  if (op !== "skip_next" && op !== "skip_previous") return true;
+  const key = `music_transport:${op}`;
+  const now = performance.now();
+  const prev = window.__veraMusicTransportDedupe;
+  if (prev && prev.key === key && now - prev.at < 900) return false;
+  window.__veraMusicTransportDedupe = { key, at: now };
+  return true;
+}
+
 /** Returns false when the same play was already started a few seconds ago (NDJSON finalize + first-audio both call this). */
 function shouldPlayMusicThisInvocation(payload, op) {
   const key = musicPlaybackDedupeKey(payload, op);
@@ -7185,6 +7243,27 @@ function shouldPlayMusicThisInvocation(payload, op) {
   const prev = window.__veraMusicPlaybackDedupe;
   if (prev && prev.key === key && now - prev.at < 7000) return false;
   window.__veraMusicPlaybackDedupe = { key, at: now };
+  return true;
+}
+
+/** NDJSON may invoke ``applyActionPayload`` twice (finalize + first audio) — skip duplicate reasoning ops. */
+function workModeReasoningDedupeKey(payload) {
+  if (!payload || payload.panel_type !== "work_mode_reasoning") return "";
+  const op = String(payload.op || "");
+  if (op === "open_new") return "open_new";
+  if (op === "activate" && payload.panel_index != null) {
+    return `activate:${Number(payload.panel_index)}`;
+  }
+  return "";
+}
+
+function shouldApplyWorkModeReasoningInvocation(payload) {
+  const key = workModeReasoningDedupeKey(payload);
+  if (!key) return true;
+  const now = performance.now();
+  const prev = window.__veraWorkModeReasoningDedupe;
+  if (prev && prev.key === key && now - prev.at < 8000) return false;
+  window.__veraWorkModeReasoningDedupe = { key, at: now };
   return true;
 }
 
@@ -7241,11 +7320,43 @@ function applyActionPayload(data) {
     return;
   }
 
+  if (payload?.panel_type === "work_mode_reasoning") {
+    if (!shouldApplyWorkModeReasoningInvocation(payload)) return;
+    if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
+    const op = payload.op || "";
+    if (op === "open_new") {
+      addReasoningTab();
+      return;
+    }
+    if (op === "activate" && payload.panel_index != null) {
+      const idx = Number(payload.panel_index);
+      if (!Number.isFinite(idx)) return;
+      const panelEl = document.querySelector(
+        `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
+      );
+      if (panelEl) activateReasoningTab(idx);
+      return;
+    }
+    return;
+  }
+
   if (payload?.panel_type === "music_control") {
     const prefix = appModePrefix();
     const op = payload.op || "open_panel";
     if (op === "close_panel") {
       hideSidePanel();
+      return;
+    }
+    if (op === "skip_next") {
+      if (!shouldApplyMusicTransportAction(payload, op)) return;
+      const fn = window.VeraSpotify?.skipNext;
+      if (typeof fn === "function") void fn();
+      return;
+    }
+    if (op === "skip_previous") {
+      if (!shouldApplyMusicTransportAction(payload, op)) return;
+      const fn = window.VeraSpotify?.skipPrevious;
+      if (typeof fn === "function") void fn();
       return;
     }
     if (op === "pause") {
