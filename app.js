@@ -3456,6 +3456,7 @@ let chatStateHydrating = false;
 let workChecklistSyncTimer = null;
 let workChecklistHydrationPromise = null;
 let workChecklistLocalMutationVersion = 0;
+let workChecklistSyncInFlight = null;
 
 function markWorkChecklistLocalMutation() {
   workChecklistLocalMutationVersion += 1;
@@ -3476,6 +3477,13 @@ function queueWorkChecklistSyncToServer() {
   if (workChecklistSyncTimer) window.clearTimeout(workChecklistSyncTimer);
   workChecklistSyncTimer = window.setTimeout(async () => {
     workChecklistSyncTimer = null;
+    await syncWorkChecklistToServerNow();
+  }, 180);
+}
+
+async function syncWorkChecklistToServerNow() {
+  if (workChecklistSyncInFlight) return workChecklistSyncInFlight;
+  workChecklistSyncInFlight = (async () => {
     try {
       const items = readChecklistItemsFromStorage();
       const completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
@@ -3488,8 +3496,24 @@ function queueWorkChecklistSyncToServer() {
           completed_collapsed: completedCollapsed
         })
       });
-    } catch (_) {}
-  }, 180);
+    } catch (_) {
+      /* ignore */
+    } finally {
+      workChecklistSyncInFlight = null;
+    }
+  })();
+  return workChecklistSyncInFlight;
+}
+
+async function flushWorkChecklistSyncBeforeCommand() {
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
+  if (workChecklistSyncTimer) {
+    window.clearTimeout(workChecklistSyncTimer);
+    workChecklistSyncTimer = null;
+    await syncWorkChecklistToServerNow();
+    return;
+  }
+  if (workChecklistSyncInFlight) await workChecklistSyncInFlight;
 }
 
 async function hydrateWorkChecklistFromServer(force = false) {
@@ -10397,6 +10421,7 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
 
 async function runInferMainPipeline(formData, opts = {}) {
   try {
+    await flushWorkChecklistSyncBeforeCommand();
     logVoicePipe("POST /infer starting (main, upload in flight)");
     const inferFetchStart = performance.now();
     const inferSignal = opts.signal ?? attachPipelineAbortSignal();
@@ -11024,6 +11049,7 @@ async function sendTextMessage() {
   addBubble(text, "user", { path: "typed-text" });
   ensureChatStartedLayout();
   try {
+    await flushWorkChecklistSyncBeforeCommand();
     const textFetchStart = performance.now();
     const res = await fetch(`${API_URL}/text`, {
       method: "POST",
@@ -12239,9 +12265,13 @@ window.VeraSpotify = {
   async skipPrevious() {
     const base = localBackendBase();
     const prefix = appModePrefix();
+    if (!window.__veraSpotifyDeviceId) {
+      await ensureSpotifyWebPlayer(prefix);
+      await waitForSpotifyDeviceId(8000);
+    }
     if (!window.__veraSpotifyDeviceId) return;
-    const s = spotifyEnsureNowState();
-    const pos = Number(s.position_ms) || 0;
+    let s = spotifyEnsureNowState();
+    let pos = Number(s.position_ms) || 0;
     if (pos > SPOTIFY_PREVIOUS_RESTART_MS) {
       try {
         await this.seekTo(0);
@@ -12253,7 +12283,18 @@ window.VeraSpotify = {
     }
     if (s.disallow_skip_prev === true) {
       await spotifyRefreshWebPlaybackStateToUi(prefix);
-      return;
+      s = spotifyEnsureNowState();
+      pos = Number(s.position_ms) || 0;
+      if (pos > SPOTIFY_PREVIOUS_RESTART_MS) {
+        try {
+          await this.seekTo(0);
+        } catch (_) {
+          /* ignore */
+        }
+        await spotifyRefreshWebPlaybackStateToUi(prefix);
+        return;
+      }
+      if (s.disallow_skip_prev === true) return;
     }
     /* Do not require ``previous_tracks`` in the SDK snapshot — it is often empty while context still has a prior track. */
     try {
