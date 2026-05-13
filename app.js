@@ -2307,7 +2307,10 @@ function veraSpotifyTransportEligibility() {
   const blockPrev = s.disallow_skip_prev === true;
   return {
     next: Boolean(s.queue_next_available),
-    prev: pos > SPOTIFY_PREVIOUS_RESTART_MS || (prevCount > 0 && !blockPrev)
+    /* SDK often leaves ``previous_tracks`` empty in playlist/album context; still try /previous when Spotify allows. */
+    prev:
+      pos > SPOTIFY_PREVIOUS_RESTART_MS ||
+      (!blockPrev && (prevCount > 0 || pos <= SPOTIFY_PREVIOUS_RESTART_MS))
   };
 }
 
@@ -12239,20 +12242,30 @@ window.VeraSpotify = {
     if (!window.__veraSpotifyDeviceId) return;
     const s = spotifyEnsureNowState();
     const pos = Number(s.position_ms) || 0;
-    const prevCount = Number(s.queue_previous_count) || 0;
     if (pos > SPOTIFY_PREVIOUS_RESTART_MS) {
-      await this.seekTo(0);
+      try {
+        await this.seekTo(0);
+      } catch (_) {
+        /* seek can fail transiently; still refresh state */
+      }
       await spotifyRefreshWebPlaybackStateToUi(prefix);
       return;
     }
-    if (prevCount < 1) return;
-    const res = await fetch(`${base}/api/spotify/player/previous`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
-      body: JSON.stringify({ device_id: window.__veraSpotifyDeviceId })
-    });
-    if (!res.ok) return;
+    if (s.disallow_skip_prev === true) {
+      await spotifyRefreshWebPlaybackStateToUi(prefix);
+      return;
+    }
+    /* Do not require ``previous_tracks`` in the SDK snapshot — it is often empty while context still has a prior track. */
+    try {
+      await fetch(`${base}/api/spotify/player/previous`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
+        body: JSON.stringify({ device_id: window.__veraSpotifyDeviceId })
+      });
+    } catch (_) {
+      /* ignore */
+    }
     await spotifyRefreshWebPlaybackStateToUi(prefix);
   },
   async togglePlayback() {
