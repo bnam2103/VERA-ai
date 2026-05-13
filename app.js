@@ -12297,8 +12297,9 @@ window.VeraSpotify = {
       if (s.disallow_skip_prev === true) return;
     }
     /* Do not require ``previous_tracks`` in the SDK snapshot — it is often empty while context still has a prior track. */
+    let res = null;
     try {
-      await fetch(`${base}/api/spotify/player/previous`, {
+      res = await fetch(`${base}/api/spotify/player/previous`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
@@ -12306,6 +12307,23 @@ window.VeraSpotify = {
       });
     } catch (_) {
       /* ignore */
+    }
+    if (!res?.ok) {
+      await spotifyRefreshWebPlaybackStateToUi(prefix);
+      const refreshed = spotifyEnsureNowState();
+      if (refreshed.disallow_skip_prev !== true) {
+        await new Promise((r) => window.setTimeout(r, 180));
+        try {
+          await fetch(`${base}/api/spotify/player/previous`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
+            body: JSON.stringify({ device_id: window.__veraSpotifyDeviceId })
+          });
+        } catch (_) {
+          /* ignore */
+        }
+      }
     }
     await spotifyRefreshWebPlaybackStateToUi(prefix);
   },
