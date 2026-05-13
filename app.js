@@ -141,13 +141,23 @@ function resetVeraSessionAndUi() {
   laneTopicSeedByIdx[0] = "";
   laneTopicSeedByIdx[1] = "";
   laneTopicSeedByIdx[2] = "";
+  laneTopicSeedByIdx[3] = "";
+  laneTopicSeedByIdx[4] = "";
+  laneTopicSeedByIdx[5] = "";
+  laneTopicSeedByIdx[6] = "";
+  laneTopicSeedByIdx[7] = "";
   laneReasoningTurnCountByIdx[0] = 0;
   laneReasoningTurnCountByIdx[1] = 0;
   laneReasoningTurnCountByIdx[2] = 0;
+  laneReasoningTurnCountByIdx[3] = 0;
+  laneReasoningTurnCountByIdx[4] = 0;
+  laneReasoningTurnCountByIdx[5] = 0;
+  laneReasoningTurnCountByIdx[6] = 0;
+  laneReasoningTurnCountByIdx[7] = 0;
   laneReasoningChainTail.clear();
   workModeTypedVoiceInferTail = Promise.resolve();
   workModeTypedVoiceInferDepth = 0;
-  WORK_MODE_REASONING_LANES.forEach((lane) => workModeReasoningLaneBusy.set(lane.idx, false));
+  syncReasoningLaneBusySlotsAfterDomChange();
   syncWorkModeReasoningCancelButton();
   setWorkModeAttachmentMeta("");
   hideWorkChecklistSyncPreview();
@@ -566,7 +576,7 @@ const DEFAULT_STREAM_TTS = true;
 
 /** Browser Web Speech API: live partials, then 1.3s stable transcript → /infer without server ASR. */
 let browserAsrMainSilenceMs = 1300;
-/** Main browser-ASR only: minimum visible chars before showing partial bubble. */
+/** Main browser-ASR only: minimum visible chars before showing partial bubble. `Infinity` = hide until utterance finalizes. */
 let mainAsrPartialMinChars = 10;
 /** Min accumulated ms of changing partial transcript to count as interrupt (vs VAD on audio). */
 let browserAsrInterruptSustainMs = 350;
@@ -598,6 +608,7 @@ const VERA_SETTING_WORKMODE_MUTE_KEY = "vera_setting_workmode_mute_v1";
 const VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY = "vera_setting_main_asr_partial_min_chars_v1";
 const VERA_SETTING_TEXT_GUIDE_ROTATOR_KEY = "vera_setting_text_guide_rotator_v1";
 const VERA_SETTING_PLANNING_DEADLINE_TIMER_KEY = "vera_setting_planning_deadline_timer_v1";
+const VERA_SETTING_REASONING_AUTO_ROUTE_KEY = "vera_setting_reasoning_auto_route_v1";
 
 function logVeraSettings(event, data = {}) {
   try {
@@ -707,19 +718,31 @@ function setVeraAsrMode(mode) {
 
 function getMainAsrPartialMinChars() {
   try {
-    const v = Number(localStorage.getItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY));
+    const raw = String(localStorage.getItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY) ?? "")
+      .trim()
+      .toLowerCase();
+    if (raw === "inf" || raw === "infinity") return Infinity;
+    const v = Number(raw);
     if (v === 5 || v === 8 || v === 10 || v === 12 || v === 15) return v;
   } catch (_) {}
   return 10;
 }
 
 function setMainAsrPartialMinChars(v) {
-  const next = v === 5 || v === 8 || v === 10 || v === 12 || v === 15 ? v : 10;
+  let next = 10;
+  let store = "10";
+  if (v === Infinity || v === "inf" || v === "infinity") {
+    next = Infinity;
+    store = "inf";
+  } else if (v === 5 || v === 8 || v === 10 || v === 12 || v === 15) {
+    next = v;
+    store = String(next);
+  }
   mainAsrPartialMinChars = next;
   try {
-    localStorage.setItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY, String(next));
+    localStorage.setItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY, store);
   } catch (_) {}
-  logVeraSettings("save_main_asr_partial_min_chars", { value: next });
+  logVeraSettings("save_main_asr_partial_min_chars", { value: next === Infinity ? "inf" : next });
 }
 
 function isWorkModeMuteEnabled() {
@@ -786,6 +809,22 @@ function setPlanningDeadlineTimerEnabled(on) {
     localStorage.setItem(VERA_SETTING_PLANNING_DEADLINE_TIMER_KEY, on ? "1" : "0");
   } catch (_) {}
   logVeraSettings("save_planning_deadline_timer", { value: on ? 1 : 0 });
+}
+
+/** When on: legacy behavior — similarity + idle lanes route topics across panels. When off (default): use active panel only. */
+function isWorkModeReasoningAutoRouteEnabled() {
+  try {
+    return localStorage.getItem(VERA_SETTING_REASONING_AUTO_ROUTE_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function setWorkModeReasoningAutoRouteEnabled(on) {
+  try {
+    localStorage.setItem(VERA_SETTING_REASONING_AUTO_ROUTE_KEY, on ? "1" : "0");
+  } catch (_) {}
+  logVeraSettings("save_reasoning_auto_route", { value: on ? 1 : 0 });
 }
 
 function applyVeraWorkModeMuteSetting() {
@@ -2229,6 +2268,8 @@ function spotifyFormatTimeMs(ms) {
 
 const SPOTIFY_VOLUME_DEFAULT = 0.1;
 const SPOTIFY_VOLUME_MAX = 0.35;
+/** If playback is past this many ms, Previous restarts the current track (no prior track in context). */
+const SPOTIFY_PREVIOUS_RESTART_MS = 3500;
 
 function spotifyGetVolume() {
   const v = Number(window.__veraSpotifyVolume);
@@ -2247,7 +2288,9 @@ function spotifyEnsureNowState() {
       position_ms: 0,
       duration_ms: 0,
       paused: true,
-      active: false
+      active: false,
+      queue_next_available: false,
+      queue_previous_count: 0
     };
   }
   return window.__veraSpotifyNowState;
@@ -2367,6 +2410,7 @@ function buildClientContextSnapshot() {
           }
         : null,
     planning_deadline_timer: isPlanningDeadlineTimerEnabled(),
+    reasoning_auto_route: isWorkModeReasoningAutoRouteEnabled(),
   };
 }
 
@@ -2411,6 +2455,16 @@ function spotifyClearPendingIfSdkMatches(sdkTrackUri) {
   if (String(sdkTrackUri || "").trim() === p.uri) spotifyClearPendingSdkTrack();
 }
 
+function spotifyReadTrackWindowQueueFlags(state) {
+  const tw = state?.track_window || {};
+  const nextTracks = Array.isArray(tw.next_tracks) ? tw.next_tracks : [];
+  const prevTracks = Array.isArray(tw.previous_tracks) ? tw.previous_tracks : [];
+  return {
+    queue_next_available: nextTracks.length > 0,
+    queue_previous_count: prevTracks.length
+  };
+}
+
 /** Merge Spotify Web Playback ``state`` into ``__veraSpotifyNowState`` (metadata skipped when pending URI mismatches SDK). */
 function spotifySyncNowStateFromWebSdk(state) {
   if (!state) return;
@@ -2422,7 +2476,9 @@ function spotifySyncNowStateFromWebSdk(state) {
     spotifyUpdateNowState({
       position_ms,
       paused,
-      active: false
+      active: false,
+      queue_next_available: false,
+      queue_previous_count: 0
     });
     window.__veraSpotifyPlaybackActive = false;
     return;
@@ -2430,11 +2486,13 @@ function spotifySyncNowStateFromWebSdk(state) {
 
   const sdkUri = String(curTrack.uri || "").trim();
   const active = !paused;
+  const qf = spotifyReadTrackWindowQueueFlags(state);
   if (spotifySdkMetadataStaleVersusPending(sdkUri)) {
     spotifyUpdateNowState({
       position_ms,
       paused,
-      active
+      active,
+      ...qf
     });
     window.__veraSpotifyPlaybackActive = active;
     return;
@@ -2449,7 +2507,8 @@ function spotifySyncNowStateFromWebSdk(state) {
     position_ms,
     duration_ms: Number(curTrack.duration_ms) || 0,
     paused,
-    active
+    active,
+    ...qf
   });
   window.__veraSpotifyPlaybackActive = active;
 }
@@ -2499,6 +2558,19 @@ function spotifyStartWebPlaybackUiTick(prefix) {
   }, 250);
 }
 
+async function spotifyRefreshWebPlaybackStateToUi(prefix) {
+  const web = window.__veraSpotifyPlayer;
+  const pfx = prefix || appModePrefix();
+  if (!web?.getCurrentState) return;
+  try {
+    const st = await web.getCurrentState();
+    if (st) {
+      spotifySyncNowStateFromWebSdk(st);
+      spotifyApplyNowStateToPanel(pfx);
+    }
+  } catch (_) {}
+}
+
 function spotifyApplyNowStateToPanel(prefix) {
   const s = spotifyEnsureNowState();
   const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
@@ -2532,6 +2604,32 @@ function spotifyApplyNowStateToPanel(prefix) {
   if (playBtn) {
     playBtn.textContent = s.paused ? "▶" : "⏸";
     playBtn.setAttribute("aria-label", s.paused ? "Play" : "Pause");
+  }
+  const prevBtn = document.getElementById(`${prefix}-spotify-prev`);
+  const nextBtn = document.getElementById(`${prefix}-spotify-next`);
+  const webReady = Boolean(window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId);
+  const prevCount = Number(s.queue_previous_count) || 0;
+  const pos = Math.max(0, Number(s.position_ms) || 0);
+  const canNext = webReady && Boolean(s.queue_next_available);
+  const canPrev = webReady && (prevCount > 0 || pos > SPOTIFY_PREVIOUS_RESTART_MS);
+  if (nextBtn instanceof HTMLButtonElement) {
+    nextBtn.disabled = !canNext;
+    nextBtn.title = canNext
+      ? "Next track"
+      : webReady
+        ? "No next track in this queue"
+        : "Connect in-browser playback (Premium) for queue controls";
+  }
+  if (prevBtn instanceof HTMLButtonElement) {
+    prevBtn.disabled = !canPrev;
+    if (canPrev) {
+      prevBtn.title =
+        pos > SPOTIFY_PREVIOUS_RESTART_MS ? "Restart from beginning" : "Previous track";
+    } else {
+      prevBtn.title = webReady
+        ? "At start of queue — nothing to skip back to"
+        : "Connect in-browser playback (Premium) for queue controls";
+    }
   }
 }
 
@@ -3034,6 +3132,15 @@ function wireProductivityPanelEvents(prefix) {
     if (typeof toggle === "function") toggle().catch(() => {});
   });
 
+  document.getElementById(`${prefix}-spotify-next`)?.addEventListener("click", () => {
+    const fn = window.VeraSpotify?.skipNext;
+    if (typeof fn === "function") void fn();
+  });
+  document.getElementById(`${prefix}-spotify-prev`)?.addEventListener("click", () => {
+    const fn = window.VeraSpotify?.skipPrevious;
+    if (typeof fn === "function") void fn();
+  });
+
   document.getElementById(`${prefix}-spotify-logout`)?.addEventListener("click", async () => {
     const base = localBackendBase();
     await fetch(`${base}/api/spotify/logout`, {
@@ -3061,7 +3168,9 @@ function wireProductivityPanelEvents(prefix) {
       position_ms: 0,
       duration_ms: 0,
       paused: true,
-      active: false
+      active: false,
+      queue_next_available: false,
+      queue_previous_count: 0
     });
     removeSpotifyMiniButton(prefix);
     await refreshSpotifyConnectionUI(prefix);
@@ -3087,7 +3196,9 @@ function wireProductivityPanelEvents(prefix) {
         position_ms: Math.round((previewAudio.currentTime || 0) * 1000),
         duration_ms: Number.isFinite(previewAudio.duration) ? Math.round(previewAudio.duration * 1000) : 0,
         paused: !!previewAudio.paused,
-        active: !previewAudio.paused
+        active: !previewAudio.paused,
+        queue_next_available: false,
+        queue_previous_count: 0
       });
       spotifyApplyNowStateToPanel(prefix);
     };
@@ -3095,7 +3206,9 @@ function wireProductivityPanelEvents(prefix) {
       persistSpotifyResumePreview(prefix);
       spotifyUpdateNowState({
         position_ms: Math.round((previewAudio.currentTime || 0) * 1000),
-        duration_ms: Number.isFinite(previewAudio.duration) ? Math.round(previewAudio.duration * 1000) : 0
+        duration_ms: Number.isFinite(previewAudio.duration) ? Math.round(previewAudio.duration * 1000) : 0,
+        queue_next_available: false,
+        queue_previous_count: 0
       });
       spotifyApplyNowStateToPanel(prefix);
     };
@@ -3184,9 +3297,9 @@ function renderProductivityPanel() {
           </div>
         </div>
         <div class="spotify-transport">
-          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-prev" aria-label="Previous" disabled title="Queue not implemented yet">⏮</button>
+          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-prev" aria-label="Previous">⏮</button>
           <button type="button" class="spotify-transport-btn spotify-play-btn" id="${prefix}-spotify-play" aria-label="Play / pause">▶</button>
-          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-next" aria-label="Next" disabled title="Queue not implemented yet">⏭</button>
+          <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-next" aria-label="Next">⏭</button>
           <div class="spotify-volume-wrap" title="Volume">
             <span class="spotify-volume-icon" aria-hidden="true">🔊</span>
             <input type="range" class="spotify-volume" id="${prefix}-spotify-volume" min="0" max="35" step="1" value="10" aria-label="Volume" />
@@ -3266,14 +3379,10 @@ const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
 const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
 const VERA_TAB_ACTIVE_USER_KEY = "vera_active_user_tab_v1";
 const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
-const REASONING_TABS_MAX = 3;
+const REASONING_TABS_DEFAULT = 3;
+const REASONING_TABS_MAX = 8;
 const REASONING_UNTITLED_TAB_NAME = "Untitled";
 const REASONING_TABS_STATE_STORAGE_KEY_PREFIX = "vera_reasoning_tabs_state_v2";
-const WORK_MODE_REASONING_LANES = [
-  { idx: 0, label: "Panel 1" },
-  { idx: 1, label: "Panel 2" },
-  { idx: 2, label: "Panel 3" }
-];
 const WORK_MODE_STATE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERA_CHAT_STATE_STORAGE_KEY_PREFIX = "vera_chat_state_v1";
 let chatStateHydrating = false;
@@ -3445,26 +3554,67 @@ function getReasoningTabsStateStorageKey() {
   return `${REASONING_TABS_STATE_STORAGE_KEY_PREFIX}:${getSessionId()}`;
 }
 
+function getReasoningPanelCountToEnsure(savedByIdx) {
+  if (!(savedByIdx instanceof Map) || savedByIdx.size === 0) return REASONING_TABS_DEFAULT;
+  let maxIdx = -1;
+  for (const k of savedByIdx.keys()) {
+    const n = Number(k);
+    if (Number.isFinite(n)) maxIdx = Math.max(maxIdx, n);
+  }
+  if (maxIdx < 0) return REASONING_TABS_DEFAULT;
+  return Math.min(REASONING_TABS_MAX, Math.max(REASONING_TABS_DEFAULT, maxIdx + 1));
+}
+
+function getReasoningPanelIndices() {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return [0, 1, 2];
+  const idxs = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")]
+    .map((p) => Number(p.dataset.tabIndex))
+    .filter((n) => Number.isFinite(n));
+  if (!idxs.length) return [0, 1, 2];
+  return idxs.sort((a, b) => a - b);
+}
+
+/** After panels are added/removed/rebuilt, keep busy flags aligned with `data-tab-index` keys. */
+function syncReasoningLaneBusySlotsAfterDomChange() {
+  const idxs = getReasoningPanelIndices();
+  const next = new Map();
+  for (const i of idxs) {
+    next.set(i, Boolean(workModeReasoningLaneBusy.get(i)));
+  }
+  workModeReasoningLaneBusy.clear();
+  for (const [k, v] of next) workModeReasoningLaneBusy.set(k, v);
+  syncWorkModeReasoningCancelButton();
+}
+
 function getWorkModeReasoningLaneLabel(idx) {
-  const lane = WORK_MODE_REASONING_LANES.find((x) => x.idx === Number(idx));
-  return lane?.label || `Panel ${Number(idx) + 1}`;
+  const i = Number(idx);
+  const panel = document.querySelector(
+    `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${i}"]`
+  );
+  const fromDom = String(panel?.dataset?.laneLabel || "").trim();
+  if (fromDom) return fromDom;
+  const preset = ["Panel 1", "Panel 2", "Panel 3"];
+  if (Number.isFinite(i) && i >= 0 && i < preset.length) return preset[i];
+  return `Panel ${i + 1}`;
 }
 
 function getWorkModeReasoningLaneId(idx) {
-  if (Number(idx) === 0) return "atlas";
-  if (Number(idx) === 1) return "echo";
-  if (Number(idx) === 2) return "nova";
-  return "atlas";
+  const i = Number(idx);
+  if (i === 0) return "atlas";
+  if (i === 1) return "echo";
+  if (i === 2) return "nova";
+  return `lane-${i}`;
 }
 
-function createReasoningLanePanel(idx, html = "", isActive = false) {
+function createReasoningLanePanel(idx, html = "", isActive = false, tabMeta = {}) {
   const panel = document.createElement("div");
   panel.className = "vera-reasoning-tab-panel";
   if (isActive) panel.classList.add("is-active");
   panel.dataset.tabIndex = String(idx);
-  panel.dataset.tabTopic = REASONING_UNTITLED_TAB_NAME;
-  panel.dataset.tabTopicSet = "0";
-  panel.dataset.laneLabel = getWorkModeReasoningLaneLabel(idx);
+  panel.dataset.tabTopic = String(tabMeta.topic || REASONING_UNTITLED_TAB_NAME);
+  panel.dataset.tabTopicSet = String(tabMeta.topicSet != null ? tabMeta.topicSet : "0");
+  panel.dataset.laneLabel = String(tabMeta.laneLabel || `Panel ${Number(idx) + 1}`);
   panel.id = `vera-reasoning-tab-panel-${idx}`;
   panel.setAttribute("role", "tabpanel");
   panel.setAttribute("aria-label", `Panel ${idx + 1}`);
@@ -3480,16 +3630,19 @@ function createReasoningLanePanel(idx, html = "", isActive = false) {
 function ensureFixedReasoningLanePanels(savedByIdx = new Map(), activeIdx = 0) {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return;
+  const count = getReasoningPanelCountToEnsure(savedByIdx);
   panelsRoot.replaceChildren();
-  WORK_MODE_REASONING_LANES.forEach((lane, i) => {
-    const saved = savedByIdx.get(lane.idx) || {};
-    const panel = createReasoningLanePanel(
-      lane.idx,
-      saved.html || "",
-      Number(activeIdx) === lane.idx || (i === 0 && activeIdx == null)
-    );
+  for (let i = 0; i < count; i++) {
+    const saved = savedByIdx.get(i) || {};
+    const isActive = Number(activeIdx) === i || (i === 0 && (activeIdx == null || activeIdx === ""));
+    const panel = createReasoningLanePanel(i, saved.html || "", isActive, {
+      topic: saved.topic,
+      topicSet: saved.topicSet,
+      laneLabel: saved.laneLabel
+    });
     panelsRoot.appendChild(panel);
-  });
+  }
+  syncReasoningLaneBusySlotsAfterDomChange();
 }
 
 function getReasoningScrollElByLane(index) {
@@ -3510,6 +3663,7 @@ function persistReasoningTabsState() {
       idx: Number(p.dataset.tabIndex) || 0,
       topic: String(p.dataset.tabTopic || REASONING_UNTITLED_TAB_NAME),
       topicSet: String(p.dataset.tabTopicSet || "0"),
+      laneLabel: String(p.dataset.laneLabel || "").trim(),
       active: p.classList.contains("is-active"),
       html: (p.querySelector(".vera-reasoning-md-panel") || p.querySelector(".vera-reasoning-scroll"))?.innerHTML || ""
     }))
@@ -3536,6 +3690,7 @@ function restoreReasoningTabsState() {
   try {
     parsed = JSON.parse(raw);
   } catch (_) {
+    ensureFixedReasoningLanePanels(new Map(), 0);
     return;
   }
   const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs.slice(0, REASONING_TABS_MAX) : [];
@@ -3555,9 +3710,14 @@ function restoreReasoningTabsState() {
   let activeIdx = 0;
   tabs.forEach((t) => {
     const idx = Number(t?.idx);
-    if (!Number.isFinite(idx)) return;
+    if (!Number.isFinite(idx) || idx < 0 || idx >= REASONING_TABS_MAX) return;
     if (Boolean(t?.active)) activeIdx = idx;
-    savedByIdx.set(idx, { html: String(t?.html || "") });
+    savedByIdx.set(idx, {
+      html: String(t?.html || ""),
+      topic: String(t?.topic || REASONING_UNTITLED_TAB_NAME),
+      topicSet: String(t?.topicSet != null ? t.topicSet : "0"),
+      laneLabel: String(t?.laneLabel || "").trim() || undefined
+    });
   });
   ensureFixedReasoningLanePanels(savedByIdx, activeIdx);
 }
@@ -3700,6 +3860,125 @@ function setReasoningTabTopicFromFinal(turnEl, opts = {}) {
   renderReasoningTabStrip();
 }
 
+function isDefaultWorkModeReasoningPanelLaneLabel(label) {
+  return /^Panel\s+\d+$/i.test(String(label || "").trim());
+}
+
+function sanitizeLlmReasoningPanelTitle(s) {
+  let t = String(s || "")
+    .replace(/\s+/g, " ")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim();
+  t = t.replace(/^["'“”‘’]+|["'“”‘’]+$/g, "").trim();
+  if (t.length > 42) {
+    const cut = t.slice(0, 42).replace(/\s+\S*$/, "").trim();
+    t = cut || t.slice(0, 42).trim();
+  }
+  return t;
+}
+
+/** Same order idea as auth: local override / localhost first, then public worker (see `localBackendBase`). */
+function veraWorkModeBackendBasesInTryOrder() {
+  const bases = [];
+  const push = (u) => {
+    const x = String(u || "").replace(/\/$/, "").trim();
+    if (x && !bases.includes(x)) bases.push(x);
+  };
+  try {
+    if (typeof localBackendBase === "function") push(localBackendBase());
+  } catch (_) {}
+  push(API_URL);
+  return bases.length ? bases : [String(API_URL).replace(/\/$/, "")];
+}
+
+async function fetchReasoningPanelTitleLlm(userPrompt, md, summ) {
+  const body = JSON.stringify({
+    session_id: getSessionId(),
+    user_prompt: String(userPrompt || "").trim(),
+    markdown_excerpt: String(md || "").trim().slice(0, 12000),
+    summary_excerpt: String(summ || "").trim().slice(0, 2500)
+  });
+  for (const base of veraWorkModeBackendBasesInTryOrder()) {
+    try {
+      const res = await fetch(`${base}/work_mode/reasoning_panel_title`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body
+      });
+      if (!res.ok) continue;
+      const j = await res.json().catch(() => ({}));
+      const title = sanitizeLlmReasoningPanelTitle(String(j?.title || ""));
+      if (title && !isBanalReasoningTopicLabel(title)) return title;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function heuristicReasoningPanelTitle(userPrompt, md, summ) {
+  const up = String(userPrompt || "").trim();
+  const mdS = String(md || "").trim();
+  const sm = String(summ || "").trim();
+  let t = buildReasoningTopicLabel({
+    summaryText: sm,
+    markdownText: mdS,
+    userPrompt: up
+  });
+  let s = sanitizeLlmReasoningPanelTitle(t);
+  if (!s || isBanalReasoningTopicLabel(s)) {
+    s = sanitizeLlmReasoningPanelTitle(compactTopicPhrase(`${sm}\n${mdS}\n${up}`, 5));
+  }
+  if (!s || isBanalReasoningTopicLabel(s)) return "";
+  return s;
+}
+
+function shouldQueueLlmReasoningPanelTitle(panel) {
+  if (!(panel instanceof HTMLElement)) return false;
+  if (!isVeraWorkModeOn()) return false;
+  if (panel.dataset.reasoningLlmTitleDone === "1") return false;
+  const lab = String(panel.dataset.laneLabel || "").trim();
+  return isDefaultWorkModeReasoningPanelLaneLabel(lab);
+}
+
+/** After the first full reasoning response on a default-named panel, ask the server for a short tab title (LLM). */
+function queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panel, { userPrompt, markdownText, summaryText } = {}) {
+  if (!shouldQueueLlmReasoningPanelTitle(panel)) return;
+  if (panel.dataset.reasoningLlmTitleInFlight === "1") return;
+  const idx = Number(panel.dataset.tabIndex);
+  if (!Number.isFinite(idx)) return;
+  const up = String(userPrompt || "").trim();
+  const md = String(markdownText || "").trim();
+  const summ = String(summaryText || "").trim();
+  if (!up && !md && !summ) return;
+  panel.dataset.reasoningLlmTitleInFlight = "1";
+  void (async () => {
+    try {
+      let title =
+        (await fetchReasoningPanelTitleLlm(up, md, summ)) || heuristicReasoningPanelTitle(up, md, summ);
+      if (!title) return;
+      const cur = document.querySelector(
+        `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
+      );
+      if (!(cur instanceof HTMLElement)) return;
+      if (cur.dataset.reasoningLlmTitleDone === "1") return;
+      if (!isDefaultWorkModeReasoningPanelLaneLabel(String(cur.dataset.laneLabel || "").trim())) return;
+      cur.dataset.reasoningLlmTitleDone = "1";
+      cur.dataset.laneLabel = title;
+      cur.dataset.tabTopic = title;
+      cur.dataset.tabTopicSet = "1";
+      renderReasoningTabStrip();
+      try {
+        persistReasoningTabsState();
+      } catch (_) {}
+    } catch (_) {
+    } finally {
+      const cur = document.querySelector(
+        `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
+      );
+      if (cur instanceof HTMLElement) cur.dataset.reasoningLlmTitleInFlight = "";
+    }
+  })();
+}
+
 function renderReasoningTabStrip() {
   const tabsEl = document.getElementById("vera-reasoning-tabs");
   const addBtn = document.getElementById("vera-reasoning-tab-add");
@@ -3725,9 +4004,27 @@ function renderReasoningTabStrip() {
     label.textContent = tabLabel;
     tabBtn.appendChild(label);
     slot.appendChild(tabBtn);
+    if (panels.length > REASONING_TABS_DEFAULT) {
+      const closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "vera-reasoning-tab-close";
+      closeBtn.dataset.tabIndex = String(idx);
+      closeBtn.setAttribute("aria-label", `Close ${tabLabel}`);
+      closeBtn.title = "Close this reasoning space";
+      closeBtn.textContent = "×";
+      slot.appendChild(closeBtn);
+    }
     tabsEl.appendChild(slot);
   });
-  if (addBtn) addBtn.hidden = true;
+  if (addBtn) {
+    const atMax = panels.length >= REASONING_TABS_MAX;
+    addBtn.hidden = atMax;
+    addBtn.setAttribute(
+      "aria-label",
+      atMax ? "Maximum reasoning spaces (8)" : `Add reasoning space (${panels.length} of ${REASONING_TABS_MAX})`
+    );
+    addBtn.title = atMax ? "Maximum 8 spaces" : `Add space (up to ${REASONING_TABS_MAX})`;
+  }
 }
 
 function activateReasoningTab(index) {
@@ -3747,21 +4044,12 @@ function addReasoningTab() {
   if (panels.length >= REASONING_TABS_MAX) return;
   const maxIdx = panels.reduce((m, p) => Math.max(m, Number(p.dataset.tabIndex) || 0), -1);
   const idx = maxIdx + 1;
-  const panel = document.createElement("div");
-  panel.className = "vera-reasoning-tab-panel";
-  panel.dataset.tabIndex = String(idx);
-  panel.dataset.tabTopic = REASONING_UNTITLED_TAB_NAME;
-  panel.dataset.tabTopicSet = "0";
-  panel.id = `vera-reasoning-tab-panel-${idx}`;
-  panel.setAttribute("role", "tabpanel");
-  panel.setAttribute("aria-label", `Panel ${panels.length + 1}`);
-  const scroll = document.createElement("div");
-  scroll.className = "vera-reasoning-scroll vera-reasoning-md-panel";
-  scroll.setAttribute("aria-live", "polite");
-  panel.appendChild(scroll);
   panels.forEach((p) => p.classList.remove("is-active"));
+  const panel = createReasoningLanePanel(idx, "", true, {
+    laneLabel: `Panel ${idx + 1}`
+  });
   panelsRoot.appendChild(panel);
-  panel.classList.add("is-active");
+  syncReasoningLaneBusySlotsAfterDomChange();
   renderReasoningTabStrip();
 }
 
@@ -3769,15 +4057,26 @@ function closeReasoningTab(index) {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return;
   const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
-  if (panels.length <= 1) return;
+  if (panels.length <= REASONING_TABS_DEFAULT) return;
   const victim = panels.find((p) => Number(p.dataset.tabIndex) === index);
   if (!victim) return;
+  const laneIdx = Number(index);
+  const ctl = workModeReasoningAbortControllers.get(laneIdx);
+  if (ctl) {
+    try {
+      ctl.abort();
+    } catch (_) {}
+    workModeReasoningAbortControllers.delete(laneIdx);
+  }
+  workModeReasoningLaneBusy.delete(laneIdx);
+  laneReasoningChainTail.delete(laneIdx);
   const wasActive = victim.classList.contains("is-active");
   victim.remove();
   if (wasActive) {
     const rest = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
     rest[0]?.classList.add("is-active");
   }
+  syncReasoningLaneBusySlotsAfterDomChange();
   renderReasoningTabStrip();
 }
 
@@ -3789,7 +4088,7 @@ function wireReasoningTabStrip() {
   if (!document.getElementById("vera-reasoning-tab-panels")) return;
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   restoreReasoningTabsState();
-  if (panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length !== REASONING_TABS_MAX) {
+  if (panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length === 0) {
     ensureFixedReasoningLanePanels(new Map(), 0);
   }
   panelsRoot?.querySelectorAll(".vera-reasoning-tab-panel").forEach((panel) => {
@@ -3805,12 +4104,19 @@ function wireReasoningTabStrip() {
   });
   tabsEl.dataset.wiredReasoningTabs = "1";
   tabsEl.addEventListener("click", (e) => {
+    const closeBtn = e.target.closest("button.vera-reasoning-tab-close");
+    if (closeBtn && closeBtn.dataset.tabIndex != null) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeReasoningTab(Number(closeBtn.dataset.tabIndex));
+      return;
+    }
     const tab = e.target.closest("button.vera-reasoning-tab");
     if (tab && tab.dataset.tabIndex != null) {
       activateReasoningTab(Number(tab.dataset.tabIndex));
     }
   });
-  if (addBtn) addBtn.hidden = true;
+  addBtn?.addEventListener("click", () => addReasoningTab());
   renderReasoningTabStrip();
   if (window.__veraReasoningTabsUnloadHook !== "1") {
     window.__veraReasoningTabsUnloadHook = "1";
@@ -4131,19 +4437,19 @@ function applyWorkModeReasoningAttachmentFile(f) {
   return true;
 }
 
-const workModeReasoningLaneBusy = new Map(WORK_MODE_REASONING_LANES.map((lane) => [lane.idx, false]));
+const workModeReasoningLaneBusy = new Map();
 const workModeReasoningLaneWaitQueue = [];
 const workModeReasoningAbortControllers = new Map();
 const workModeTypedTurnQueue = [];
 const WORK_MODE_TYPED_TURN_QUEUE_MAX = 8;
 /** Last non–example-request user text in work mode (typed or voice); steers generic “example” reasoning. */
 let workModeLastSubstantiveUserText = "";
-/** Panel index (0–2) for the last substantive reasoning turn — generic “example” chains here. */
+/** Panel index for the last substantive reasoning turn — generic “example” chains here. */
 let workModeLastSubstantiveLaneIdx = null;
-/** Per-lane topic seed for categorical routing (same topic → same panel, queued). */
-const laneTopicSeedByIdx = { 0: "", 1: "", 2: "" };
-/** How many reasoning turns have been placed on each panel (load balance new topics across 1→2→3). */
-const laneReasoningTurnCountByIdx = { 0: 0, 1: 0, 2: 0 };
+/** Per-lane topic seed for categorical routing when auto-route is enabled (same topic → same panel, queued). */
+const laneTopicSeedByIdx = { 0: "", 1: "", 2: "", 3: "", 4: "", 5: "", 6: "", 7: "" };
+/** How many reasoning turns have been placed on each panel (load balance new topics across panels in auto-route mode). */
+const laneReasoningTurnCountByIdx = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0 };
 /** Serialize reasoning streams per panel; unrelated topics run on different lanes concurrently. */
 const laneReasoningChainTail = new Map();
 /** Serialize work-mode typed `/infer`+TTS while reasoning runs in parallel across lanes. */
@@ -4190,15 +4496,15 @@ function endWorkModeReasoningLaneRun(idx) {
  * route to the same panel before this runs.
  */
 function pickIdleReasoningLaneIdx() {
-  const idle = WORK_MODE_REASONING_LANES.filter((lane) => !workModeReasoningLaneBusy.get(lane.idx));
-  if (!idle.length) return null;
-  let bestIdx = idle[0].idx;
+  const idleIdxs = getReasoningPanelIndices().filter((idx) => !workModeReasoningLaneBusy.get(idx));
+  if (!idleIdxs.length) return null;
+  let bestIdx = idleIdxs[0];
   let bestCount = laneReasoningTurnCountByIdx[bestIdx] ?? 0;
-  for (const lane of idle) {
-    const c = laneReasoningTurnCountByIdx[lane.idx] ?? 0;
-    if (c < bestCount || (c === bestCount && lane.idx < bestIdx)) {
+  for (const idx of idleIdxs) {
+    const c = laneReasoningTurnCountByIdx[idx] ?? 0;
+    if (c < bestCount || (c === bestCount && idx < bestIdx)) {
       bestCount = c;
-      bestIdx = lane.idx;
+      bestIdx = idx;
     }
   }
   return bestIdx;
@@ -4212,20 +4518,65 @@ function acquireWorkModeReasoningLane(_forTopicText = "") {
     return Promise.resolve(picked);
   }
   return new Promise((resolve) => {
-    workModeReasoningLaneWaitQueue.push({ resolve, forTopicText: String(forTopicText || "") });
+    workModeReasoningLaneWaitQueue.push({
+      resolve,
+      desiredLaneIdx: null,
+      forTopicText: String(_forTopicText || "")
+    });
+  });
+}
+
+function acquireWorkModeReasoningLaneForIndex(desiredLaneIdx) {
+  const idxs = getReasoningPanelIndices();
+  const raw = Number(desiredLaneIdx);
+  const laneIdx = Number.isFinite(raw) && idxs.includes(raw) ? raw : idxs[0] ?? 0;
+  if (!workModeReasoningLaneBusy.get(laneIdx)) {
+    workModeReasoningLaneBusy.set(laneIdx, true);
+    syncWorkModeReasoningCancelButton();
+    return Promise.resolve(laneIdx);
+  }
+  return new Promise((resolve) => {
+    workModeReasoningLaneWaitQueue.push({ resolve, desiredLaneIdx: laneIdx });
   });
 }
 
 function releaseWorkModeReasoningLane(idx) {
   const laneIdx = Number(idx);
-  const next = workModeReasoningLaneWaitQueue.shift();
-  if (next != null) {
+  const queue = workModeReasoningLaneWaitQueue;
+
+  let pos = -1;
+  for (let i = 0; i < queue.length; i++) {
+    const w = queue[i];
+    if (w?.desiredLaneIdx != null && Number(w.desiredLaneIdx) === laneIdx) {
+      pos = i;
+      break;
+    }
+  }
+  if (pos >= 0) {
+    const next = queue.splice(pos, 1)[0];
     const resolve = typeof next === "function" ? next : next.resolve;
     workModeReasoningLaneBusy.set(laneIdx, true);
     syncWorkModeReasoningCancelButton();
     resolve(laneIdx);
     return;
   }
+
+  for (let i = 0; i < queue.length; i++) {
+    const w = queue[i];
+    if (w?.desiredLaneIdx == null) {
+      pos = i;
+      break;
+    }
+  }
+  if (pos >= 0) {
+    const next = queue.splice(pos, 1)[0];
+    const resolve = typeof next === "function" ? next : next.resolve;
+    workModeReasoningLaneBusy.set(laneIdx, true);
+    syncWorkModeReasoningCancelButton();
+    resolve(laneIdx);
+    return;
+  }
+
   workModeReasoningLaneBusy.set(laneIdx, false);
   syncWorkModeReasoningCancelButton();
 }
@@ -4960,28 +5311,36 @@ function runOnLaneReasoningChain(laneIdx, task) {
 
 async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
   const t = String(trimmed || "").trim();
-  if (!t) return await acquireWorkModeReasoningLane("");
-  if (isGenericExampleFollowUpText(t) && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
-    return Number(workModeLastSubstantiveLaneIdx);
-  }
-  if (opts.continuePriorLane === true && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
-    return Number(workModeLastSubstantiveLaneIdx);
-  }
-  let bestLane = -1;
-  let bestScore = 0;
-  for (const lane of WORK_MODE_REASONING_LANES) {
-    const seed = String(laneTopicSeedByIdx[lane.idx] || "").trim();
-    if (!seed) continue;
-    const sc = topicSimilarityScore(t, seed);
-    if (sc > bestScore) {
-      bestScore = sc;
-      bestLane = lane.idx;
+  const autoRoute = isWorkModeReasoningAutoRouteEnabled();
+
+  if (autoRoute) {
+    if (!t) return await acquireWorkModeReasoningLane("");
+    if (isGenericExampleFollowUpText(t) && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
+      return Number(workModeLastSubstantiveLaneIdx);
     }
+    if (opts.continuePriorLane === true && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
+      return Number(workModeLastSubstantiveLaneIdx);
+    }
+    let bestLane = -1;
+    let bestScore = 0;
+    for (const idx of getReasoningPanelIndices()) {
+      const seed = String(laneTopicSeedByIdx[idx] || "").trim();
+      if (!seed) continue;
+      const sc = topicSimilarityScore(t, seed);
+      if (sc > bestScore) {
+        bestScore = sc;
+        bestLane = idx;
+      }
+    }
+    if (bestScore >= WORK_MODE_TOPIC_SIMILARITY_MERGE && bestLane >= 0) {
+      return bestLane;
+    }
+    return await acquireWorkModeReasoningLane(t);
   }
-  if (bestScore >= WORK_MODE_TOPIC_SIMILARITY_MERGE && bestLane >= 0) {
-    return bestLane;
-  }
-  return await acquireWorkModeReasoningLane(t);
+
+  if (!t) return await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0);
+  /* Active-panel mode: always the tab the user selected — no thread/example pinning or topic similarity. */
+  return await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0);
 }
 
 function enqueueWorkModeTypedVoiceInfer(run) {
@@ -5073,6 +5432,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         /```/.test(t) ||
         /\b(function|class|import|const|let|var|def|return)\b/.test(t) ||
         /[{}();]{2,}/.test(t);
+      const wordCount = (t.match(/\S+/g) || []).length;
+      const explainReasoningAsk =
+        /\bexplain\b/.test(t) &&
+        wordCount >= 3 &&
+        !/^\s*explain\s+(?:yourself|vera|this\s+app)\b/i.test(String(trimmed || "").trim());
       return (
         (conceptWords.test(t) && domainWords.test(t)) ||
         domainWords.test(t) ||
@@ -5080,7 +5444,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         hasCodeSnippet ||
         multiPart.test(t) ||
         writingTask ||
-        guideWritingTask
+        guideWritingTask ||
+        explainReasoningAsk
       );
     })();
     routeReasoning = classifyRoute || heuristicReasoning;
@@ -5254,6 +5619,14 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             markdownText: mdDone,
             userPrompt: trimmed
           });
+          const panelForTitle = turnEl.closest(".vera-reasoning-tab-panel");
+          if (panelForTitle instanceof HTMLElement) {
+            queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panelForTitle, {
+              userPrompt: trimmed,
+              markdownText: mdDone,
+              summaryText: extractWorkModeReasoningSummaryAnswerLine(summaryText)
+            });
+          }
           if (mdDone) {
             const hasSyncHeading = /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdDone);
             if (planningIntent || hasSyncHeading) {
@@ -5310,7 +5683,9 @@ function setWorkModeAttachmentMeta(message) {
 /** Text-only reasoning stream into the reasoning panel (no `/infer`). File uploads use `maybePrepareWorkModeReasoning` + typed infer instead. */
 async function streamWorkModeReasoningComposer(text, signal) {
   const reasoningUserFocusLaneIdx = getActiveReasoningLaneIndex();
-  const laneIdx = await acquireWorkModeReasoningLane(text);
+  const laneIdx = isWorkModeReasoningAutoRouteEnabled()
+    ? await acquireWorkModeReasoningLane(text)
+    : await acquireWorkModeReasoningLaneForIndex(reasoningUserFocusLaneIdx ?? 0);
   const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
   const laneId = getWorkModeReasoningLaneId(laneIdx);
   const laneAbortController = new AbortController();
@@ -5396,6 +5771,14 @@ async function streamWorkModeReasoningComposer(text, signal) {
       markdownText: markdownAcc,
       userPrompt: text
     });
+    const panelForTitle = turnEl.closest(".vera-reasoning-tab-panel");
+    if (panelForTitle instanceof HTMLElement) {
+      queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panelForTitle, {
+        userPrompt: text,
+        markdownText: markdownAcc,
+        summaryText: extractWorkModeReasoningSummaryAnswerLine(summaryText)
+      });
+    }
     maybeReasoningScrollToLatest(scrollEl);
   } finally {
     endWorkModeReasoningLaneRun(laneIdx);
@@ -9211,6 +9594,7 @@ function scheduleMainBrowserEndOfUtterance() {
 }
 
 function updateMainBrowserLiveBubble(fullText, interim) {
+  if (mainAsrPartialMinChars === Infinity) return;
   const convo = uiEl("conversation");
   if (!convo) return;
   const line = (fullText + interim).trim();
@@ -9230,6 +9614,21 @@ function removeMainBrowserLiveBubble() {
     mainBrowserLiveBubble.remove();
   }
   mainBrowserLiveBubble = null;
+}
+
+/** When partial min is Infinity: no live bubble during ASR; create/update once at finalize so the user sees text before /infer returns. */
+function showDeferredMainBrowserUserBubbleIfNeeded(trimmed) {
+  if (mainAsrPartialMinChars !== Infinity) return;
+  const t = String(trimmed ?? "").trim();
+  if (!t) return;
+  const convo = uiEl("conversation");
+  if (!convo) return;
+  if (!mainBrowserLiveBubble?.isConnected) {
+    mainBrowserLiveBubble = addBubble(t, "user", { path: "main-browser-partial" });
+  } else {
+    mainBrowserLiveBubble.textContent = t;
+  }
+  convo.scrollTop = convo.scrollHeight;
 }
 
 /**
@@ -9271,6 +9670,7 @@ async function finalizeMainBrowserTranscript(text) {
 
   /* Keep partial bubble in DOM; commitServerUserTranscriptBubble updates the same node when /infer returns. */
   abortBrowserSpeechRecognizers();
+  showDeferredMainBrowserUserBubbleIfNeeded(trimmed);
 
   const formData = new FormData();
   formData.append("transcript", trimmed);
@@ -9689,6 +10089,7 @@ async function finalizeInterruptBrowserTranscript(text) {
   setStatus("Thinking", "thinking");
 
   abortBrowserSpeechRecognizers();
+  showDeferredMainBrowserUserBubbleIfNeeded(trimmed);
 
   const formData = new FormData();
   formData.append("transcript", trimmed);
@@ -10897,6 +11298,7 @@ function wireVeraSettingsPanel() {
   const textGuideRotatorBtn = document.getElementById("vera-setting-text-guide-rotator");
   const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
   const planningDeadlineTimerBtn = document.getElementById("vera-setting-planning-deadline-timer");
+  const reasoningAutoRouteBtn = document.getElementById("vera-setting-reasoning-auto-route");
   const saveBtn = document.getElementById("vera-settings-save");
   if (!(modal instanceof HTMLElement)) return;
 
@@ -10906,8 +11308,9 @@ function wireVeraSettingsPanel() {
   let draftTextGuideRotator = isTextGuideRotatorEnabled();
   let draftWorkModeMute = isWorkModeMuteEnabled();
   let draftPlanningDeadlineTimer = isPlanningDeadlineTimerEnabled();
+  let draftReasoningAutoRoute = isWorkModeReasoningAutoRouteEnabled();
   let draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
-  const partialMinCharOptions = [5, 8, 10, 12, 15];
+  const partialMinCharOptions = [5, 8, 10, 12, 15, Infinity];
   const silenceToIndex = (ms) => {
     const idx = silenceOptions.indexOf(ms);
     return idx >= 0 ? idx : 1;
@@ -10962,6 +11365,13 @@ function wireVeraSettingsPanel() {
       planningDeadlineTimerBtn.setAttribute("aria-pressed", on ? "true" : "false");
     }
   };
+  const applyReasoningAutoRouteUi = () => {
+    const on = draftReasoningAutoRoute;
+    if (reasoningAutoRouteBtn instanceof HTMLButtonElement) {
+      reasoningAutoRouteBtn.classList.toggle("is-on", on);
+      reasoningAutoRouteBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  };
 
   const hydrate = () => {
     draftSilenceMs = getVeraAsrSilenceMs();
@@ -10969,6 +11379,7 @@ function wireVeraSettingsPanel() {
     draftTextGuideRotator = isTextGuideRotatorEnabled();
     draftWorkModeMute = isWorkModeMuteEnabled();
     draftPlanningDeadlineTimer = isPlanningDeadlineTimerEnabled();
+    draftReasoningAutoRoute = isWorkModeReasoningAutoRouteEnabled();
     draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
     if (silenceSlider instanceof HTMLInputElement) {
       silenceSlider.value = String(silenceToIndex(draftSilenceMs));
@@ -10980,6 +11391,7 @@ function wireVeraSettingsPanel() {
     applyTextGuideRotatorUi();
     applyMuteUi();
     applyPlanningDeadlineTimerUi();
+    applyReasoningAutoRouteUi();
     applyVeraWorkModeMuteSetting();
     applyTextGuideRotatorSetting();
   };
@@ -10992,7 +11404,8 @@ function wireVeraSettingsPanel() {
       text_guide_rotator: draftTextGuideRotator ? 1 : 0,
       workmode_mute: draftWorkModeMute ? 1 : 0,
       planning_deadline_timer: draftPlanningDeadlineTimer ? 1 : 0,
-      main_asr_partial_min_chars: draftMainAsrPartialMinChars,
+      reasoning_auto_route: draftReasoningAutoRoute ? 1 : 0,
+      main_asr_partial_min_chars: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
     });
     modal.removeAttribute("hidden");
   };
@@ -11025,7 +11438,9 @@ function wireVeraSettingsPanel() {
   });
   const syncDraftPartialMinChars = () => {
     draftMainAsrPartialMinChars = readSliderPartialMinChars();
-    logVeraSettings("draft_main_asr_partial_min_chars", { value: draftMainAsrPartialMinChars });
+    logVeraSettings("draft_main_asr_partial_min_chars", {
+      value: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
+    });
   };
   mainPartialMinSel?.addEventListener("input", syncDraftPartialMinChars);
   mainPartialMinSel?.addEventListener("change", syncDraftPartialMinChars);
@@ -11044,6 +11459,11 @@ function wireVeraSettingsPanel() {
     applyPlanningDeadlineTimerUi();
     logVeraSettings("draft_planning_deadline_timer", { value: draftPlanningDeadlineTimer ? 1 : 0 });
   });
+  reasoningAutoRouteBtn?.addEventListener("click", () => {
+    draftReasoningAutoRoute = !draftReasoningAutoRoute;
+    applyReasoningAutoRouteUi();
+    logVeraSettings("draft_reasoning_auto_route", { value: draftReasoningAutoRoute ? 1 : 0 });
+  });
   saveBtn?.addEventListener("click", () => {
     draftSilenceMs = readSliderSilenceMs();
     draftMainAsrPartialMinChars = readSliderPartialMinChars();
@@ -11053,7 +11473,8 @@ function wireVeraSettingsPanel() {
       text_guide_rotator: draftTextGuideRotator ? 1 : 0,
       workmode_mute: draftWorkModeMute ? 1 : 0,
       planning_deadline_timer: draftPlanningDeadlineTimer ? 1 : 0,
-      main_asr_partial_min_chars: draftMainAsrPartialMinChars,
+      reasoning_auto_route: draftReasoningAutoRoute ? 1 : 0,
+      main_asr_partial_min_chars: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
     });
     setVeraAsrSilenceMs(draftSilenceMs);
     setVeraAsrMode(draftAsrMode);
@@ -11061,6 +11482,7 @@ function wireVeraSettingsPanel() {
     setTextGuideRotatorEnabled(draftTextGuideRotator);
     setWorkModeMuteEnabled(draftWorkModeMute);
     setPlanningDeadlineTimerEnabled(draftPlanningDeadlineTimer);
+    setWorkModeReasoningAutoRouteEnabled(draftReasoningAutoRoute);
     close();
   });
 
@@ -11477,6 +11899,7 @@ window.VeraSpotify = {
           playBtn.textContent = "⏸";
           playBtn.setAttribute("aria-label", "Pause");
         }
+        void spotifyRefreshWebPlaybackStateToUi(prefix);
         return;
       }
       spotifyClearPendingSdkTrack();
@@ -11518,7 +11941,9 @@ window.VeraSpotify = {
         position_ms: Math.round((audio.currentTime || 0) * 1000),
         duration_ms: Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : 0,
         paused: !!audio.paused,
-        active: !audio.paused
+        active: !audio.paused,
+        queue_next_available: false,
+        queue_previous_count: 0
       });
       spotifyApplyNowStateToPanel(prefix);
       if (artistEl) artistEl.textContent = meta?.artist || "";
@@ -11598,6 +12023,7 @@ window.VeraSpotify = {
       active: true
     });
     spotifyApplyNowStateToPanel(prefix);
+    void spotifyRefreshWebPlaybackStateToUi(prefix);
   },
   async playPlaylistTrack(playlistUri, trackUri, meta = {}) {
     const prefix = appModePrefix();
@@ -11650,6 +12076,42 @@ window.VeraSpotify = {
       active: true
     });
     spotifyApplyNowStateToPanel(prefix);
+    void spotifyRefreshWebPlaybackStateToUi(prefix);
+  },
+  async skipNext() {
+    const base = localBackendBase();
+    const prefix = appModePrefix();
+    if (!window.__veraSpotifyDeviceId) return;
+    const res = await fetch(`${base}/api/spotify/player/next`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
+      body: JSON.stringify({ device_id: window.__veraSpotifyDeviceId })
+    });
+    if (!res.ok) return;
+    await spotifyRefreshWebPlaybackStateToUi(prefix);
+  },
+  async skipPrevious() {
+    const base = localBackendBase();
+    const prefix = appModePrefix();
+    if (!window.__veraSpotifyDeviceId) return;
+    const s = spotifyEnsureNowState();
+    const pos = Number(s.position_ms) || 0;
+    const prevCount = Number(s.queue_previous_count) || 0;
+    if (pos > SPOTIFY_PREVIOUS_RESTART_MS) {
+      await this.seekTo(0);
+      await spotifyRefreshWebPlaybackStateToUi(prefix);
+      return;
+    }
+    if (prevCount < 1) return;
+    const res = await fetch(`${base}/api/spotify/player/previous`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
+      body: JSON.stringify({ device_id: window.__veraSpotifyDeviceId })
+    });
+    if (!res.ok) return;
+    await spotifyRefreshWebPlaybackStateToUi(prefix);
   },
   async togglePlayback() {
     const web = window.__veraSpotifyPlayer;
@@ -11733,7 +12195,9 @@ window.VeraSpotify = {
         position_ms: Math.round((audio.currentTime || 0) * 1000),
         duration_ms: Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : 0,
         paused: true,
-        active: false
+        active: false,
+        queue_next_available: false,
+        queue_previous_count: 0
       });
       spotifyApplyNowStateToPanel(prefix);
     }
@@ -11763,7 +12227,9 @@ window.VeraSpotify = {
         position_ms: Math.round((audio.currentTime || 0) * 1000),
         duration_ms: Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : 0,
         paused: false,
-        active: true
+        active: true,
+        queue_next_available: false,
+        queue_previous_count: 0
       });
       spotifyApplyNowStateToPanel(prefix);
     }
