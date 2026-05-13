@@ -6,7 +6,7 @@
   <!-- Optional: override user auth backend (otherwise localhost = same origin; GitHub Pages = Worker below) -->
   <meta name="vera-local-backend-origin" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=9">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -787,8 +787,8 @@
               type="button"
               id="vera-reasoning-tab-add"
               class="vera-reasoning-tab-add"
-              aria-label="Add reasoning space (max 3)"
-              title="New space (max 3)"
+              aria-label="Add reasoning space (up to 8)"
+              title="Add space (up to 8)"
             >
               +
             </button>
@@ -2600,8 +2600,13 @@ document.addEventListener("click", () => {
 
       <div class="vera-settings-row">
         <label for="vera-setting-main-partial-min" class="vera-settings-label">Min chars before showing partial</label>
-        <input id="vera-setting-main-partial-min" type="range" min="0" max="4" step="1" value="2" />
-        <div class="vera-settings-range-labels"><span>5</span><span>8</span><span>10</span><span>12</span><span>15</span></div>
+        <input id="vera-setting-main-partial-min" type="range" min="0" max="5" step="1" value="2" />
+        <div
+          class="vera-settings-range-labels vera-settings-range-labels--partial-min"
+          title="Infinity: hide live captions until you finish the utterance (transcript appears when sending to VERA)."
+        >
+          <span>5</span><span>8</span><span>10</span><span>12</span><span>15</span><span>Infinity</span>
+        </div>
       </div>
     </section>
 
@@ -2622,6 +2627,12 @@ document.addEventListener("click", () => {
       <div class="vera-settings-row vera-settings-toggle-row">
         <span class="vera-settings-label">Timer for explicit due-in plans</span>
         <button type="button" id="vera-setting-planning-deadline-timer" class="vera-settings-toggle is-on" aria-pressed="true" title="When on, due-in phrases start a countdown that ends 10 minutes before the time you gave">
+          <span class="knob"></span>
+        </button>
+      </div>
+      <div class="vera-settings-row vera-settings-toggle-row">
+        <span class="vera-settings-label">Auto-route reasoning across panels</span>
+        <button type="button" id="vera-setting-reasoning-auto-route" class="vera-settings-toggle" aria-pressed="false" title="When on, topics are routed by similarity and idle panels (legacy). When off, reasoning uses the panel you are on (default).">
           <span class="knob"></span>
         </button>
       </div>
@@ -2651,7 +2662,7 @@ document.addEventListener("click", () => {
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
-<script src="app.js?v=35"></script>
+<script src="app.js?v=44"></script>
 </body>
 </html>
 

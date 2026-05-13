@@ -2290,7 +2290,8 @@ function spotifyEnsureNowState() {
       paused: true,
       active: false,
       queue_next_available: false,
-      queue_previous_count: 0
+      queue_previous_count: 0,
+      disallow_skip_prev: false
     };
   }
   return window.__veraSpotifyNowState;
@@ -2455,13 +2456,24 @@ function spotifyClearPendingIfSdkMatches(sdkTrackUri) {
   if (String(sdkTrackUri || "").trim() === p.uri) spotifyClearPendingSdkTrack();
 }
 
-function spotifyReadTrackWindowQueueFlags(state) {
+function spotifyReadWebPlaybackTransportHints(state) {
   const tw = state?.track_window || {};
   const nextTracks = Array.isArray(tw.next_tracks) ? tw.next_tracks : [];
   const prevTracks = Array.isArray(tw.previous_tracks) ? tw.previous_tracks : [];
+  const dis = state?.disallows || {};
+  const skipNextBlocked = dis.skipping_next === true;
+  const skipPrevBlocked = dis.skipping_prev === true;
+  const ctxUri = String(state?.context?.uri || "").trim();
+  const hasBrowsableContext =
+    ctxUri.startsWith("spotify:playlist:") ||
+    ctxUri.startsWith("spotify:album:") ||
+    ctxUri.startsWith("spotify:artist:");
+  /** Spotify often leaves ``next_tracks`` empty while playlist/album context still advances; use context + ``disallows``. */
+  const queue_next_available = nextTracks.length > 0 || (hasBrowsableContext && !skipNextBlocked);
   return {
-    queue_next_available: nextTracks.length > 0,
-    queue_previous_count: prevTracks.length
+    queue_next_available,
+    queue_previous_count: prevTracks.length,
+    disallow_skip_prev: skipPrevBlocked
   };
 }
 
@@ -2478,7 +2490,8 @@ function spotifySyncNowStateFromWebSdk(state) {
       paused,
       active: false,
       queue_next_available: false,
-      queue_previous_count: 0
+      queue_previous_count: 0,
+      disallow_skip_prev: false
     });
     window.__veraSpotifyPlaybackActive = false;
     return;
@@ -2486,7 +2499,7 @@ function spotifySyncNowStateFromWebSdk(state) {
 
   const sdkUri = String(curTrack.uri || "").trim();
   const active = !paused;
-  const qf = spotifyReadTrackWindowQueueFlags(state);
+  const qf = spotifyReadWebPlaybackTransportHints(state);
   if (spotifySdkMetadataStaleVersusPending(sdkUri)) {
     spotifyUpdateNowState({
       position_ms,
@@ -2610,15 +2623,16 @@ function spotifyApplyNowStateToPanel(prefix) {
   const webReady = Boolean(window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId);
   const prevCount = Number(s.queue_previous_count) || 0;
   const pos = Math.max(0, Number(s.position_ms) || 0);
+  const blockPrev = s.disallow_skip_prev === true;
   const canNext = webReady && Boolean(s.queue_next_available);
-  const canPrev = webReady && (prevCount > 0 || pos > SPOTIFY_PREVIOUS_RESTART_MS);
+  const canPrev = webReady && (pos > SPOTIFY_PREVIOUS_RESTART_MS || (prevCount > 0 && !blockPrev));
   if (nextBtn instanceof HTMLButtonElement) {
     nextBtn.disabled = !canNext;
     nextBtn.title = canNext
       ? "Next track"
       : webReady
-        ? "No next track in this queue"
-        : "Connect in-browser playback (Premium) for queue controls";
+        ? "At end of playlist — no further tracks"
+        : "Connect in-browser playback (Premium) for skip controls";
   }
   if (prevBtn instanceof HTMLButtonElement) {
     prevBtn.disabled = !canPrev;
@@ -2627,8 +2641,8 @@ function spotifyApplyNowStateToPanel(prefix) {
         pos > SPOTIFY_PREVIOUS_RESTART_MS ? "Restart from beginning" : "Previous track";
     } else {
       prevBtn.title = webReady
-        ? "At start of queue — nothing to skip back to"
-        : "Connect in-browser playback (Premium) for queue controls";
+        ? "At start of playlist — nothing to skip back to"
+        : "Connect in-browser playback (Premium) for skip controls";
     }
   }
 }
@@ -3170,7 +3184,8 @@ function wireProductivityPanelEvents(prefix) {
       paused: true,
       active: false,
       queue_next_available: false,
-      queue_previous_count: 0
+      queue_previous_count: 0,
+      disallow_skip_prev: false
     });
     removeSpotifyMiniButton(prefix);
     await refreshSpotifyConnectionUI(prefix);
@@ -3198,7 +3213,8 @@ function wireProductivityPanelEvents(prefix) {
         paused: !!previewAudio.paused,
         active: !previewAudio.paused,
         queue_next_available: false,
-        queue_previous_count: 0
+        queue_previous_count: 0,
+        disallow_skip_prev: false
       });
       spotifyApplyNowStateToPanel(prefix);
     };
@@ -3208,7 +3224,8 @@ function wireProductivityPanelEvents(prefix) {
         position_ms: Math.round((previewAudio.currentTime || 0) * 1000),
         duration_ms: Number.isFinite(previewAudio.duration) ? Math.round(previewAudio.duration * 1000) : 0,
         queue_next_available: false,
-        queue_previous_count: 0
+        queue_previous_count: 0,
+        disallow_skip_prev: false
       });
       spotifyApplyNowStateToPanel(prefix);
     };
@@ -11943,7 +11960,8 @@ window.VeraSpotify = {
         paused: !!audio.paused,
         active: !audio.paused,
         queue_next_available: false,
-        queue_previous_count: 0
+        queue_previous_count: 0,
+        disallow_skip_prev: false
       });
       spotifyApplyNowStateToPanel(prefix);
       if (artistEl) artistEl.textContent = meta?.artist || "";
@@ -12197,7 +12215,8 @@ window.VeraSpotify = {
         paused: true,
         active: false,
         queue_next_available: false,
-        queue_previous_count: 0
+        queue_previous_count: 0,
+        disallow_skip_prev: false
       });
       spotifyApplyNowStateToPanel(prefix);
     }
@@ -12229,7 +12248,8 @@ window.VeraSpotify = {
         paused: false,
         active: true,
         queue_next_available: false,
-        queue_previous_count: 0
+        queue_previous_count: 0,
+        disallow_skip_prev: false
       });
       spotifyApplyNowStateToPanel(prefix);
     }

@@ -31,6 +31,8 @@ body.app-open {
 html:has(#vera-app.work-mode:not([hidden])),
 body:has(#vera-app.work-mode:not([hidden])) {
   overflow: hidden !important;
+  height: 100%;
+  max-height: 100dvh;
 }
 body.app-open #bg-video {
   opacity: 0;
@@ -2995,7 +2997,7 @@ body.app-open:not(.bmo-open) #vera-app.fade-in .vera-mode-guide {
 }
 
 .spotify-transport-btn:disabled {
-  opacity: 0.35;
+  opacity: 0.52;
   cursor: not-allowed;
 }
 
@@ -3437,6 +3439,7 @@ body.chat-started .input-bar {
 
 /* Work mode: VERA | clock pill | BMO */
 #vera-app.work-mode .vera-app-header.chat-header {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
@@ -3644,8 +3647,29 @@ body.chat-started .input-bar {
   content: none !important;
 }
 
+/* Work mode: shell fills the viewport; no scroll on #vera-app / .chat-centered (panels scroll inside). */
+#vera-app.work-mode:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
 /* Bridge header + first row so the clock strip and panel region share one continuous field */
 #vera-app.work-mode > .chat-centered {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  height: auto;
+  max-height: none;
+  align-items: stretch;
+  overflow: hidden !important;
+  overflow-x: hidden !important;
+  overflow-y: hidden !important;
   background-image: linear-gradient(
     180deg,
     rgba(6, 12, 22, 0.38) 0%,
@@ -3664,7 +3688,6 @@ body.chat-started .input-bar {
   padding: 14px 10px 12px;
   flex: 1 1 auto;
   min-height: 0;
-  height: calc(100vh - 98px);
   align-items: stretch;
 }
 
@@ -3937,9 +3960,9 @@ body.chat-started .input-bar {
 #vera-app.work-mode .vera-wm-center > .vera-wm-reasoning-top {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12px;
   padding: 8px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
@@ -3948,31 +3971,42 @@ body.chat-started .input-bar {
   margin: 0;
   padding: 0;
   border: none;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.55);
+  line-height: 28px;
 }
 
 #vera-app.work-mode .vera-reasoning-tabs-strip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
 }
 
 #vera-app.work-mode .vera-reasoning-tabs {
+  grid-column: 1;
   display: flex;
-  align-items: center;
-  gap: 4px;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  max-width: min(360px, 55vw);
+  align-content: flex-start;
+  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  /* ~3 rows of tabs (slot height + gap); scroll if ever denser */
+  max-height: calc(3 * (34px + 4px) - 4px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 #vera-app.work-mode .vera-reasoning-tab-add {
+  grid-column: 2;
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
@@ -5204,6 +5238,10 @@ body.chat-started .input-bar {
 #vera-setting-main-partial-min {
   width: min(560px, 100%);
   accent-color: #8cb6ff;
+}
+
+.vera-settings-range-labels.vera-settings-range-labels--partial-min {
+  font-size: 11px;
 }
 
 .vera-settings-range-labels {
