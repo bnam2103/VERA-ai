@@ -12331,40 +12331,49 @@ window.VeraSpotify = {
       }
     }
     /* Do not require ``previous_tracks`` in the SDK snapshot — it is often empty while context still has a prior track. */
-    let res = null;
-    try {
-      res = await fetch(`${base}/api/spotify/player/previous`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
-        body: JSON.stringify({ device_id: window.__veraSpotifyDeviceId })
-      });
-      console.log("[MUSIC][SKIP_PREV] previous-call-1", { ok: Boolean(res?.ok), status: res?.status ?? -1 });
-    } catch (_) {
-      /* ignore */
-      console.log("[MUSIC][SKIP_PREV] previous-call-1-error");
+    const delays = [0, 220, 650];
+    let moved = false;
+    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+      if (attempt > 0) {
+        await spotifyRefreshWebPlaybackStateToUi(prefix);
+        const gate = spotifyEnsureNowState();
+        if (gate.disallow_skip_prev === true) {
+          console.log("[MUSIC][SKIP_PREV] retry-abort-disallowed", { attempt: attempt + 1 });
+          break;
+        }
+      }
+      if (delays[attempt] > 0) {
+        await new Promise((r) => window.setTimeout(r, delays[attempt]));
+      }
+      try {
+        const res = await fetch(`${base}/api/spotify/player/previous`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
+          body: JSON.stringify({ device_id: window.__veraSpotifyDeviceId })
+        });
+        console.log("[MUSIC][SKIP_PREV] previous-call", {
+          attempt: attempt + 1,
+          ok: Boolean(res?.ok),
+          status: res?.status ?? -1
+        });
+        if (res?.ok) {
+          moved = true;
+          break;
+        }
+      } catch (_) {
+        console.log("[MUSIC][SKIP_PREV] previous-call-error", { attempt: attempt + 1 });
+      }
     }
-    if (!res?.ok) {
-      await spotifyRefreshWebPlaybackStateToUi(prefix);
-      const refreshed = spotifyEnsureNowState();
-      console.log("[MUSIC][SKIP_PREV] retry-gate", {
-        disallow_skip_prev: refreshed.disallow_skip_prev === true,
-        position_ms: Number(refreshed.position_ms) || 0,
-        queue_previous_count: Number(refreshed.queue_previous_count) || 0,
-      });
-      if (refreshed.disallow_skip_prev !== true) {
-        await new Promise((r) => window.setTimeout(r, 180));
+    if (!moved) {
+      const web = window.__veraSpotifyPlayer;
+      if (web && typeof web.previousTrack === "function") {
         try {
-          const res2 = await fetch(`${base}/api/spotify/player/previous`, {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
-            body: JSON.stringify({ device_id: window.__veraSpotifyDeviceId })
-          });
-          console.log("[MUSIC][SKIP_PREV] previous-call-2", { ok: Boolean(res2?.ok), status: res2?.status ?? -1 });
+          await web.previousTrack();
+          moved = true;
+          console.log("[MUSIC][SKIP_PREV] sdk-previousTrack-ok");
         } catch (_) {
-          /* ignore */
-          console.log("[MUSIC][SKIP_PREV] previous-call-2-error");
+          console.log("[MUSIC][SKIP_PREV] sdk-previousTrack-failed");
         }
       }
     }
