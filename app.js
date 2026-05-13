@@ -3197,12 +3197,10 @@ function wireProductivityPanelEvents(prefix) {
   });
 
   document.getElementById(`${prefix}-spotify-next`)?.addEventListener("click", () => {
-    const fn = window.VeraSpotify?.skipNext;
-    if (typeof fn === "function") void fn();
+    invokeSpotifyTransport("skip_next", { source: "button" });
   });
   document.getElementById(`${prefix}-spotify-prev`)?.addEventListener("click", () => {
-    const fn = window.VeraSpotify?.skipPrevious;
-    if (typeof fn === "function") void fn();
+    invokeSpotifyTransport("skip_previous", { source: "button" });
   });
 
   document.getElementById(`${prefix}-spotify-logout`)?.addEventListener("click", async () => {
@@ -7267,6 +7265,22 @@ function shouldApplyMusicTransportAction(payload, op) {
   return true;
 }
 
+function invokeSpotifyTransport(op, { source = "unknown" } = {}) {
+  const fn =
+    op === "skip_previous"
+      ? window.VeraSpotify?.skipPrevious
+      : op === "skip_next"
+      ? window.VeraSpotify?.skipNext
+      : null;
+  if (typeof fn !== "function") {
+    console.log("[MUSIC][TRANSPORT] missing-handler", { op, source });
+    return false;
+  }
+  console.log("[MUSIC][TRANSPORT] invoke", { op, source });
+  void fn();
+  return true;
+}
+
 /** Returns false when the same play was already started a few seconds ago (NDJSON finalize + first-audio both call this). */
 function shouldPlayMusicThisInvocation(payload, op) {
   const key = musicPlaybackDedupeKey(payload, op);
@@ -7381,8 +7395,7 @@ function applyActionPayload(data) {
     }
     if (op === "skip_next") {
       if (!shouldApplyMusicTransportAction(payload, op)) return;
-      const fn = window.VeraSpotify?.skipNext;
-      if (typeof fn === "function") void fn();
+      invokeSpotifyTransport("skip_next", { source: "command" });
       return;
     }
     if (op === "skip_previous") {
@@ -7391,8 +7404,7 @@ function applyActionPayload(data) {
         source: data?.type || "unknown",
         has_payload: Boolean(payload),
       });
-      const fn = window.VeraSpotify?.skipPrevious;
-      if (typeof fn === "function") void fn();
+      invokeSpotifyTransport("skip_previous", { source: "command" });
       return;
     }
     if (op === "pause") {
@@ -12288,6 +12300,7 @@ window.VeraSpotify = {
     }
     let s = spotifyEnsureNowState();
     let pos = Number(s.position_ms) || 0;
+    let seekRestartDone = false;
     console.log("[MUSIC][SKIP_PREV] precheck", {
       position_ms: pos,
       disallow_skip_prev: s.disallow_skip_prev === true,
@@ -12296,13 +12309,15 @@ window.VeraSpotify = {
     if (pos > SPOTIFY_PREVIOUS_RESTART_MS) {
       try {
         await this.seekTo(0);
+        seekRestartDone = true;
         console.log("[MUSIC][SKIP_PREV] seek-restart-ok");
       } catch (_) {
         /* seek can fail transiently; still refresh state */
         console.log("[MUSIC][SKIP_PREV] seek-restart-failed");
       }
       await spotifyRefreshWebPlaybackStateToUi(prefix);
-      return;
+      if (seekRestartDone) return;
+      console.log("[MUSIC][SKIP_PREV] seek-failed-fallback-to-previous");
     }
     if (s.disallow_skip_prev === true) {
       console.log("[MUSIC][SKIP_PREV] blocked-by-disallow-before-refresh");
@@ -12317,13 +12332,15 @@ window.VeraSpotify = {
       if (pos > SPOTIFY_PREVIOUS_RESTART_MS) {
         try {
           await this.seekTo(0);
+          seekRestartDone = true;
           console.log("[MUSIC][SKIP_PREV] seek-restart-after-refresh-ok");
         } catch (_) {
           /* ignore */
           console.log("[MUSIC][SKIP_PREV] seek-restart-after-refresh-failed");
         }
         await spotifyRefreshWebPlaybackStateToUi(prefix);
-        return;
+        if (seekRestartDone) return;
+        console.log("[MUSIC][SKIP_PREV] seek-after-refresh-failed-fallback-to-previous");
       }
       if (s.disallow_skip_prev === true) {
         console.log("[MUSIC][SKIP_PREV] abort:still-disallowed");
