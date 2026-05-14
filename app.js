@@ -1385,6 +1385,14 @@ function addBubble(text, who, meta) {
 
   const bubble = document.createElement("div");
   bubble.className = `bubble ${who}`;
+  if (meta?.bubbleClass) {
+    const extra = String(meta.bubbleClass || "").trim();
+    if (extra) {
+      for (const c of extra.split(/\s+/)) {
+        if (c) bubble.classList.add(c);
+      }
+    }
+  }
   bubble.textContent = text;
 
   row.appendChild(bubble);
@@ -1412,6 +1420,41 @@ function commitServerUserTranscriptBubble(text, path) {
       logVoiceTranscript("final", t, { path, via: "promote-partial-bubble" });
     }
   } else {
+    const convoEl = uiEl("conversation");
+    if (convoEl) {
+      const rows = [...convoEl.querySelectorAll(".message-row")];
+      /* Walk up from the bottom to the latest user row. Skip duplicate commit when that user line
+         already matches `t` and only assistant rows follow, including a work-mode stage‑1 ack —
+         i.e. NDJSON `asr` re-applying the same transcript after stage‑1 inserted a VERA bubble.
+         (Do not skip when the user sends the same text again later with no stage‑1 row below.) */
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const row = rows[i];
+        if (!row.classList.contains("user")) continue;
+        const b = row.querySelector(".bubble");
+        if (b instanceof HTMLElement && b.classList.contains("interrupt-preview")) continue;
+        const existing = ((b && b.textContent) || "").trim();
+        if (existing !== t) break;
+        let sawStage1Below = false;
+        let anotherUserBelow = false;
+        for (let j = i + 1; j < rows.length; j++) {
+          if (rows[j].classList.contains("user")) {
+            anotherUserBelow = true;
+            break;
+          }
+          const vb = rows[j].querySelector(".bubble");
+          if (vb?.classList.contains("vera-work-mode-stage1-ack")) sawStage1Below = true;
+        }
+        if (sawStage1Below && !anotherUserBelow) {
+          if (voiceTranscriptDebugEnabled()) {
+            logVoiceTranscript("final", t, { path, via: "skip-duplicate-user-bubble-after-stage1" });
+          }
+          persistVeraChatState();
+          ensureChatStartedLayout();
+          return;
+        }
+        break;
+      }
+    }
     addBubble(t, "user", { path });
   }
   persistVeraChatState();
@@ -2890,6 +2933,107 @@ function collectWorkModeVoiceExcerptForContext(maxChars = 3500, maxRows = 8) {
   return out;
 }
 
+/**
+ * Same-thread requests that still need the reasoning stream (implementation, proofs, full solves).
+ * When true, isGeneralWorkModeFollowUpContinuingTask must not suppress routing.
+ */
+function isReasoningHeavySameThreadRequest(trimmed) {
+  const low = String(trimmed || "").toLowerCase();
+  if (!low) return false;
+
+  if (
+    /\b(code|implement|program(?:ming)?|script|snippet|function|class|debug|refactor)\b/i.test(low) &&
+    (/\b(python|typescript|javascript|java|rust|go|kotlin|c\+\+|csharp|sql|julia|matlab|\br\b)\b/i.test(low) ||
+      /\b(this|that|it|the problem|the same)\b/i.test(low))
+  ) {
+    return true;
+  }
+
+  if (/\b(full\s+)?proof|formal\s+proof|rigorous\s+proof|prove\s+(?:it|this|that|formally)\b/i.test(low)) {
+    return true;
+  }
+  if (/\bderive|derivation\b/i.test(low)) return true;
+  if (/\bstep[\s-]by[\s-]step\b/i.test(low)) return true;
+  if (
+    /\bsolv(?:e|ing)\b/i.test(low) &&
+    (/\b(step|explicitly|completely|fully|all\s+steps|show\s+(?:all\s+)?work)\b/i.test(low) || /\bwork\s+it\s+out\b/i.test(low))
+  ) {
+    return true;
+  }
+  if (/\bcalculat(?:e|ing)|compute\b/i.test(low) && /\b(it|this|that|the\s+(numbers?|values?|result))\b/i.test(low)) {
+    return true;
+  }
+
+  if (
+    /\bexplain\b/i.test(low) &&
+    /\b(math|mathematics|algebra|calculus|derivation|equation|formula|intuition|why\s+it\s+works|mechanism)\b/i.test(low)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * True → keep this turn on the main Voice /infer path and reuse snapshot context instead of
+ * spawning /work_mode/reasoning_stream. Default: short deictic / continuation turns stay on the
+ * active task unless the user clearly starts something new (see negative checks).
+ */
+function isGeneralWorkModeFollowUpContinuingTask(trimmed, priorThreadAnchor) {
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
+  const raw = String(trimmed || "").trim();
+  if (!raw) return false;
+  if (isReasoningHeavySameThreadRequest(raw)) return false;
+  const low = raw.toLowerCase();
+  const wc = (low.match(/\S+/g) || []).length;
+
+  const anchor = String(priorThreadAnchor || "").trim();
+  const reasoningPeek = collectWorkModeReasoningExcerptForContext(500).trim();
+  const voicePeek = collectWorkModeVoiceExcerptForContext(900, 5).trim();
+  const hasAssistantVoice = /\bAssistant:\s*\S/.test(voicePeek);
+  const hasContinuableContext =
+    anchor.length >= 6 || reasoningPeek.length >= 40 || hasAssistantVoice;
+
+  if (!hasContinuableContext) return false;
+
+  if (
+    /\b(new\s+(problem|question|topic|homework|assignment)|different\s+(question|problem)|unrelated|start\s+over|forget\s+(about\s+)?(that|this)|switch\s+topics?)\b/i.test(
+      low
+    )
+  ) {
+    return false;
+  }
+
+  const deictic = /\b(this|that|these|those|it|them|same|previous|prior|earlier|above|beforehand|the\s+last|your\s+last|the\s+previous)\b/i.test(
+    low
+  );
+  const threadRef =
+    /\b(the\s+)?(answer|solution|results?|your\s+work|the\s+work|proof|derivation|approach|method|steps?|tables?|code|numbers?|final)\b/i.test(low);
+  const partRef = /\bpart\s+[a-z0-9]{1,4}\b|\bsection\s+\d+|\bsubpart\b/i.test(low);
+  const continuation = /\b(continue|go on|carry on|pick up|more detail|keep going|expand|elaborate|shorten|shorter|trim|summarize|recap|clarify|double[\s-]?check)\b/i.test(
+    low
+  );
+  const materials = /\b(answer\s*sheet|rubric|attachment|uploaded|the\s+pdf|the\s+file|what i sent)\b/i.test(low);
+  const formatShape = /\b(in\s+a\s+table|as\s+a\s+table|in\s+code|as\s+code|markdown|bullet points?|latex)\b/i.test(low);
+  const explainPointing = /\bexplain\b.*\b(that|this|it|your|above)\b/i.test(low);
+  const critique = /\b(wrong|mistake|not\s+right|doesn'?t\s+match|correct\s+that)\b/i.test(low);
+  const hedgeQuestion = /\b(why|how come|what about|is that true|are you sure)\b/i.test(low);
+
+  if (wc <= 26) {
+    if (partRef || continuation || materials || formatShape || explainPointing) return true;
+    if (critique && (deictic || threadRef || wc <= 14)) return true;
+    if (hedgeQuestion && (deictic || threadRef || partRef)) return true;
+    if (threadRef && wc <= 18) return true;
+    if (deictic) return true;
+  } else if (wc <= 40) {
+    if (partRef) return true;
+    if (explainPointing) return true;
+    if ((continuation || materials || formatShape) && (deictic || threadRef)) return true;
+    if (hedgeQuestion && deictic) return true;
+  }
+  return false;
+}
+
 /** Tab list for /infer routing (work mode reasoning spaces). */
 function collectWorkModeReasoningPanelsSnapshot() {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
@@ -2935,7 +3079,7 @@ function buildClientContextSnapshot() {
 
   const activeLaneIdx = inWorkMode ? getActiveReasoningLaneIndex() : null;
   const reasoningExcerpt = inWorkMode ? collectWorkModeReasoningExcerptForContext() : "";
-  const voiceExcerpt = inWorkMode ? collectWorkModeVoiceExcerptForContext() : "";
+  const voiceExcerpt = inWorkMode ? collectWorkModeVoiceExcerptForContext(4500, 10) : "";
   const combinedProblemExcerpt = [reasoningExcerpt, voiceExcerpt]
     .filter((s) => String(s || "").trim())
     .join("\n\n---\n\n");
@@ -5420,6 +5564,111 @@ function escapeHtml(s) {
     .replaceAll(">", "&gt;");
 }
 
+/**
+ * Models often mix Markdown **bold** with raw <strong>/<b> (sometimes spaced: `< /strong >`).
+ * Convert to Markdown ** / * so the reasoning pipeline stays Markdown-only until the final HTML pass in `inline()`.
+ */
+function normalizeReasoningHtmlishMarkdown(raw) {
+  let s = String(raw || "").replace(/\r/g, "");
+  for (let pass = 0; pass < 4; pass += 1) {
+    s = s
+      .replace(/\*\*\s*<\s*\/\s*(strong|b)\s*>/gi, "**")
+      .replace(/<\s*\/\s*(strong|b)\s*>\s*\*\*/gi, "**")
+      .replace(/\*\*\s*<\s*(strong|b)\b[^>]*>/gi, "**")
+      .replace(/<\s*(strong|b)\b[^>]*>\s*\*\*/gi, "**");
+  }
+  s = s.replace(/<\s*\/\s*(strong|b)\s*><\s*(strong|b)\b[^>]*>/gi, "**");
+  for (let i = 0; i < 24; i += 1) {
+    const m = s.match(/<\s*(strong|b)\b[^>]*>([\s\S]*?)<\s*\/\s*\1\s*>/i);
+    if (!m) break;
+    const inner = String(m[2] || "").replace(/\*\*/g, "");
+    s = `${s.slice(0, m.index)}**${inner}**${s.slice(m.index + m[0].length)}`;
+  }
+  for (let i = 0; i < 24; i += 1) {
+    const m = s.match(/<\s*(em|i)\b[^>]*>([\s\S]*?)<\s*\/\s*\1\s*>/i);
+    if (!m) break;
+    const inner = String(m[2] || "").replace(/\*/g, "");
+    s = `${s.slice(0, m.index)}*${inner}*${s.slice(m.index + m[0].length)}`;
+  }
+  s = s.replace(/<\s*\/\s*(strong|b)\s*>/gi, "**");
+  s = s.replace(/<\s*(strong|b)\b[^>]*>/gi, "**");
+  s = s.replace(/<\s*\/\s*(em|i)\s*>/gi, "*");
+  s = s.replace(/<\s*(em|i)\b[^>]*>/gi, "*");
+  for (let j = 0; j < 16; j += 1) {
+    const prev = s;
+    s = s.replace(/\*{4,}/g, "**");
+    if (s === prev) break;
+  }
+  s = s.replace(/<\s*br\s*\/?>/gi, "\n");
+  s = s.replace(/<\s*(\/?)\s*(strong|b|em|i)\b[^>]*$/i, "");
+  return s;
+}
+
+/**
+ * Last-chance cleanup before render: orphan/malformed emphasis tags → Markdown markers
+ * (does not touch `<` that are not tag-like, beyond emphasis/break patterns).
+ */
+function defensiveReasoningMarkdownStripLooseHtml(s) {
+  let t = String(s || "");
+  for (let pass = 0; pass < 6; pass += 1) {
+    const prev = t;
+    t = t.replace(/<\s*\/\s*(strong|b)\s*>\s*<\s*(strong|b)\b[^>]*>/gi, "**");
+    t = t.replace(/<\s*(strong|b)\b[^>]*>\s*<\s*\/\s*(strong|b)\s*>/gi, "**");
+    t = t.replace(/<\s*\/\s*(strong|b)\s*>/gi, "**");
+    t = t.replace(/<\s*(strong|b)\b[^>]*>/gi, "**");
+    t = t.replace(/<\s*\/\s*(em|i)\s*>/gi, "*");
+    t = t.replace(/<\s*(em|i)\b[^>]*>/gi, "*");
+    t = t.replace(/<\s*br\s*\/?>/gi, "\n");
+    for (let j = 0; j < 8; j += 1) {
+      const p2 = t;
+      t = t.replace(/\*{4,}/g, "**");
+      if (t === p2) break;
+    }
+    if (t === prev) break;
+  }
+  return t;
+}
+
+function splitGfmTableRow(line) {
+  let row = String(line ?? "").trim();
+  if (!row.includes("|")) return [];
+  if (row.startsWith("|")) row = row.slice(1);
+  if (row.endsWith("|")) row = row.slice(0, -1);
+  return row.split("|").map((c) => c.trim());
+}
+
+function isGfmTableSeparatorRow(line) {
+  const cells = splitGfmTableRow(line);
+  if (cells.length < 2) return false;
+  return cells.every((cell) => /^:?-{3,}:?$/.test(String(cell).replace(/\s+/g, "")));
+}
+
+/**
+ * Render a GFM-style pipe table; `rows` must include header, separator, then body lines.
+ */
+function renderWorkModeGfmTable(rows, inlineFn) {
+  if (!rows || rows.length < 2 || !isGfmTableSeparatorRow(rows[1])) {
+    return `<p>${inlineFn(rows.map((r) => String(r).trim()).join(" "))}</p>`;
+  }
+  const headerCells = splitGfmTableRow(rows[0]);
+  const colCount = Math.max(2, headerCells.length);
+  let out = '<div class="vera-md-table-wrap"><table class="vera-md-table"><thead><tr>';
+  for (let i = 0; i < colCount; i++) {
+    out += `<th scope="col">${inlineFn(headerCells[i] ?? "")}</th>`;
+  }
+  out += "</tr></thead><tbody>";
+  for (let r = 2; r < rows.length; r++) {
+    const cells = splitGfmTableRow(rows[r]);
+    out += "<tr>";
+    for (let i = 0; i < colCount; i++) {
+      out += `<td>${inlineFn(cells[i] ?? "")}</td>`;
+    }
+    out += "</tr>";
+  }
+  out += "</tbody></table></div>";
+  return out;
+}
+
 /** Map ```fence language id to highlight.js grammar id when registered. */
 function mapReasoningFenceLangToHljs(raw) {
   const k = String(raw || "")
@@ -5580,7 +5829,10 @@ function extractLatexBoxedPlaceholders(s, outLatex) {
 function renderWorkModeMarkdown(el, markdown, summaryText = "") {
   if (!el) return;
   const globalBoxed = [];
-  const mdWithBoxPh = extractLatexBoxedPlaceholders(String(markdown || "").replace(/\r/g, ""), globalBoxed);
+  const mdNormalized = defensiveReasoningMarkdownStripLooseHtml(
+    normalizeReasoningHtmlishMarkdown(String(markdown || ""))
+  );
+  const mdWithBoxPh = extractLatexBoxedPlaceholders(mdNormalized.replace(/\r/g, ""), globalBoxed);
   const lines = mdWithBoxPh.split("\n");
   let olItemSeq = 0;
   const katexRenderOpts = (displayMode) => ({
@@ -5630,6 +5882,7 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
       return `@@CODE${codes.length - 1}@@`;
     });
     t = unwrapTexDollars(t);
+    /* Emphasis → HTML only inside this renderer, after escape (upstream stays Markdown-only). */
     t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
     t = applyInlineMath(t);
@@ -5645,10 +5898,13 @@ function renderWorkModeMarkdown(el, markdown, summaryText = "") {
   let listType = "";
   let para = [];
   const flushPara = () => {
-    if (para.length) {
+    if (!para.length) return;
+    if (para.length >= 2 && isGfmTableSeparatorRow(para[1])) {
+      html += renderWorkModeGfmTable(para, inline);
+    } else {
       html += `<p>${inline(para.join(" "))}</p>`;
-      para = [];
     }
+    para = [];
   };
   const closeList = () => {
     if (listType) {
@@ -5951,6 +6207,8 @@ function computeWorkModeInferThreadAnchor(trimmed, priorThreadAnchor, continuePr
   if (!prior || prior === cur) return "";
   if (continuePriorLane) return prior;
   if (isGenericExampleFollowUpText(cur)) return prior;
+  /* Classifier sometimes omits continue_prior_lane; same-thread code/proof asks still need the prior prompt for /infer. */
+  if (isReasoningHeavySameThreadRequest(cur)) return prior;
   return "";
 }
 
@@ -5962,8 +6220,153 @@ function workModeReasoningPrepOutcome(chainPromise, inferThreadAnchor, inferGate
     inferGate,
     inferThreadAnchor: String(inferThreadAnchor || "").trim(),
     reasoningHadFileUpload: Boolean(meta.reasoningHadFileUpload),
-    reasoningUploadState: meta.reasoningUploadState || null
+    reasoningUploadState: meta.reasoningUploadState || null,
+    voiceTwoStage: meta.voiceTwoStage || { reasoningRouted: false }
   };
+}
+
+/** Latest completed reasoning lane snapshot for Voice `/infer` handoff (updated when NDJSON finishes). */
+let activeWorkModeReasoningContext = null;
+const workModeCompletedReasoningByLaneId = Object.create(null);
+
+function commitActiveWorkModeReasoningContext(payload) {
+  const o = {
+    active_lane_id: String(payload.active_lane_id || "").trim(),
+    lane_title: String(payload.lane_title || "").trim(),
+    last_user_request: String(payload.last_user_request || "").trim(),
+    prior_problem_anchor: String(payload.prior_problem_anchor || "").trim(),
+    latest_reasoning_summary: String(payload.latest_reasoning_summary || "").trim(),
+    latest_final_answer_excerpt: String(payload.latest_final_answer_excerpt || "").trim(),
+    code_or_math_generated: Boolean(payload.code_or_math_generated),
+    updated_at: Date.now()
+  };
+  activeWorkModeReasoningContext = o;
+  if (o.active_lane_id) workModeCompletedReasoningByLaneId[o.active_lane_id] = { ...o };
+}
+
+function attachWorkModeReasoningContextToInferFormData(formData) {
+  if (!isVeraWorkModeOn() || !(formData instanceof FormData) || !activeWorkModeReasoningContext) return;
+  const c = activeWorkModeReasoningContext;
+  const payload = {
+    active_lane_id: c.active_lane_id || "",
+    lane_title: c.lane_title || "",
+    last_user_request: c.last_user_request || "",
+    prior_problem_anchor: c.prior_problem_anchor || "",
+    latest_reasoning_summary: c.latest_reasoning_summary || "",
+    latest_final_answer_excerpt: c.latest_final_answer_excerpt || "",
+    code_or_math_generated: Boolean(c.code_or_math_generated)
+  };
+  const raw = JSON.stringify(payload);
+  if (typeof formData.set === "function") formData.set("work_mode_reasoning_context", raw);
+  else formData.append("work_mode_reasoning_context", raw);
+  console.log("[voice_infer_context]", {
+    lane_id: payload.active_lane_id,
+    title: payload.lane_title,
+    summary_len: (payload.latest_reasoning_summary || "").length,
+    excerpt_len: (payload.latest_final_answer_excerpt || "").length,
+    code_or_math: payload.code_or_math_generated
+  });
+}
+
+function detectWorkModeRequestHasCodeVoiceIntent(trimmed) {
+  const t = String(trimmed || "").toLowerCase();
+  return /\b(code|coding|script|snippet|python|typescript|javascript|java|c\+\+|rust|go|kotlin|sql|ruby|php|implement|program|debugger?|refactor)\b/.test(
+    t
+  );
+}
+
+function buildWorkModeReasoningStage1AckText(trimmed, opts = {}) {
+  const o = opts || {};
+  if (o.hasUpload) return "I'll work from your file in the reasoning space.";
+  if (o.planningIntent) return "I'll lay out the plan in the reasoning space.";
+  if (o.requestHasCodeIntent) return "Sure — I'll put the detailed code in the reasoning space.";
+  if (o.requestHasProofIntent) return "I'll work through the proof in the reasoning space.";
+  if (o.requestHasDenseMathIntent) return "I'll work the full solution in the reasoning space.";
+  if (o.requestHasTableIntent) return "I'll put the full table in the reasoning space.";
+  return "I'll work through this in the reasoning space.";
+}
+
+/**
+ * Stage-1 reasoning acknowledgement using the same server TTS as normal replies (`/text` + `tts_only`),
+ * not browser speechSynthesis. Shows the ack in the Voice UI before the main `/infer` reply when possible.
+ * @param {string} [userTranscript] — same line as this turn's `/infer` transcript so the user bubble appears before the stage-1 bubble (typed work mode has no live partial row).
+ */
+async function maybePlayWorkModeReasoningStage1VeraTts(ackText, abortSignal, userTranscript) {
+  const s = String(ackText || "").trim();
+  if (!s) return;
+  if (!isVeraWorkModeOn()) return;
+  const userT = String(userTranscript ?? "").trim();
+  const ensureUserBubbleBeforeStage1 = () => {
+    if (!userT) return;
+    commitServerUserTranscriptBubble(userT, "work-mode-stage1-user-order");
+  };
+  const addStage1AssistantBubble = () => {
+    const convoEl = uiEl("conversation");
+    if (convoEl) {
+      const rows = [...convoEl.querySelectorAll(".message-row")];
+      const last = rows[rows.length - 1];
+      if (last?.classList.contains("vera")) {
+        const b = last.querySelector(".bubble");
+        if (
+          b instanceof HTMLElement &&
+          b.classList.contains("vera-work-mode-stage1-ack") &&
+          (b.textContent || "").trim() === s
+        ) {
+          return;
+        }
+      }
+    }
+    addBubble(s, "vera", { path: "work-mode-reasoning-stage1", bubbleClass: "vera-work-mode-stage1-ack" });
+  };
+  if (isWorkModeMuteEnabled()) {
+    console.info("[voice] work_mode_stage1_skip_muted", { len: s.length });
+    ensureUserBubbleBeforeStage1();
+    addStage1AssistantBubble();
+    return;
+  }
+  ensureUserBubbleBeforeStage1();
+  addStage1AssistantBubble();
+  try {
+    const res = await fetch(`${API_URL}/text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: s,
+        session_id: getSessionId(),
+        client: appModePrefix(),
+        stream_tts: false,
+        tts_only: true
+      }),
+      signal: abortSignal
+    });
+    if (!res.ok) {
+      console.warn("[voice] work_mode_stage1_tts_http", res.status);
+      return;
+    }
+    if (abortSignal?.aborted) return;
+    const data = await res.json();
+    const urls = resolveAudioUrls(data);
+    if (!urls.length) {
+      console.warn("[voice] work_mode_stage1_tts_no_audio");
+      return;
+    }
+    console.info("[voice] work_mode_stage1_vera_tts", { preview: s.slice(0, 96), segments: urls.length });
+    await enqueueAssistantTtsPlayback(async () => {
+      await playTtsFromApi(data, { ephemeralAck: true });
+    });
+  } catch (e) {
+    if (e?.name === "AbortError") return;
+    console.warn("[voice] work_mode_stage1_tts_error", e);
+  }
+}
+
+function attachWorkModeVoiceBriefCompletionFlag(formData, prep) {
+  if (!(formData instanceof FormData)) return;
+  const vs = prep?.voiceTwoStage;
+  if (!vs?.reasoningRouted) return;
+  /* Stage‑2 voice: one short spoken summary of what is already in the Reasoning panel (not a second full answer). */
+  if (typeof formData.set === "function") formData.set("work_mode_voice_brief_completion", "1");
+  else formData.append("work_mode_voice_brief_completion", "1");
 }
 
 /** Last few Voice UI lines (+ queued typed turns) so “example” requests track the latest topic. */
@@ -6097,9 +6500,23 @@ function enqueueWorkModeTypedVoiceInfer(run) {
   return true;
 }
 
+/**
+ * One global FIFO for work-mode voice turns (browser ASR, server ASR, PTT, typed infer): prep → stage‑1 → `/infer`
+ * and all included TTS, so a new turn cannot start until the previous turn’s playback pipeline has finished.
+ * (Reasoning still streams in the panel for the active turn; later turns wait here before calling `/infer`.)
+ */
+let workModeVoiceInferPlaybackTail = Promise.resolve();
+function enqueueWorkModeVoiceInferPlaybackTurn(run) {
+  const p = workModeVoiceInferPlaybackTail.catch(() => {}).then(() => run());
+  workModeVoiceInferPlaybackTail = p.catch(() => {});
+  return p;
+}
+
 async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {}) {
-  if (!isVeraWorkModeOn()) return workModeReasoningPrepOutcome(Promise.resolve(), "");
-  if (isLikelyWorkChecklistEditIntent(trimmed)) return workModeReasoningPrepOutcome(Promise.resolve(), "");
+  const noRouteMeta = { voiceTwoStage: { reasoningRouted: false } };
+  if (!isVeraWorkModeOn()) return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  if (isLikelyWorkChecklistEditIntent(trimmed))
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   /* Snapshot before this turn mutates it — used so /classify thread anchor is the *prior* user line, not the current one. */
   const priorThreadAnchor = String(workModeLastSubstantiveUserText || "").trim();
   const planningIntent = isLikelyWorkModePlanningIntent(trimmed);
@@ -6116,6 +6533,16 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     const voiceCtx = buildVoiceUiRecentContextBlock(8, true);
     if (voiceCtx) parts.push(voiceCtx);
     if (parts.length) reasoningStreamText = `${reasoningStreamText}\n\n${parts.join("\n\n")}`;
+  }
+  if (
+    !planningIntent &&
+    !isGenericExampleFollowUpText(trimmed) &&
+    appModePrefix() === "vera" &&
+    isReasoningHeavySameThreadRequest(trimmed) &&
+    priorThreadAnchor &&
+    priorThreadAnchor !== trimmed
+  ) {
+    reasoningStreamText = `${reasoningStreamText}\n\nUser (prior request on this thread — the current message is a short follow-up): ${priorThreadAnchor}`;
   }
   const attachment = opts?.attachment;
   const hasUpload = attachment instanceof File && attachment.size > 0;
@@ -6148,6 +6575,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
 
   let routeReasoning = Boolean(hasUpload);
   if (!hasUpload) {
+    const taskFollowUpContinuing =
+      !planningIntent && isGeneralWorkModeFollowUpContinuingTask(trimmed, priorThreadAnchor);
     const heuristicReasoning = (() => {
       const t = String(trimmed || "").toLowerCase();
       if (!t) return false;
@@ -6185,14 +6614,16 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         explainReasoningAsk
       );
     })();
-    routeReasoning = classifyRoute || heuristicReasoning;
+    routeReasoning = (classifyRoute || heuristicReasoning) && !taskFollowUpContinuing;
     if (!routeReasoning) {
       if (!isGenericExampleFollowUpText(trimmed)) {
         workModeLastSubstantiveUserText = trimmed;
       }
       return workModeReasoningPrepOutcome(
         Promise.resolve(),
-        computeWorkModeInferThreadAnchor(trimmed, priorThreadAnchor, Boolean(continuePriorLane))
+        computeWorkModeInferThreadAnchor(trimmed, priorThreadAnchor, Boolean(continuePriorLane)),
+        undefined,
+        noRouteMeta
       );
     }
   }
@@ -6203,6 +6634,28 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     priorThreadAnchor,
     continueLaneForThisTurn
   );
+  const requestHasCodeIntent = detectWorkModeRequestHasCodeVoiceIntent(trimmed);
+  const requestHasProofIntent = /\b(proof|prove|theorem|lemma|qed)\b/i.test(String(trimmed || ""));
+  const requestHasDenseMathIntent = /\b(black-?scholes|integral|matrix|eigen|pde|ode|latex|equation|calculus|derivative)\b/i.test(
+    String(trimmed || "").toLowerCase()
+  );
+  const requestHasTableIntent = /\b(table|tabular|spreadsheet|csv)\b/i.test(String(trimmed || "").toLowerCase());
+  const stage1AckText = buildWorkModeReasoningStage1AckText(trimmed, {
+    hasUpload,
+    planningIntent,
+    requestHasCodeIntent,
+    requestHasProofIntent,
+    requestHasDenseMathIntent,
+    requestHasTableIntent
+  });
+  const voiceTwoStage = {
+    reasoningRouted: true,
+    requestHasCodeIntent,
+    requestHasProofIntent,
+    requestHasDenseMathIntent,
+    requestHasTableIntent,
+    stage1AckText
+  };
 
   workModeReasoningConfirmPending = null;
   const reasoningUserFocusLaneIdx = getActiveReasoningLaneIndex();
@@ -6215,25 +6668,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     workModeLastSubstantiveLaneIdx = laneIdx;
     workModeLastSubstantiveUserText = trimmed;
   }
-  const useEarlyInferGate = true;
-  let inferGateEarlyResolve = null;
-  const inferGateEarlyP = useEarlyInferGate
-    ? new Promise((resolve) => {
-        inferGateEarlyResolve = resolve;
-      })
-    : null;
-  let inferGateEarlySignaled = false;
-  const signalInferGateEarly = () => {
-    if (!useEarlyInferGate || inferGateEarlySignaled) return;
-    inferGateEarlySignaled = true;
-    try {
-      inferGateEarlyResolve?.();
-    } catch {
-      /* ignore */
-    }
-  };
+  /* Voice /infer waits for the full reasoning NDJSON stream (summary + markdown + done) so handoff context is complete. */
   const chainP = runOnLaneReasoningChain(laneIdx, async () => {
-    try {
     workModeReasoningLaneBusy.set(laneIdx, true);
     syncWorkModeReasoningCancelButton();
     const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
@@ -6338,9 +6774,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
               focusLaneIdx: reasoningUserFocusLaneIdx
             });
             turnEl.dataset.summaryText = normalizedSummary.text;
-            formData.append("reasoning_voice_coach", normalizedSummary.text);
+            if (typeof formData.set === "function") {
+              formData.set("reasoning_voice_coach", normalizedSummary.text);
+            } else {
+              formData.append("reasoning_voice_coach", normalizedSummary.text);
+            }
             foundSummary = true;
-            signalInferGateEarly();
             break;
           }
         }
@@ -6351,12 +6790,34 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         onDone: ({ markdownAcc, summaryText }) => {
           const mdFromDom = String(turnEl?.dataset?.markdownAcc || "").trim();
           const mdDone = mdFromDom || String(markdownAcc || "").trim();
+          const panelForTitle = turnEl.closest(".vera-reasoning-tab-panel");
+          const laneTitleForCtx =
+            panelForTitle instanceof HTMLElement ? getReasoningTabTopicLabel(panelForTitle) : laneLabel;
+          const excerptCap = 12000;
+          const excerpt = mdDone.length > excerptCap ? `${mdDone.slice(0, excerptCap)}\n…` : mdDone;
+          const summaryLine = extractWorkModeReasoningSummaryAnswerLine(summaryText);
+          const codeOrMath = Boolean(
+            mdDone &&
+              (/\`\`\`/.test(mdDone) ||
+                /\$[^\s$]/.test(mdDone) ||
+                /\\[\[(]/.test(mdDone) ||
+                /\bdef\s+\w/.test(mdDone) ||
+                /\bimport\s+/.test(mdDone))
+          );
+          commitActiveWorkModeReasoningContext({
+            active_lane_id: laneId,
+            lane_title: laneTitleForCtx,
+            last_user_request: trimmed,
+            prior_problem_anchor: priorThreadAnchor || "",
+            latest_reasoning_summary: summaryLine,
+            latest_final_answer_excerpt: excerpt,
+            code_or_math_generated: codeOrMath
+          });
           setReasoningTabTopicFromFinal(turnEl, {
             summaryText: extractWorkModeReasoningSummaryAnswerLine(summaryText),
             markdownText: mdDone,
             userPrompt: trimmed
           });
-          const panelForTitle = turnEl.closest(".vera-reasoning-tab-panel");
           if (panelForTitle instanceof HTMLElement) {
             queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panelForTitle, {
               userPrompt: trimmed,
@@ -6384,17 +6845,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       endWorkModeReasoningLaneRun(laneIdx);
     }
     maybeReasoningScrollToLatest(scrollEl);
-    } finally {
-      signalInferGateEarly();
-    }
-    });
-  const inferGate =
-    useEarlyInferGate && inferGateEarlyP
-      ? Promise.race([inferGateEarlyP, chainP]).then(() => {})
-      : chainP;
+  });
+  const inferGate = chainP;
   return workModeReasoningPrepOutcome(chainP, inferThreadAnchor, inferGate, {
     reasoningHadFileUpload: hasUpload,
-    reasoningUploadState
+    reasoningUploadState,
+    voiceTwoStage
   });
 }
 
@@ -6419,6 +6875,7 @@ function setWorkModeAttachmentMeta(message) {
 
 /** Text-only reasoning stream into the reasoning panel (no `/infer`). File uploads use `maybePrepareWorkModeReasoning` + typed infer instead. */
 async function streamWorkModeReasoningComposer(text, signal) {
+  const priorProblemAnchorSnap = String(workModeLastSubstantiveUserText || "").trim();
   const reasoningUserFocusLaneIdx = getActiveReasoningLaneIndex();
   const laneIdx = isWorkModeReasoningAutoRouteEnabled()
     ? await acquireWorkModeReasoningLane(text)
@@ -6503,12 +6960,35 @@ async function streamWorkModeReasoningComposer(text, signal) {
         if (done) break;
       }
     } catch (_) {}
+    const panelForTitle = turnEl.closest(".vera-reasoning-tab-panel");
+    const laneTitleForCtx =
+      panelForTitle instanceof HTMLElement ? getReasoningTabTopicLabel(panelForTitle) : laneLabel;
+    const mdDone = String(markdownAcc || "").trim();
+    const excerptCap = 12000;
+    const excerpt = mdDone.length > excerptCap ? `${mdDone.slice(0, excerptCap)}\n…` : mdDone;
+    const summaryLine = extractWorkModeReasoningSummaryAnswerLine(summaryText);
+    const codeOrMath = Boolean(
+      mdDone &&
+        (/\`\`\`/.test(mdDone) ||
+          /\$[^\s$]/.test(mdDone) ||
+          /\\[\[(]/.test(mdDone) ||
+          /\bdef\s+\w/.test(mdDone) ||
+          /\bimport\s+/.test(mdDone))
+    );
+    commitActiveWorkModeReasoningContext({
+      active_lane_id: laneId,
+      lane_title: laneTitleForCtx,
+      last_user_request: String(text || "").trim(),
+      prior_problem_anchor: priorProblemAnchorSnap,
+      latest_reasoning_summary: summaryLine,
+      latest_final_answer_excerpt: excerpt,
+      code_or_math_generated: codeOrMath
+    });
     setReasoningTabTopicFromFinal(turnEl, {
       summaryText: extractWorkModeReasoningSummaryAnswerLine(summaryText),
       markdownText: markdownAcc,
       userPrompt: text
     });
-    const panelForTitle = turnEl.closest(".vera-reasoning-tab-panel");
     if (panelForTitle instanceof HTMLElement) {
       queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panelForTitle, {
         userPrompt: text,
@@ -9436,7 +9916,7 @@ async function playTtsUrlSequenceGapless(
 }
 
 /** Single <audio> for one file; Web Audio queue when multiple sentence chunks. */
-async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
+async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {}) {
   if (appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled()) {
     logVeraSettings("tts_play_suppressed_workmode_mute", { mode: "playTtsFromApi" });
     mainTtsPlaybackActive = false;
@@ -9444,7 +9924,7 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd } = {}) {
     if (typeof onPlayEnd === "function") onPlayEnd();
     return;
   }
-  if (listeningMode === "continuous" && inputMuted) {
+  if (!ephemeralAck && listeningMode === "continuous" && inputMuted) {
     logVeraSettings("tts_play_suppressed_continuous_input_muted", { mode: "playTtsFromApi" });
     mainTtsPlaybackActive = false;
     if (typeof onPlayStart === "function") onPlayStart();
@@ -10476,8 +10956,43 @@ async function runInferAfterWorkModeReasoningPrep(formData, prep, inferOpts = {}
   const p = prep || {};
   await p.inferGate;
   if (p.reasoningUploadState?.failed) return "reasoning-upload-failed";
+  // Snapshot was taken before reasoning prep; after the summary gate the panel often has much more
+  // markdown. Refresh so /infer grounding matches what the user sees (and Voice UI excerpts stay aligned).
+  try {
+    if (isVeraWorkModeOn() && formData instanceof FormData) {
+      const snap = JSON.stringify(buildClientContextSnapshot());
+      if (typeof formData.set === "function") formData.set("context_snapshot", snap);
+      else {
+        try {
+          formData.delete("context_snapshot");
+        } catch (_) {}
+        formData.append("context_snapshot", snap);
+      }
+      attachWorkModeReasoningContextToInferFormData(formData);
+      attachWorkModeVoiceBriefCompletionFlag(formData, prep);
+    }
+  } catch (_) {}
+  try {
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+  } catch (_) {}
+  cancelMainTtsPlayback();
+  try {
+    const a = getAudioEl();
+    if (a) {
+      a.pause();
+      a.currentTime = 0;
+    }
+  } catch (_) {}
   await runInferMainPipeline(formData, inferOpts);
   await p.chain;
+}
+
+function maybePlayWorkModeReasoningStage1FromPrep(prep, abortSignal, userTranscript) {
+  const vs = prep?.voiceTwoStage;
+  if (!vs?.reasoningRouted || !vs.stage1AckText) return Promise.resolve();
+  return maybePlayWorkModeReasoningStage1VeraTts(vs.stage1AckText, abortSignal, userTranscript);
 }
 
 async function finalizeMainBrowserTranscript(text) {
@@ -10533,6 +11048,9 @@ async function finalizeMainBrowserTranscript(text) {
   logFinalTranscriptSentToLlm("main-browser-asr", trimmed);
   attachPipelineAbortSignal();
   const pipelineSig = activePipelineAbort.signal;
+  const prepP = maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig, {
+    attachment: voiceAttach
+  });
   let clearedVoiceAttach = false;
   const clearVoiceReasoningAttach = () => {
     if (!voiceAttach || clearedVoiceAttach) return;
@@ -10545,11 +11063,19 @@ async function finalizeMainBrowserTranscript(text) {
     setWorkModeAttachmentMeta("");
   };
   try {
-    const prep = await maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig, {
-      attachment: voiceAttach
-    });
-    if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
-    await runInferAfterWorkModeReasoningPrep(formData, prep, { signal: pipelineSig });
+    const runTurn = async () => {
+      const prep = await prepP;
+      if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
+      const stage1P = maybePlayWorkModeReasoningStage1FromPrep(prep, pipelineSig, trimmed);
+      const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prep, { signal: pipelineSig });
+      await Promise.resolve(stage1P).catch(() => {});
+      return prepFail;
+    };
+    if (isVeraWorkModeOn()) {
+      await enqueueWorkModeVoiceInferPlaybackTurn(runTurn);
+    } else {
+      await runTurn();
+    }
   } finally {
     clearVoiceReasoningAttach();
   }
@@ -11504,16 +12030,25 @@ async function handleUtterance() {
         if (fin) fin.value = "";
         setWorkModeAttachmentMeta("");
       };
+      const prepP = maybePrepareWorkModeReasoning(formData2, trimmed, pipelineSig, {
+        attachment: voiceAttach2
+      });
       try {
-        const prepWrap = await maybePrepareWorkModeReasoning(formData2, trimmed, pipelineSig, {
-          attachment: voiceAttach2
-        });
-        if (prepWrap?.inferThreadAnchor) {
-          formData2.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
-        }
-        const prepFail = await runInferAfterWorkModeReasoningPrep(formData2, prepWrap, {
-          signal: pipelineSig
-        });
+        const runTurn = async () => {
+          const prepWrap = await prepP;
+          if (prepWrap?.inferThreadAnchor) {
+            formData2.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
+          }
+          const stage1P = maybePlayWorkModeReasoningStage1FromPrep(prepWrap, pipelineSig, trimmed);
+          const prepFail = await runInferAfterWorkModeReasoningPrep(formData2, prepWrap, {
+            signal: pipelineSig
+          });
+          await Promise.resolve(stage1P).catch(() => {});
+          return prepFail;
+        };
+        const prepFail = isVeraWorkModeOn()
+          ? await enqueueWorkModeVoiceInferPlaybackTurn(runTurn)
+          : await runTurn();
         if (prepFail === "reasoning-upload-failed") {
           processing = false;
           requestInFlight = false;
@@ -11622,16 +12157,25 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
       setStatus("Thinking", "thinking");
       beginVoiceUxTurn();
 
-      const prepWrap = await reasoningPrepP;
-      if (prepWrap?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
       const inferSig = attachPipelineAbortSignal();
-      const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prepWrap, { signal: inferSig });
-      if (prepFail === "reasoning-upload-failed") {
-        processing = false;
-        requestInFlight = false;
-        voiceUxTurn = null;
-        setStatus("Ready", "idle");
-        return;
+      const runPlayback = async () => {
+        const prepWrap = await reasoningPrepP;
+        if (prepWrap?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
+        const stage1P = maybePlayWorkModeReasoningStage1FromPrep(prepWrap, inferSig, trimmed);
+        const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prepWrap, { signal: inferSig });
+        await Promise.resolve(stage1P).catch(() => {});
+        if (prepFail === "reasoning-upload-failed") {
+          processing = false;
+          requestInFlight = false;
+          voiceUxTurn = null;
+          setStatus("Ready", "idle");
+          return;
+        }
+      };
+      if (isVeraWorkModeOn()) {
+        await enqueueWorkModeVoiceInferPlaybackTurn(runPlayback);
+      } else {
+        await runPlayback();
       }
     } catch (err) {
       if (err?.name === "AbortError") {
@@ -11917,9 +12461,19 @@ async function onPttClick() {
       try {
         attachPipelineAbortSignal();
         const pipelineSig = activePipelineAbort.signal;
-        const prep = await maybePrepareWorkModeReasoning(formData, text, pipelineSig);
-        if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
-        await runInferAfterWorkModeReasoningPrep(formData, prep, { signal: pipelineSig });
+        const prepP = maybePrepareWorkModeReasoning(formData, text, pipelineSig);
+        const runTurn = async () => {
+          const prep = await prepP;
+          if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
+          const stage1P = maybePlayWorkModeReasoningStage1FromPrep(prep, pipelineSig, text);
+          await runInferAfterWorkModeReasoningPrep(formData, prep, { signal: pipelineSig });
+          await Promise.resolve(stage1P).catch(() => {});
+        };
+        if (isVeraWorkModeOn()) {
+          await enqueueWorkModeVoiceInferPlaybackTurn(runTurn);
+        } else {
+          await runTurn();
+        }
       } catch (err) {
         if (err?.name !== "AbortError") {
           console.warn("[PTT][browser-asr] infer", err);

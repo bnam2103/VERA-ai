@@ -4481,6 +4481,35 @@ body.chat-started .input-bar {
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+#vera-app.work-mode .vera-md-table-wrap {
+  margin: 10px 0 14px;
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+#vera-app.work-mode .vera-md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.94rem;
+  line-height: 1.45;
+}
+
+#vera-app.work-mode .vera-md-table th,
+#vera-app.work-mode .vera-md-table td {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+#vera-app.work-mode .vera-md-table thead th {
+  background: rgba(255, 255, 255, 0.06);
+  font-weight: 650;
+}
+
 #vera-app.work-mode .vera-md-code-frame {
   margin: 12px 0 14px;
   border-radius: 10px;
@@ -6249,6 +6278,11 @@ body.bmo-open .bubble.user.interrupt-preview {
 /* VERA — RIGHT */
 .bubble.vera {
   background: #2f3a44;
+}
+
+.bubble.vera.vera-work-mode-stage1-ack {
+  border-left: 3px solid rgba(120, 180, 255, 0.4);
+  padding-left: 0.65rem;
 }
 
 /* =========================
