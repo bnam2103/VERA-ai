@@ -1204,19 +1204,29 @@ function applyWorkModeTimerPayload(wm) {
   updateWorkModeTimerHeaderFromState();
   startWorkModeTimerUiFastRefreshIfNeeded();
   const delay = Math.max(0, fireMs - Date.now());
+  const timerTtsPayload = {
+    audio_url: wm.audio_url,
+    audio_urls: wm.audio_urls
+  };
   veraWorkModeTimerTimeoutId = window.setTimeout(() => {
     veraWorkModeTimerTimeoutId = null;
     clearVeraWorkModeClientTimer();
     if (typeof isVeraWorkModeOn === "function" && !isVeraWorkModeOn()) return;
     if (appModePrefix() !== "vera") return;
-    try {
-      if (window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(message);
-        u.rate = 1.0;
-        window.speechSynthesis.speak(u);
-      }
-    } catch (_) {}
+    const urls =
+      typeof resolveAudioUrls === "function" ? resolveAudioUrls(timerTtsPayload) : [];
+    if (urls.length) {
+      void playTtsFromApi(timerTtsPayload, {}).catch(() => {});
+    } else {
+      try {
+        if (window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(message);
+          u.rate = 1.0;
+          window.speechSynthesis.speak(u);
+        }
+      } catch (_) {}
+    }
     try {
       setStatus("Timer", "idle");
     } catch (_) {}
@@ -1465,9 +1475,511 @@ function removeSpotifyMiniButton(prefix) {
   document.getElementById(spotifyMiniToggleId(prefix))?.remove();
 }
 
+function getProductivityMusicSource(prefix) {
+  const root = document.querySelector(`[data-productivity-root="${prefix}"]`);
+  return String(root?.dataset.musicSource || "spotify").toLowerCase() === "builtin"
+    ? "builtin"
+    : "spotify";
+}
+
+function setProductivityMusicSource(prefix, source) {
+  const builtin = source === "builtin";
+  const root = document.querySelector(`[data-productivity-root="${prefix}"]`);
+  if (root instanceof HTMLElement) root.dataset.musicSource = builtin ? "builtin" : "spotify";
+  document.getElementById(`${prefix}-music-tab-spotify`)?.classList.toggle("active", !builtin);
+  document.getElementById(`${prefix}-music-tab-spotify`)?.classList.add("spotify-source-tab");
+  document.getElementById(`${prefix}-music-tab-builtin`)?.classList.toggle("active", builtin);
+  document
+    .getElementById(`${prefix}-music-tab-spotify`)
+    ?.setAttribute("aria-selected", builtin ? "false" : "true");
+  document
+    .getElementById(`${prefix}-music-tab-builtin`)
+    ?.setAttribute("aria-selected", builtin ? "true" : "false");
+  const spotifyStack = document.getElementById(`${prefix}-spotify-stack`);
+  const builtinStack = document.getElementById(`${prefix}-builtin-stack`);
+  if (spotifyStack) spotifyStack.hidden = builtin;
+  if (builtinStack) builtinStack.hidden = !builtin;
+}
+
+function freeMusicAbsUrl(path) {
+  const p = String(path || "").trim();
+  if (!p) return "";
+  if (/^https?:\/\//i.test(p)) return p;
+  const preferred = String(window.__veraFreeMusicLastCatalogBase || "").replace(/\/$/, "");
+  const base = (
+    preferred ||
+    (typeof localBackendBase === "function" ? String(localBackendBase()).replace(/\/$/, "") : "")
+  ).trim();
+  if (!base) return p.startsWith("/") ? p : `/${p}`;
+  return p.startsWith("/") ? `${base}${p}` : `${base}/${p}`;
+}
+
+function isBuiltinFreeMusicPlaying(prefix) {
+  const a = document.getElementById(`${prefix}-free-music-audio`);
+  return Boolean(a && !a.paused && a.currentTime > 0 && a.src);
+}
+
+function stopBuiltinFreeMusic(prefix) {
+  const a = document.getElementById(`${prefix}-free-music-audio`);
+  if (!a) return;
+  a.pause();
+  a.removeAttribute("src");
+  a.loop = false;
+  a.load?.();
+  window.__veraFreeMusicPlayback = null;
+}
+
+async function pauseSpotifyLayersForBuiltin(prefix) {
+  const preview = document.getElementById(`${prefix}-spotify-preview-audio`);
+  if (preview && !preview.paused) preview.pause();
+  window.__veraSpotifyPlaybackActive = false;
+  const tp = window.VeraSpotify?.pausePlayback;
+  if (typeof tp === "function") {
+    try {
+      await tp();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+}
+
+async function loadFreeMusicCatalog(prefix) {
+  const bases = [];
+  const push = (u) => {
+    const x = String(u || "").replace(/\/$/, "").trim();
+    if (x && !bases.includes(x)) bases.push(x);
+  };
+  try {
+    if (typeof localBackendBase === "function") push(localBackendBase());
+  } catch (_) {}
+  push(typeof API_URL !== "undefined" ? API_URL : "");
+  const ordered = bases.length ? bases : ["https://vera-api.vera-api-ned.workers.dev"];
+  let lastErr = null;
+  for (const base of ordered) {
+    try {
+      const u = new URL("/api/free-music/catalog", `${base}/`);
+      const res = await fetch(u.href, { cache: "no-store" });
+      if (!res.ok) {
+        lastErr = new Error(`HTTP ${res.status}`);
+        continue;
+      }
+      const data = await res.json();
+      window.__veraFreeMusicLastCatalogBase = base;
+      return data;
+    } catch (e) {
+      lastErr = e instanceof Error ? e : new Error(String(e));
+    }
+  }
+  throw lastErr || new Error("Failed to fetch");
+}
+
+async function ensureFreeMusicCatalogUi(prefix) {
+  const catalogEl = document.getElementById(`${prefix}-free-music-catalog`);
+  if (!catalogEl) return;
+  if (catalogEl.dataset.loaded === "1") return;
+  catalogEl.innerHTML = `<p class="free-music-hint">Loading library…</p>`;
+  try {
+    const data = await loadFreeMusicCatalog(prefix);
+    window.__veraFreeMusicCatalog ||= {};
+    window.__veraFreeMusicCatalog[prefix] = data;
+    catalogEl.innerHTML = renderFreeMusicCatalogHtml(prefix, data);
+    catalogEl.dataset.loaded = "1";
+    wireFreeMusicCatalogInteractions(prefix);
+  } catch (e) {
+    catalogEl.innerHTML = `<p class="free-music-hint">Could not load built-in music (${escapeHtml(
+      String(e?.message || e)
+    )}).</p>`;
+  }
+}
+
+function findFreeMusicPlaylist(prefix, id) {
+  const cat = window.__veraFreeMusicCatalog?.[prefix];
+  if (!cat || id == null) return null;
+  return (cat.playlists || []).find((p) => String(p.id) === String(id)) || null;
+}
+
+const FREE_MUSIC_ORDER_STORAGE_PREFIX = "vera_free_music_order_v1";
+
+function freeMusicReadStoredOrder(prefix, playlistId) {
+  try {
+    const raw = localStorage.getItem(`${FREE_MUSIC_ORDER_STORAGE_PREFIX}_${prefix}_${playlistId}`);
+    if (!raw) return null;
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.map(String) : null;
+  } catch {
+    return null;
+  }
+}
+
+function freeMusicWriteStoredOrder(prefix, playlistId, urls) {
+  try {
+    localStorage.setItem(
+      `${FREE_MUSIC_ORDER_STORAGE_PREFIX}_${prefix}_${playlistId}`,
+      JSON.stringify(urls.map(String))
+    );
+  } catch {
+    /* ignore quota */
+  }
+}
+
+function freeMusicOrderedTracks(prefix, playlist) {
+  const base = Array.isArray(playlist?.tracks) ? playlist.tracks.slice() : [];
+  const id = String(playlist?.id || "");
+  if (!base.length || !id) return base;
+  const saved = freeMusicReadStoredOrder(prefix, id);
+  if (!saved || saved.length !== base.length) return base;
+  const byUrl = new Map(base.map((t) => [String(t.url), t]));
+  const out = [];
+  for (const u of saved) {
+    const t = byUrl.get(String(u));
+    if (t) out.push(t);
+  }
+  return out.length === base.length ? out : base;
+}
+
+function freeMusicPersistOrderFromDom(prefix, playlistId, tracksEl) {
+  if (!tracksEl) return;
+  const urls = [...tracksEl.querySelectorAll(".free-music-track-row[data-free-track-url]")]
+    .map((r) => r.getAttribute("data-free-track-url") || "")
+    .filter(Boolean);
+  const pl = findFreeMusicPlaylist(prefix, playlistId);
+  if (pl && urls.length === (pl.tracks || []).length) freeMusicWriteStoredOrder(prefix, playlistId, urls);
+}
+
+function freeMusicDomIdSafe(s) {
+  return String(s || "").replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function freeMusicPlaylistTrackRowsHtml(prefix, playlist) {
+  const ordered = freeMusicOrderedTracks(prefix, playlist);
+  return ordered
+    .map((t, i) => {
+      const url = escapeHtml(String(t.url || ""));
+      const name = escapeHtml(String(t.name || t.filename || `Track ${i + 1}`));
+      return `<div class="free-music-track-row" draggable="false" data-track-index="${i}" data-free-track-url="${url}">
+        <span class="free-music-drag-handle" draggable="true" aria-label="Drag to reorder" title="Drag to reorder">
+          <span class="free-music-drag-dots" aria-hidden="true"></span>
+        </span>
+        <button type="button" class="free-music-builtin-row-play" aria-label="Play ${name}">▶</button>
+        <div class="free-music-track-row-title">${name}</div>
+      </div>`;
+    })
+    .join("");
+}
+
+function renderFreeMusicCatalogHtml(prefix, data) {
+  const playlists = Array.isArray(data?.playlists) ? data.playlists : [];
+  const tracks = Array.isArray(data?.tracks) ? data.tracks : [];
+  let html = "";
+  if (data?.hint) {
+    html += `<p class="free-music-hint">${escapeHtml(String(data.hint))}</p>`;
+  }
+  if (!playlists.length && !tracks.length) {
+    html += `<p class="free-music-hint">No audio found yet. On the server, add <code>Free_music/lofi_mix/</code> (playlist) and/or files like <code>white_noise.mp3</code> at <code>Free_music/</code>. See <code>Free_music/README.md</code>.</p>`;
+    return html;
+  }
+  if (playlists.length) {
+    html += `<p class="free-music-section-title free-music-section-title--playlists">Playlists</p><div class="free-music-playlist-cards">`;
+    for (const p of playlists) {
+      const n = p.tracks?.length || 0;
+      const title = escapeHtml(String(p.title || p.id || "Playlist"));
+      const pid = escapeHtml(String(p.id || ""));
+      const sid = freeMusicDomIdSafe(p.id);
+      const trackRows = freeMusicPlaylistTrackRowsHtml(prefix, p);
+      html += `<div class="free-music-playlist-card" data-free-playlist-id="${pid}">
+        <div class="free-music-playlist-head" role="button" tabindex="0" aria-expanded="false" aria-controls="${prefix}-free-pl-tracks-${sid}">
+          <span class="free-music-playlist-chevron" aria-hidden="true">▶</span>
+          <div class="free-music-playlist-head-text">
+            <div class="free-music-playlist-title">${title}</div>
+            <div class="free-music-playlist-meta">${n} track${n === 1 ? "" : "s"}</div>
+          </div>
+          <button type="button" class="free-music-playlist-header-play" aria-label="Play ${title}">▶</button>
+        </div>
+        <div class="free-music-playlist-tracks" id="${prefix}-free-pl-tracks-${sid}" hidden>${trackRows}</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  if (tracks.length) {
+    html += `<p class="free-music-section-title free-music-section-title--sounds">Sounds</p><div class="free-music-sound-list">`;
+    for (const t of tracks) {
+      const title = escapeHtml(String(t.title || t.id));
+      const url = escapeHtml(String(t.url || ""));
+      html += `<div class="free-music-sound-row" data-free-url="${url}">
+        <button type="button" class="free-music-sound-row-play" aria-label="Play ${title}">▶</button>
+        <span class="free-music-sound-row-title">${title}</span>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  return html;
+}
+
+function wireFreeMusicCatalogInteractions(prefix) {
+  const cat = document.getElementById(`${prefix}-free-music-catalog`);
+  if (!cat) return;
+  window.__veraFreeMusicListAbort ||= {};
+  try {
+    window.__veraFreeMusicListAbort[prefix]?.abort();
+  } catch (_) {}
+  const ac = new AbortController();
+  window.__veraFreeMusicListAbort[prefix] = ac;
+  const { signal } = ac;
+  let dragRow = null;
+
+  cat.addEventListener(
+    "click",
+    (e) => {
+      const t = e.target;
+      if (!(t instanceof HTMLElement)) return;
+      if (t.closest(".free-music-playlist-header-play")) {
+        e.preventDefault();
+        const card = t.closest(".free-music-playlist-card");
+        const id = card?.getAttribute("data-free-playlist-id") || "";
+        const pl = findFreeMusicPlaylist(prefix, id);
+        if (pl) void playFreeMusicPlaylist(prefix, pl);
+        return;
+      }
+      if (t.closest(".free-music-builtin-row-play")) {
+        e.preventDefault();
+        const row = t.closest(".free-music-track-row");
+        const card = row?.closest(".free-music-playlist-card");
+        const id = card?.getAttribute("data-free-playlist-id") || "";
+        const idx = Math.max(0, parseInt(String(row?.getAttribute("data-track-index") || "0"), 10) || 0);
+        const pl = findFreeMusicPlaylist(prefix, id);
+        if (pl) void playFreeMusicPlaylistFrom(prefix, pl, idx);
+        return;
+      }
+      if (t.closest(".free-music-sound-row-play")) {
+        e.preventDefault();
+        const wrap = t.closest(".free-music-sound-row");
+        const u = wrap?.getAttribute("data-free-url") || "";
+        const title = wrap?.querySelector(".free-music-sound-row-title")?.textContent?.trim() || "Sound";
+        if (u) void playFreeMusicSingle(prefix, { title, url: u }, { loop: true });
+        return;
+      }
+      const head = t.closest(".free-music-playlist-head");
+      if (head && !t.closest("button")) {
+        e.preventDefault();
+        const expanded = head.getAttribute("aria-expanded") === "true";
+        const card = head.closest(".free-music-playlist-card");
+        const tracks = card?.querySelector(".free-music-playlist-tracks");
+        if (!tracks) return;
+        head.setAttribute("aria-expanded", expanded ? "false" : "true");
+        tracks.hidden = expanded;
+        head.classList.toggle("is-expanded", !expanded);
+        return;
+      }
+    },
+    { signal }
+  );
+
+  cat.addEventListener(
+    "dragstart",
+    (e) => {
+      const handle = e.target?.closest?.(".free-music-drag-handle");
+      if (!handle || !cat.contains(handle)) return;
+      const row = handle.closest(".free-music-track-row");
+      if (!row || !cat.contains(row)) return;
+      dragRow = row;
+      row.classList.add("free-music-track-row--dragging");
+      try {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", "reorder");
+      } catch (_) {}
+    },
+    { signal }
+  );
+  cat.addEventListener(
+    "dragend",
+    () => {
+      cat.querySelectorAll(".free-music-track-row--dragging").forEach((el) => {
+        el.classList.remove("free-music-track-row--dragging");
+      });
+      dragRow = null;
+    },
+    { signal }
+  );
+  cat.addEventListener(
+    "dragover",
+    (e) => {
+      const row = e.target?.closest?.(".free-music-track-row");
+      if (!row || !cat.contains(row) || !dragRow || row === dragRow) return;
+      e.preventDefault();
+      try {
+        e.dataTransfer.dropEffect = "move";
+      } catch (_) {}
+    },
+    { signal }
+  );
+  cat.addEventListener(
+    "drop",
+    (e) => {
+      const row = e.target?.closest?.(".free-music-track-row");
+      if (!row || !dragRow || row === dragRow || !cat.contains(dragRow)) return;
+      e.preventDefault();
+      const parent = row.parentElement;
+      if (!parent || !dragRow.parentElement) return;
+      const rect = row.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      if (before) parent.insertBefore(dragRow, row);
+      else parent.insertBefore(dragRow, row.nextSibling);
+      const card = dragRow.closest(".free-music-playlist-card");
+      const pid = card?.getAttribute("data-free-playlist-id");
+      const tracksEl = card?.querySelector(".free-music-playlist-tracks");
+      if (pid && tracksEl) {
+        freeMusicPersistOrderFromDom(prefix, pid, tracksEl);
+        [...tracksEl.querySelectorAll(".free-music-track-row")].forEach((r, i) => {
+          r.setAttribute("data-track-index", String(i));
+        });
+      }
+      dragRow = null;
+    },
+    { signal }
+  );
+}
+
+function syncFreeMusicTransportFlags() {
+  const st = window.__veraFreeMusicPlayback;
+  if (!st || st.mode !== "playlist" || !st.queue?.length) {
+    if (st) {
+      st.canNext = false;
+      st.canPrev = false;
+    }
+    return;
+  }
+  const multi = st.queue.length > 1;
+  st.canNext = multi;
+  st.canPrev = multi;
+}
+
+function freeMusicSyncNowFromAudio(prefix) {
+  const a = document.getElementById(`${prefix}-free-music-audio`);
+  const st = window.__veraFreeMusicPlayback;
+  if (!a || !st) return;
+  const dur = Number.isFinite(a.duration) && a.duration > 0 ? Math.round(a.duration * 1000) : 0;
+  const pos = Math.round((a.currentTime || 0) * 1000);
+  const idx = Number(st.index) || 0;
+  const curName = st.queue?.[idx]?.name || "";
+  const title =
+    st.mode === "playlist" ? st.playlistTitle || "Playlist" : curName || st.playlistTitle || "Built-in";
+  const sub =
+    st.mode === "playlist"
+      ? `Track ${idx + 1} of ${st.queue.length}${curName ? ` • ${curName}` : ""}`
+      : st.loopOne
+        ? "Looping"
+        : "Built-in music";
+  syncFreeMusicTransportFlags();
+  spotifyUpdateNowState({
+    title,
+    artist: sub,
+    cover_url: "",
+    position_ms: pos,
+    duration_ms: dur,
+    paused: !!a.paused,
+    active: !a.paused,
+    queue_next_available: !!st.canNext,
+    queue_previous_count: st.canPrev ? 1 : 0,
+    disallow_skip_prev: !st.canPrev
+  });
+  spotifyApplyNowStateToPanel(prefix);
+}
+
+async function freeMusicPlayQueueIndex(prefix, index) {
+  const st = window.__veraFreeMusicPlayback;
+  const a = document.getElementById(`${prefix}-free-music-audio`);
+  if (!st?.queue?.length || !a) return;
+  const i = Math.max(0, Math.min(st.queue.length - 1, index));
+  st.index = i;
+  const item = st.queue[i];
+  a.src = freeMusicAbsUrl(item.url);
+  a.volume = Math.min(1, Math.max(0, spotifyGetVolume()));
+  await a.play().catch(() => {});
+  freeMusicSyncNowFromAudio(prefix);
+}
+
+async function playFreeMusicPlaylistFrom(prefix, playlist, startIndex) {
+  await pauseSpotifyLayersForBuiltin(prefix);
+  const tracks = freeMusicOrderedTracks(prefix, playlist);
+  if (!tracks.length) return;
+  const a = document.getElementById(`${prefix}-free-music-audio`);
+  if (!a) return;
+  a.loop = false;
+  const i0 = Math.max(0, Math.min(tracks.length - 1, Number(startIndex) || 0));
+  window.__veraFreeMusicPlayback = {
+    mode: "playlist",
+    playlistTitle: String(playlist.title || playlist.id || "Playlist"),
+    queue: tracks.map((t) => ({ url: t.url, name: t.name || t.filename || "" })),
+    index: i0,
+    loopOne: false
+  };
+  syncFreeMusicTransportFlags();
+  await freeMusicPlayQueueIndex(prefix, i0);
+}
+
+async function playFreeMusicPlaylist(prefix, playlist) {
+  await playFreeMusicPlaylistFrom(prefix, playlist, 0);
+}
+
+async function playFreeMusicSingle(prefix, track, { loop }) {
+  await pauseSpotifyLayersForBuiltin(prefix);
+  const a = document.getElementById(`${prefix}-free-music-audio`);
+  if (!a || !track?.url) return;
+  a.loop = !!loop;
+  window.__veraFreeMusicPlayback = {
+    mode: "single",
+    playlistTitle: String(track.title || "Sound"),
+    queue: [{ url: track.url, name: track.title || "" }],
+    index: 0,
+    loopOne: !!loop
+  };
+  syncFreeMusicTransportFlags();
+  a.src = freeMusicAbsUrl(track.url);
+  a.volume = Math.min(1, Math.max(0, spotifyGetVolume()));
+  await a.play().catch(() => {});
+  freeMusicSyncNowFromAudio(prefix);
+}
+
+function wireFreeMusicAudioElement(prefix) {
+  const a = document.getElementById(`${prefix}-free-music-audio`);
+  if (!a || a.dataset.freeMusicWired === "1") return;
+  a.dataset.freeMusicWired = "1";
+  a.addEventListener("timeupdate", () => {
+    if (getProductivityMusicSource(prefix) !== "builtin") return;
+    freeMusicSyncNowFromAudio(prefix);
+  });
+  a.addEventListener("play", () => {
+    if (getProductivityMusicSource(prefix) !== "builtin") return;
+    freeMusicSyncNowFromAudio(prefix);
+    spotifySyncPlayButtonUi(prefix);
+  });
+  a.addEventListener("pause", () => {
+    if (getProductivityMusicSource(prefix) !== "builtin") return;
+    freeMusicSyncNowFromAudio(prefix);
+    spotifySyncPlayButtonUi(prefix);
+  });
+  a.addEventListener("loadedmetadata", () => {
+    if (getProductivityMusicSource(prefix) !== "builtin") return;
+    freeMusicSyncNowFromAudio(prefix);
+  });
+  a.addEventListener("ended", () => {
+    if (getProductivityMusicSource(prefix) !== "builtin") return;
+    const st = window.__veraFreeMusicPlayback;
+    if (!st) return;
+    if (st.mode === "playlist" && st.queue.length > 1) {
+      const next = ((Number(st.index) || 0) + 1) % st.queue.length;
+      void freeMusicPlayQueueIndex(prefix, next);
+      return;
+    }
+    freeMusicSyncNowFromAudio(prefix);
+    spotifySyncPlayButtonUi(prefix);
+  });
+}
+
 function isSpotifyPlaybackActive(prefix) {
   const previewAudio = document.getElementById(`${prefix}-spotify-preview-audio`);
   if (previewAudio && !previewAudio.paused && previewAudio.currentTime > 0) return true;
+  if (isBuiltinFreeMusicPlaying(prefix)) return true;
   return window.__veraSpotifyPlaybackActive === true;
 }
 
@@ -1476,6 +1988,8 @@ function shouldKeepMusicPanelMounted(prefix) {
   if (isSpotifyPlaybackActive(prefix)) return true;
   const previewAudio = document.getElementById(`${prefix}-spotify-preview-audio`);
   if (previewAudio?.src && !previewAudio.ended) return true;
+  const freeA = document.getElementById(`${prefix}-free-music-audio`);
+  if (freeA?.src && !freeA.ended) return true;
   const s = spotifyEnsureNowState();
   if (window.__veraSpotifyPlayer && (s.duration_ms > 0 || s.title)) return true;
   return false;
@@ -2247,6 +2761,17 @@ async function refreshSpotifyConnectionUI(prefix) {
 function spotifySyncPlayButtonUi(prefix) {
   const playBtn = document.getElementById(`${prefix}-spotify-play`);
   if (!playBtn) return;
+  if (getProductivityMusicSource(prefix) === "builtin") {
+    const fa = document.getElementById(`${prefix}-free-music-audio`);
+    if (fa?.src) {
+      playBtn.textContent = fa.paused ? "▶" : "⏸";
+      playBtn.setAttribute("aria-label", fa.paused ? "Play" : "Pause");
+      return;
+    }
+    playBtn.textContent = "▶";
+    playBtn.setAttribute("aria-label", "Play / pause");
+    return;
+  }
   if (window.__veraSpotifyPlayer) return;
   const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
   if (!audio?.src) {
@@ -2651,9 +3176,13 @@ function spotifyApplyNowStateToPanel(prefix) {
       s.artist ||
       "Connect Spotify for in-browser playback, or use search + preview / Open in Spotify.";
   }
-  if (ph && s.cover_url) {
-    ph.style.backgroundImage = `url(${JSON.stringify(s.cover_url)})`;
-    ph.style.backgroundSize = "cover";
+  if (ph) {
+    if (s.cover_url) {
+      ph.style.backgroundImage = `url(${JSON.stringify(s.cover_url)})`;
+      ph.style.backgroundSize = "cover";
+    } else if (getProductivityMusicSource(prefix) === "builtin") {
+      ph.style.backgroundImage = "";
+    }
   }
   if (elapsed) elapsed.textContent = spotifyFormatTimeMs(s.position_ms);
   if (total) total.textContent = spotifyFormatTimeMs(s.duration_ms);
@@ -2671,6 +3200,25 @@ function spotifyApplyNowStateToPanel(prefix) {
   }
   const prevBtn = document.getElementById(`${prefix}-spotify-prev`);
   const nextBtn = document.getElementById(`${prefix}-spotify-next`);
+  if (getProductivityMusicSource(prefix) === "builtin") {
+    const st = window.__veraFreeMusicPlayback;
+    const multi = Boolean(st && st.mode === "playlist" && st.queue && st.queue.length > 1);
+    if (nextBtn instanceof HTMLButtonElement) {
+      nextBtn.disabled = !multi;
+      nextBtn.title = multi ? "Next track" : "Single track or ambience";
+    }
+    if (prevBtn instanceof HTMLButtonElement) {
+      prevBtn.disabled = !multi;
+      const pos = Math.max(0, Number(s.position_ms) || 0);
+      if (multi) {
+        prevBtn.title =
+          pos > SPOTIFY_PREVIOUS_RESTART_MS ? "Restart from beginning" : "Previous track";
+      } else {
+        prevBtn.title = "Single track or ambience";
+      }
+    }
+    return;
+  }
   const webReady = Boolean(window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId);
   const { next: canNextElig, prev: canPrevElig } = veraSpotifyTransportEligibility();
   const canNext = webReady && canNextElig;
@@ -2726,14 +3274,14 @@ function spotifySyncPlaylistSelectionHighlight(prefix) {
 function spotifyApplyViewMode(prefix) {
   const ui = spotifyEnsureUiState();
   const isPlaylist = ui.view === "playlist";
-  const panelBody = document.querySelector(`[data-productivity-root="${prefix}"]`);
+  const viewRoot = document.getElementById(`${prefix}-spotify-view-root`);
   const songView = document.getElementById(`${prefix}-spotify-song-view`);
   const playlistView = document.getElementById(`${prefix}-spotify-playlist-view`);
   const searchForm = document.getElementById(`${prefix}-spotify-search-form`);
   const songTab = document.getElementById(`${prefix}-spotify-tab-song`);
   const playlistTab = document.getElementById(`${prefix}-spotify-tab-playlist`);
-  if (panelBody instanceof HTMLElement) {
-    panelBody.dataset.spotifyView = isPlaylist ? "playlist" : "search";
+  if (viewRoot instanceof HTMLElement) {
+    viewRoot.dataset.spotifyView = isPlaylist ? "playlist" : "search";
   }
   if (songView) songView.hidden = isPlaylist;
   if (playlistView) playlistView.hidden = !isPlaylist;
@@ -2962,6 +3510,38 @@ function wireProductivityPanelEvents(prefix) {
   const input = document.getElementById(`${prefix}-spotify-search-input`);
   const resultsEl = document.getElementById(`${prefix}-spotify-results`);
   const playlistRoot = document.getElementById(`${prefix}-spotify-playlist-root`);
+
+  wireFreeMusicAudioElement(prefix);
+
+  document.getElementById(`${prefix}-music-tab-spotify`)?.addEventListener("click", () => {
+    stopBuiltinFreeMusic(prefix);
+    setProductivityMusicSource(prefix, "spotify");
+    spotifyApplyNowStateToPanel(prefix);
+    spotifySyncPlayButtonUi(prefix);
+    void spotifyRefreshWebPlaybackStateToUi(prefix);
+  });
+  document.getElementById(`${prefix}-music-tab-builtin`)?.addEventListener("click", async () => {
+    await pauseSpotifyLayersForBuiltin(prefix);
+    setProductivityMusicSource(prefix, "builtin");
+    const fa = document.getElementById(`${prefix}-free-music-audio`);
+    if (!fa?.src || fa.ended) {
+      spotifyUpdateNowState({
+        title: "Nothing playing",
+        artist: "Choose a playlist or sound below.",
+        cover_url: "",
+        position_ms: 0,
+        duration_ms: 0,
+        paused: true,
+        active: false,
+        queue_next_available: false,
+        queue_previous_count: 0,
+        disallow_skip_prev: false
+      });
+    }
+    await ensureFreeMusicCatalogUi(prefix);
+    spotifyApplyNowStateToPanel(prefix);
+    spotifySyncPlayButtonUi(prefix);
+  });
 
   const applyPlaylistSelectedUi = () => {
     spotifySyncPlaylistSelectionHighlight(prefix);
@@ -3192,14 +3772,52 @@ function wireProductivityPanelEvents(prefix) {
 
   const playBtn = document.getElementById(`${prefix}-spotify-play`);
   playBtn?.addEventListener("click", () => {
+    if (getProductivityMusicSource(prefix) === "builtin") {
+      const a = document.getElementById(`${prefix}-free-music-audio`);
+      if (!a?.src) return;
+      if (a.paused) {
+        void a.play().then(() => {
+          freeMusicSyncNowFromAudio(prefix);
+          spotifySyncPlayButtonUi(prefix);
+        });
+      } else {
+        a.pause();
+        freeMusicSyncNowFromAudio(prefix);
+        spotifySyncPlayButtonUi(prefix);
+      }
+      return;
+    }
     const toggle = window.VeraSpotify?.togglePlayback;
     if (typeof toggle === "function") toggle().catch(() => {});
   });
 
   document.getElementById(`${prefix}-spotify-next`)?.addEventListener("click", () => {
+    if (getProductivityMusicSource(prefix) === "builtin") {
+      const st = window.__veraFreeMusicPlayback;
+      if (st?.mode === "playlist" && st.queue?.length > 1) {
+        const next = ((Number(st.index) || 0) + 1) % st.queue.length;
+        void freeMusicPlayQueueIndex(prefix, next);
+      }
+      return;
+    }
     invokeSpotifyTransport("skip_next", { source: "button" });
   });
   document.getElementById(`${prefix}-spotify-prev`)?.addEventListener("click", () => {
+    if (getProductivityMusicSource(prefix) === "builtin") {
+      const st = window.__veraFreeMusicPlayback;
+      const a = document.getElementById(`${prefix}-free-music-audio`);
+      if (st?.mode === "playlist" && st.queue?.length > 1) {
+        const pos = Math.round((a?.currentTime || 0) * 1000);
+        if (pos > SPOTIFY_PREVIOUS_RESTART_MS && a) {
+          a.currentTime = 0;
+          freeMusicSyncNowFromAudio(prefix);
+          return;
+        }
+        const prev = ((Number(st.index) || 0) + st.queue.length - 1) % st.queue.length;
+        void freeMusicPlayQueueIndex(prefix, prev);
+      }
+      return;
+    }
     invokeSpotifyTransport("skip_previous", { source: "button" });
   });
 
@@ -3245,6 +3863,7 @@ function wireProductivityPanelEvents(prefix) {
   if (previewAudio && !previewAudio.dataset.veraSpotifyPlayUiWired) {
     previewAudio.dataset.veraSpotifyPlayUiWired = "1";
     const onPreviewPlayState = () => {
+      if (getProductivityMusicSource(prefix) === "builtin") return;
       spotifySyncPlayButtonUi(prefix);
       window.__veraSpotifyPlaybackActive = !previewAudio.paused && previewAudio.currentTime > 0;
       if (!window.__veraSpotifyPlaybackActive) {
@@ -3267,6 +3886,7 @@ function wireProductivityPanelEvents(prefix) {
       spotifyApplyNowStateToPanel(prefix);
     };
     const onPreviewTime = () => {
+      if (getProductivityMusicSource(prefix) === "builtin") return;
       persistSpotifyResumePreview(prefix);
       spotifyUpdateNowState({
         position_ms: Math.round((previewAudio.currentTime || 0) * 1000),
@@ -3292,8 +3912,16 @@ function wireProductivityPanelEvents(prefix) {
     if (elapsed) elapsed.textContent = spotifyFormatTimeMs(ms);
   });
   progress?.addEventListener("change", () => {
-    const seekTo = window.VeraSpotify?.seekTo;
     const ms = Number(progress.value) || 0;
+    if (getProductivityMusicSource(prefix) === "builtin") {
+      const a = document.getElementById(`${prefix}-free-music-audio`);
+      if (a && Number.isFinite(a.duration) && a.duration > 0) {
+        a.currentTime = Math.min(Math.max(0, a.duration - 0.05), Math.max(0, ms / 1000));
+      }
+      freeMusicSyncNowFromAudio(prefix);
+      return;
+    }
+    const seekTo = window.VeraSpotify?.seekTo;
     if (typeof seekTo === "function") seekTo(ms).catch(() => {});
   });
 
@@ -3301,8 +3929,14 @@ function wireProductivityPanelEvents(prefix) {
   if (volume) {
     volume.value = String(Math.round(spotifyGetVolume() * 100));
     const onVolumeInput = () => {
-      const setVolume = window.VeraSpotify?.setVolume;
       const value = (Number(volume.value) || 0) / 100;
+      window.__veraSpotifyVolume = value;
+      if (getProductivityMusicSource(prefix) === "builtin") {
+        const a = document.getElementById(`${prefix}-free-music-audio`);
+        if (a) a.volume = Math.min(1, Math.max(0, value));
+        return;
+      }
+      const setVolume = window.VeraSpotify?.setVolume;
       if (typeof setVolume === "function") setVolume(value).catch(() => {});
     };
     volume.addEventListener("input", onVolumeInput);
@@ -3328,18 +3962,16 @@ function renderProductivityPanel() {
     <div class="side-pane-header">
       <div class="side-pane-heading">
         <h3 class="side-pane-title">Music panel</h3>
-        <div class="side-pane-subtitle spotify-brand">Spotify</div>
+        <div class="music-source-toggle" role="tablist" aria-label="Music source">
+          <button type="button" class="music-source-tab spotify-source-tab active" id="${prefix}-music-tab-spotify" data-music-source="spotify" aria-selected="true">Spotify</button>
+          <button type="button" class="music-source-tab" id="${prefix}-music-tab-builtin" data-music-source="builtin" aria-selected="false">Built-in music</button>
+        </div>
       </div>
       <div class="side-pane-controls">
         <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
       </div>
     </div>
-    <div class="spotify-panel-body" data-productivity-root="${prefix}" data-spotify-view="search">
-      <div class="spotify-connect-row" id="${prefix}-spotify-connect-row">
-        <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link">Connect Spotify (Premium)</a>
-        <button type="button" class="spotify-logout-btn" id="${prefix}-spotify-logout" hidden>Disconnect</button>
-        <span class="spotify-connected-badge" id="${prefix}-spotify-connected-badge" hidden>Connected</span>
-      </div>
+    <div class="spotify-panel-body" data-productivity-root="${prefix}" data-music-source="spotify">
       <div class="spotify-now-playing">
         <div class="spotify-art-placeholder" id="${prefix}-spotify-art-placeholder" aria-hidden="true"></div>
         <div class="spotify-track-meta">
@@ -3371,28 +4003,44 @@ function renderProductivityPanel() {
           </div>
         </div>
       </div>
-      <div class="spotify-view-toggle" role="tablist" aria-label="Search and playlists">
-        <button type="button" class="spotify-view-tab active" id="${prefix}-spotify-tab-song" data-spotify-view="song" aria-selected="true">Search</button>
-        <button type="button" class="spotify-view-tab" id="${prefix}-spotify-tab-playlist" data-spotify-view="playlist" aria-selected="false">Playlist</button>
+      <div id="${prefix}-spotify-stack" class="music-pane-stack">
+        <div id="${prefix}-spotify-view-root" data-spotify-view="search">
+          <div class="spotify-connect-row" id="${prefix}-spotify-connect-row">
+            <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link">Connect Spotify (Premium)</a>
+            <button type="button" class="spotify-logout-btn" id="${prefix}-spotify-logout" hidden>Disconnect</button>
+            <span class="spotify-connected-badge" id="${prefix}-spotify-connected-badge" hidden>Connected</span>
+          </div>
+          <div class="spotify-view-toggle" role="tablist" aria-label="Search and playlists">
+            <button type="button" class="spotify-view-tab active" id="${prefix}-spotify-tab-song" data-spotify-view="song" aria-selected="true">Search</button>
+            <button type="button" class="spotify-view-tab" id="${prefix}-spotify-tab-playlist" data-spotify-view="playlist" aria-selected="false">Playlist</button>
+          </div>
+          <form class="spotify-search-form" id="${prefix}-spotify-search-form">
+            <input type="search" class="spotify-search-input" id="${prefix}-spotify-search-input" placeholder="Search tracks, artists, albums…" autocomplete="off" />
+            <button type="submit" class="spotify-search-submit">Search</button>
+          </form>
+          <div class="spotify-song-view" id="${prefix}-spotify-song-view">
+            <div class="spotify-results" id="${prefix}-spotify-results" role="listbox" aria-label="Search results"></div>
+          </div>
+          <div class="spotify-playlist-view" id="${prefix}-spotify-playlist-view" hidden>
+            <div
+              class="spotify-results spotify-playlist-root"
+              id="${prefix}-spotify-playlist-root"
+              role="listbox"
+              aria-label="Your playlists"
+            >
+              <p class="spotify-results-hint">Open this tab to load your playlists.</p>
+            </div>
+          </div>
+        </div>
+        <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
       </div>
-      <form class="spotify-search-form" id="${prefix}-spotify-search-form">
-        <input type="search" class="spotify-search-input" id="${prefix}-spotify-search-input" placeholder="Search tracks, artists, albums…" autocomplete="off" />
-        <button type="submit" class="spotify-search-submit">Search</button>
-      </form>
-      <div class="spotify-song-view" id="${prefix}-spotify-song-view">
-        <div class="spotify-results" id="${prefix}-spotify-results" role="listbox" aria-label="Search results"></div>
-      </div>
-      <div class="spotify-playlist-view" id="${prefix}-spotify-playlist-view" hidden>
-        <div
-          class="spotify-results spotify-playlist-root"
-          id="${prefix}-spotify-playlist-root"
-          role="listbox"
-          aria-label="Your playlists"
-        >
-          <p class="spotify-results-hint">Open this tab to load your playlists.</p>
+      <div id="${prefix}-builtin-stack" class="music-pane-stack" hidden>
+        <div class="free-music-pane-inner">
+          <p class="free-music-hint" id="${prefix}-free-music-hint"></p>
+          <div class="free-music-catalog" id="${prefix}-free-music-catalog"></div>
         </div>
       </div>
-      <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
+      <audio id="${prefix}-free-music-audio" preload="metadata" crossorigin="anonymous" hidden></audio>
     </div>
   `;
 
