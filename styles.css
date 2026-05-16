@@ -6212,7 +6212,39 @@ body.app-open {
 }
 
 .message-row.vera {
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+}
+
+/* Work-mode stage-2: quoted user line above assistant reply (Voice UI). */
+.voice-quote-ref {
+  max-width: 70%;
+  margin-bottom: 4px;
+  padding: 6px 10px 6px 8px;
+  border-radius: 10px;
+  background: rgba(18, 26, 34, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(215, 225, 235, 0.88);
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.voice-quote-ref__icon {
+  flex-shrink: 0;
+  opacity: 0.72;
+  font-size: 13px;
+  line-height: 1.2;
+  margin-top: 1px;
+  font-family: system-ui, sans-serif;
+}
+
+.voice-quote-ref__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Chat bubbles — one-shot enter on new DOM nodes; streaming only mutates textContent inside. */
@@ -6283,6 +6315,10 @@ body.bmo-open .bubble.user.interrupt-preview {
 .bubble.vera.vera-work-mode-stage1-ack {
   border-left: 3px solid rgba(120, 180, 255, 0.4);
   padding-left: 0.65rem;
+}
+
+.bubble.vera.vera-work-mode-stage2-reply {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 /* =========================
