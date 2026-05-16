@@ -811,7 +811,7 @@
           </p>
         </div>
         <div class="vera-reasoning-compose">
-          <button type="button" id="vera-reasoning-attach-btn" class="vera-reasoning-attach-btn" title="Attach one PDF or image (max 25MB)">
+          <button type="button" id="vera-reasoning-attach-btn" class="vera-reasoning-attach-btn" title="Attach PDFs or images — up to 5 files, max 25MB each, ~45MB total per message">
             +
           </button>
           <input
@@ -819,6 +819,7 @@
             id="vera-reasoning-file"
             class="vera-reasoning-file-input"
             accept=".pdf,image/png,image/jpeg,image/jpg,image/webp"
+            multiple
           />
           <input
             type="text"
@@ -839,11 +840,6 @@
         </div>
         <div class="vera-reasoning-attach-wrap" id="vera-reasoning-attach-wrap">
         <div class="vera-reasoning-attach-meta" id="vera-reasoning-attach-meta" aria-live="polite"></div>
-        <div id="vera-attachment-preview-popover" class="vera-attachment-preview-popover" hidden>
-          <div class="vera-attachment-preview-dialog" role="dialog" aria-label="Attachment preview">
-            <div id="vera-attachment-preview-inner" class="vera-attachment-preview-inner"></div>
-          </div>
-        </div>
         </div>
         <p class="vera-reasoning-typed-note">
           VERA will speak aloud unless you mute (same behavior as Voice UI). In-app mute for typed replies is coming soon; for now use system volume or your device mute when you need silence.

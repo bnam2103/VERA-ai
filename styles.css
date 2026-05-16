@@ -5205,56 +5205,124 @@ body.chat-started .input-bar {
 }
 
 #vera-app.work-mode .vera-reasoning-attach-name {
-  cursor: zoom-in;
-  text-decoration: underline;
-  text-decoration-style: dotted;
-  text-underline-offset: 2px;
-  color: rgba(165, 215, 255, 0.98);
+  color: rgba(200, 220, 245, 0.95);
 }
 
-/* Fixed + JS-placed on document.body above the filename (see ensureWorkModeAttachmentPreviewPopoverOnBody). */
-#vera-app.work-mode .vera-attachment-preview-popover {
+/* Full-screen attachment preview (click/tap; created in app.js on first open) */
+.vera-wm-attachment-preview-modal {
   position: fixed;
+  inset: 0;
+  z-index: 20050;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
   box-sizing: border-box;
-  margin: 0;
-  z-index: 12050;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+}
+
+.vera-wm-attachment-preview-modal.is-open {
+  display: flex;
+}
+
+.vera-wm-attachment-preview-modal-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: min(96vw, 920px);
+  max-height: min(92vh, 880px);
+  background: rgba(10, 14, 22, 0.98);
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(6, 10, 18, 0.98);
-  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.5), 0 8px 32px rgba(0, 0, 0, 0.35);
-  overflow: auto;
-  pointer-events: auto;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
 }
 
-#vera-app.work-mode .vera-attachment-preview-dialog {
-  padding: 10px;
+.vera-wm-attachment-preview-modal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-#vera-app.work-mode .vera-attachment-preview-inner {
-  min-height: 80px;
-}
-
-#vera-app.work-mode .vera-attachment-preview-img {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  margin: 0 auto;
-  border-radius: 8px;
-}
-
-#vera-app.work-mode .vera-attachment-preview-iframe {
-  width: 100%;
-  height: min(68vh, 480px);
-  border: 0;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.45);
-}
-
-#vera-app.work-mode .vera-attachment-preview-fallback {
+.vera-wm-attachment-preview-modal-title {
   margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(245, 248, 255, 0.95);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.vera-wm-attachment-preview-modal-close {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.vera-wm-attachment-preview-modal-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.vera-wm-attachment-preview-modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 12px;
-  font-size: 12px;
-  color: rgba(220, 230, 245, 0.75);
+  -webkit-overflow-scrolling: touch;
+}
+
+.vera-wm-attachment-preview-modal-img {
+  max-width: 100%;
+  max-height: min(85vh, 820px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.vera-wm-attachment-preview-modal-pdf-wrap {
+  width: 100%;
+  height: min(78vh, 720px);
+  min-height: 200px;
+  overflow: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.4);
+  -webkit-overflow-scrolling: touch;
+}
+
+.vera-wm-attachment-preview-modal-iframe {
+  display: block;
+  width: 100%;
+  min-height: min(78vh, 720px);
+  border: 0;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.vera-wm-attachment-preview-modal-fallback {
+  padding: 24px 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(220, 230, 245, 0.85);
+  text-align: center;
 }
 
 #vera-app.work-mode .vera-reasoning-typed-note {
@@ -7238,4 +7306,398 @@ body.bmo-open.news-panel-open #bmo-page .input-container {
 
 #vera-app.work-mode .vera-wm-checklist-li:hover {
   background-color: rgba(255, 255, 255, 0.045);
+}
+
+/* Work Mode — lane attachment previews (upload / paste) */
+.vera-wm-composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.vera-wm-composer-attachment-panel {
+  margin-top: 8px;
+  padding: 10px 10px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(120, 160, 255, 0.2);
+  background: rgba(4, 10, 20, 0.45);
+}
+
+.vera-wm-composer-attachment-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.vera-wm-composer-attachment-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(200, 215, 255, 0.88);
+}
+
+.vera-wm-composer-attachment-count-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.vera-wm-composer-attachments-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+}
+
+.vera-wm-composer-attach-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.vera-wm-composer-attach-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.vera-wm-composer-attach-card-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.vera-wm-composer-attach-kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(180, 200, 255, 0.75);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(90, 120, 200, 0.2);
+}
+
+.vera-wm-composer-attach-card-body {
+  flex: 1;
+  min-height: 88px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.vera-wm-composer-attach-thumb {
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.vera-wm-composer-attach-doc-tap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  border-radius: 6px;
+}
+
+.vera-wm-composer-attach-doc-tap:focus-visible {
+  outline: 2px solid rgba(120, 180, 255, 0.7);
+  outline-offset: 2px;
+}
+
+.vera-wm-composer-attach-doc-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+  border-radius: 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.vera-wm-composer-attach-doc-icon {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(255, 120, 100, 0.95);
+}
+
+.vera-wm-composer-attach-doc-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.vera-wm-composer-attach-doc-lines span {
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.vera-wm-composer-attach-doc-sub {
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  text-align: center;
+}
+
+.vera-wm-composer-attach-fallback-mini {
+  padding: 16px 8px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: center;
+}
+
+.vera-wm-composer-attach-card-remove {
+  margin-top: 8px;
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: rgba(255, 150, 150, 0.85);
+  cursor: pointer;
+  font-size: 11px;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.vera-wm-composer-attach-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(255, 210, 150, 0.92);
+}
+
+.vera-wm-composer-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 6px 4px 4px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+
+.vera-wm-composer-attach-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.vera-wm-composer-attach-chip-remove {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.vera-wm-lane-attachment-block {
+  margin: 12px 0 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(120, 180, 255, 0.22);
+  background: rgba(8, 14, 24, 0.55);
+}
+
+.vera-wm-lane-attachment-head {
+  margin-bottom: 10px;
+}
+
+.vera-wm-lane-attachment-head-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.vera-wm-lane-attachment-head-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(200, 220, 255, 0.85);
+}
+
+.vera-wm-lane-attachment-count-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.vera-wm-lane-attachment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.vera-wm-lane-attach-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.vera-wm-lane-attach-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vera-wm-lane-attach-type-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(190, 210, 255, 0.8);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(80, 110, 180, 0.22);
+}
+
+.vera-wm-lane-attach-thumb-scroll {
+  max-height: 280px;
+  overflow: auto;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.vera-wm-lane-attach-thumb {
+  display: block;
+  max-width: 420px;
+  width: 100%;
+  max-height: none;
+  height: auto;
+  object-fit: contain;
+  border-radius: 6px;
+  cursor: zoom-in;
+}
+
+.vera-wm-lane-attach-pdf-wrap {
+  width: 100%;
+  height: min(320px, 42vh);
+  max-height: 360px;
+  overflow: auto;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.vera-wm-lane-attach-pdf-iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 280px;
+  border: none;
+}
+
+.vera-wm-lane-attach-file-meta {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.vera-wm-lane-attach-card-caption {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.88);
+  word-break: break-word;
+  line-height: 1.35;
+  flex: 1;
+  min-width: 0;
+}
+
+.vera-wm-lane-attach-fallback {
+  padding: 20px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  text-align: center;
+}
+
+.vera-wm-lane-attach-media-tap,
+.vera-wm-lane-attach-pdf-tap {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  border-radius: 6px;
+}
+
+.vera-wm-lane-attach-media-tap:focus-visible,
+.vera-wm-lane-attach-pdf-tap:focus-visible {
+  outline: 2px solid rgba(120, 180, 255, 0.65);
+  outline-offset: 2px;
+}
+
+.vera-wm-lane-attach-thumb {
+  cursor: pointer;
+}
+
+.vera-wm-lane-attach-pdf-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 10px;
+  border-radius: 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.vera-wm-lane-attach-pdf-card-icon {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(255, 120, 100, 0.95);
+}
+
+.vera-wm-lane-attach-pdf-card-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.vera-wm-lane-attach-pdf-card-lines span {
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.vera-wm-lane-attach-pdf-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  text-align: center;
 }
