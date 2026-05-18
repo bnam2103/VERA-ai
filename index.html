@@ -6,7 +6,7 @@
   <!-- Optional: override user auth backend (otherwise localhost = same origin; GitHub Pages = Worker below) -->
   <meta name="vera-local-backend-origin" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=11">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -900,15 +900,27 @@
     <audio id="vera-audio" preload="auto" crossorigin="anonymous"></audio>
   </main>
   <div class="vera-bottom-right-tools" aria-label="Quick tools">
-    <button
-      type="button"
-      id="vera-work-mode"
-      class="vera-work-mode-btn"
-      title="Toggle work mode"
-      aria-pressed="false"
-    >
-      Work
-    </button>
+    <div class="vera-work-mode-tools-row" role="group" aria-label="Work mode controls">
+      <button
+        type="button"
+        id="vera-work-mode"
+        class="vera-work-mode-btn"
+        title="Toggle work mode"
+        aria-pressed="false"
+      >
+        Work
+      </button>
+      <button
+        type="button"
+        id="vera-work-mode-guide"
+        class="vera-work-mode-btn"
+        title="Open Work Mode guide"
+        aria-haspopup="dialog"
+        aria-controls="vera-work-guide-modal"
+      >
+        Guide
+      </button>
+    </div>
     <button
       type="button"
       id="vera-productivity-mode"
@@ -932,6 +944,90 @@
     </div>
   </div>
 </section>
+
+<div
+  id="vera-work-guide-modal"
+  class="vera-work-guide-modal"
+  hidden
+  aria-hidden="true"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="vera-work-guide-title"
+>
+  <button type="button" class="vera-work-guide-backdrop" tabindex="-1" aria-label="Close guide"></button>
+  <div class="vera-work-guide-dialog">
+    <button type="button" class="vera-work-guide-close" aria-label="Close guide">&times;</button>
+    <h2 id="vera-work-guide-title" class="vera-work-guide-title">Work Mode Guide</h2>
+    <div class="vera-work-guide-scroll">
+      <article class="vera-work-guide-card">
+        <h3 class="vera-work-guide-card-title">Music panel</h3>
+        <img class="vera-work-guide-shot" src="assets/work-guide/music.png" alt="Work Mode music panel" width="640" height="360" loading="lazy" decoding="async" />
+        <p class="vera-work-guide-lead">
+          Use this panel to control background music while you work (either through buttons or commands).
+        </p>
+        <h4 class="vera-work-guide-section-label">Common commands</h4>
+        <ul class="vera-work-guide-commands">
+          <li>“Pause the music”</li>
+          <li>“Can you play the next/previous track”</li>
+          <li>“Play the lo-fi mix”</li>
+          <li>“Turn the volume up”</li>
+          <li>“Turn the volume down”</li>
+        </ul>
+      </article>
+      <article class="vera-work-guide-card">
+        <h3 class="vera-work-guide-card-title">Reasoning panel</h3>
+        <img class="vera-work-guide-shot" src="assets/work-guide/reasoning.png" alt="Work Mode reasoning panel" width="640" height="360" loading="lazy" decoding="async" />
+        <p class="vera-work-guide-lead">
+          This is where deep work happens: planning, homework help, writing, coding, file/image analysis, and long-form solutions.
+        </p>
+        <h4 class="vera-work-guide-section-label">Common commands</h4>
+        <ul class="vera-work-guide-commands">
+          <li>“Open a new panel”</li>
+          <li>“Go to the Black-Scholes panel”</li>
+          <li>“Look at this file/photo and help me do it”</li>
+          <li>“Help me plan my English homework due in 2 hours”</li>
+        </ul>
+        <p class="vera-work-guide-note">
+          If you say “Can you help me plan my English homework due in 2 hours?”, VERA can build a plan in the Reasoning Panel and then sync it into the Checklist Panel.
+        </p>
+        <p class="vera-work-guide-tip"><strong>Quick tip:</strong> Use separate panels for different topics so each workspace stays organized.</p>
+      </article>
+      <article class="vera-work-guide-card">
+        <h3 class="vera-work-guide-card-title">Voice UI</h3>
+        <img class="vera-work-guide-shot" src="assets/work-guide/voice.png" alt="Work Mode voice UI" width="640" height="360" loading="lazy" decoding="async" />
+        <p class="vera-work-guide-lead">
+          Use Voice UI to talk to VERA naturally. Quick confirmations appear here, while detailed work is sent to the Reasoning Panel.
+        </p>
+        <h4 class="vera-work-guide-section-label">Common commands</h4>
+        <ul class="vera-work-guide-commands">
+          <li>“What time is it?”</li>
+          <li>“What’s the weather?”</li>
+          <li>“Give me the news”</li>
+          <li>“Check Apple stock's price”</li>
+          <li>“Summarize what we just worked on”</li>
+          <li>“Set a timer for 30 minutes”</li>
+        </ul>
+      </article>
+      <article class="vera-work-guide-card">
+        <h3 class="vera-work-guide-card-title">Checklist panel</h3>
+        <img class="vera-work-guide-shot" src="assets/work-guide/checklist.png" alt="Work Mode checklist panel" width="640" height="360" loading="lazy" decoding="async" />
+        <p class="vera-work-guide-lead">
+          Use this panel to track tasks and sync plans into a checklist you can manage by command or button.
+        </p>
+        <h4 class="vera-work-guide-section-label">Common commands</h4>
+        <ul class="vera-work-guide-commands">
+          <li>“Add English essay to my checklist”</li>
+          <li>“Remove item 1 from my checklist”</li>
+          <li>“Mark English essay complete”</li>
+          <li>“Sync this plan to my checklist”</li>
+        </ul>
+        <p class="vera-work-guide-tip">
+          <strong>Pro tip:</strong> The planning workflow works especially well here: ask VERA to make a plan, then sync it directly into the checklist.
+        </p>
+      </article>
+    </div>
+  </div>
+</div>
 
 <section id="bmo-loading-screen" hidden>
   <div class="bmo-loading-shell">
@@ -1253,6 +1349,11 @@
   const bmoPage = document.getElementById("bmo-page");
   const veraApp = document.getElementById("vera-app");
   const veraWorkModeBtn = document.getElementById("vera-work-mode");
+  const veraWorkModeGuideBtn = document.getElementById("vera-work-mode-guide");
+  const veraWorkGuideModal = document.getElementById("vera-work-guide-modal");
+  const veraWorkGuideCloseBtn = veraWorkGuideModal?.querySelector(".vera-work-guide-close");
+  const veraWorkGuideBackdrop = veraWorkGuideModal?.querySelector(".vera-work-guide-backdrop");
+  let veraWorkGuideLastFocus = null;
   const bmoLoadingDotsEl = document.querySelector(".bmo-loading-dots");
 
   const navHome = document.getElementById("nav-home");
@@ -1748,6 +1849,7 @@ function startTyping() {
     }
     veraApp?.classList.remove("work-mode");
     veraWorkModeBtn?.setAttribute("aria-pressed", "false");
+    closeVeraWorkGuideModal();
     if (typeof window.syncVeraHeaderDateTimeForWorkMode === "function") {
       window.syncVeraHeaderDateTimeForWorkMode();
     }
@@ -1795,7 +1897,48 @@ function startTyping() {
   if (window.matchMedia("(max-width: 768px)").matches) {
     veraWorkModeBtn?.setAttribute("hidden", "");
     veraWorkModeBtn?.setAttribute("aria-hidden", "true");
+    veraWorkModeGuideBtn?.setAttribute("hidden", "");
+    veraWorkModeGuideBtn?.setAttribute("aria-hidden", "true");
   }
+
+  function openVeraWorkGuideModal() {
+    if (!veraWorkGuideModal) return;
+    veraWorkGuideLastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    veraWorkGuideModal.hidden = false;
+    veraWorkGuideModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("vera-work-guide-open");
+    veraWorkGuideCloseBtn?.focus();
+  }
+
+  function closeVeraWorkGuideModal() {
+    if (!veraWorkGuideModal) return;
+    veraWorkGuideModal.hidden = true;
+    veraWorkGuideModal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("vera-work-guide-open");
+    if (veraWorkGuideLastFocus instanceof HTMLElement) {
+      try {
+        veraWorkGuideLastFocus.focus();
+      } catch (_) {}
+    }
+    veraWorkGuideLastFocus = null;
+  }
+
+  veraWorkModeGuideBtn?.addEventListener("click", () => {
+    if (!veraApp || veraApp.hidden) return;
+    if (!veraApp.classList.contains("work-mode")) return;
+    openVeraWorkGuideModal();
+  });
+  veraWorkGuideCloseBtn?.addEventListener("click", () => closeVeraWorkGuideModal());
+  veraWorkGuideBackdrop?.addEventListener("click", () => closeVeraWorkGuideModal());
+  veraWorkGuideModal?.addEventListener("click", (e) => {
+    if (e.target === veraWorkGuideModal) closeVeraWorkGuideModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!veraWorkGuideModal || veraWorkGuideModal.hidden) return;
+    e.preventDefault();
+    closeVeraWorkGuideModal();
+  });
 
   veraWorkModeBtn?.addEventListener("click", () => {
     if (!veraApp || veraApp.hidden) return;
