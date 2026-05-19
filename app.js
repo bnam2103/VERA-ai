@@ -723,6 +723,17 @@ function setVeraAsrMode(mode) {
   logVeraSettings("save_asr_mode", { value: next });
 }
 
+const MAIN_ASR_PARTIAL_MIN_CHAR_OPTIONS = [10, 15, 20, 25, Infinity];
+
+function normalizeMainAsrPartialMinChars(v) {
+  if (v === Infinity || v === "inf" || v === "infinity") return Infinity;
+  const n = Number(v);
+  if (n === 10 || n === 15 || n === 20 || n === 25) return n;
+  if (n === 5 || n === 8) return 10;
+  if (n === 12) return 15;
+  return 10;
+}
+
 function getMainAsrPartialMinChars() {
   try {
     const raw = String(localStorage.getItem(VERA_SETTING_MAIN_ASR_PARTIAL_MIN_CHARS_KEY) ?? "")
@@ -730,7 +741,7 @@ function getMainAsrPartialMinChars() {
       .toLowerCase();
     if (raw === "inf" || raw === "infinity") return Infinity;
     const v = Number(raw);
-    if (v === 5 || v === 8 || v === 10 || v === 12 || v === 15) return v;
+    if (Number.isFinite(v)) return normalizeMainAsrPartialMinChars(v);
   } catch (_) {}
   return 10;
 }
@@ -738,11 +749,12 @@ function getMainAsrPartialMinChars() {
 function setMainAsrPartialMinChars(v) {
   let next = 10;
   let store = "10";
-  if (v === Infinity || v === "inf" || v === "infinity") {
+  const normalized = normalizeMainAsrPartialMinChars(v);
+  if (normalized === Infinity) {
     next = Infinity;
     store = "inf";
-  } else if (v === 5 || v === 8 || v === 10 || v === 12 || v === 15) {
-    next = v;
+  } else if (normalized === 10 || normalized === 15 || normalized === 20 || normalized === 25) {
+    next = normalized;
     store = String(next);
   }
   mainAsrPartialMinChars = next;
@@ -6774,6 +6786,53 @@ function clearWorkModePendingAttachments() {
   if (fin) fin.value = "";
 }
 
+function workModePendingAttachmentFileNames() {
+  return workModePendingAttachments.map((it) => String(it?.name || it?.file?.name || "file").trim()).filter(Boolean);
+}
+
+function logComposerAttachmentsBeforeSubmit(files, turnContext) {
+  const list = Array.isArray(files) ? files.filter((f) => f instanceof File && f.size) : [];
+  try {
+    console.info("[composer_attachments_before_submit]", {
+      count: list.length,
+      file_names: list.map((f) => f.name || "file"),
+      turn_id: turnContext?.turn_id ?? null,
+      lane_id: turnContext?.turn_lane_id ?? null
+    });
+  } catch (_) {}
+}
+
+function preserveComposerAttachments(reason, turnContext) {
+  try {
+    console.info("[composer_attachments_preserved]", {
+      reason: String(reason || "").trim() || "unknown",
+      turn_id: turnContext?.turn_id ?? null,
+      lane_id: turnContext?.turn_lane_id ?? null,
+      count: workModePendingAttachments.length,
+      file_names: workModePendingAttachmentFileNames()
+    });
+  } catch (_) {}
+}
+
+/**
+ * Clear composer tray after the turn is committed to the reasoning lane (not on stream failure later).
+ * @param {object} [turnContext]
+ * @param {string} [reason]
+ */
+function clearComposerAttachmentsAfterSubmit(turnContext, reason) {
+  const count = workModePendingAttachments.length;
+  if (!count) return;
+  clearWorkModePendingAttachments();
+  try {
+    console.info("[composer_attachments_cleared]", {
+      turn_id: turnContext?.turn_id ?? null,
+      lane_id: turnContext?.turn_lane_id ?? null,
+      count,
+      reason: String(reason || "").trim() || "submit_success"
+    });
+  } catch (_) {}
+}
+
 /**
  * Add one or more files to the composer queue (PDF / images only).
  * @param {File[]} files
@@ -9257,13 +9316,28 @@ function commitActiveWorkModeReasoningContext(payload, meta = {}) {
   notifyWorkModeTtsReasoningCommitted(commitLaneId, o);
 
   if (frozenTurnId) {
+    const resultPack = classifyWorkModeSameTurnReasoningResultStatus(
+      excerpt,
+      String(o.latest_reasoning_summary || "").trim(),
+      {
+        turn_intent: String(
+          meta.turn_intent || classifyWorkModeTurnIntent(o.last_user_request || "").turn_intent || ""
+        )
+          .trim()
+          .toLowerCase()
+      }
+    );
     workModeStage2SameTurnByTurnId[frozenTurnId] = {
+      turn_id: frozenTurnId,
       lane_id: commitLaneId,
       latest_final_answer_excerpt: excerpt,
       latest_reasoning_summary: String(o.latest_reasoning_summary || "").trim(),
       latest_markdown_preview: String(latest_markdown_preview || "").trim(),
       main_context_type: String(o.main_context_type || "").trim(),
       code_or_math_generated: Boolean(o.code_or_math_generated),
+      same_turn_result_status: resultPack.status,
+      missing_inputs: resultPack.missing_inputs,
+      same_turn_summary_preview: resultPack.same_turn_summary_preview,
       updated_at: Date.now(),
       source_function: String(meta.source_function || "").trim()
     };
@@ -9271,7 +9345,9 @@ function commitActiveWorkModeReasoningContext(payload, meta = {}) {
       console.info("[stage2_same_turn_snapshot]", {
         turn_id: frozenTurnId,
         lane_id: commitLaneId,
-        excerpt_preview: previewWorkModeRegistryText(excerpt)
+        excerpt_preview: previewWorkModeRegistryText(excerpt),
+        same_turn_result_status: resultPack.status,
+        missing_inputs: resultPack.missing_inputs
       });
     } catch (_) {}
   }
@@ -9690,9 +9766,6 @@ function attachWorkModeReasoningContextToInferFormData(formData, prep) {
     logWorkModeInferContextDebugTrace(formData, prep, null, resolution);
     return;
   }
-  if (sameTurn && turnIdForSame) {
-    delete workModeStage2SameTurnByTurnId[turnIdForSame];
-  }
 
   const summaryMerged = sameTurn
     ? String(sameTurn.latest_reasoning_summary || base.latest_reasoning_summary || "").trim()
@@ -9723,6 +9796,22 @@ function attachWorkModeReasoningContextToInferFormData(formData, prep) {
 
   const grounding = sameTurn ? "same_turn_stream" : "lane_registry";
   const sameTurnDup = sameTurn ? primaryExcerpt : "";
+  const excerptForStatus =
+    (sameTurn
+      ? String(sameTurn.latest_final_answer_excerpt || sameTurn.latest_markdown_preview || "").trim()
+      : "") ||
+    primaryExcerpt ||
+    (stage2Voice ? getWorkModeLaneMarkdownExcerptForStage2(laneIdPayload) : "");
+  const resultPack = packStage2ResultStatus(
+    prep,
+    classifyWorkModeSameTurnReasoningResultStatus(excerptForStatus, summaryMerged, stage2ClassifyOptsFromPrep(prep)),
+    "infer_attach"
+  );
+  prep.stage2ResultStatus = resultPack;
+  prep.stage2InferExcerpt = excerptForStatus;
+  if (sameTurn && turnIdForSame) {
+    delete workModeStage2SameTurnByTurnId[turnIdForSame];
+  }
 
   const payload = {
     active_lane_id: laneIdPayload,
@@ -9739,6 +9828,11 @@ function attachWorkModeReasoningContextToInferFormData(formData, prep) {
     same_turn_reasoning_excerpt: sameTurnDup,
     lane_background_excerpt: laneBackgroundExcerpt,
     stage2_grounding: grounding,
+    same_turn_result_status: resultPack.status,
+    status_turn_id: resultPack.turn_id,
+    status_lane_id: resultPack.lane_id,
+    missing_inputs: resultPack.missing_inputs || [],
+    same_turn_summary_preview: String(resultPack.same_turn_summary_preview || "").slice(0, 220),
     _infer_context_source: sameTurn ? `${selectedSource}+same_turn_priority` : selectedSource
   };
   const raw = JSON.stringify(payload);
@@ -9820,6 +9914,420 @@ function detectWorkModeRequestHasCodeVoiceIntent(trimmed) {
  * Submit-time intent for Stage‑2 brief voice + LLM (must follow current user line, not lane history).
  * @returns {{ turn_intent: string, content_type_requested: string, stage2_completion_action: string }}
  */
+/** @typedef {'solved'|'partially_completed'|'needs_missing_info'|'clarification_required'|'failed'} WorkModeSameTurnResultStatus */
+
+/**
+ * Classify what the same-turn reasoning stream actually delivered (for Stage 2 voice).
+ * @returns {{
+ *   status: WorkModeSameTurnResultStatus,
+ *   missing_inputs: string[],
+ *   same_turn_summary_preview: string,
+ *   status_reason: string,
+ *   explicit_missing_info_found: boolean,
+ *   explicit_partial_found: boolean,
+ *   substantive_answer_detected: boolean
+ * }}
+ */
+function detectSubstantiveWorkModeReasoningAnswer(raw, opts = {}) {
+  const text = String(raw || "").trim();
+  const low = text.toLowerCase();
+  const turnIntent = String(opts.turn_intent || "").trim().toLowerCase();
+  if (text.length < 80) return false;
+
+  const hasHeadings = /^#{1,6}\s/m.test(text);
+  const hasBullets = /^\s*[-*•]\s/m.test(text) || /^\s*\d+\.\s/m.test(text);
+  const hasTable = /\|.+\|.+\|/m.test(text) || /\|\s*---+\s*\|/.test(text);
+  const hasCode = /```/.test(text);
+  const paragraphCount = (text.match(/\n\s*\n/g) || []).length;
+
+  const solvedSignals = [
+    /\bfinal answer\b/i,
+    /\btherefore[,]?\s+/i,
+    /\bconclusion\b/i,
+    /\bthe (?:call|put|option) (?:is worth|price is|premium is)\b/i,
+    /\b=\s*\$?[\d,]+(?:\.\d+)?/,
+    /\bin one sentence\b/i,
+    /\bkey terms\b/i
+  ];
+  if (solvedSignals.some((re) => re.test(text))) return true;
+  if (hasCode && text.length >= 100) return true;
+  if (hasTable && text.length >= 140) return true;
+
+  const explainLike =
+    turnIntent === "explain" ||
+    turnIntent === "summarize" ||
+    turnIntent === "plan" ||
+    /\b(explain|overview|summary|background|timeline|essay|outline)\b/i.test(low);
+  const structuredExplain =
+    explainLike && text.length >= 320 && (hasHeadings || hasBullets || hasTable || paragraphCount >= 2);
+  if (structuredExplain) return true;
+
+  if (hasHeadings && hasBullets && text.length >= 220) return true;
+  if (paragraphCount >= 2 && text.length >= 400) return true;
+  if (text.length >= 700 && (hasHeadings || hasBullets || hasTable)) return true;
+
+  return false;
+}
+
+function detectExplicitPartialWorkModeReasoning(raw) {
+  const low = String(raw || "").toLowerCase();
+  const partialPatterns = [
+    /\bpartial(?:ly)? (?:complete|completed|done|finished|solved)\b/i,
+    /\bpartial progress\b/i,
+    /\bincomplete\b/i,
+    /\bunfinished\b/i,
+    /\bdraft only\b/i,
+    /\bsetup only\b/i,
+    /\bonly (?:the )?setup\b/i,
+    /\bcannot finish yet\b/i,
+    /\bnot fully finished\b/i,
+    /\bnot (?:yet )?complete\b/i,
+    /\bstill working on\b/i,
+    /\b(incomplete|partial) (?:setup|draft|solution|answer|work)\b/i,
+    /\bhave(?:n't| not) finished\b/i,
+    /\bcan't finish yet\b/i
+  ];
+  if (partialPatterns.some((re) => re.test(raw))) return true;
+  if (/\bpartial(?:ly)?\b/i.test(low) && /\b(?:need|missing|cannot|can't|without)\b/i.test(low)) {
+    return false;
+  }
+  return false;
+}
+
+function analyzeWorkModeSameTurnReasoningResult(markdown, summary = "", opts = {}) {
+  const raw = `${String(markdown || "")}\n${String(summary || "")}`.trim();
+  const low = raw.toLowerCase();
+  const same_turn_summary_preview = raw.slice(0, 220);
+  const missing_inputs = extractWorkModeMissingInputsFromReasoning(raw);
+  const substantive_answer_detected = detectSubstantiveWorkModeReasoningAnswer(raw, opts);
+  const explicit_partial_found = detectExplicitPartialWorkModeReasoning(raw);
+
+  const needsInfoPatterns = [
+    /\bmissing inputs?\b/i,
+    /\bunder-?specified\b/i,
+    /\bstill need\b/i,
+    /\bi still need\b/i,
+    /\bnot (?:shown|provided|given|included)\b/i,
+    /\bwithout those\b/i,
+    /\bplease (?:provide|send|supply|give)\b/i,
+    /\bneed (?:the )?(?:following|missing)\b/i,
+    /\bcannot (?:compute|calculate|solve|finish)\b[^\n]{0,80}\bwithout\b/i,
+    /\bcan't (?:compute|calculate|solve|finish)\b[^\n]{0,80}\bwithout\b/i,
+    /\bone important issue\b/i,
+    /\bbefore i can (?:finish|complete|solve)\b/i,
+    /\bmissing parameters?\b/i,
+    /\bneed more information\b/i,
+    /\bneed (?:volatility|risk-?free|dividend)\b/i,
+    /\b#{1,6}\s*missing inputs?\b/i
+  ];
+  const explicit_missing_info_found =
+    needsInfoPatterns.some((re) => re.test(raw)) ||
+    (missing_inputs.length >= 1 &&
+      /\b(?:missing inputs?|under-?specified|still need|cannot .{0,80} without|before i can (?:finish|complete|solve)|need (?:volatility|risk-?free|dividend))\b/i.test(
+        low
+      ));
+
+  const base = {
+    missing_inputs,
+    same_turn_summary_preview,
+    status_reason: "",
+    explicit_missing_info_found,
+    explicit_partial_found,
+    substantive_answer_detected
+  };
+
+  if (!raw) {
+    return { ...base, status: "failed", status_reason: "empty_output" };
+  }
+  if (/\b(reasoning error|stream failed|could not complete)\b/i.test(raw)) {
+    return { ...base, status: "failed", status_reason: "stream_error_text" };
+  }
+  if (explicit_missing_info_found) {
+    return { ...base, status: "needs_missing_info", status_reason: "explicit_missing_info" };
+  }
+  if (
+    /\b(which one|could you clarify|please confirm|do you mean|need clarification|could you specify)\b/i.test(
+      low
+    ) &&
+    /\?/.test(raw) &&
+    !substantive_answer_detected
+  ) {
+    return { ...base, status: "clarification_required", status_reason: "clarification_question" };
+  }
+  if (explicit_partial_found && !substantive_answer_detected) {
+    return { ...base, status: "partially_completed", status_reason: "explicit_partial_language" };
+  }
+  if (substantive_answer_detected) {
+    return { ...base, status: "solved", status_reason: "substantive_answer_detected" };
+  }
+  if (explicit_partial_found) {
+    return { ...base, status: "partially_completed", status_reason: "explicit_partial_with_substance" };
+  }
+  if (raw.length >= 120) {
+    return { ...base, status: "solved", status_reason: "default_substantive_length" };
+  }
+  return { ...base, status: "failed", status_reason: "insufficient_content" };
+}
+
+function classifyWorkModeSameTurnReasoningResultStatus(markdown, summary = "", opts = {}) {
+  return analyzeWorkModeSameTurnReasoningResult(markdown, summary, opts);
+}
+
+function stage2ClassifyOptsFromPrep(prep) {
+  return { turn_intent: String(prep?.turnContext?.turn_intent || "").trim().toLowerCase() };
+}
+
+function extractWorkModeMissingInputsFromReasoning(text) {
+  const found = new Set();
+  const add = (label) => {
+    const s = String(label || "").trim();
+    if (s) found.add(s);
+  };
+  const raw = String(text || "");
+  if (/\bvolatility\b|\bsigma\b|σ/i.test(raw)) add("volatility σ");
+  if (/\brisk-?free rate\b/i.test(raw)) add("risk-free rate r");
+  if (/\bdividend yield\b/i.test(raw)) add("dividend yield q");
+
+  const sec = raw.match(/\b#{0,6}\s*missing inputs?\b[^\n]*\n([\s\S]{0,1400})/i);
+  if (sec?.[1]) {
+    for (const line of sec[1].split("\n")) {
+      const bullet = line
+        .replace(/^[\s>*#-]+/, "")
+        .replace(/\*\*/g, "")
+        .trim();
+      if (!bullet || bullet.length > 140) continue;
+      if (
+        /\b(volatility|risk-?free|dividend|sigma|rate|yield|missing)\b/i.test(bullet) ||
+        /^[-*•]\s*/.test(line)
+      ) {
+        add(bullet.replace(/^[-*•]\s*/, ""));
+      }
+    }
+  }
+  return [...found].slice(0, 8);
+}
+
+function stage2ScopeIdsFromPrep(prep) {
+  const turn_id = String(prep?.turnContext?.turn_id || "").trim();
+  const lane_id = String(prep?.turnContext?.turn_lane_id || prep?.reasoningLaneId || "").trim();
+  return { turn_id, lane_id };
+}
+
+function stage2StatusMatchesScope(statusPack, prep) {
+  if (!statusPack?.status) return false;
+  const cur = stage2ScopeIdsFromPrep(prep);
+  const st = String(statusPack.turn_id || "").trim();
+  const sl = String(statusPack.lane_id || "").trim();
+  if (!cur.turn_id || !st || st !== cur.turn_id) return false;
+  if (cur.lane_id && sl && sl !== cur.lane_id) return false;
+  return true;
+}
+
+function logStage2StatusScopeCheck(prep, statusSource, statusPack, statusUsed, reason) {
+  const cur = stage2ScopeIdsFromPrep(prep);
+  try {
+    console.info("[stage2_status_scope_check]", {
+      current_turn_id: cur.turn_id || null,
+      current_lane_id: cur.lane_id || null,
+      status_turn_id: statusPack?.turn_id ?? null,
+      status_lane_id: statusPack?.lane_id ?? null,
+      status_used: Boolean(statusUsed),
+      detected_status: statusPack?.status ?? null,
+      missing_inputs: statusPack?.missing_inputs ?? [],
+      reason: String(reason || ""),
+      status_source: statusSource || null
+    });
+  } catch (_) {}
+}
+
+function packStage2ResultStatus(prep, classified, source = "") {
+  const cur = stage2ScopeIdsFromPrep(prep);
+  return {
+    turn_id: cur.turn_id,
+    lane_id: cur.lane_id,
+    status: classified.status,
+    missing_inputs: Array.isArray(classified.missing_inputs) ? classified.missing_inputs : [],
+    same_turn_summary_preview: String(classified.same_turn_summary_preview || "").slice(0, 220),
+    status_reason: String(classified.status_reason || ""),
+    explicit_missing_info_found: Boolean(classified.explicit_missing_info_found),
+    explicit_partial_found: Boolean(classified.explicit_partial_found),
+    substantive_answer_detected: Boolean(classified.substantive_answer_detected),
+    _source: String(source || "")
+  };
+}
+
+function getWorkModeLaneMarkdownExcerptForStage2(laneId) {
+  const lid = String(laneId || "").trim();
+  if (!lid) return "";
+  const panel = getReasoningPanelElementByLaneId(lid);
+  if (!(panel instanceof HTMLElement)) return "";
+  const scroll = panel.querySelector(".vera-reasoning-md-panel, .vera-reasoning-scroll");
+  if (!(scroll instanceof HTMLElement)) return "";
+  const turns = [...scroll.querySelectorAll(".vera-reasoning-turn")];
+  const last = turns.length ? turns[turns.length - 1] : null;
+  if (last instanceof HTMLElement) {
+    const md = String(last.dataset.markdownAcc || "").trim();
+    if (md) return md;
+    const plain = String(last.innerText || last.textContent || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    if (plain.length > 48) return plain;
+  }
+  const acc = String(scroll.dataset.markdownAcc || "").trim();
+  if (acc) return acc;
+  return "";
+}
+
+function resolveScopedStage2ResultStatus(prep, opts = {}) {
+  const cur = stage2ScopeIdsFromPrep(prep);
+  const mdIn = String(opts.markdown || "").trim();
+  const smIn = String(opts.summary || "").trim();
+
+  const tryScoped = (pack, source) => {
+    if (!pack?.status) return null;
+    if (stage2StatusMatchesScope(pack, prep)) {
+      logStage2StatusScopeCheck(prep, source, pack, true, "scope_match");
+      return pack;
+    }
+    logStage2StatusScopeCheck(prep, source, pack, false, "scope_mismatch");
+    return null;
+  };
+
+  const fromPrep = tryScoped(prep?.stage2ResultStatus, "prep.stage2ResultStatus");
+  if (fromPrep) return fromPrep;
+
+  const snap = cur.turn_id ? workModeStage2SameTurnByTurnId[cur.turn_id] || null : null;
+  if (snap) {
+    const snapMd = String(
+      mdIn || snap.latest_final_answer_excerpt || snap.latest_markdown_preview || ""
+    ).trim();
+    const snapSm = String(smIn || snap.latest_reasoning_summary || "").trim();
+    const reclassified = classifyWorkModeSameTurnReasoningResultStatus(snapMd, snapSm, stage2ClassifyOptsFromPrep(prep));
+    const scoped = packStage2ResultStatus(prep, reclassified, "same_turn_snapshot_reclassify");
+    if (stage2StatusMatchesScope(scoped, prep)) {
+      logStage2StatusScopeCheck(prep, "same_turn_snapshot_reclassify", scoped, true, "reclassified");
+      return scoped;
+    }
+  }
+
+  const liveMd = mdIn || getWorkModeLaneMarkdownExcerptForStage2(cur.lane_id);
+  const classified = classifyWorkModeSameTurnReasoningResultStatus(liveMd, smIn, stage2ClassifyOptsFromPrep(prep));
+  const scoped = packStage2ResultStatus(
+    prep,
+    classified,
+    liveMd ? "live_lane_classify" : "neutral_fallback"
+  );
+  logStage2StatusScopeCheck(
+    prep,
+    scoped._source,
+    scoped,
+    Boolean(liveMd || smIn),
+    liveMd ? "classified_current_markdown" : "no_markdown_neutral"
+  );
+  return scoped;
+}
+
+function clearPrepStage2ResultStatus(prep, reason = "") {
+  if (!prep) return;
+  prep.stage2ResultStatus = null;
+  try {
+    console.info("[stage2_result_status_cleared]", {
+      turn_id: prep?.turnContext?.turn_id ?? null,
+      lane_id: prep?.turnContext?.turn_lane_id ?? null,
+      reason: String(reason || "")
+    });
+  } catch (_) {}
+}
+
+function workModeReasoningStreamAllowsStage2(prep) {
+  if (!prep?.voiceTwoStage?.reasoningRouted) return true;
+  const cached = prep?.stage2ResultStatus;
+  if (cached?.status && stage2StatusMatchesScope(cached, prep) && cached.status !== "failed") {
+    return true;
+  }
+  const turnId = String(prep?.turnContext?.turn_id || "").trim();
+  const rec = turnId ? workModeTtsTurnRegistry.get(turnId) : null;
+  if (rec) {
+    return Boolean(rec.markdown_len > 20 || rec.has_substantive_reasoning);
+  }
+  const snap = turnId ? workModeStage2SameTurnByTurnId[turnId] || null : null;
+  return workModeStage2SameTurnSnapshotUsable(snap);
+}
+
+function getWorkModeStage2ResultStatusFromPrep(prep) {
+  return resolveScopedStage2ResultStatus(prep);
+}
+
+function shouldUseCannedStage2SpokenLine(status, detected = {}) {
+  const st = String(status || "").trim().toLowerCase();
+  if (st === "needs_missing_info" || st === "clarification_required" || st === "failed") {
+    return true;
+  }
+  if (st === "partially_completed") {
+    return Boolean(detected.explicit_partial_found);
+  }
+  return false;
+}
+
+function buildWorkModeStage2SpokenOverride(detected) {
+  if (!shouldUseCannedStage2SpokenLine(detected?.status, detected)) return "";
+  return buildWorkModeStage2SpokenLine(detected.status, detected.missing_inputs);
+}
+
+function buildWorkModeStage2SpokenLine(resultStatus, missingInputs) {
+  const st = String(resultStatus || "").trim().toLowerCase();
+  const miss = (missingInputs || []).map((x) => String(x || "").trim()).filter(Boolean);
+  if (st === "needs_missing_info") {
+    if (miss.length) {
+      const joined =
+        miss.length <= 3 ? miss.join(", ") : `${miss.slice(0, 2).join(", ")}, and other model inputs`;
+      return `I set up the problem, but it still needs ${joined} before I can finish it in the reasoning panel.`;
+    }
+    return "I set up the problem, but it still needs a few missing model inputs before I can finish it in the reasoning panel.";
+  }
+  if (st === "clarification_required") {
+    return "I started the setup, but I need a quick clarification before I can finish it in the reasoning panel.";
+  }
+  if (st === "partially_completed") {
+    return "I made partial progress on it in the reasoning panel, but it is not fully finished yet.";
+  }
+  if (st === "failed") {
+    return "I could not finish that in the reasoning panel — check there for what went wrong.";
+  }
+  return "";
+}
+
+function stage2ReplyImpliesFalseSuccess(text) {
+  const t = String(text || "").toLowerCase();
+  if (!t) return false;
+  return (
+    /\bi (?:solved|worked out|finished solving|completed solving)\b/.test(t) ||
+    /\bi(?:'ve| have) solved\b/.test(t) ||
+    /\bthe full (?:answer|result|solution) is ready\b/.test(t) ||
+    /\bworked out the .* (?:setup|problem|solution)\b/.test(t) ||
+    /\bleft the (?:full |complete )?(?:answer|solution|result) in\b/.test(t)
+  );
+}
+
+function logStage2ResultStatus(prep, detected, generatedStage2Text, usedCannedLine = false) {
+  const tc = prep?.turnContext;
+  try {
+    console.info("[stage2_result_status]", {
+      turn_id: tc?.turn_id ?? null,
+      user_text: String(tc?.user_text || "").trim(),
+      detected_status: detected?.status ?? null,
+      status_reason: detected?.status_reason ?? null,
+      explicit_missing_info_found: Boolean(detected?.explicit_missing_info_found),
+      explicit_partial_found: Boolean(detected?.explicit_partial_found),
+      substantive_answer_detected: Boolean(detected?.substantive_answer_detected),
+      generated_stage2_text: String(generatedStage2Text ?? "").slice(0, 500),
+      used_canned_line: Boolean(usedCannedLine),
+      missing_inputs: detected?.missing_inputs ?? []
+    });
+  } catch (_) {}
+}
+
 function classifyWorkModeTurnIntent(userText) {
   const t = String(userText || "").trim();
   const low = t.toLowerCase();
@@ -9960,10 +10468,17 @@ function attachWorkModeVoiceBriefCompletionFlag(formData, prep) {
   if (!(formData instanceof FormData)) return;
   const vs = prep?.voiceTwoStage;
   if (!vs?.reasoningRouted) return;
+  prep.stage2VoiceBubble = null;
+  if (!workModeReasoningStreamAllowsStage2(prep)) return;
   /* Stage‑2 voice: one short spoken summary of what is already in the Reasoning panel (not a second full answer). */
   if (typeof formData.set === "function") formData.set("work_mode_voice_brief_completion", "1");
   else formData.append("work_mode_voice_brief_completion", "1");
   const tc = prep?.turnContext;
+  const detected = resolveScopedStage2ResultStatus(prep, {
+    markdown: String(prep?.stage2InferExcerpt || "").trim()
+  });
+  prep.stage2ResultStatus = detected;
+  logStage2StatusScopeCheck(prep, detected._source || "stage2_attach", detected, true, "attached_to_infer");
   if (tc?.turn_id) {
     const payload = {
       turn_id: tc.turn_id,
@@ -9972,7 +10487,12 @@ function attachWorkModeVoiceBriefCompletionFlag(formData, prep) {
       current_user_text: String(tc.user_text || "").trim(),
       turn_intent: String(tc.turn_intent || "general").trim(),
       content_type_requested: String(tc.content_type_requested || "general").trim(),
-      stage2_completion_action: String(tc.stage2_completion_action || "report_work_placed").trim()
+      stage2_completion_action: String(tc.stage2_completion_action || "report_work_placed").trim(),
+      reasoning_result_status: detected.status,
+      status_turn_id: detected.turn_id,
+      status_lane_id: detected.lane_id,
+      missing_inputs: detected.missing_inputs || [],
+      same_turn_summary_preview: detected.same_turn_summary_preview || ""
     };
     const raw = JSON.stringify(payload);
     try {
@@ -9982,6 +10502,19 @@ function attachWorkModeVoiceBriefCompletionFlag(formData, prep) {
       formData.append("work_mode_stage2_turn_json", raw);
     }
   }
+  const spokenOverride = buildWorkModeStage2SpokenOverride(detected);
+  if (spokenOverride) {
+    if (typeof formData.set === "function") formData.set("work_mode_stage2_spoken_override", spokenOverride);
+    else formData.append("work_mode_stage2_spoken_override", spokenOverride);
+    storeEffectiveStage2ReplyOnPrep(prep, {
+      effective_stage2_reply: spokenOverride,
+      generated_stage2_text: "",
+      used_override: true,
+      override_reason: "canned_status_line_attach"
+    });
+  }
+  logStage2ResultStatus(prep, detected, spokenOverride || "", Boolean(spokenOverride));
+  clearPrepStage2ResultStatus(prep, "consumed_by_stage2_attach");
 }
 
 /** Last few Voice UI lines (+ queued typed turns) so “example” requests track the latest topic. */
@@ -10424,54 +10957,201 @@ function isStage2BriefProseOkDespiteLightFlags(s) {
   return words <= 56;
 }
 
-function emergencyFallbackStage2Line(prep) {
+function stage2TopicPhraseFromUserText(userText) {
+  let t = String(userText || "")
+    .trim()
+    .replace(/[?.!]+$/g, "")
+    .trim();
+  if (!t) return "";
+  t = t
+    .replace(
+      /^(please|can you|could you|would you|help me|i need you to|i want you to)\s+/i,
+      ""
+    )
+    .replace(
+      /^(explain|summarize|summarise|describe|outline|write|solve|compute|calculate|find|show)\s+/i,
+      ""
+    )
+    .trim();
+  if (t.length > 72) t = `${t.slice(0, 69).trim()}…`;
+  return t;
+}
+
+/** Safe Stage-2 line when the model reply is empty or unsafe for voice/bubble. */
+function buildSafeStage2FallbackLine(prep) {
+  const detected = getWorkModeStage2ResultStatusFromPrep(prep);
+  const statusLine = buildWorkModeStage2SpokenLine(detected.status, detected.missing_inputs);
+  if (statusLine) return statusLine;
   const intent = String(prep?.turnContext?.turn_intent || "").trim().toLowerCase();
-  if (intent === "code") return "Done — I put the code in the reasoning panel.";
-  if (intent === "solve") return "Done — I solved it in the reasoning panel.";
-  if (intent === "explain") return "Done — I wrote it up in the reasoning panel.";
-  if (intent === "plan") return "Done — I laid out the plan in the reasoning panel.";
-  if (intent === "revise") return "Done — I updated it in the reasoning panel.";
-  if (intent === "summarize") return "Done — I summarized it in the reasoning panel.";
-  return "Done — the full answer is in the reasoning panel.";
+  const topic = stage2TopicPhraseFromUserText(prep?.turnContext?.user_text);
+  if (intent === "code") {
+    return topic
+      ? `I put the code for ${topic} in the reasoning panel.`
+      : "I put the code in the reasoning panel.";
+  }
+  if (intent === "solve") {
+    return topic ? `I solved ${topic} in the reasoning panel.` : "I solved it in the reasoning panel.";
+  }
+  if (intent === "explain") {
+    return topic
+      ? `I wrote ${topic} in the reasoning panel.`
+      : "I wrote the explanation in the reasoning panel.";
+  }
+  if (intent === "plan") {
+    return topic ? `I laid out the plan for ${topic} in the reasoning panel.` : "I laid out the plan in the reasoning panel.";
+  }
+  if (intent === "revise") {
+    return topic ? `I updated ${topic} in the reasoning panel.` : "I updated it in the reasoning panel.";
+  }
+  if (intent === "summarize") {
+    return topic ? `I summarized ${topic} in the reasoning panel.` : "I summarized it in the reasoning panel.";
+  }
+  return topic
+    ? `The full answer for ${topic} is in the reasoning panel.`
+    : "The full answer is in the reasoning panel.";
 }
 
 /**
- * @returns {{ text: string, usedOverride: boolean, overrideReason: string | null }}
+ * Single canonical Stage-2 sentence for Voice UI bubble and TTS.
+ * @returns {{
+ *   effective_stage2_reply: string,
+ *   generated_stage2_text: string,
+ *   used_override: boolean,
+ *   override_reason: string | null
+ * }}
+ */
+function resolveEffectiveStage2Reply(prep, generatedReply, ttsStage) {
+  const generated_stage2_text = String(generatedReply ?? "").trim();
+  const passthrough = {
+    effective_stage2_reply: generated_stage2_text,
+    generated_stage2_text,
+    used_override: false,
+    override_reason: null
+  };
+  if ((ttsStage ?? 2) !== 2 || !prep?.voiceTwoStage?.reasoningRouted) {
+    return passthrough;
+  }
+  const detected = getWorkModeStage2ResultStatusFromPrep(prep);
+  if (shouldUseCannedStage2SpokenLine(detected.status, detected)) {
+    const fixed = buildWorkModeStage2SpokenLine(detected.status, detected.missing_inputs);
+    if (fixed) {
+      return {
+        effective_stage2_reply: fixed,
+        generated_stage2_text,
+        used_override: true,
+        override_reason: "canned_status_line"
+      };
+    }
+  }
+  if (
+    detected.status === "solved" &&
+    stage2ReplyImpliesFalseSuccess(generated_stage2_text) &&
+    detected.explicit_partial_found
+  ) {
+    const fixed = buildWorkModeStage2SpokenLine("partially_completed", detected.missing_inputs);
+    if (fixed) {
+      return {
+        effective_stage2_reply: fixed,
+        generated_stage2_text,
+        used_override: true,
+        override_reason: "false_success_explicit_partial"
+      };
+    }
+  }
+  const diag = diagnoseStage2ReplyUnsafeForTts(generated_stage2_text);
+  if (!diag.unsafe) {
+    return {
+      effective_stage2_reply: generated_stage2_text,
+      generated_stage2_text,
+      used_override: false,
+      override_reason: null
+    };
+  }
+  if (isStage2BriefProseOkDespiteLightFlags(generated_stage2_text)) {
+    return {
+      effective_stage2_reply: generated_stage2_text,
+      generated_stage2_text,
+      used_override: false,
+      override_reason: "brief_prose_despite_light_flags"
+    };
+  }
+  const fallback = buildSafeStage2FallbackLine(prep);
+  return {
+    effective_stage2_reply: fallback,
+    generated_stage2_text,
+    used_override: true,
+    override_reason: diag.reasons.includes("empty") ? "empty_reply" : diag.reasons.join(",")
+  };
+}
+
+function storeEffectiveStage2ReplyOnPrep(prep, pack) {
+  if (!prep || !pack) return pack;
+  prep.effectiveStage2Reply = pack;
+  return pack;
+}
+
+function logStage2EffectiveReply(prep, pack, bubbleTextFinal, ttsTextFinal) {
+  const tc = prep?.turnContext;
+  try {
+    console.info("[stage2_effective_reply]", {
+      turn_id: tc?.turn_id ?? null,
+      lane_id: tc?.turn_lane_id ?? null,
+      generated_stage2_text: String(pack?.generated_stage2_text ?? "").slice(0, 500),
+      effective_stage2_reply: String(pack?.effective_stage2_reply ?? "").slice(0, 500),
+      bubble_text_final: String(bubbleTextFinal ?? "").slice(0, 500),
+      tts_text_final: String(ttsTextFinal ?? "").slice(0, 500),
+      used_override: Boolean(pack?.used_override),
+      override_reason: pack?.override_reason ?? null
+    });
+  } catch (_) {}
+}
+
+/**
+ * @returns {{ text: string, effective_stage2_reply: string, usedOverride: boolean, overrideReason: string | null }}
  */
 function resolveWorkModeStage2TtsChoice(prep, generatedReply, ttsStage) {
-  const out = (text, usedOverride, overrideReason) => ({
-    text: String(text || "").trim(),
-    usedOverride,
-    overrideReason: overrideReason ?? null
-  });
-  if ((ttsStage ?? 2) !== 2 || !prep?.voiceTwoStage?.reasoningRouted) {
-    return out(generatedReply, false, null);
+  const pack = storeEffectiveStage2ReplyOnPrep(
+    prep,
+    resolveEffectiveStage2Reply(prep, generatedReply, ttsStage)
+  );
+  return {
+    text: pack.effective_stage2_reply,
+    effective_stage2_reply: pack.effective_stage2_reply,
+    usedOverride: pack.used_override,
+    overrideReason: pack.override_reason
+  };
+}
+
+/** Show the canonical Stage-2 line in Voice UI (bubble source of truth). */
+function ensureStage2VoiceBubble(prep, effectiveText, replyBack = null) {
+  const t = String(effectiveText || "").trim();
+  if (!t) return null;
+  const convoEl = uiEl("conversation");
+  if (prep?.stage2VoiceBubble instanceof HTMLElement && prep.stage2VoiceBubble.isConnected) {
+    prep.stage2VoiceBubble.textContent = t;
+    if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
+    persistVeraChatState();
+    return prep.stage2VoiceBubble;
   }
-  const raw = String(generatedReply ?? "").trim();
-  const diag = diagnoseStage2ReplyUnsafeForTts(raw);
-  if (!diag.unsafe) {
-    return out(raw, false, null);
-  }
-  if (isStage2BriefProseOkDespiteLightFlags(raw)) {
-    return out(raw, false, "brief_prose_despite_light_flags");
-  }
-  if (diag.reasons.includes("empty")) {
-    return out(emergencyFallbackStage2Line(prep), true, "empty_reply");
-  }
-  return out(emergencyFallbackStage2Line(prep), true, diag.reasons.join(","));
+  let opts = { path: "stage2-effective-reply" };
+  if (replyBack) opts = mergeReplyBackIntoBubbleMeta(opts, replyBack);
+  const bubble = addBubble(t, "vera", opts);
+  if (prep) prep.stage2VoiceBubble = bubble;
+  if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
+  persistVeraChatState();
+  return bubble;
 }
 
 function logStage2TtsChoice(prep, generated, choice) {
-  const tc = prep?.turnContext;
-  try {
-    console.info("[stage2_tts_choice]", {
-      turn_id: tc?.turn_id ?? null,
-      lane_id: tc?.turn_lane_id ?? null,
-      generated_stage2_text: String(generated ?? "").slice(0, 500),
-      used_override: Boolean(choice?.usedOverride),
-      override_reason: choice?.overrideReason ?? null
-    });
-  } catch (_) {}
+  const pack =
+    prep?.effectiveStage2Reply ||
+    resolveEffectiveStage2Reply(prep, generated, 2);
+  logStage2EffectiveReply(
+    prep,
+    pack,
+    choice?.effective_stage2_reply ?? choice?.text ?? pack.effective_stage2_reply,
+    choice?.effective_stage2_reply ?? choice?.text ?? pack.effective_stage2_reply
+  );
 }
 
 function shouldUseWorkModeTurnTtsQueue(ttsTurn) {
@@ -10934,6 +11614,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     } catch (_) {}
     const scrollEl = getReasoningScrollElByLane(laneIdx);
     if (!scrollEl) {
+      preserveComposerAttachments("no_reasoning_scroll", turnContext);
       safeReasoningLaneRelease("no_scroll");
       return;
     }
@@ -10977,6 +11658,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           turn_id: turnContext?.turn_id || ""
         }))
       );
+      clearComposerAttachmentsAfterSubmit(turnContext, "lane_attachment_block_enqueued");
     }
     laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
 
@@ -11012,6 +11694,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           }
           setWorkModeAttachmentMeta(msg);
           if (reasoningUploadState) reasoningUploadState.failed = true;
+          /* Lane attachment block already committed; composer tray stays cleared. */
           safeReasoningLaneRelease("upload_failed");
           return "reasoning-upload-failed";
         }
@@ -11046,8 +11729,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
 
     const turnEl = appendReasoningTurnMount(scrollEl);
     if (!turnEl) {
+      preserveComposerAttachments("no_reasoning_turn_mount", turnContext);
       safeReasoningLaneRelease("no_turn_el");
       return;
+    }
+    if (!hasUpload) {
+      clearComposerAttachmentsAfterSubmit(turnContext, "reasoning_turn_mount");
     }
     turnEl.dataset.markdownAcc = "";
     turnEl.dataset.summaryText = "";
@@ -12544,16 +13231,16 @@ function wireWorkModeChecklistAndComposer() {
     const files = getWorkModePendingAttachmentFiles();
     if (!t && !files.length) return;
     if (!isVeraWorkModeOn()) return;
+    logComposerAttachmentsBeforeSubmit(files, null);
     if (ri) ri.value = "";
     try {
       const path = files.length ? "reasoning-composer-upload" : "reasoning-composer";
       await sendVeraWorkModeTypedInferTurn(t, { path });
     } catch (err) {
+      preserveComposerAttachments("composer_submit_throw", null);
       console.warn("[WorkMode] reasoning composer", err);
     } finally {
-      clearWorkModePendingAttachments();
       closeWorkModeAttachmentPreviewModal();
-      if (fileInput) fileInput.value = "";
       setWorkModeAttachmentMeta("");
     }
   };
@@ -13297,12 +13984,15 @@ function applyAssistantReplyAndPanels(data) {
   addBubble(data.reply, "vera");
 }
 
-function createNdjsonStreamingReplyState(initialReplyBack = null) {
+function createNdjsonStreamingReplyState(initialReplyBack = null, opts = {}) {
   return {
     bubble: null,
     latest: "",
     pendingVoiceQuote: replyBackQuoteText(initialReplyBack),
-    pendingReplyBack: initialReplyBack
+    pendingReplyBack: initialReplyBack,
+    /** When true, ignore streamed reply_so_far until finalize sets the canonical line. */
+    suppressReplyProgress: Boolean(opts.suppressReplyProgress),
+    stage2EffectiveLocked: false
   };
 }
 
@@ -13311,6 +14001,7 @@ function createNdjsonStreamingReplyState(initialReplyBack = null) {
  */
 function applyNdjsonStreamingReplySoFar(replySoFar, state) {
   if (replySoFar == null || replySoFar === "") return;
+  if (state?.suppressReplyProgress || state?.stage2EffectiveLocked) return;
   state.latest = String(replySoFar);
   const convoEl = uiEl("conversation");
   if (!convoEl) return;
@@ -13368,8 +14059,16 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   ) {
     applyActionPayload(merged);
   }
+  /* Work Mode Stage 2: one bubble with reply-back is created via ensureStage2VoiceBubble after resolve. */
+  if (state?.suppressReplyProgress) {
+    state.latest = String(done.reply || "");
+    state.stage2EffectiveLocked = true;
+    persistVeraChatState();
+    return;
+  }
   if (state.bubble?.isConnected) {
     state.bubble.textContent = done.reply;
+    state.stage2EffectiveLocked = true;
     persistVeraChatState();
     return;
   }
@@ -13382,6 +14081,7 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
     state.pendingVoiceQuote = null;
   }
   state.bubble = addBubble(done.reply, "vera", finOpts);
+  state.stage2EffectiveLocked = true;
   persistVeraChatState();
 }
 
@@ -14852,7 +15552,10 @@ async function tryPeekApplyWorkModeTimerFromNdjsonClone(res) {
  * can appear after the assistant (same bug for main infer and interrupt NDJSON).
  * First-sentence assistant text is applied in onBeforeFirstPlay (after decode, before src.start) so it aligns with audio.
  */
-async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEnd, onReplyProgress, skipAudio }) {
+async function runNdjsonTtsPlayback(
+  res,
+  { onMeta, onDone, onPlayStart, onPlayEnd, onReplyProgress, skipAudio, suppressReplyProgress }
+) {
   const reader = res.body.getReader();
   activeNdjsonBodyReader = reader;
   const sessionToken = mainTtsPlaybackToken;
@@ -14974,7 +15677,7 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
               ndjsonBmoFaceModes.push(bmoMoodToFaceMode(mood));
             }
             queue.push(obj.url);
-            if (obj.reply_so_far != null && onReplyProgress) {
+            if (obj.reply_so_far != null && onReplyProgress && !suppressReplyProgress) {
               if (deferFirstReply) {
                 pendingFirstReplySoFar = String(obj.reply_so_far);
                 deferFirstReply = false;
@@ -15011,7 +15714,7 @@ async function runNdjsonTtsPlayback(res, { onMeta, onDone, onPlayStart, onPlayEn
   try {
     if (skipAudio) {
       await readTask;
-      applyPendingFirstReply();
+      if (!suppressReplyProgress) applyPendingFirstReply();
       if (typeof onPlayStart === "function") onPlayStart();
       if (typeof onPlayEnd === "function") onPlayEnd();
       return;
@@ -15751,19 +16454,11 @@ async function finalizeMainBrowserTranscript(text) {
   logFinalTranscriptSentToLlm("main-browser-asr", trimmed);
   attachPipelineAbortSignal();
   const pipelineSig = activePipelineAbort.signal;
+  logComposerAttachmentsBeforeSubmit(voiceFiles, turnContext);
   const prepP = maybePrepareWorkModeReasoning(formData, trimmed, pipelineSig, {
     attachments: voiceFiles,
     turnContext
   });
-  let clearedVoiceAttach = false;
-  const clearVoiceReasoningAttach = () => {
-    if (!voiceFiles.length || clearedVoiceAttach) return;
-    clearedVoiceAttach = true;
-    clearWorkModePendingAttachments();
-    const fin = document.getElementById("vera-reasoning-file");
-    if (fin) fin.value = "";
-    setWorkModeAttachmentMeta("");
-  };
   try {
     const runTurn = async () => {
       bumpWorkModeVoiceInferTurnSeq();
@@ -15790,8 +16485,9 @@ async function finalizeMainBrowserTranscript(text) {
     } else {
       await runTurn();
     }
-  } finally {
-    clearVoiceReasoningAttach();
+  } catch (voiceTurnErr) {
+    if (voiceFiles.length) preserveComposerAttachments("voice_turn_throw", turnContext);
+    throw voiceTurnErr;
   }
 }
 
@@ -16297,15 +16993,33 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
     data && typeof data === "object"
       ? data
       : { reply: "", transcript: "", audio_url: "", audio_urls: [] };
+  let stage2EffectivePack = null;
   if (
     inferPrep?.voiceTwoStage?.reasoningRouted &&
     ttsStage === 2 &&
     playData &&
     typeof playData === "object"
   ) {
-    const choice = resolveWorkModeStage2TtsChoice(inferPrep, playData.reply, ttsStage);
-    logStage2TtsChoice(inferPrep, playData.reply, choice);
-    playData = { ...playData, reply: choice.text };
+    stage2EffectivePack = storeEffectiveStage2ReplyOnPrep(
+      inferPrep,
+      resolveEffectiveStage2Reply(inferPrep, playData.reply, ttsStage)
+    );
+    logStage2EffectiveReply(
+      inferPrep,
+      stage2EffectivePack,
+      stage2EffectivePack.effective_stage2_reply,
+      stage2EffectivePack.effective_stage2_reply
+    );
+    playData = { ...playData, reply: stage2EffectivePack.effective_stage2_reply };
+    const stage2ReplyBack = buildWorkModeVoiceReplyBack({
+      prep: inferPrep,
+      userText: String(inferPrep?.turnContext?.user_text || playData?.transcript || "").trim()
+    });
+    ensureStage2VoiceBubble(
+      inferPrep,
+      stage2EffectivePack.effective_stage2_reply,
+      stage2ReplyBack
+    );
   }
   const playMainAnswerPromise = (async () => {
     resetAudioHandlers();
@@ -16317,7 +17031,9 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
         const onPlayStart = () => {
           logVoiceFirstAudio("main-reply");
           logVoiceMainReplyAudio();
-          applyAssistantReplyAndPanels(playData);
+          if (!(inferPrep?.stage2VoiceBubble instanceof HTMLElement && inferPrep.stage2VoiceBubble.isConnected)) {
+            applyAssistantReplyAndPanels(playData);
+          }
           waveState = "speaking";
           audioStartedAt = performance.now();
           setStatus(
@@ -16386,8 +17102,10 @@ async function runInferMainPipeline(formData, opts = {}) {
       requestInFlight = false;
 
       let ndjsonMeta = null;
-          const streamReplyState = createNdjsonStreamingReplyState(stage2ReplyBack);
-          let wmStage2TtsChoice = null;
+          const streamReplyState = createNdjsonStreamingReplyState(stage2ReplyBack, {
+            suppressReplyProgress: isWmStage2Voice
+          });
+          let wmStage2EffectivePack = null;
           const ndjsonPlaybackPromise = (async () => {
             try {
               console.log("[UX][TTS] NDJSON streaming (main)");
@@ -16426,13 +17144,18 @@ async function runInferMainPipeline(formData, opts = {}) {
                   logInferLatency(done, "main", inferTtfbMs);
                   let effectiveReply = String(done?.reply || "").trim();
                   if (isWmStage2Voice) {
-                    wmStage2TtsChoice = resolveWorkModeStage2TtsChoice(
+                    wmStage2EffectivePack = storeEffectiveStage2ReplyOnPrep(
                       inferPrep,
-                      done?.reply,
-                      opts.ttsStage ?? 2
+                      resolveEffectiveStage2Reply(inferPrep, done?.reply, opts.ttsStage ?? 2)
                     );
-                    logStage2TtsChoice(inferPrep, done?.reply, wmStage2TtsChoice);
-                    effectiveReply = wmStage2TtsChoice.text;
+                    effectiveReply = wmStage2EffectivePack.effective_stage2_reply;
+                    streamReplyState.stage2EffectiveLocked = true;
+                    logStage2EffectiveReply(
+                      inferPrep,
+                      wmStage2EffectivePack,
+                      effectiveReply,
+                      effectiveReply
+                    );
                   }
                   if (inferPrep?.voiceTwoStage?.reasoningRouted && inferPrep?.turnContext) {
                     const tc = inferPrep.turnContext;
@@ -16447,10 +17170,12 @@ async function runInferMainPipeline(formData, opts = {}) {
                       reasoning_summary_preview: previewWorkModeRegistryText(
                         wm?.latest_reasoning_summary || ""
                       ),
-                      generated_stage2_text: String(done?.reply || "").slice(0, 500),
-                      effective_reply: effectiveReply,
-                      used_tts_fallback: Boolean(wmStage2TtsChoice?.usedOverride),
-                      tts_override_reason: wmStage2TtsChoice?.overrideReason ?? null
+                      generated_stage2_text: String(
+                        wmStage2EffectivePack?.generated_stage2_text ?? done?.reply ?? ""
+                      ).slice(0, 500),
+                      effective_stage2_reply: effectiveReply,
+                      used_tts_fallback: Boolean(wmStage2EffectivePack?.used_override),
+                      tts_override_reason: wmStage2EffectivePack?.override_reason ?? null
                     });
                     try {
                       console.table([
@@ -16465,11 +17190,23 @@ async function runInferMainPipeline(formData, opts = {}) {
                       ]);
                     } catch (_) {}
                   }
+                  const replyBackForBubble =
+                    streamReplyState.pendingReplyBack ||
+                    stage2ReplyBack ||
+                    buildWorkModeVoiceReplyBack({ prep: inferPrep, userText: inferUserText });
                   finalizeNdjsonStreamingReply(
                     ndjsonMeta,
                     { ...done, reply: effectiveReply },
                     streamReplyState
                   );
+                  if (isWmStage2Voice && effectiveReply) {
+                    const bubble = ensureStage2VoiceBubble(
+                      inferPrep,
+                      effectiveReply,
+                      replyBackForBubble
+                    );
+                    if (bubble) streamReplyState.bubble = bubble;
+                  }
                 },
                 onPlayStart: () => {
                   logVoiceFirstAudio("main-reply");
@@ -16485,7 +17222,11 @@ async function runInferMainPipeline(formData, opts = {}) {
                 }
               };
               const consumeNdjsonTextOnly = async () => {
-                await runNdjsonTtsPlayback(res, { ...ndjsonOpts, skipAudio: true });
+                await runNdjsonTtsPlayback(res, {
+                  ...ndjsonOpts,
+                  skipAudio: true,
+                  suppressReplyProgress: isWmStage2Voice
+                });
               };
               const playTask = async () => {
                 const playbackEnd = await waitForAssistantPlaybackEnd(() => {
@@ -16493,8 +17234,16 @@ async function runInferMainPipeline(formData, opts = {}) {
                 });
                 resetAudioHandlers();
                 if (isWmStage2Voice) {
-                  await runNdjsonTtsPlayback(res, { ...ndjsonOpts, skipAudio: true });
-                  const phrase = String(wmStage2TtsChoice?.text || "").trim();
+                  await runNdjsonTtsPlayback(res, {
+                    ...ndjsonOpts,
+                    skipAudio: true,
+                    suppressReplyProgress: true
+                  });
+                  const phrase = String(
+                    wmStage2EffectivePack?.effective_stage2_reply ||
+                      inferPrep?.effectiveStage2Reply?.effective_stage2_reply ||
+                      ""
+                  ).trim();
                   if (phrase) {
                     await playWorkModeTtsOnlyPhrase(phrase, inferSignal);
                   }
@@ -16880,16 +17629,7 @@ async function handleUtterance() {
 
       logVoiceTranscript("final", trimmed, { path: "work-mode-server-asr" });
       logFinalTranscriptSentToLlm("work-mode-server-asr", trimmed);
-
-      let clearedVoiceAttach2 = false;
-      const clearVoiceReasoningAttach2 = () => {
-        if (!voiceAttach2Files.length || clearedVoiceAttach2) return;
-        clearedVoiceAttach2 = true;
-        clearWorkModePendingAttachments();
-        const fin = document.getElementById("vera-reasoning-file");
-        if (fin) fin.value = "";
-        setWorkModeAttachmentMeta("");
-      };
+      logComposerAttachmentsBeforeSubmit(voiceAttach2Files, turnContext);
       const prepP = maybePrepareWorkModeReasoning(formData2, trimmed, pipelineSig, {
         attachments: voiceAttach2Files,
         turnContext
@@ -16929,8 +17669,11 @@ async function handleUtterance() {
           setStatus("Ready", "idle");
           return;
         }
-      } finally {
-        clearVoiceReasoningAttach2();
+      } catch (serverAsrPrepErr) {
+        if (voiceAttach2Files.length) {
+          preserveComposerAttachments("server_asr_prep_throw", turnContext);
+        }
+        throw serverAsrPrepErr;
       }
     } catch (err) {
       if (err?.name === "AbortError") {
@@ -16992,13 +17735,18 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
 
   if (isWorkModeTypedTurnBlocked()) {
     if (!fromQueue) {
+      const queueSnap = getWorkModePendingAttachmentFiles();
+      logComposerAttachmentsBeforeSubmit(queueSnap, null);
       const queued = enqueueWorkModeTypedTurn(trimmed, {
         ...opts,
         path,
-        reasoningAttachments: getWorkModePendingAttachmentFiles()
+        reasoningAttachments: queueSnap
       });
-      if (!queued) {
+      if (queued) {
+        clearComposerAttachmentsAfterSubmit(null, "typed_turn_queue_enqueue");
+      } else {
         setStatus(`Work queue full (max ${WORK_MODE_TYPED_TURN_QUEUE_MAX})`, "idle");
+        preserveComposerAttachments("typed_turn_queue_full", null);
         try {
           console.info("[reasoning_queue_omitted]", {
             turn_id: null,
@@ -17041,6 +17789,7 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   appendWorkModeSubmissionLaneToFormData(formData, turnContext?.turn_lane_id);
 
   logFinalTranscriptSentToLlm(path, trimmed || transcriptLine);
+  logComposerAttachmentsBeforeSubmit(pendingFiles, turnContext);
 
   try {
     if (hasUpload) {
@@ -17061,7 +17810,6 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     attachments: pendingFiles,
     turnContext
   });
-  if (!fromQueue) clearWorkModePendingAttachments();
 
   const enqueued = enqueueWorkModeTypedVoiceInfer(async () => {
     try {
@@ -17674,7 +18422,7 @@ function wireVeraSettingsPanel() {
   let draftWorkModeMute = isWorkModeMuteEnabled();
   let draftPlanningDeadlineTimer = isPlanningDeadlineTimerEnabled();
   let draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
-  const partialMinCharOptions = [5, 8, 10, 12, 15, Infinity];
+  const partialMinCharOptions = MAIN_ASR_PARTIAL_MIN_CHAR_OPTIONS;
   const silenceToIndex = (ms) => {
     const idx = silenceOptions.indexOf(ms);
     return idx >= 0 ? idx : 1;
@@ -17686,8 +18434,8 @@ function wireVeraSettingsPanel() {
     return silenceOptions[idx];
   };
   const partialMinCharsToIndex = (n) => {
-    const idx = partialMinCharOptions.indexOf(n);
-    return idx >= 0 ? idx : 2;
+    const idx = partialMinCharOptions.indexOf(normalizeMainAsrPartialMinChars(n));
+    return idx >= 0 ? idx : 0;
   };
   const readSliderPartialMinChars = () => {
     if (!(mainPartialMinSel instanceof HTMLInputElement)) return draftMainAsrPartialMinChars;
