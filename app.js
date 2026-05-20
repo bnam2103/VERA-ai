@@ -585,7 +585,7 @@ const DEFAULT_STREAM_TTS = true;
 /** Browser Web Speech API: live partials, then 1.3s stable transcript → /infer without server ASR. */
 let browserAsrMainSilenceMs = 1300;
 /** Main browser-ASR only: minimum visible chars before showing partial bubble. `Infinity` = hide until utterance finalizes. */
-let mainAsrPartialMinChars = 10;
+let mainAsrPartialMinChars = 20;
 /** Min accumulated ms of changing partial transcript to count as interrupt (vs VAD on audio). */
 let browserAsrInterruptSustainMs = 350;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
@@ -725,13 +725,15 @@ function setVeraAsrMode(mode) {
 
 const MAIN_ASR_PARTIAL_MIN_CHAR_OPTIONS = [10, 15, 20, 25, Infinity];
 
+const MAIN_ASR_PARTIAL_MIN_CHARS_DEFAULT = 20;
+
 function normalizeMainAsrPartialMinChars(v) {
   if (v === Infinity || v === "inf" || v === "infinity") return Infinity;
   const n = Number(v);
   if (n === 10 || n === 15 || n === 20 || n === 25) return n;
   if (n === 5 || n === 8) return 10;
   if (n === 12) return 15;
-  return 10;
+  return MAIN_ASR_PARTIAL_MIN_CHARS_DEFAULT;
 }
 
 function getMainAsrPartialMinChars() {
@@ -743,12 +745,12 @@ function getMainAsrPartialMinChars() {
     const v = Number(raw);
     if (Number.isFinite(v)) return normalizeMainAsrPartialMinChars(v);
   } catch (_) {}
-  return 10;
+  return MAIN_ASR_PARTIAL_MIN_CHARS_DEFAULT;
 }
 
 function setMainAsrPartialMinChars(v) {
-  let next = 10;
-  let store = "10";
+  let next = MAIN_ASR_PARTIAL_MIN_CHARS_DEFAULT;
+  let store = String(MAIN_ASR_PARTIAL_MIN_CHARS_DEFAULT);
   const normalized = normalizeMainAsrPartialMinChars(v);
   if (normalized === Infinity) {
     next = Infinity;
