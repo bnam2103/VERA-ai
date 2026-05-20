@@ -5801,26 +5801,43 @@ body.vera-work-guide-open {
   color: rgba(255, 255, 255, 0.86);
 }
 
-#vera-setting-silence {
+.vera-settings-slider-wrap,
+.settings-slider-wrap {
+  --settings-thumb-size: 18px;
   width: min(560px, 100%);
+}
+
+.vera-settings-slider-wrap input[type="range"],
+.settings-slider-wrap input[type="range"] {
+  display: block;
+  width: 100%;
+  margin: 0;
   accent-color: #8cb6ff;
 }
 
-#vera-setting-main-partial-min {
-  width: min(560px, 100%);
-  accent-color: #8cb6ff;
+.vera-settings-slider-ticks {
+  position: relative;
+  height: 1.35em;
+  margin-top: 6px;
+  pointer-events: none;
 }
 
-.vera-settings-range-labels.vera-settings-range-labels--partial-min {
-  font-size: 11px;
-}
-
-.vera-settings-range-labels {
-  width: min(560px, 100%);
-  display: flex;
-  justify-content: space-between;
+.vera-settings-slider-tick {
+  position: absolute;
+  top: 0;
+  left: calc(
+    (var(--settings-thumb-size) / 2) +
+      var(--tick-pct) * (100% - var(--settings-thumb-size))
+  );
+  transform: translateX(-50%);
   font-size: 12px;
+  line-height: 1.2;
   opacity: 0.72;
+  white-space: nowrap;
+}
+
+.vera-settings-slider-ticks--partial-min .vera-settings-slider-tick {
+  font-size: 11px;
 }
 
 .vera-settings-row select {

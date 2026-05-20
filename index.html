@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -2713,8 +2713,14 @@ document.addEventListener("click", () => {
 
       <div class="vera-settings-row">
         <label for="vera-setting-silence" class="vera-settings-label">Silence time after ASR</label>
-        <input id="vera-setting-silence" type="range" min="0" max="2" step="1" value="1" />
-        <div class="vera-settings-range-labels"><span>1.0s</span><span>1.3s</span><span>1.6s</span></div>
+        <div class="vera-settings-slider-wrap settings-slider-wrap">
+          <input id="vera-setting-silence" type="range" min="0" max="2" step="1" value="1" />
+          <div class="vera-settings-slider-ticks" aria-hidden="true">
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0">1.0s</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0.5">1.3s</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 1">1.6s</span>
+          </div>
+        </div>
       </div>
 
       <div class="vera-settings-row">
@@ -2739,12 +2745,19 @@ document.addEventListener("click", () => {
 
       <div class="vera-settings-row">
         <label for="vera-setting-main-partial-min" class="vera-settings-label">Min chars before showing partial</label>
-        <input id="vera-setting-main-partial-min" type="range" min="0" max="5" step="1" value="2" />
-        <div
-          class="vera-settings-range-labels vera-settings-range-labels--partial-min"
-          title="Infinity: hide live captions until you finish the utterance (transcript appears when sending to VERA)."
-        >
-          <span>5</span><span>8</span><span>10</span><span>12</span><span>15</span><span>Infinity</span>
+        <div class="vera-settings-slider-wrap settings-slider-wrap">
+          <input id="vera-setting-main-partial-min" type="range" min="0" max="4" step="1" value="0" />
+          <div
+            class="vera-settings-slider-ticks vera-settings-slider-ticks--partial-min"
+            aria-hidden="true"
+            title="Infinity: hide live captions until you finish the utterance (transcript appears when sending to VERA)."
+          >
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0">10</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0.25">15</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0.5">20</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0.75">25</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 1">Infinity</span>
+          </div>
         </div>
       </div>
     </section>
