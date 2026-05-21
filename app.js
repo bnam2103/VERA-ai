@@ -1126,6 +1126,10 @@ let veraLastWorkModeTimerClientId = null;
 /** When set, header pill shows countdown until this epoch ms (work mode). */
 let veraWorkModeTimerFireAtMs = null;
 let veraWorkModeTimerUiIntervalId = null;
+/** True once the scheduled timer has fired and the timer-up modal is showing.
+ *  While true the header pill switches to a red overtime counter and the modal
+ *  keeps ticking until the user presses Acknowledge. */
+let veraWorkModeTimerExpired = false;
 
 function formatWorkModeTimerCountdown(remainingMs) {
   const left = Math.max(0, Number(remainingMs) || 0);
@@ -1141,6 +1145,20 @@ function formatWorkModeTimerCountdown(remainingMs) {
   return `${m}:${pad2(s)}`;
 }
 
+function formatWorkModeTimerOvertime(elapsedMs) {
+  const e = Math.max(0, Number(elapsedMs) || 0);
+  if (e < 60000) {
+    return `-${(e / 1000).toFixed(1)}s`;
+  }
+  const t = Math.floor(e / 1000);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  const pad2 = (n) => String(n).padStart(2, "0");
+  if (h > 0) return `-${h}:${pad2(m)}:${pad2(s)}`;
+  return `-${m}:${pad2(s)}`;
+}
+
 function updateWorkModeTimerHeaderFromState() {
   const wrap = document.getElementById("vera-work-mode-timer-wrap");
   const el = document.getElementById("vera-work-mode-timer");
@@ -1151,12 +1169,57 @@ function updateWorkModeTimerHeaderFromState() {
     wrap.hidden = true;
     if (dateSep) dateSep.hidden = true;
     el.textContent = "";
+    el.classList.remove("vera-work-mode-timer--overtime");
     return;
   }
-  const left = end - Date.now();
+  const now = Date.now();
+  const left = end - now;
   wrap.hidden = false;
   if (dateSep) dateSep.hidden = false;
-  el.textContent = left <= 0 ? "0.0s" : formatWorkModeTimerCountdown(left);
+  if (veraWorkModeTimerExpired || left <= 0) {
+    const overtime = Math.max(0, now - end);
+    el.textContent = formatWorkModeTimerOvertime(overtime);
+    el.classList.add("vera-work-mode-timer--overtime");
+  } else {
+    el.textContent = formatWorkModeTimerCountdown(left);
+    el.classList.remove("vera-work-mode-timer--overtime");
+  }
+}
+
+function updateWorkModeTimerUpModalFromState() {
+  const modal = document.getElementById("vera-work-timer-up-modal");
+  if (!modal || modal.hidden) return;
+  const span = document.getElementById("vera-work-timer-up-overtime");
+  if (!span) return;
+  const end = veraWorkModeTimerFireAtMs;
+  if (end == null || !Number.isFinite(end)) {
+    span.textContent = "-0.0s";
+    return;
+  }
+  const overtime = Math.max(0, Date.now() - end);
+  span.textContent = formatWorkModeTimerOvertime(overtime);
+}
+
+function openWorkModeTimerUpModal(message) {
+  const modal = document.getElementById("vera-work-timer-up-modal");
+  if (!modal) return;
+  const desc = document.getElementById("vera-work-timer-up-desc");
+  if (desc && message) desc.textContent = String(message);
+  modal.hidden = false;
+  modal.setAttribute("aria-hidden", "false");
+  updateWorkModeTimerUpModalFromState();
+  try {
+    document
+      .getElementById("vera-work-timer-up-ack")
+      ?.focus({ preventScroll: true });
+  } catch (_) {}
+}
+
+function closeWorkModeTimerUpModal() {
+  const modal = document.getElementById("vera-work-timer-up-modal");
+  if (!modal) return;
+  modal.hidden = true;
+  modal.setAttribute("aria-hidden", "true");
 }
 
 function stopWorkModeTimerUiFastRefresh() {
@@ -1166,20 +1229,28 @@ function stopWorkModeTimerUiFastRefresh() {
   }
 }
 
-/** Sub-second updates while a short countdown is active (header clock ticks once per second). */
+/** Sub-second updates while a short countdown is active or while we're in overtime
+ *  (the modal shows tenths of a second and the header pill needs the same cadence). */
 function startWorkModeTimerUiFastRefreshIfNeeded() {
   stopWorkModeTimerUiFastRefresh();
   const end = veraWorkModeTimerFireAtMs;
   if (end == null || !Number.isFinite(end)) return;
   const left = end - Date.now();
-  if (left <= 0 || left > 120000) return;
+  const shouldFastRefresh =
+    veraWorkModeTimerExpired || (left > 0 && left <= 120000);
+  if (!shouldFastRefresh) return;
   veraWorkModeTimerUiIntervalId = window.setInterval(() => {
     updateWorkModeTimerHeaderFromState();
+    updateWorkModeTimerUpModalFromState();
     if (veraWorkModeTimerFireAtMs == null) {
       stopWorkModeTimerUiFastRefresh();
       return;
     }
-    if (Date.now() >= veraWorkModeTimerFireAtMs) stopWorkModeTimerUiFastRefresh();
+    /* Only stop on the countdown→zero boundary when we have NOT entered overtime yet.
+       Once expired, keep ticking forever so the modal counter stays live until ack. */
+    if (!veraWorkModeTimerExpired && Date.now() >= veraWorkModeTimerFireAtMs) {
+      stopWorkModeTimerUiFastRefresh();
+    }
   }, 100);
 }
 
@@ -1191,7 +1262,17 @@ function clearVeraWorkModeClientTimer() {
   }
   veraLastWorkModeTimerClientId = null;
   veraWorkModeTimerFireAtMs = null;
+  veraWorkModeTimerExpired = false;
+  closeWorkModeTimerUpModal();
   updateWorkModeTimerHeaderFromState();
+}
+
+/** Only way to dismiss the timer-up modal — also stops any TTS the timer triggered. */
+function acknowledgeWorkModeTimerUp() {
+  try {
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+  } catch (_) {}
+  clearVeraWorkModeClientTimer();
 }
 
 /** Server `/infer` + `/text` short-circuit: schedule a one-shot reminder in work mode only. */
@@ -1220,9 +1301,20 @@ function applyWorkModeTimerPayload(wm) {
   };
   veraWorkModeTimerTimeoutId = window.setTimeout(() => {
     veraWorkModeTimerTimeoutId = null;
-    clearVeraWorkModeClientTimer();
-    if (typeof isVeraWorkModeOn === "function" && !isVeraWorkModeOn()) return;
-    if (appModePrefix() !== "vera") return;
+    if (typeof isVeraWorkModeOn === "function" && !isVeraWorkModeOn()) {
+      clearVeraWorkModeClientTimer();
+      return;
+    }
+    if (appModePrefix() !== "vera") {
+      clearVeraWorkModeClientTimer();
+      return;
+    }
+    /* Flip to overtime: keep fire_at set so the header pill and modal can both
+       compute negative time, and restart fast-refresh so they tick together. */
+    veraWorkModeTimerExpired = true;
+    updateWorkModeTimerHeaderFromState();
+    startWorkModeTimerUiFastRefreshIfNeeded();
+    openWorkModeTimerUpModal(message);
     const urls =
       typeof resolveAudioUrls === "function" ? resolveAudioUrls(timerTtsPayload) : [];
     if (urls.length) {
@@ -1244,6 +1336,10 @@ function applyWorkModeTimerPayload(wm) {
 }
 
 window.clearVeraWorkModeClientTimer = clearVeraWorkModeClientTimer;
+
+document
+  .getElementById("vera-work-timer-up-ack")
+  ?.addEventListener("click", acknowledgeWorkModeTimerUp);
 
 function updateMuteInputButton() {
   const continuousMicReady = listeningMode === "continuous" && !!micStream;
@@ -1293,6 +1389,17 @@ function setContinuousInputMuted(nextMuted) {
       suppressNextUtterance = true;
       mediaRecorder.stop();
     }
+    if (interruptRecorder && interruptRecorder.state !== "inactive") {
+      try {
+        interruptRecorder.ondataavailable = null;
+        interruptRecorder.onstop = null;
+        interruptRecorder.stop();
+      } catch {}
+    }
+    interruptRecorder = null;
+    interruptRecording = false;
+    interruptChunks = [];
+    stopAllBrowserSpeechRecognizers();
 
     /* Same as interrupt: stop <audio>, Web Audio chunk queue, and NDJSON TTS stream. */
     resetAudioHandlers();
@@ -14592,6 +14699,13 @@ function startInterruptCapture() {
     interruptChunks = [];
     return;
   }
+  if (inputMuted) {
+    interruptRecording = false;
+    interruptChunks = [];
+    stopAllBrowserSpeechRecognizers();
+    showMutedStatusIfIdle();
+    return;
+  }
   if (browserAsrPreferred() && !isNarrowViewport()) {
     startInterruptBrowserPartialDetection();
     return;
@@ -15049,6 +15163,17 @@ const BMO_TTS_SAD_HINTS =
   /\b(sorry|sad|sorrow|cry|tears|tearful|afraid|scared|fear|worried|worry|anxious|anxiety|depress|lonely|alone|hurt|hurts|pain|aching|hate|hatred|angry|rage|terrible|awful|horrible|worst|tragic|unfortunately|regret|guilt|ashamed|loss|lose|lost|die|death|dead|dying|kill|never\s+again|hopeless|despair|upset|disappoint|failed?|failure|breakdown|grief|mourn)\b/i;
 const BMO_TTS_HAPPY_HINTS =
   /\b(happy|happiness|joy|joyful|great|wonderful|awesome|amazing|love|loved|celebrat|excit|excited|fun|funny|laugh|smile|cheer|yay|best|lucky|glad|proud|relief|relieved|good\s+news|victory|won|win|beautiful|perfect)\b/i;
+// Playful/idiomatic phrases that contain "negative" tokens but are clearly NOT sad.
+// We test these BEFORE the sad hints so "never hurt anyone" stays neutral instead of
+// flipping to a sad face on the bare 'hurt'/'pain'/'sorry' tokens.
+const BMO_PLAYFUL_NEGATIVE_RX =
+  /\b(never\s+(?:hurt|hurts|harmed|killed|cried|failed|did\s+anything)\s+(?:anyone|anybody|anything|nobody|no\s+one|a\s+soul)|(?:doesn|don|didn|won|wouldn|couldn|shouldn|can|cannot|cant)'?t\s+hurt(?:\s+(?:to|anyone|anybody|me|us|you|it))?|no\s+harm(?:\s+done|\s+in\s+(?:that|trying|asking))?|just\s+(?:kidding|teasing|joking|playing|messing\s+with\s+you)|only\s+(?:kidding|teasing|joking)|no\s+big\s+deal|nothing\s+to\s+worry\s+about|all\s+in\s+good\s+fun|grammatical\s+weathering)\b/i;
+
+function bmoSentenceIsPlayfulNegative(seg) {
+  const s = String(seg || "").trim();
+  if (!s) return false;
+  return BMO_PLAYFUL_NEGATIVE_RX.test(s);
+}
 
 function normalizeBmoTtsMood(x) {
   const s = String(x || "neutral").trim().toLowerCase();
@@ -15059,69 +15184,120 @@ function normalizeBmoTtsMood(x) {
 function classifyBmoTtsSegmentHeuristic(seg) {
   const s = (seg || "").trim();
   if (!s) return "neutral";
+  // Playful idiom guard: don't let bare 'hurt'/'pain'/'sorry' force sad on a clearly
+  // playful sentence ("a little weathering never hurt anyone", "no harm done", etc.).
+  if (bmoSentenceIsPlayfulNegative(s)) {
+    if (BMO_TTS_HAPPY_HINTS.test(s) && !BMO_TTS_SAD_HINTS.test(s)) return "happy";
+    return "neutral";
+  }
   if (BMO_TTS_SAD_HINTS.test(s) && !BMO_TTS_HAPPY_HINTS.test(s)) return "sad";
   if (BMO_TTS_HAPPY_HINTS.test(s) && !BMO_TTS_SAD_HINTS.test(s)) return "happy";
   if (BMO_TTS_SAD_HINTS.test(s)) return "sad";
   if (BMO_TTS_HAPPY_HINTS.test(s)) return "happy";
-  if (/\b(unfortunately|however,\s+i\s+am\s+afraid|i\s+am\s+sorry)\b/i.test(s)) return "sad";
   return "neutral";
 }
 
-/** Apology / commiseration → sad mouth stack, independent of LLM “neutral” labels. */
-function bmoAssistantSegmentPrefersSadFace(seg) {
+/** Strict lexicon override — always force sad regardless of user_text or LLM label.
+ *  Reserved for unambiguous grief / deep apology / condolences phrasings. Generic
+ *  "sorry" / "wish I could" do NOT belong here; those move to the soft set below.
+ */
+function bmoAssistantSegmentRequiresSadFaceStrict(seg) {
   const s = String(seg || "").trim();
   if (!s) return false;
-  if (/\b(sorry|apologi[sz]e|apologies|my condolences|condolences)\b/i.test(s)) return true;
+  if (bmoSentenceIsPlayfulNegative(s)) return false;
+  if (
+    /\b(my\s+condolences|deepest\s+condolences|so\s+sorry\s+for\s+your\s+loss|i'?m\s+so\s+sorry\s+to\s+hear|that'?s\s+(?:so\s+)?heartbreaking|that\s+sounds\s+(?:truly|really)\s+(?:awful|devastating|heartbreaking))\b/i.test(
+      s
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Soft empathy/apology — only forces sad when the USER_text shows distress. */
+function bmoAssistantSegmentSoftEmpathy(seg) {
+  const s = String(seg || "").trim();
+  if (!s) return false;
+  if (bmoSentenceIsPlayfulNegative(s)) return false;
+  if (/\b(sorry|apologi[sz]e|apologies)\b/i.test(s)) return true;
   if (/\b(i\s*'?m\s+sorry|i\s+am\s+sorry|we\s*'?re\s+sorry|so\s+sorry|really\s+sorry|deeply\s+sorry)\b/i.test(s))
     return true;
   if (/\b(sorry\s+you'?re|sorry\s+to\s+hear|sorry\s+about|sorry\s+for)\b/i.test(s)) return true;
-  if (/\b(that\s+sounds\s+(?:really\s+)?(?:hard|rough|awful|tough|difficult)|hearing\s+that|wish\s+i\s+could)\b/i.test(s))
+  if (
+    /\b(that\s+sounds\s+(?:really\s+)?(?:hard|rough|awful|tough|difficult)|hearing\s+(?:that|you)|wish\s+i\s+could|i\s+hear\s+you|i'?m\s+here\s+for\s+you)\b/i.test(
+      s
+    )
+  )
     return true;
   return false;
 }
 
+// Tightened user-distress hint: bare tokens like "down" / "blue" / "alone" / "hurt"
+// / "pain" require accompanying "feel(ing)" or "I'm" context so casual phrasing
+// like "Trump is going down to China" doesn't promote BMO to sad mode.
+const BMO_USER_DISTRESS_RX =
+  /\b(sad|depressed|depressing|anxious|anxiety|worried|worries|cry|crying|tearful|grief|grieving|mourning|hopeless|despair|despairing|overwhelmed|exhausted|drained|can'?t\s+cope|cannot\s+cope|cant\s+cope|not\s+ok(?:ay)?|having\s+a\s+(?:hard|tough|rough)\s+time|need\s+(?:to\s+)?(?:cry|vent|talk))\b|\bfeel(?:ing)?\s+(?:down|blue|empty|numb|lonely|alone|sad|hurt|broken|hopeless|low|terrible|awful|miserable|like\s+crap|like\s+shit)\b|\bi'?m\s+(?:hurting|hurt|in\s+pain|crying|broken|lost|done|struggling|overwhelmed|exhausted|drained|not\s+ok(?:ay)?|miserable|grieving)\b/i;
+
+function bmoUserTextIsDistressed(userText) {
+  const ut = String(userText || "").trim();
+  if (!ut) return false;
+  return BMO_USER_DISTRESS_RX.test(ut);
+}
+
+/** Backward-compat name still used by callers in this file. */
+function bmoAssistantSegmentPrefersSadFace(seg, userText) {
+  if (bmoAssistantSegmentRequiresSadFaceStrict(seg)) return true;
+  if (bmoUserTextIsDistressed(userText) && bmoAssistantSegmentSoftEmpathy(seg)) return true;
+  return false;
+}
+
 /**
- * If TTS is one file for many sentences, any apology in the reply still deserves the sad mouth.
- * Otherwise align per-sentence modes to each chunk index.
+ * If TTS is one file for many sentences, any STRICT apology (condolences, deep grief)
+ * in the reply deserves the sad mouth even when modes is a single-element array.
+ * SOFT empathy ("I'm sorry", "wish I could") only flips when userText is distressed.
  */
-function applyBmoSadFaceLexiconOverride(sentences, faceModes) {
+function applyBmoSadFaceLexiconOverride(sentences, faceModes, userText) {
   if (!Array.isArray(sentences) || !Array.isArray(faceModes) || !faceModes.length) return faceModes;
+  const distressed = bmoUserTextIsDistressed(userText);
+  const shouldOverride = (s) => {
+    if (bmoAssistantSegmentRequiresSadFaceStrict(s)) return true;
+    if (distressed && bmoAssistantSegmentSoftEmpathy(s)) return true;
+    return false;
+  };
   if (faceModes.length === 1 && sentences.length > 1) {
-    if (sentences.some((t) => bmoAssistantSegmentPrefersSadFace(t))) return ["sad"];
+    if (sentences.some(shouldOverride)) return ["sad"];
     return faceModes;
   }
-  return faceModes.map((mode, i) =>
-    bmoAssistantSegmentPrefersSadFace(sentences[i]) ? "sad" : mode
-  );
+  return faceModes.map((mode, i) => (shouldOverride(sentences[i]) ? "sad" : mode));
+}
+
+function logBmoEmotionDecision(row) {
+  try {
+    console.log("[bmo_emotion_decision]", JSON.stringify(row));
+  } catch {}
 }
 
 function bmoMoodToFaceMode(mood) {
   return normalizeBmoTtsMood(mood) === "sad" ? "sad" : "happy";
 }
 
-/** When the user sounded distressed, do not keep empathy/apology sentences as neutral (LLM often does). */
+/** When the user sounded clearly distressed, do not keep empathy/apology sentences as
+ *  neutral (LLM often does). Casual user phrasing must NOT trigger this — playful
+ *  idioms in the assistant reply are left alone via the playful-negative guard.
+ */
 function boostBmoMoodsForUserDistress(userText, sentences, moods) {
   const ut = (userText || "").trim();
   if (!ut || !Array.isArray(sentences) || !Array.isArray(moods) || moods.length !== sentences.length) {
     return moods;
   }
-  if (
-    !/\b(sad|depressed|depressing|feeling\s+down|feel\s+down|down|blue|empty|numb|anxious|anxiety|worried|worry|worries|lonely|alone|hurt|hurting|pain|cry|crying|grief|upset|struggl|hopeless|overwhelmed|not\s+ok(?:ay)?)\b/i.test(
-      ut
-    )
-  ) {
-    return moods;
-  }
+  if (!bmoUserTextIsDistressed(ut)) return moods;
   return moods.map((m, i) => {
     const lab = normalizeBmoTtsMood(m);
     if (lab === "sad" || lab === "happy") return lab;
     const s = String(sentences[i] || "");
-    if (
-      /\b(i\s*'?m\s+sorry|i\s+am\s+sorry|sorry\s+you'?re|sorry\s+to\s+hear|that\s+sounds\s+(?:really\s+)?(?:hard|rough|awful))\b/i.test(
-        s
-      ) ||
-      /\bsorry\b/i.test(s)
-    ) {
+    if (bmoSentenceIsPlayfulNegative(s)) return lab;
+    if (bmoAssistantSegmentSoftEmpathy(s) || bmoAssistantSegmentRequiresSadFaceStrict(s)) {
       return "sad";
     }
     return lab;
@@ -15185,18 +15361,62 @@ async function resolveBmoTtsSegmentFaceModesForPlayback(data, urlCount) {
   if (!reply) return alignBmoFaceModesToChunkCount([], n);
   const sentences = splitSentencesForTtsClient(reply);
   if (!sentences.length) return alignBmoFaceModesToChunkCount([], n);
-  let labels;
+
+  // Heuristic per sentence — always computed so we can include it in [bmo_emotion_decision].
+  const heuristicLabels = sentences.map((s) => classifyBmoTtsSegmentHeuristic(s));
+
+  // LLM labels are PRIMARY when available; heuristic is only a fallback.
+  let llmLabels = null;
   try {
-    labels = await fetchBmoTtsEmotionLabels(userText, sentences);
-    labels = boostBmoMoodsForUserDistress(userText, sentences, labels);
+    llmLabels = await fetchBmoTtsEmotionLabels(userText, sentences);
   } catch (e) {
     console.warn("[BMO][TTS] emotion route", e);
-    labels = sentences.map((s) => classifyBmoTtsSegmentHeuristic(s));
-    labels = boostBmoMoodsForUserDistress(userText, sentences, labels);
+    llmLabels = null;
   }
-  let modes = sentences.map((_, i) => bmoMoodToFaceMode(labels[i]));
+  const primary = llmLabels || heuristicLabels.slice();
+  const boosted = boostBmoMoodsForUserDistress(userText, sentences, primary);
+
+  let modes = sentences.map((_, i) => bmoMoodToFaceMode(boosted[i]));
   modes = alignBmoFaceModesToChunkCount(modes, n);
-  modes = applyBmoSadFaceLexiconOverride(sentences, modes);
+  // Lexicon override now requires either a STRICT phrase (always) or SOFT empathy
+  // + a clearly distressed user (never on a single bare 'sorry' / 'hurt' alone).
+  modes = applyBmoSadFaceLexiconOverride(sentences, modes, userText);
+
+  for (let i = 0; i < sentences.length; i++) {
+    const llm = llmLabels ? normalizeBmoTtsMood(llmLabels[i]) : null;
+    const heur = normalizeBmoTtsMood(heuristicLabels[i]);
+    const final = normalizeBmoTtsMood(boosted[i]);
+    let overrideApplied = false;
+    let overrideReason = "";
+    if (llm && llm !== final) {
+      overrideApplied = true;
+      if (llm === "sad" && final !== "sad" && bmoSentenceIsPlayfulNegative(sentences[i])) {
+        overrideReason = "demoted_playful_negative";
+      } else if (final === "sad") {
+        if (bmoAssistantSegmentRequiresSadFaceStrict(sentences[i])) {
+          overrideReason = "strict_empathy_lexicon";
+        } else if (bmoUserTextIsDistressed(userText) && bmoAssistantSegmentSoftEmpathy(sentences[i])) {
+          overrideReason = "soft_empathy_with_user_distress";
+        } else {
+          overrideReason = "boost_for_user_distress";
+        }
+      } else {
+        overrideReason = "label_changed";
+      }
+    } else if (!llm) {
+      overrideReason = "heuristic_fallback";
+    }
+    logBmoEmotionDecision({
+      sentence: String(sentences[i] || "").slice(0, 200),
+      user_text: String(userText || "").slice(0, 200),
+      llm_label: llm,
+      heuristic_label: heur,
+      final_label: final,
+      override_applied: overrideApplied,
+      override_reason: overrideReason,
+    });
+  }
+
   return modes;
 }
 
@@ -15587,6 +15807,7 @@ async function runNdjsonTtsPlayback(
   /** BMO: per-chunk face stack (happy vs sad); built from meta (full reply) or per chunk (LLM streaming + heuristic). */
   let ndjsonBmoFaceModes = null;
   let ndjsonBmoStreamingTts = false;
+  let ndjsonBmoLastUserText = "";
   let ndjsonBmoCumulativeForSeg = "";
 
   async function readAll() {
@@ -15626,6 +15847,7 @@ async function runNdjsonTtsPlayback(
             logVoicePipe("NDJSON meta line (UI can attach transcript)");
             if (document.body.classList.contains("bmo-open")) {
               ndjsonBmoStreamingTts = Boolean(obj.llm_streaming);
+              ndjsonBmoLastUserText = String(obj.transcript || obj.user_text || "");
               const reply = String(obj.reply || "").trim();
               if (reply && !ndjsonBmoStreamingTts) {
                 ndjsonBmoCumulativeForSeg = "";
@@ -15633,7 +15855,7 @@ async function runNdjsonTtsPlayback(
                   const sentences = splitSentencesForTtsClient(reply);
                   const n = Math.max(1, Number(obj.tts_segment_count) || sentences.length);
                   let labels;
-                  const ut = String(obj.transcript || obj.user_text || "");
+                  const ut = ndjsonBmoLastUserText;
                   try {
                     labels = await fetchBmoTtsEmotionLabels(ut, sentences);
                     labels = boostBmoMoodsForUserDistress(ut, sentences, labels);
@@ -15644,7 +15866,7 @@ async function runNdjsonTtsPlayback(
                   }
                   let modes = sentences.map((_, i) => bmoMoodToFaceMode(labels[i]));
                   modes = alignBmoFaceModesToChunkCount(modes, n);
-                  ndjsonBmoFaceModes = applyBmoSadFaceLexiconOverride(sentences, modes);
+                  ndjsonBmoFaceModes = applyBmoSadFaceLexiconOverride(sentences, modes, ut);
                 } catch (e) {
                   console.warn("[BMO][TTS] NDJSON meta face modes", e);
                   ndjsonBmoFaceModes = null;
@@ -15675,7 +15897,16 @@ async function runNdjsonTtsPlayback(
               ndjsonBmoCumulativeForSeg = cur;
               const segFor = (delta || cur).trim();
               let mood = classifyBmoTtsSegmentHeuristic(segFor);
-              if (bmoAssistantSegmentPrefersSadFace(segFor)) mood = "sad";
+              // Strict lexicon override stays unconditional; soft empathy requires
+              // distressed user_text so casual replies don't flip to sad.
+              if (bmoAssistantSegmentRequiresSadFaceStrict(segFor)) {
+                mood = "sad";
+              } else if (
+                bmoUserTextIsDistressed(ndjsonBmoLastUserText) &&
+                bmoAssistantSegmentSoftEmpathy(segFor)
+              ) {
+                mood = "sad";
+              }
               ndjsonBmoFaceModes.push(bmoMoodToFaceMode(mood));
             }
             queue.push(obj.url);
@@ -16101,6 +16332,14 @@ document.getElementById("bmo-audio")?.addEventListener("ended", () => {
 
 function detectSpeech() {
   if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+  if (inputMuted) {
+    suppressNextUtterance = true;
+    try {
+      mediaRecorder.stop();
+    } catch {}
+    showMutedStatusIfIdle();
+    return;
+  }
 
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
@@ -16246,6 +16485,7 @@ function maybeResumeMainBrowserSpeechRecognition(reason) {
 }
 
 function scheduleMainBrowserEndOfUtterance() {
+  if (inputMuted) return;
   if (mainBrowserSilenceTimer != null) {
     clearTimeout(mainBrowserSilenceTimer);
     mainBrowserSilenceTimer = null;
@@ -16401,6 +16641,13 @@ function maybePlayWorkModeReasoningStage1FromPrep(prep, abortSignal, userTranscr
 
 async function finalizeMainBrowserTranscript(text) {
   const trimmed = (text || "").trim();
+  if (inputMuted) {
+    stopAllBrowserSpeechRecognizers();
+    processing = false;
+    voiceUxTurn = null;
+    showMutedStatusIfIdle();
+    return;
+  }
   if (!trimmed) {
     stopAllBrowserSpeechRecognizers();
     processing = false;
@@ -16496,6 +16743,11 @@ async function finalizeMainBrowserTranscript(text) {
 function startMainBrowserRecognitionContinuous() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return;
+  if (inputMuted) {
+    stopAllBrowserSpeechRecognizers();
+    showMutedStatusIfIdle();
+    return;
+  }
 
   stopAllBrowserSpeechRecognizers();
   mainBrowserFinalizeKind = "main";
@@ -16509,6 +16761,11 @@ function startMainBrowserRecognitionContinuous() {
   mainBrowserRecognition.lang = getSpeechRecognitionLang();
 
   mainBrowserRecognition.onresult = (event) => {
+    if (inputMuted) {
+      stopAllBrowserSpeechRecognizers();
+      showMutedStatusIfIdle();
+      return;
+    }
     browserAsrMainNetworkRetries = 0;
     markBrowserAsrResult("main");
     interimBuf = "";
@@ -16607,6 +16864,11 @@ function startMainBrowserRecognitionContinuous() {
 function startInterruptBrowserPartialDetection() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return;
+  if (inputMuted) {
+    stopAllBrowserSpeechRecognizers();
+    showMutedStatusIfIdle();
+    return;
+  }
 
   if (interruptDetectNoResultWatchdogTimer != null) {
     clearTimeout(interruptDetectNoResultWatchdogTimer);
@@ -16637,6 +16899,11 @@ function startInterruptBrowserPartialDetection() {
   let hadAnyResult = false;
 
   interruptDetectRecognition.onresult = (event) => {
+    if (inputMuted) {
+      stopAllBrowserSpeechRecognizers();
+      showMutedStatusIfIdle();
+      return;
+    }
     if (!interruptBrowserDetectActive) return;
     hadAnyResult = true;
 
@@ -16786,6 +17053,11 @@ function startInterruptBrowserPartialDetection() {
 function startPostInterruptBrowserRecognition() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return;
+  if (inputMuted) {
+    stopAllBrowserSpeechRecognizers();
+    showMutedStatusIfIdle();
+    return;
+  }
 
   const seedTranscript = (interruptPartialLastText || "").trim();
   abortBrowserSpeechRecognizers();
@@ -16800,6 +17072,11 @@ function startPostInterruptBrowserRecognition() {
   postInterruptRecognition.lang = getSpeechRecognitionLang();
 
   postInterruptRecognition.onresult = (event) => {
+    if (inputMuted) {
+      stopAllBrowserSpeechRecognizers();
+      showMutedStatusIfIdle();
+      return;
+    }
     markBrowserAsrResult("post-interrupt");
     interimBuf = "";
     for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -16851,6 +17128,13 @@ function startPostInterruptBrowserRecognition() {
 
 async function finalizeInterruptBrowserTranscript(text) {
   const trimmed = (text || "").trim();
+  if (inputMuted) {
+    stopAllBrowserSpeechRecognizers();
+    processing = false;
+    requestInFlight = false;
+    showMutedStatusIfIdle();
+    return;
+  }
   if (!trimmed) {
     stopAllBrowserSpeechRecognizers();
     listening = true;

@@ -1029,6 +1029,38 @@
   </div>
 </div>
 
+<div
+  id="vera-work-timer-up-modal"
+  class="vera-work-timer-up-modal"
+  hidden
+  aria-hidden="true"
+  role="alertdialog"
+  aria-modal="true"
+  aria-labelledby="vera-work-timer-up-title"
+  aria-describedby="vera-work-timer-up-desc"
+>
+  <div class="vera-work-timer-up-backdrop" aria-hidden="true"></div>
+  <div class="vera-work-timer-up-dialog">
+    <h2 id="vera-work-timer-up-title" class="vera-work-timer-up-title">Timer is up</h2>
+    <p id="vera-work-timer-up-desc" class="vera-work-timer-up-desc">
+      Your work mode timer has ended.
+    </p>
+    <div class="vera-work-timer-up-overtime">
+      <span class="vera-work-timer-up-overtime-label">Overtime</span>
+      <span
+        class="vera-work-timer-up-overtime-value"
+        id="vera-work-timer-up-overtime"
+        aria-live="polite"
+      >-0.0s</span>
+    </div>
+    <button
+      type="button"
+      class="vera-work-timer-up-ack"
+      id="vera-work-timer-up-ack"
+    >Acknowledge</button>
+  </div>
+</div>
+
 <section id="bmo-loading-screen" hidden>
   <div class="bmo-loading-shell">
     <div class="bmo-loading-card">

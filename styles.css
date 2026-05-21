@@ -3779,6 +3779,125 @@ body.chat-started .input-bar {
   color: rgba(120, 200, 255, 0.95);
 }
 
+.vera-work-mode-timer--overtime {
+  color: rgba(255, 120, 120, 0.95);
+}
+
+/* Work Mode timer-up modal (centered alert; only closes via Acknowledge). */
+.vera-work-timer-up-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+
+.vera-work-timer-up-modal[hidden] {
+  display: none !important;
+}
+
+.vera-work-timer-up-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 8, 16, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.vera-work-timer-up-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(380px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 26px 24px 22px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 110, 110, 0.35);
+  background: rgba(14, 20, 32, 0.96);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 24px rgba(255, 90, 90, 0.18);
+  color: rgba(255, 255, 255, 0.94);
+  text-align: center;
+}
+
+.vera-work-timer-up-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: rgba(255, 200, 200, 0.96);
+}
+
+.vera-work-timer-up-desc {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(220, 220, 230, 0.78);
+}
+
+.vera-work-timer-up-overtime {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 110, 110, 0.4);
+  background: rgba(40, 12, 16, 0.6);
+}
+
+.vera-work-timer-up-overtime-label {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 170, 170, 0.85);
+}
+
+.vera-work-timer-up-overtime-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 120, 120, 0.95);
+}
+
+.vera-work-timer-up-ack {
+  margin-top: 8px;
+  appearance: none;
+  border: 1px solid rgba(255, 110, 110, 0.55);
+  background: linear-gradient(180deg, rgba(220, 70, 80, 0.9), rgba(170, 40, 50, 0.92));
+  color: white;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 10px 24px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(180, 40, 50, 0.35);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    background 0.15s ease;
+}
+
+.vera-work-timer-up-ack:hover {
+  background: linear-gradient(180deg, rgba(235, 80, 90, 0.95), rgba(190, 50, 60, 0.95));
+  box-shadow: 0 6px 20px rgba(180, 40, 50, 0.55);
+}
+
+.vera-work-timer-up-ack:active {
+  transform: translateY(1px);
+}
+
+.vera-work-timer-up-ack:focus-visible {
+  outline: 2px solid rgba(255, 180, 180, 0.85);
+  outline-offset: 3px;
+}
+
 .vera-datetime-sep {
   flex-shrink: 0;
   width: 1px;
