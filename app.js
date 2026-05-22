@@ -18860,6 +18860,75 @@ async function refreshVeraActiveUserLabel() {
   }
 }
 
+/** Dev-only cost-log UI: localhost, ?costdebug=1, or localStorage vera_cost_log_debug=1 */
+function isVeraCostLogDevUiEnabled() {
+  try {
+    if (typeof URLSearchParams !== "undefined" && typeof location !== "undefined") {
+      const q = new URLSearchParams(location.search);
+      if (q.get("costdebug") === "1" || q.get("cost_log_debug") === "1") return true;
+    }
+    if (typeof localStorage !== "undefined" && localStorage.getItem("vera_cost_log_debug") === "1") {
+      return true;
+    }
+    const o = typeof location !== "undefined" ? String(location.origin || "") : "";
+    return /^(https?:\/\/)(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(o);
+  } catch (_) {
+    return false;
+  }
+}
+
+function formatVeraCostLogStatusPayload(data) {
+  if (!data || typeof data !== "object") return "(no status)";
+  const lines = [
+    `log_dir: ${data.log_dir || "?"}`,
+    `reset_allowed: ${data.reset_allowed ? "yes" : "no"}`,
+    `open_in_memory_sessions: ${data.open_in_memory_sessions ?? 0}`,
+  ];
+  for (const f of data.files || []) {
+    lines.push(
+      `${f.name}: rows=${f.row_count ?? 0} size=${f.size_bytes ?? 0}B` +
+        (f.earliest_timestamp ? ` from=${f.earliest_timestamp}` : "") +
+        (f.latest_timestamp ? ` to=${f.latest_timestamp}` : "")
+    );
+  }
+  const archives = data.archives || [];
+  if (archives.length) {
+    lines.push(`archives (${archives.length} recent): ${archives.slice(0, 3).map((a) => a.name).join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+async function fetchVeraCostLogStatus() {
+  const base = typeof localBackendBase === "function" ? localBackendBase() : "";
+  const res = await fetch(`${base}/cost/logs/status`, { method: "GET" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+  return data;
+}
+
+async function archiveVeraCostLogsAndStartClean({ scenarioName = "" } = {}) {
+  const base = typeof localBackendBase === "function" ? localBackendBase() : "";
+  const archiveRes = await fetch(`${base}/cost/logs/archive`, { method: "POST" });
+  const archiveData = await archiveRes.json().catch(() => ({}));
+  if (!archiveRes.ok) {
+    throw new Error(archiveData.detail || archiveData.message || `archive HTTP ${archiveRes.status}`);
+  }
+  const scenario = String(scenarioName || "").trim();
+  let sessionStart = null;
+  if (scenario && typeof getSessionId === "function") {
+    const startRes = await fetch(`${base}/cost/session/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: getSessionId(), scenario_name: scenario }),
+    });
+    sessionStart = await startRes.json().catch(() => ({}));
+    if (!startRes.ok) {
+      console.warn("[cost_log] session/start after archive failed", sessionStart);
+    }
+  }
+  return { archive: archiveData, session_start: sessionStart };
+}
+
 function wireVeraSettingsPanel() {
   const modal = document.getElementById("vera-settings-modal");
   const openVeraBtn = document.getElementById("vera-settings-open");
@@ -18870,6 +18939,10 @@ function wireVeraSettingsPanel() {
   const asrSingleBtn = document.getElementById("vera-setting-asr-single");
   const mainPartialMinSel = document.getElementById("vera-setting-main-partial-min");
   const resetSessionBtn = document.getElementById("vera-setting-reset-session");
+  const costLogDevSection = document.getElementById("vera-cost-log-dev-section");
+  const costArchiveBtn = document.getElementById("vera-cost-archive-clean-btn");
+  const costScenarioSelect = document.getElementById("vera-cost-scenario-select");
+  const costLogStatusPre = document.getElementById("vera-cost-log-status");
   const textGuideRotatorBtn = document.getElementById("vera-setting-text-guide-rotator");
   const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
   const planningDeadlineTimerBtn = document.getElementById("vera-setting-planning-deadline-timer");
@@ -18959,8 +19032,26 @@ function wireVeraSettingsPanel() {
     applyTextGuideRotatorSetting();
   };
 
+  const refreshCostLogDevUi = async () => {
+    const devOn = isVeraCostLogDevUiEnabled();
+    if (costLogDevSection instanceof HTMLElement) {
+      if (devOn) costLogDevSection.removeAttribute("hidden");
+      else costLogDevSection.setAttribute("hidden", "");
+    }
+    if (!devOn || !(costLogStatusPre instanceof HTMLElement)) return;
+    try {
+      const status = await fetchVeraCostLogStatus();
+      costLogStatusPre.textContent = formatVeraCostLogStatusPayload(status);
+      costLogStatusPre.removeAttribute("hidden");
+    } catch (e) {
+      costLogStatusPre.textContent = `status error: ${e?.message || e}`;
+      costLogStatusPre.removeAttribute("hidden");
+    }
+  };
+
   const open = () => {
     hydrate();
+    void refreshCostLogDevUi();
     logVeraSettings("open_modal", {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
@@ -19048,6 +19139,33 @@ function wireVeraSettingsPanel() {
     if (appModePrefix() === "bmo") resetBmoSessionAndUi();
     else resetVeraSessionAndUi();
     close();
+  });
+
+  costArchiveBtn?.addEventListener("click", async () => {
+    if (!isVeraCostLogDevUiEnabled()) return;
+    const scenario =
+      costScenarioSelect instanceof HTMLSelectElement ? costScenarioSelect.value.trim() : "";
+    const msg =
+      "Archive current cost/credit logs to logs/archive/ and start fresh empty logs?\n\n" +
+      (scenario ? `Scenario label: ${scenario}\n` : "") +
+      "Old data is preserved in the archive folder.";
+    if (!window.confirm(msg)) return;
+    costArchiveBtn.disabled = true;
+    try {
+      const result = await archiveVeraCostLogsAndStartClean({ scenarioName: scenario });
+      const arch = result.archive || {};
+      const moved = (arch.moved || []).length;
+      window.alert(
+        `Archived ${moved} file(s) to:\n${arch.archive_dir || "(unknown)"}\n\n` +
+          (scenario ? `Tagged session with scenario: ${scenario}\n` : "") +
+          "Active logs are now empty. Cost logging is still enabled."
+      );
+      await refreshCostLogDevUi();
+    } catch (e) {
+      window.alert(`Cost log archive failed: ${e?.message || e}`);
+    } finally {
+      costArchiveBtn.disabled = false;
+    }
   });
 
   const app = document.getElementById("vera-app");
