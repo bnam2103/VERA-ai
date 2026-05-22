@@ -9673,84 +9673,18 @@ function resolveWorkModeReasoningContextForInferWithMeta(formData, userText, pre
   return none;
 }
 
+/** Lane/infer debug overlay removed from the UI; the structured rows still flow to
+ *  the console via the existing `[infer_reference_resolution]` log call. These
+ *  helpers stay as no-ops so callers keep working without rendering anything. */
 function ensureWorkModeInferDebugOverlay() {
-  let root = document.getElementById("vera-wm-infer-debug");
-  if (root && !root.querySelector("#vera-wm-infer-debug-body")) {
-    root.remove();
-    root = null;
-  }
-  if (root) return root.querySelector("#vera-wm-infer-debug-body") || root;
-
-  root = document.createElement("div");
-  root.id = "vera-wm-infer-debug";
-  root.setAttribute("aria-label", "Work mode lane debug");
-  root.style.cssText =
-    "position:fixed;bottom:72px;left:8px;width:min(460px,92vw);max-height:42vh;" +
-    "z-index:99999;display:none;flex-direction:column;" +
-    "font:11px/1.35 ui-monospace,monospace;background:rgba(8,12,8,0.94);color:#9f9;" +
-    "border:1px solid #3a6;border-radius:6px;box-shadow:0 4px 24px rgba(0,0,0,0.45);pointer-events:auto;";
-
-  const header = document.createElement("div");
-  header.style.cssText =
-    "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-bottom:1px solid #363;flex-shrink:0;";
-  const title = document.createElement("span");
-  title.textContent = "Lane / infer debug";
-  title.style.cssText = "font-weight:600;color:#bfb;";
-  const actions = document.createElement("div");
-  actions.style.cssText = "display:flex;gap:6px;align-items:center;";
-
-  const copyBtn = document.createElement("button");
-  copyBtn.type = "button";
-  copyBtn.textContent = "Copy JSON";
-  copyBtn.style.cssText =
-    "font:inherit;font-size:10px;padding:2px 8px;cursor:pointer;background:#1a2a1a;color:#9f9;border:1px solid #4a6;border-radius:4px;";
-  copyBtn.addEventListener("click", () => {
-    const body = document.getElementById("vera-wm-infer-debug-body");
-    const raw = body?.dataset?.debugJson || "";
-    if (!raw) return;
-    navigator.clipboard?.writeText(raw).catch(() => {});
-  });
-
-  const collapseBtn = document.createElement("button");
-  collapseBtn.type = "button";
-  collapseBtn.textContent = "−";
-  collapseBtn.title = "Collapse";
-  collapseBtn.style.cssText = copyBtn.style.cssText;
-  collapseBtn.addEventListener("click", () => {
-    const body = document.getElementById("vera-wm-infer-debug-body");
-    if (!body) return;
-    const collapsed = body.style.display === "none";
-    body.style.display = collapsed ? "block" : "none";
-    collapseBtn.textContent = collapsed ? "−" : "+";
-  });
-
-  actions.appendChild(copyBtn);
-  actions.appendChild(collapseBtn);
-  header.appendChild(title);
-  header.appendChild(actions);
-
-  const body = document.createElement("div");
-  body.id = "vera-wm-infer-debug-body";
-  body.style.cssText =
-    "overflow-y:auto;overflow-x:hidden;max-height:calc(42vh - 36px);padding:8px 10px;white-space:pre-wrap;word-break:break-word;";
-
-  root.appendChild(header);
-  root.appendChild(body);
-  document.body.appendChild(root);
-  return body;
+  const stale = document.getElementById("vera-wm-infer-debug");
+  if (stale) stale.remove();
+  return null;
 }
 
-function updateWorkModeInferDebugOverlay(debugRow) {
-  const root = document.getElementById("vera-wm-infer-debug");
-  const el = ensureWorkModeInferDebugOverlay();
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") {
-    if (root) root.style.display = "none";
-    return;
-  }
-  if (root) root.style.display = "flex";
-  const json = JSON.stringify(debugRow, null, 2);
-  el.textContent = json;
-  el.dataset.debugJson = json;
+function updateWorkModeInferDebugOverlay(_debugRow) {
+  const stale = document.getElementById("vera-wm-infer-debug");
+  if (stale) stale.remove();
 }
 
 function applyWorkModeLaneDebugFromInferMeta(meta) {
@@ -10103,6 +10037,52 @@ function detectExplicitPartialWorkModeReasoning(raw) {
   return false;
 }
 
+/**
+ * Group the current turn into a coarse "task kind" the Stage 2 canned-line
+ * gate cares about. Independent from the finer turn_intent string.
+ *   - calculation       finance/options/math/numerical/model calculation
+ *   - code_debug        code, debugging, stack traces, file/repo edits
+ *   - planning_writing  plans, outlines, essays, drafts, study schedules
+ *   - explanation       explanations, overviews, summaries, walk-throughs
+ *   - general           anything else
+ */
+function classifyStage2TaskKind(userText, turnIntent) {
+  const t = String(userText || "");
+  const low = t.toLowerCase();
+  const ti = String(turnIntent || "").trim().toLowerCase();
+  const calcRx = /\b(calculate|computation|compute|derive|formula|equation|integral|derivative|matrix|delta|hedge|black-?scholes|option (?:price|premium|value|payoff)|greek|premium|npv|irr|var\b|expected value|probability|standard deviation|variance|regression|coefficient|eigen|determinant|cdf|pdf|monte carlo|payoff|interest rate|yield curve|bond price)\b/i;
+  const codeRx = /\b(code|coding|script|snippet|implement|program|debug(?:ging)?|stack trace|traceback|exception|error message|refactor|function signature|class definition|method|file|repo|repository|pull request|commit|merge|compile|build error)\b/i;
+  const planRx = /\b(plan(?:ning)?|outline|essay|paragraph|draft|write(?:-?up)?|cover letter|story|narrative|brainstorm|study (?:plan|schedule)|schedule|itinerary|agenda|to-?do|checklist|roadmap)\b/i;
+  const explainRx = /\b(explain|overview|summary|summarize|background|history|timeline|describe|definition|tell me about|walk me through|how does|how do|why does|why do|what is|what are)\b/i;
+  if (ti === "code" || codeRx.test(low)) return "code_debug";
+  if (ti === "solve" || calcRx.test(low)) return "calculation";
+  if (ti === "plan" || planRx.test(low)) return "planning_writing";
+  if (ti === "explain" || ti === "summarize" || explainRx.test(low)) return "explanation";
+  return "general";
+}
+
+/**
+ * Stricter than explicit_missing_info_found. True only when the reasoning
+ * output explicitly says it cannot finish (e.g. blocking phrases). Used to
+ * keep the canned `needs_missing_info` line for non-calculation tasks only
+ * when the answer is genuinely blocked.
+ */
+function detectExplicitBlockingMissingInfo(raw) {
+  const text = String(raw || "");
+  if (!text) return false;
+  const blockingPatterns = [
+    /\bi (?:cannot|can'?t) (?:finish|complete|solve|compute|calculate|proceed|continue|move forward)\b/i,
+    /\bmissing required (?:input|parameter|value|data|field)/i,
+    /\b(?:i )?need (?:the )?(?:volatility|sigma|σ|risk-?free rate|dividend yield|input values|required values|model inputs)\b/i,
+    /\bplease provide [^\n.]{0,80}? before i can (?:calculate|compute|solve|finish|complete|proceed)/i,
+    /\bwithout (?:these|those|that|the volatility|the risk-?free|the dividend|this input) i (?:cannot|can'?t) (?:finish|complete|compute|calculate|solve|proceed)\b/i,
+    /\bcannot (?:compute|calculate|finish|complete|solve) (?:this|it|the (?:problem|calculation|model|equation))[^\n]{0,80}(?:without|until)\b/i,
+    /\bunable to (?:finish|complete|compute|calculate|solve)\b[^\n]{0,80}\bwithout\b/i,
+    /\bblock(?:ed|er)\b[^\n]{0,60}\b(?:missing|need|until|without)\b/i
+  ];
+  return blockingPatterns.some((re) => re.test(text));
+}
+
 function analyzeWorkModeSameTurnReasoningResult(markdown, summary = "", opts = {}) {
   const raw = `${String(markdown || "")}\n${String(summary || "")}`.trim();
   const low = raw.toLowerCase();
@@ -10110,6 +10090,8 @@ function analyzeWorkModeSameTurnReasoningResult(markdown, summary = "", opts = {
   const missing_inputs = extractWorkModeMissingInputsFromReasoning(raw);
   const substantive_answer_detected = detectSubstantiveWorkModeReasoningAnswer(raw, opts);
   const explicit_partial_found = detectExplicitPartialWorkModeReasoning(raw);
+  const explicit_blocking_missing_info = detectExplicitBlockingMissingInfo(raw);
+  const task_kind = classifyStage2TaskKind(opts.user_text, opts.turn_intent);
 
   const needsInfoPatterns = [
     /\bmissing inputs?\b/i,
@@ -10142,7 +10124,9 @@ function analyzeWorkModeSameTurnReasoningResult(markdown, summary = "", opts = {
     status_reason: "",
     explicit_missing_info_found,
     explicit_partial_found,
-    substantive_answer_detected
+    explicit_blocking_missing_info,
+    substantive_answer_detected,
+    task_kind
   };
 
   if (!raw) {
@@ -10152,6 +10136,18 @@ function analyzeWorkModeSameTurnReasoningResult(markdown, summary = "", opts = {
     return { ...base, status: "failed", status_reason: "stream_error_text" };
   }
   if (explicit_missing_info_found) {
+    // Intent gate: planning/explanation tasks that already produced a useful
+    // answer should not be demoted to needs_missing_info unless the reasoning
+    // output is genuinely blocking. This stops Stage 2 from saying
+    // "still needs a few missing model inputs" after a usable essay/study plan.
+    const planningLike = task_kind === "planning_writing" || task_kind === "explanation";
+    if (planningLike && substantive_answer_detected && !explicit_blocking_missing_info) {
+      return {
+        ...base,
+        status: "solved",
+        status_reason: `missing_info_overridden_by_${task_kind}_intent`
+      };
+    }
     return { ...base, status: "needs_missing_info", status_reason: "explicit_missing_info" };
   }
   if (
@@ -10183,7 +10179,10 @@ function classifyWorkModeSameTurnReasoningResultStatus(markdown, summary = "", o
 }
 
 function stage2ClassifyOptsFromPrep(prep) {
-  return { turn_intent: String(prep?.turnContext?.turn_intent || "").trim().toLowerCase() };
+  return {
+    turn_intent: String(prep?.turnContext?.turn_intent || "").trim().toLowerCase(),
+    user_text: String(prep?.turnContext?.user_text || "").trim()
+  };
 }
 
 function extractWorkModeMissingInputsFromReasoning(text) {
@@ -10260,7 +10259,9 @@ function packStage2ResultStatus(prep, classified, source = "") {
     status_reason: String(classified.status_reason || ""),
     explicit_missing_info_found: Boolean(classified.explicit_missing_info_found),
     explicit_partial_found: Boolean(classified.explicit_partial_found),
+    explicit_blocking_missing_info: Boolean(classified.explicit_blocking_missing_info),
     substantive_answer_detected: Boolean(classified.substantive_answer_detected),
+    task_kind: String(classified.task_kind || "general"),
     _source: String(source || "")
   };
 }
@@ -10368,10 +10369,26 @@ function getWorkModeStage2ResultStatusFromPrep(prep) {
   return resolveScopedStage2ResultStatus(prep);
 }
 
+/**
+ * Canned-line gate.
+ *   - clarification_required / failed → always canned.
+ *   - partially_completed → canned only when reasoning explicitly says partial.
+ *   - needs_missing_info → canned ONLY when the task kind is calculation /
+ *     code_debug, OR the reasoning output uses explicit blocking language.
+ *     Planning / writing / explanation tasks should keep speaking the
+ *     LLM-generated Stage 2 sentence so the user hears what was actually
+ *     produced (e.g. "I made a 1-hour English essay plan in the reasoning
+ *     panel") instead of "still needs a few missing model inputs".
+ */
 function shouldUseCannedStage2SpokenLine(status, detected = {}) {
   const st = String(status || "").trim().toLowerCase();
-  if (st === "needs_missing_info" || st === "clarification_required" || st === "failed") {
-    return true;
+  if (st === "clarification_required" || st === "failed") return true;
+  if (st === "needs_missing_info") {
+    const tk = String(detected.task_kind || "").trim().toLowerCase();
+    const calcLike = tk === "calculation" || tk === "code_debug";
+    if (calcLike) return true;
+    if (detected.explicit_blocking_missing_info) return true;
+    return false;
   }
   if (st === "partially_completed") {
     return Boolean(detected.explicit_partial_found);
@@ -10379,21 +10396,77 @@ function shouldUseCannedStage2SpokenLine(status, detected = {}) {
   return false;
 }
 
-function buildWorkModeStage2SpokenOverride(detected) {
-  if (!shouldUseCannedStage2SpokenLine(detected?.status, detected)) return "";
-  return buildWorkModeStage2SpokenLine(detected.status, detected.missing_inputs);
+function logStage2StatusIntentGate(prep, detected, decision) {
+  try {
+    const ids = stage2ScopeIdsFromPrep(prep);
+    console.info("[stage2_status_intent_gate]", {
+      turn_id: ids.turn_id || null,
+      lane_id: ids.lane_id || null,
+      user_text: String(prep?.turnContext?.user_text || "").slice(0, 240),
+      detected_intent: String(prep?.turnContext?.turn_intent || "general"),
+      task_kind: String(detected?.task_kind || "general"),
+      detected_status: detected?.status || null,
+      substantive_answer_detected: Boolean(detected?.substantive_answer_detected),
+      explicit_missing_info_found: Boolean(detected?.explicit_missing_info_found),
+      explicit_blocking_missing_info: Boolean(detected?.explicit_blocking_missing_info),
+      used_canned_line: Boolean(decision?.used_canned_line),
+      final_stage2_reply: String(decision?.final_stage2_reply || "").slice(0, 240),
+      source: String(decision?.source || "")
+    });
+  } catch (_) {}
 }
 
-function buildWorkModeStage2SpokenLine(resultStatus, missingInputs) {
+function buildWorkModeStage2SpokenOverride(detected, prep) {
+  if (!shouldUseCannedStage2SpokenLine(detected?.status, detected)) {
+    logStage2StatusIntentGate(prep, detected, {
+      used_canned_line: false,
+      final_stage2_reply: "",
+      source: "build_override_gate_open"
+    });
+    return "";
+  }
+  const line = buildWorkModeStage2SpokenLine(
+    detected.status,
+    detected.missing_inputs,
+    detected.task_kind
+  );
+  logStage2StatusIntentGate(prep, detected, {
+    used_canned_line: Boolean(line),
+    final_stage2_reply: line,
+    source: "build_override_canned"
+  });
+  return line;
+}
+
+function buildWorkModeStage2SpokenLine(resultStatus, missingInputs, taskKind = "general") {
   const st = String(resultStatus || "").trim().toLowerCase();
   const miss = (missingInputs || []).map((x) => String(x || "").trim()).filter(Boolean);
+  const tk = String(taskKind || "").trim().toLowerCase();
   if (st === "needs_missing_info") {
+    if (tk === "calculation") {
+      if (miss.length) {
+        const joined =
+          miss.length <= 3 ? miss.join(", ") : `${miss.slice(0, 2).join(", ")}, and a few other values`;
+        return `I set up the calculation, but I still need ${joined} before I can finish it.`;
+      }
+      return "I set up the calculation, but I still need a few required values before I can finish it.";
+    }
+    if (tk === "code_debug") {
+      if (miss.length) {
+        const joined =
+          miss.length <= 3 ? miss.join(", ") : `${miss.slice(0, 2).join(", ")}, and a few other details`;
+        return `I started the code in the reasoning panel, but I still need ${joined} before I can finish it.`;
+      }
+      return "I started the code in the reasoning panel, but I still need a few details before I can finish it.";
+    }
+    // Reached only when explicit blocking language forces a canned line for a
+    // non-calculation task. Avoid the robotic "model inputs" phrasing here.
     if (miss.length) {
       const joined =
-        miss.length <= 3 ? miss.join(", ") : `${miss.slice(0, 2).join(", ")}, and other model inputs`;
-      return `I set up the problem, but it still needs ${joined} before I can finish it in the reasoning panel.`;
+        miss.length <= 3 ? miss.join(", ") : `${miss.slice(0, 2).join(", ")}, and a few more details`;
+      return `I started it in the reasoning panel, but I still need ${joined} before I can finish.`;
     }
-    return "I set up the problem, but it still needs a few missing model inputs before I can finish it in the reasoning panel.";
+    return "I started it in the reasoning panel, but I still need a few more details before I can finish.";
   }
   if (st === "clarification_required") {
     return "I started the setup, but I need a quick clarification before I can finish it in the reasoning panel.";
@@ -10611,7 +10684,7 @@ function attachWorkModeVoiceBriefCompletionFlag(formData, prep) {
       formData.append("work_mode_stage2_turn_json", raw);
     }
   }
-  const spokenOverride = buildWorkModeStage2SpokenOverride(detected);
+  const spokenOverride = buildWorkModeStage2SpokenOverride(detected, prep);
   if (spokenOverride) {
     if (typeof formData.set === "function") formData.set("work_mode_stage2_spoken_override", spokenOverride);
     else formData.append("work_mode_stage2_spoken_override", spokenOverride);
@@ -11089,8 +11162,17 @@ function stage2TopicPhraseFromUserText(userText) {
 /** Safe Stage-2 line when the model reply is empty or unsafe for voice/bubble. */
 function buildSafeStage2FallbackLine(prep) {
   const detected = getWorkModeStage2ResultStatusFromPrep(prep);
-  const statusLine = buildWorkModeStage2SpokenLine(detected.status, detected.missing_inputs);
-  if (statusLine) return statusLine;
+  // Only use a canned status line when the intent gate allows it. Planning /
+  // explanation tasks with substantive answers fall through to the topical
+  // wording below so the user hears what actually got produced.
+  if (shouldUseCannedStage2SpokenLine(detected.status, detected)) {
+    const statusLine = buildWorkModeStage2SpokenLine(
+      detected.status,
+      detected.missing_inputs,
+      detected.task_kind
+    );
+    if (statusLine) return statusLine;
+  }
   const intent = String(prep?.turnContext?.turn_intent || "").trim().toLowerCase();
   const topic = stage2TopicPhraseFromUserText(prep?.turnContext?.user_text);
   if (intent === "code") {
@@ -11142,8 +11224,17 @@ function resolveEffectiveStage2Reply(prep, generatedReply, ttsStage) {
   }
   const detected = getWorkModeStage2ResultStatusFromPrep(prep);
   if (shouldUseCannedStage2SpokenLine(detected.status, detected)) {
-    const fixed = buildWorkModeStage2SpokenLine(detected.status, detected.missing_inputs);
+    const fixed = buildWorkModeStage2SpokenLine(
+      detected.status,
+      detected.missing_inputs,
+      detected.task_kind
+    );
     if (fixed) {
+      logStage2StatusIntentGate(prep, detected, {
+        used_canned_line: true,
+        final_stage2_reply: fixed,
+        source: "resolve_effective_canned"
+      });
       return {
         effective_stage2_reply: fixed,
         generated_stage2_text,
@@ -11151,13 +11242,23 @@ function resolveEffectiveStage2Reply(prep, generatedReply, ttsStage) {
         override_reason: "canned_status_line"
       };
     }
+  } else {
+    logStage2StatusIntentGate(prep, detected, {
+      used_canned_line: false,
+      final_stage2_reply: generated_stage2_text,
+      source: "resolve_effective_gate_open"
+    });
   }
   if (
     detected.status === "solved" &&
     stage2ReplyImpliesFalseSuccess(generated_stage2_text) &&
     detected.explicit_partial_found
   ) {
-    const fixed = buildWorkModeStage2SpokenLine("partially_completed", detected.missing_inputs);
+    const fixed = buildWorkModeStage2SpokenLine(
+      "partially_completed",
+      detected.missing_inputs,
+      detected.task_kind
+    );
     if (fixed) {
       return {
         effective_stage2_reply: fixed,
