@@ -7246,6 +7246,19 @@ const WORK_MODE_REASONING_WATCHDOG_MS = 110000;
 const workModeReasoningWatchdogByLaneIdx = new Map();
 const workModeTypedTurnQueue = [];
 const WORK_MODE_TYPED_TURN_QUEUE_MAX = 8;
+/**
+ * Hard cap on typed (keyboard) inputs pending in Work Mode. Matches the
+ * non-work-mode "3 consecutive user turns before VERA replies" block. Counts
+ * voice infer chain depth + queued typed turns; the 4th input is refused
+ * with a status hint instead of being queued indefinitely.
+ */
+const WORK_MODE_TYPED_PENDING_MAX = 3;
+/**
+ * Max number of reasoning panels generating answers at the same time, even
+ * if more panels exist. The 4th request lands in `workModeReasoningLaneWaitQueue`
+ * and resumes when one of the three active lanes releases.
+ */
+const WORK_MODE_REASONING_MAX_CONCURRENT = 3;
 /** Last non–example-request user text in work mode (typed or voice); steers generic “example” reasoning. */
 let workModeLastSubstantiveUserText = "";
 /** Panel index for the last substantive reasoning turn — generic “example” chains here. */
@@ -7358,12 +7371,27 @@ function logLaneBusyStateForReasoning(tag, laneIdx, turnId, streamLaneId) {
   } catch (_) {}
 }
 
+/** Number of reasoning panels currently busy (i.e. generating an answer). */
+function countBusyReasoningLanes() {
+  let n = 0;
+  for (const idx of getReasoningPanelIndices()) {
+    if (workModeReasoningLaneBusy.get(idx) === true) n += 1;
+  }
+  return n;
+}
+
+function isReasoningLanePoolAtCap() {
+  return countBusyReasoningLanes() >= WORK_MODE_REASONING_MAX_CONCURRENT;
+}
+
 /**
  * Pick which idle panel gets a *new* topic (no merge with existing lane): the panel with the fewest reasoning
  * turns so far; ties go Panel 1 → 2 → 3 (lowest index). Categorical / similarity / thread continuation still
- * route to the same panel before this runs.
+ * route to the same panel before this runs. Returns null when the global concurrent-reasoning cap is hit
+ * even if some panels are idle — those requests queue.
  */
 function pickIdleReasoningLaneIdx() {
+  if (isReasoningLanePoolAtCap()) return null;
   const idleIdxs = getReasoningPanelIndices().filter((idx) => !workModeReasoningLaneBusy.get(idx));
   if (!idleIdxs.length) return null;
   let bestIdx = idleIdxs[0];
@@ -7385,6 +7413,14 @@ function acquireWorkModeReasoningLane(_forTopicText = "") {
     syncWorkModeReasoningCancelButton();
     return Promise.resolve(picked);
   }
+  try {
+    console.info("[reasoning_pool_wait]", {
+      reason: isReasoningLanePoolAtCap() ? "pool_at_max_concurrent" : "all_panels_busy",
+      busy: countBusyReasoningLanes(),
+      max_concurrent: WORK_MODE_REASONING_MAX_CONCURRENT,
+      desired_lane_idx: null
+    });
+  } catch (_) {}
   return new Promise((resolve) => {
     workModeReasoningLaneWaitQueue.push({
       resolve,
@@ -7398,55 +7434,73 @@ function acquireWorkModeReasoningLaneForIndex(desiredLaneIdx) {
   const idxs = getReasoningPanelIndices();
   const raw = Number(desiredLaneIdx);
   const laneIdx = Number.isFinite(raw) && idxs.includes(raw) ? raw : idxs[0] ?? 0;
-  if (!workModeReasoningLaneBusy.get(laneIdx)) {
+  if (!workModeReasoningLaneBusy.get(laneIdx) && !isReasoningLanePoolAtCap()) {
     workModeReasoningLaneBusy.set(laneIdx, true);
     syncWorkModeReasoningCancelButton();
     return Promise.resolve(laneIdx);
   }
+  try {
+    console.info("[reasoning_pool_wait]", {
+      reason: workModeReasoningLaneBusy.get(laneIdx)
+        ? "desired_lane_busy"
+        : "pool_at_max_concurrent",
+      busy: countBusyReasoningLanes(),
+      max_concurrent: WORK_MODE_REASONING_MAX_CONCURRENT,
+      desired_lane_idx: laneIdx
+    });
+  } catch (_) {}
   return new Promise((resolve) => {
     workModeReasoningLaneWaitQueue.push({ resolve, desiredLaneIdx: laneIdx });
   });
 }
 
+/**
+ * Walk the reasoning lane wait queue and grant capacity to as many waiters
+ * as the global concurrent cap allows. Preserves FIFO ordering: a waiter for
+ * a specific lane is granted as soon as that lane is idle, an "any-lane"
+ * waiter takes the next idle lane (by `pickIdleReasoningLaneIdx`'s policy).
+ */
+function drainWorkModeReasoningLaneWaitQueue() {
+  const queue = workModeReasoningLaneWaitQueue;
+  let i = 0;
+  while (i < queue.length) {
+    if (isReasoningLanePoolAtCap()) break;
+    const w = queue[i];
+    if (!w) {
+      queue.splice(i, 1);
+      continue;
+    }
+    if (w.desiredLaneIdx != null) {
+      const di = Number(w.desiredLaneIdx);
+      if (!workModeReasoningLaneBusy.get(di)) {
+        queue.splice(i, 1);
+        workModeReasoningLaneBusy.set(di, true);
+        const resolve = typeof w === "function" ? w : w.resolve;
+        try {
+          resolve(di);
+        } catch (_) {}
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    const picked = pickIdleReasoningLaneIdx();
+    if (picked == null) break;
+    queue.splice(i, 1);
+    workModeReasoningLaneBusy.set(picked, true);
+    const resolve = typeof w === "function" ? w : w.resolve;
+    try {
+      resolve(picked);
+    } catch (_) {}
+  }
+  syncWorkModeReasoningCancelButton();
+}
+
 function releaseWorkModeReasoningLane(idx) {
   const laneIdx = Number(idx);
-  const queue = workModeReasoningLaneWaitQueue;
-
-  let pos = -1;
-  for (let i = 0; i < queue.length; i++) {
-    const w = queue[i];
-    if (w?.desiredLaneIdx != null && Number(w.desiredLaneIdx) === laneIdx) {
-      pos = i;
-      break;
-    }
-  }
-  if (pos >= 0) {
-    const next = queue.splice(pos, 1)[0];
-    const resolve = typeof next === "function" ? next : next.resolve;
-    workModeReasoningLaneBusy.set(laneIdx, true);
-    syncWorkModeReasoningCancelButton();
-    resolve(laneIdx);
-    return;
-  }
-
-  for (let i = 0; i < queue.length; i++) {
-    const w = queue[i];
-    if (w?.desiredLaneIdx == null) {
-      pos = i;
-      break;
-    }
-  }
-  if (pos >= 0) {
-    const next = queue.splice(pos, 1)[0];
-    const resolve = typeof next === "function" ? next : next.resolve;
-    workModeReasoningLaneBusy.set(laneIdx, true);
-    syncWorkModeReasoningCancelButton();
-    resolve(laneIdx);
-    return;
-  }
-
   workModeReasoningLaneBusy.set(laneIdx, false);
   syncWorkModeReasoningCancelButton();
+  drainWorkModeReasoningLaneWaitQueue();
 }
 
 function workModeTypedQueueItemHasPayload(item) {
@@ -7494,6 +7548,21 @@ function enqueueWorkModeTypedTurn(text, opts = {}) {
 function isWorkModeTypedTurnBlocked() {
   /* Typed lines queue only when the voice `/infer` chain is saturated; reasoning runs in parallel per panel. */
   return workModeTypedVoiceInferDepth >= WORK_MODE_TYPED_VOICE_CHAIN_MAX;
+}
+
+/** Total typed Work-Mode turns currently in flight (voice infer chain) + queued. */
+function countPendingWorkModeTypedTurns() {
+  return workModeTypedVoiceInferDepth + workModeTypedTurnQueue.length;
+}
+
+/**
+ * True when there are already `WORK_MODE_TYPED_PENDING_MAX` typed turns in
+ * flight or queued. Used to refuse a brand-new keyboard input at the entry
+ * point — the same UX as the non-work-mode "3 user turns before VERA replies"
+ * block (see `sendTextMessage`).
+ */
+function isWorkModeTypedTurnAtHardCap() {
+  return countPendingWorkModeTypedTurns() >= WORK_MODE_TYPED_PENDING_MAX;
 }
 
 async function drainWorkModeTypedTurnQueue() {
@@ -10786,10 +10855,13 @@ async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
   if (autoRoute) {
     if (!t) return await acquireWorkModeReasoningLane("");
     if (isGenericExampleFollowUpText(t) && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
-      return Number(workModeLastSubstantiveLaneIdx);
+      /* Follow-ups chain onto the prior substantive lane (serialized by `runOnLaneReasoningChain`);
+         route through the acquirer so the global concurrent-reasoning cap is honored if that lane
+         is currently busy and the pool is at capacity. */
+      return await acquireWorkModeReasoningLaneForIndex(Number(workModeLastSubstantiveLaneIdx));
     }
     if (opts.continuePriorLane === true && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
-      return Number(workModeLastSubstantiveLaneIdx);
+      return await acquireWorkModeReasoningLaneForIndex(Number(workModeLastSubstantiveLaneIdx));
     }
     let bestLane = -1;
     let bestScore = 0;
@@ -10803,7 +10875,7 @@ async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
       }
     }
     if (bestScore >= WORK_MODE_TOPIC_SIMILARITY_MERGE && bestLane >= 0) {
-      return bestLane;
+      return await acquireWorkModeReasoningLaneForIndex(bestLane);
     }
     return await acquireWorkModeReasoningLane(t);
   }
@@ -13108,7 +13180,7 @@ function syncWorkChecklistHelpPlanButton() {
 function syncWorkChecklistSyncPlanButton() {
   const btn = document.getElementById("vera-wm-checklist-sync-plan");
   if (!(btn instanceof HTMLButtonElement)) return;
-  const canUseSync = workChecklistSyncPlanVersion > workChecklistSyncConsumedPlanVersion;
+  const canUseSync = Boolean(getWorkChecklistSyncSourceMarkdown());
   btn.disabled = !canUseSync;
 }
 
@@ -13123,16 +13195,55 @@ function getLatestWorkModeReasoningMarkdown() {
   return "";
 }
 
-/** Markdown used for checklist Sync: saved plan if it still parses; else latest turn that parses; else raw fallback. */
+function getLatestMarkdownInReasoningScroll(scroll) {
+  if (!(scroll instanceof HTMLElement)) return "";
+  const turns = [...scroll.querySelectorAll(".vera-reasoning-turn")];
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const md = String(turns[i]?.dataset?.markdownAcc || "").trim();
+    if (md) return md;
+  }
+  return "";
+}
+
+function getWorkModeReasoningMarkdownCandidates() {
+  const candidates = [];
+  const seen = new Set();
+  const push = (md, source) => {
+    const text = String(md || "").trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    candidates.push({ markdown: text, source });
+  };
+
+  // Pending is the newest server-confirmed plan while the page stays alive.
+  push(workChecklistSyncPendingMarkdown, "pending_plan");
+  push(getLatestWorkModeReasoningMarkdown(), "active_reasoning_tab");
+
+  // Also scan all reasoning tabs so Sync remains available after accepting
+  // once, switching lanes, or when the visible active tab is not the plan tab.
+  const root = document.getElementById("vera-reasoning-tab-panels");
+  if (root instanceof HTMLElement) {
+    const panels = [...root.querySelectorAll(".vera-reasoning-tab-panel")];
+    for (const panel of panels) {
+      const scroll =
+        panel.querySelector(".vera-reasoning-md-panel") ||
+        panel.querySelector(".vera-reasoning-scroll");
+      push(getLatestMarkdownInReasoningScroll(scroll), "reasoning_tab");
+    }
+  }
+
+  return candidates;
+}
+
+/** Markdown used for checklist Sync: first parseable pending/active/any-tab plan. */
 function getWorkChecklistSyncSourceMarkdown() {
-  const pending = String(workChecklistSyncPendingMarkdown || "").trim();
-  const latest = getLatestWorkModeReasoningMarkdown();
-  const pendingRows = pending ? buildChecklistProposalFromMarkdown(pending).length : 0;
-  const latestRows = latest ? buildChecklistProposalFromMarkdown(latest).length : 0;
-  if (pendingRows > 0) return pending;
-  if (latestRows > 0) return latest;
-  if (pending) return pending;
-  return latest;
+  const candidates = getWorkModeReasoningMarkdownCandidates();
+  for (const cand of candidates) {
+    if (buildChecklistProposalFromMarkdown(cand.markdown).length > 0) {
+      return cand.markdown;
+    }
+  }
+  return "";
 }
 
 function normalizeChecklistLineText(text) {
@@ -13324,18 +13435,14 @@ function eraseEntireWorkChecklist() {
 }
 
 function runWorkChecklistSyncFromLatestPlan() {
-  if (workChecklistSyncPlanVersion <= workChecklistSyncConsumedPlanVersion) {
-    flashWorkChecklistPlanHint("Run Plan again to generate a new checklist sync.");
-    return false;
-  }
   const markdown = getWorkChecklistSyncSourceMarkdown();
   if (!markdown) {
-    flashWorkChecklistPlanHint("No plan found yet. Run Plan first.");
+    flashWorkChecklistPlanHint("No checklist-ready plan found yet. Ask VERA for a plan first.");
     return false;
   }
   const rows = buildChecklistProposalFromMarkdown(markdown);
   if (!rows.length) {
-    flashWorkChecklistPlanHint("Could not parse checklist bullets from saved plan.");
+    flashWorkChecklistPlanHint("Could not parse checklist bullets from the visible plan.");
     return false;
   }
   showWorkChecklistSyncPreview(formatChecklistProposalText(rows));
@@ -13515,6 +13622,16 @@ function wireWorkModeChecklistAndComposer() {
     const files = getWorkModePendingAttachmentFiles();
     if (!t && !files.length) return;
     if (!isVeraWorkModeOn()) return;
+    if (isWorkModeTypedTurnAtHardCap()) {
+      setStatus("Wait for VERA response before sending more", "idle");
+      try {
+        console.warn("[WorkMode] composer blocked at hard cap (reasoning-composer)", {
+          pending: countPendingWorkModeTypedTurns(),
+          max: WORK_MODE_TYPED_PENDING_MAX
+        });
+      } catch (_) {}
+      return;
+    }
     logComposerAttachmentsBeforeSubmit(files, null);
     if (ri) ri.value = "";
     try {
@@ -18194,6 +18311,28 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     return;
   }
 
+  /* Hard cap: at most WORK_MODE_TYPED_PENDING_MAX typed turns in flight or queued.
+     Matches the non-work-mode "3 user turns before VERA replies" guard. Refuse
+     instead of queueing the 4th so the user gets the same clear feedback. */
+  if (!fromQueue && isWorkModeTypedTurnAtHardCap()) {
+    setStatus("Wait for VERA response before sending more", "idle");
+    preserveComposerAttachments("typed_hard_cap_reached", null);
+    try {
+      console.warn("[WorkMode] typed hard cap reached — refusing input", {
+        pending: countPendingWorkModeTypedTurns(),
+        max: WORK_MODE_TYPED_PENDING_MAX,
+        depth: workModeTypedVoiceInferDepth,
+        queued: workModeTypedTurnQueue.length
+      });
+      console.info("[reasoning_queue_omitted]", {
+        turn_id: null,
+        lane_id: null,
+        reason: "typed_hard_cap_reached"
+      });
+    } catch (_) {}
+    return;
+  }
+
   if (isWorkModeTypedTurnBlocked()) {
     if (!fromQueue) {
       const queueSnap = getWorkModePendingAttachmentFiles();
@@ -18369,6 +18508,16 @@ async function sendTextMessage() {
 
   if (!text) return;
   if (inVeraWorkMode) {
+    if (isWorkModeTypedTurnAtHardCap()) {
+      setStatus("Wait for VERA response before sending more", "idle");
+      try {
+        console.warn("[WorkMode] keyboard blocked at hard cap (typed-text)", {
+          pending: countPendingWorkModeTypedTurns(),
+          max: WORK_MODE_TYPED_PENDING_MAX
+        });
+      } catch (_) {}
+      return;
+    }
     if (textInput) textInput.value = "";
     await sendVeraWorkModeTypedInferTurn(text, { path: "typed-text" });
     return;

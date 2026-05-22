@@ -2823,6 +2823,33 @@ document.addEventListener("click", () => {
       </div>
     </section>
 
+    <section id="vera-cost-log-dev-section" class="vera-settings-section" hidden>
+      <h3>Cost logging (dev)</h3>
+      <p class="vera-settings-hint">
+        Archive moves current cost/credit JSONL files into <code>logs/archive/</code> and starts fresh empty logs.
+        Does not disable logging.
+      </p>
+      <div class="vera-settings-row">
+        <label for="vera-cost-scenario-select" class="vera-settings-label">Test scenario label</label>
+        <select id="vera-cost-scenario-select" class="vera-settings-select">
+          <option value="">(none)</option>
+          <option value="light_session">light_session</option>
+          <option value="normal_work_mode_session">normal_work_mode_session</option>
+          <option value="heavy_reasoning_session">heavy_reasoning_session</option>
+          <option value="search_heavy_session">search_heavy_session</option>
+          <option value="voice_heavy_session">voice_heavy_session</option>
+          <option value="file_upload_session">file_upload_session</option>
+          <option value="image_upload_session">image_upload_session</option>
+        </select>
+      </div>
+      <div class="vera-settings-row">
+        <button type="button" id="vera-cost-archive-clean-btn" class="vera-settings-danger-btn">
+          Archive logs and start clean test
+        </button>
+      </div>
+      <pre id="vera-cost-log-status" class="vera-cost-log-status" hidden></pre>
+    </section>
+
     <section class="vera-settings-section">
       <h3>Main Streaming ASR (Experimental)</h3>
 

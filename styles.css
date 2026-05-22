@@ -6016,6 +6016,39 @@ body.vera-work-guide-open {
   cursor: pointer;
 }
 
+.vera-settings-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(220, 228, 245, 0.78);
+}
+
+.vera-settings-select {
+  width: 100%;
+  max-width: 320px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(12, 18, 32, 0.85);
+  color: rgba(235, 242, 255, 0.95);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.vera-cost-log-status {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  max-height: 180px;
+  overflow: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.28);
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(210, 220, 240, 0.92);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .vera-settings-toggle-row {
   display: flex;
   align-items: center;
