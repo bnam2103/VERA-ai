@@ -10880,6 +10880,33 @@ let workModeTtsCurrentlyPlaying = null;
 
 const WORK_MODE_TTS_PRIOR_READY_PHRASE = "The earlier result is ready too.";
 
+// Explicit replace phrases — matched against the *newer* turn's user text.
+// Conservative on purpose: only clear cancel/replace language. Casual
+// interjections must NOT silence a useful prior Stage 2.
+const WORK_MODE_EXPLICIT_REPLACE_RX =
+  /\b(?:stop|cancel|cancel\s+that|scratch\s+that|forget\s+(?:that|it)|never\s*mind|nevermind|disregard\s+that|ignore\s+that|do\s+(?:this|that)\s+instead|instead\s+do|actually\s+(?:do|use|make)|wait[, ]+stop|hold on stop|drop\s+that)\b/i;
+
+// Same-lane topic similarity at/above this threshold counts as a true
+// REFINEMENT of the older request (e.g. "actually make it 30 minutes").
+// Below this is just a topic shift within the same lane bucket and must
+// NOT silence the older Stage 2 (the user explicitly asked for this).
+const WORK_MODE_TOPIC_REFINEMENT_MIN = Math.max(
+  0.4,
+  WORK_MODE_TOPIC_SIMILARITY_MERGE * 1.5
+);
+
+function userTextLooksLikeExplicitReplace(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  return WORK_MODE_EXPLICIT_REPLACE_RX.test(s);
+}
+
+function logStage2InterruptPolicy(fields) {
+  try {
+    console.info("[tts_stage2_interrupt_policy]", fields);
+  } catch (_) {}
+}
+
 function resetWorkModeTurnTtsQueue() {
   workModeTtsTurnSeqCounter = 0;
   workModeTtsGlobalGeneration = 0;
@@ -10957,58 +10984,105 @@ function isAudioReplacedByNewerCompletion(item) {
 }
 
 /**
- * Stage‑2 playback policy (not “stale = not latest”). Returns how to deliver audio vs text-only.
+ * Stage-2 playback policy.
+ *
+ * Policy (per "Stage 2 should keep speaking unless explicitly cancelled / replaced"):
+ *   1. `rec.canceled`           -> drop audio (user explicitly cancelled). Bubble stays.
+ *   2. reasoning lane DOM gone  -> text_only (lane was removed; nothing to anchor audio to).
+ *   3. newer turn on a DIFFERENT lane         -> SPEAK (audio queued, not dropped).
+ *   4. newer turn on the SAME lane, with explicit replace words ("stop / scratch that
+ *      / do this instead" etc.) OR HIGH topic similarity (= true refinement of the same
+ *      task) -> drop audio (text_only). If the older reasoning was substantive, add the
+ *      short supplement so the user still hears that the earlier result is available.
+ *   5. newer turn on the SAME lane but it's clearly a different topic (low similarity,
+ *      no explicit replace) -> SPEAK (the older Stage 2 is still relevant).
+ *   6. no newer turn                          -> SPEAK.
+ *
+ * The drain loop already serializes playback, so "queued behind the currently playing
+ * item" naturally implements the "delay until current speech finishes" behavior the
+ * user asked for; we do NOT need a separate `delay` action.
+ *
  * @returns {{ action: 'play_full'|'text_only'|'text_only_with_supplement', drop_reason?: string, supplementPhrase?: string, spokenOverride?: string|null }}
  */
 function evaluateWorkModeStage2Tts(item) {
-  const prep = item?.prep;
   const rec = getWorkModeTtsTurnRecord(item?.turn_id);
   const lane = String(item?.lane_id || "").trim();
   const latestId = workModeLatestTurnIdByLane.get(lane);
-  const isLatest = latestId && String(item?.turn_id) === String(latestId);
   const latestRec = latestId ? getWorkModeTtsTurnRecord(latestId) : null;
+  const isLatest = latestId && String(item?.turn_id) === String(latestId);
+  const newerExists = Boolean(latestRec && !isLatest);
 
-  if (rec?.canceled) {
-    return { action: "text_only", drop_reason: "superseded_same_lane" };
-  }
+  const ownLane = String(rec?.reasoning_lane_id || lane || "");
+  const latestLane = String(latestRec?.reasoning_lane_id || "");
+  const sameLane = !latestRec || ownLane === latestLane;
 
-  const reasoningLane = String(rec?.reasoning_lane_id || lane).trim();
-  if (reasoningLane && !isReasoningLaneDomPresent(reasoningLane)) {
-    return { action: "text_only", drop_reason: "lane_not_active" };
-  }
+  const explicitlyCancelled = Boolean(rec?.canceled);
+  const explicitReplace =
+    newerExists && sameLane && userTextLooksLikeExplicitReplace(latestRec?.user_text);
+  const similarity = newerExists
+    ? topicSimilarityScore(rec?.user_text || "", latestRec?.user_text || "")
+    : 0;
+  const refinement =
+    newerExists && sameLane && !explicitReplace && similarity >= WORK_MODE_TOPIC_REFINEMENT_MIN;
+  const supersededSameTask = explicitReplace || refinement;
 
-  if (isAudioReplacedByNewerCompletion(item)) {
-    if (rec?.has_substantive_reasoning) {
-      return {
-        action: "text_only_with_supplement",
-        drop_reason: "audio_replaced_by_newer_completion",
-        supplementPhrase: WORK_MODE_TTS_PRIOR_READY_PHRASE
-      };
+  // Decide.
+  let internalAction;            // "speak" | "text_only" | "text_only_with_supplement" | "drop"
+  let reason;
+
+  if (explicitlyCancelled) {
+    internalAction = "drop";
+    reason = "explicit_cancel";
+  } else {
+    const reasoningLane = String(rec?.reasoning_lane_id || lane).trim();
+    if (reasoningLane && !isReasoningLaneDomPresent(reasoningLane)) {
+      internalAction = "text_only";
+      reason = "lane_not_active";
+    } else if (supersededSameTask) {
+      reason = explicitReplace ? "same_lane_explicit_replace" : "same_lane_refinement";
+      internalAction = rec?.has_substantive_reasoning
+        ? "text_only_with_supplement"
+        : "text_only";
+    } else {
+      // No replacement. Different lane / different topic on same lane / no newer turn
+      // all keep the audio. The queue will deliver it after any currently-playing item.
+      internalAction = "speak";
+      if (!newerExists) reason = "no_newer_turn";
+      else if (!sameLane) reason = "different_lane_kept";
+      else reason = "same_lane_topic_shift_kept";
     }
-    return { action: "text_only", drop_reason: "audio_replaced_by_newer_completion" };
   }
 
-  if (!isLatest && latestRec) {
-    const replaces = newerTurnSemanticallyReplacesOlder(rec, latestRec);
-    if (!replaces) {
-      return { action: "play_full" };
-    }
-    const topicShift =
-      String(rec?.reasoning_lane_id || "") !== String(latestRec?.reasoning_lane_id || "") ||
-      topicSimilarityScore(rec?.user_text || "", latestRec?.user_text || "") <
-        WORK_MODE_TOPIC_SIMILARITY_MERGE * 0.5;
-    const dropReason = topicShift ? "user_changed_topic" : "superseded_same_lane";
-    if (rec?.has_substantive_reasoning) {
-      return {
-        action: "text_only_with_supplement",
-        drop_reason: dropReason,
-        supplementPhrase: WORK_MODE_TTS_PRIOR_READY_PHRASE
-      };
-    }
-    return { action: "text_only", drop_reason: dropReason };
-  }
+  // Debug log as specified in the spec.
+  logStage2InterruptPolicy({
+    turn_id: item?.turn_id || null,
+    lane_id: lane || null,
+    stage: item?.stage ?? 2,
+    latest_turn_id_for_lane: latestId || null,
+    newer_turn_exists: newerExists,
+    same_lane: sameLane,
+    explicitly_cancelled: explicitlyCancelled,
+    superseded_same_task: supersededSameTask,
+    similarity: Number.isFinite(similarity) ? Number(similarity.toFixed(3)) : null,
+    action:
+      internalAction === "speak" ? "speak"
+      : internalAction === "drop" ? "drop"
+      : "text_only",
+    reason
+  });
 
-  return { action: "play_full", spokenOverride: null };
+  if (internalAction === "speak") {
+    return { action: "play_full", spokenOverride: null };
+  }
+  if (internalAction === "text_only_with_supplement") {
+    return {
+      action: "text_only_with_supplement",
+      drop_reason: reason,
+      supplementPhrase: WORK_MODE_TTS_PRIOR_READY_PHRASE
+    };
+  }
+  // "drop" and "text_only" both surface to the queue as text_only (no audio, bubble stays).
+  return { action: "text_only", drop_reason: reason };
 }
 
 function registerWorkModeTtsTurnRecord(ttsTurn, prep, userText) {
