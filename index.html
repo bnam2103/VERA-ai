@@ -1869,6 +1869,55 @@ function startTyping() {
     }
   };
 
+  /**
+   * Pause any audio currently playing in the Vera Work Mode music panel.
+   * Called when the user navigates away from Vera (to Home or BMO) so the
+   * Spotify track doesn't keep playing in the background on a different page.
+   * Best-effort: each branch is wrapped so a failure in one path can't block
+   * the navigation transition.
+   */
+  function pauseMusicPanelOnNavAway(reason) {
+    try {
+      const tag = String(reason || "nav_away");
+      let paused = false;
+      // 1. Spotify Web Playback SDK (primary path for the music panel).
+      try {
+        const sp = window.VeraSpotify;
+        if (sp && typeof sp.pausePlayback === "function") {
+          const result = sp.pausePlayback();
+          if (result && typeof result.then === "function") {
+            result.catch((err) => console.warn("[music_panel_pause] spotify pause error:", err));
+          }
+          paused = true;
+        }
+      } catch (err) {
+        console.warn("[music_panel_pause] spotify pause threw:", err);
+      }
+      // 2. Any <audio>/<video> elements inside the Work Mode music panel
+      //    (covers preview audio + future non-Spotify players).
+      try {
+        const root = document.getElementById("vera-wm-music-pane");
+        if (root) {
+          const players = root.querySelectorAll("audio, video");
+          players.forEach((el) => {
+            try {
+              if (!el.paused) {
+                el.pause();
+                paused = true;
+              }
+            } catch (_) {}
+          });
+        }
+      } catch (err) {
+        console.warn("[music_panel_pause] media element pause threw:", err);
+      }
+      try {
+        console.info("[music_panel_pause]", { reason: tag, paused });
+      } catch (_) {}
+    } catch (_) {}
+  }
+  window.pauseMusicPanelOnNavAway = pauseMusicPanelOnNavAway;
+
   function exitVeraWorkMode() {
     if (typeof window.layoutVeraWorkModePanels === "function") {
       window.layoutVeraWorkModePanels(false);
@@ -1986,6 +2035,7 @@ function startTyping() {
     if (!bmoPage.hidden) {
       return;
     }
+    pauseMusicPanelOnNavAway("vera_to_bmo");
     if (typeof window.resetVoiceUiToIdle === "function") {
       window.resetVoiceUiToIdle();
     }
@@ -2382,6 +2432,7 @@ document.getElementById("return-home").onclick = async () => {
 
 document.getElementById("return-home-vera").onclick = async () => {
   exitVeraWorkMode();
+  pauseMusicPanelOnNavAway("vera_to_home");
   await resumeHomeMusic();
 
   if (typeof window.resetVoiceUiToIdle === "function") {
