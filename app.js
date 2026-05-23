@@ -395,27 +395,57 @@ function veraShowCapabilityFailureBubble(feature, message, opts = {}) {
 
 /**
  * Heuristic for "this typed/voice utterance is going to trigger Serper /
- * news.latest". We can't ask the server (the whole point is to show feedback
- * before the network round-trip), so this stays simple — false positives are
- * cheap: the bubble vanishes the moment a real reply arrives.
+ * news.latest / external search". Runs purely client-side BEFORE the network
+ * round-trip so the pending bubble can appear immediately.
+ *
+ * Conservative by design: false negatives just mean no placeholder (the user
+ * still sees the real reply), but false positives would briefly show
+ * "Searching news…" for a local command — so we explicitly exclude obvious
+ * local intents (music, volume, checklist edits, timer, basic greetings).
  */
 function looksLikeNewsSearchRequest(text) {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
-  if (/\b(?:latest|breaking|recently|right now|today|tonight)\b/.test(raw) && /\b(?:news|update|story|stories|headline|headlines)\b/.test(raw))
-    return true;
-  if (/\b(?:headlines?|articles?)\b/.test(raw)) return true;
+
+  // Negative filter first: never show "Searching news…" for known local
+  // intents. The router would (correctly) handle these without any Serper
+  // round-trip, so showing a news placeholder would be misleading.
+  if (
+    /\b(?:music|spotify|playback|playlist|volume|mute|unmute|skip|pause|resume|play\s+(?:the\s+)?next|skip\s+next|skip\s+previous|previous\s+(?:song|track))\b/.test(
+      raw
+    )
+  ) return false;
+  if (/\b(?:checklist|to[- ]?do|tasks?\s+list|sync|sync\s+the\s+checklist)\b/.test(raw)) return false;
+  if (/\b(?:timer|stopwatch|countdown|set\s+(?:a\s+)?(?:\d+|one|two|three|four|five|ten|fifteen|twenty|thirty)[- ]?minute)\b/.test(raw)) return false;
+  if (/\b(?:hi|hey|hello|yo|sup|how\s+are\s+you|what'?s\s+up|good\s+(?:morning|afternoon|evening|night))\b\s*[.?!]?\s*$/.test(raw)) return false;
+  if (/\b(?:thank\s+you|thanks|cool|nice|got\s+it|okay|ok|alright|sure)\b\s*[.?!]?\s*$/.test(raw)) return false;
+  if (/\b(?:open|show|bring\s+up|switch\s+to|go\s+to)\s+(?:the\s+|my\s+)?(?:work\s+mode|reasoning|tab|panel|page|space|lane)\b/.test(raw)) return false;
+
+  // Strong single-word/phrase triggers (user-specified vocabulary).
+  if (/\bnews\b/.test(raw)) return true;
+  if (/\bheadlines?\b/.test(raw)) return true;
+  if (/\blatest\b/.test(raw)) return true;
+  if (/\bbreaking\b/.test(raw)) return true;
+  if (/\barticles?\b/.test(raw)) return true;
   if (/\bsources?\??\s*$/.test(raw)) return true;
-  if (/\bdo you have (?:any )?sources?\b/.test(raw)) return true;
-  if (/\bshow\s+(?:me\s+)?(?:the\s+)?(?:sources?|articles?|news|headlines?|the link)\b/.test(raw)) return true;
-  if (/\bwhat(?:'?s| is)\s+(?:happening|going on)\s+with\b/.test(raw)) return true;
-  if (/\bwhat\s+(?:happened|happens)\b/.test(raw)) return true;
-  if (/\blatest\s+(?:on|about|for|news on|news about)\b/.test(raw)) return true;
-  if (/\bany\s+(?:news|updates?)\b/.test(raw)) return true;
+  if (/\b(?:search|google|look\s*up|search\s*for|look\s*it\s*up)\b/.test(raw)) return true;
+  if (/\b(?:current|currently)\b/.test(raw)) return true;
+  if (/\b(?:today|tonight|this\s+(?:week|morning|afternoon|evening))\b/.test(raw)) return true;
+  if (/\b(?:recently|recent)\b/.test(raw)) return true;
+
+  // Phrase triggers.
+  // Match "what happened", "what happens", "what's happening", "what is happening".
+  if (/\bwhat(?:'?s)?(?:\s+is)?\s+happen(?:ed|ing|s)\b/.test(raw)) return true;
+  // Match "what's going on", "what is going on", "what's new", "what's the latest".
+  if (/\bwhat(?:'?s|\s+is)\s+(?:going\s+on|new|the\s+latest)\b/.test(raw)) return true;
+  if (/\bdo\s+you\s+know\s+(?:if|whether|about|that)\b/.test(raw)) return true;
+  if (/\bdid\s+(?:he|she|they|it|that|trump|biden|musk|elon|nvidia|apple|tesla|openai|microsoft|google|amazon|meta)\b/.test(raw)) return true;
+  if (/\b(?:any|got\s+any)\s+(?:news|updates?)\b/.test(raw)) return true;
   if (/\btell\s+me\s+(?:about\s+)?(?:the\s+)?(?:news|latest|recent)\b/.test(raw)) return true;
-  if (/\bwhat\s+(?:is|are)\s+the\s+latest\b/.test(raw)) return true;
-  if (/\bcan\s+you\s+(?:search|google|look\s+up)\b/.test(raw)) return true;
-  if (/\bdid\s+(?:he|she|they|it|that)\s+(?:happen|do)\b/.test(raw)) return false; // pronoun follow-up — covered by news follow-up resolver, no need for new bubble
+  if (/\bshow\s+(?:me\s+)?(?:the\s+)?(?:sources?|articles?|news|headlines?|link)\b/.test(raw)) return true;
+  if (/\bdo\s+you\s+have\s+(?:any\s+)?(?:sources?|links?|articles?)\b/.test(raw)) return true;
+  if (/\bwhere\s+did\s+you\s+(?:get|find|read)\s+(?:that|this)\b/.test(raw)) return true;
+
   return false;
 }
 
@@ -17523,6 +17553,11 @@ async function finalizeMainBrowserTranscript(text) {
   /* Keep partial bubble in DOM; commitServerUserTranscriptBubble updates the same node when /infer returns. */
   abortBrowserSpeechRecognizers();
   showDeferredMainBrowserUserBubbleIfNeeded(trimmed);
+  // Arm pending news bubble BEFORE POST /infer using the final browser-ASR
+  // transcript — the bubble appears during the search round-trip, not after
+  // it. For server-ASR (audio-upload) paths, runInferMainPipeline's
+  // formData fallback below still arms when the transcript becomes known.
+  armPendingNewsStatusBubble(trimmed);
 
   const formData = new FormData();
   formData.append("transcript", trimmed);
@@ -18211,7 +18246,28 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
   else void playMainAnswerPromise;
 }
 
+/** Pull the user transcript from /infer FormData, if present, so the pending
+ *  news bubble can be armed at pipeline entry without waiting for NDJSON
+ *  `meta.transcript`. Safe on FormData-less callers (returns ""). */
+function _readInferFormDataTranscript(formData) {
+  try {
+    if (formData && typeof formData.get === "function") {
+      const t = formData.get("transcript");
+      if (typeof t === "string") return t;
+    }
+  } catch (_) {}
+  return "";
+}
+
 async function runInferMainPipeline(formData, opts = {}) {
+  // Earliest possible point inside the pipeline — fires BEFORE the network
+  // round-trip when the caller pushed a transcript into FormData (browser
+  // ASR + typed work-mode + interrupt voice). For server-ASR audio uploads
+  // there is no transcript yet; the onMeta callback below still arms when
+  // the server returns `meta.transcript`. armPendingNewsStatusBubble is
+  // idempotent (dedupe via dataset.pendingForText), so a later arm with the
+  // same text is a no-op.
+  armPendingNewsStatusBubble(_readInferFormDataTranscript(formData));
   try {
     await flushWorkChecklistSyncBeforeCommand();
     logVoicePipe("POST /infer starting (main, upload in flight)");
@@ -18465,6 +18521,9 @@ async function runInferMainPipeline(formData, opts = {}) {
 }
 
 async function runInferInterruptPipeline(formData) {
+  // Same early-arm policy as runInferMainPipeline so the placeholder appears
+  // during the interrupt search/thinking window.
+  armPendingNewsStatusBubble(_readInferFormDataTranscript(formData));
   try {
     logVoicePipe("POST /infer starting (interrupt, upload in flight)");
     const inferFetchStart = performance.now();
@@ -18984,6 +19043,10 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   /* User bubble: do not addBubble here — /infer NDJSON first `asr` line calls commitServerUserTranscriptBubble
      (same as voice). A prior addBubble would duplicate the row in Voice UI. */
   ensureChatStartedLayout();
+  // Arm pending news bubble BEFORE POST /infer so the placeholder appears
+  // during the thinking/searching window, not right before the final answer.
+  // Idempotent — duplicate calls for the same transcript are no-ops.
+  armPendingNewsStatusBubble(trimmed);
 
   const transcriptLine =
     trimmed || (pendingFiles.length ? "[Uploaded attachment(s)] — see attached file(s)." : "");
