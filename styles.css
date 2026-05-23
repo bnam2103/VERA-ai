@@ -4700,6 +4700,105 @@ body.vera-work-guide-open {
   min-height: 0;
 }
 
+/* Per-panel follow-up queue: shown above the reasoning stream so the user
+   can see, edit, or delete pending requests while the panel is generating. */
+#vera-app.work-mode .vera-reasoning-tab-panel .vera-reasoning-queue-host {
+  flex: 0 0 auto;
+  margin: 8px 10px 4px;
+  padding: 8px 10px;
+  background: rgba(80, 120, 200, 0.10);
+  border: 1px solid rgba(120, 160, 220, 0.28);
+  border-left: 3px solid rgba(120, 180, 255, 0.65);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgba(220, 230, 245, 0.92);
+  max-height: 30vh;
+  overflow: auto;
+}
+
+#vera-app.work-mode .vera-reasoning-queue-heading {
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: rgba(190, 215, 255, 0.85);
+  margin-bottom: 6px;
+}
+
+#vera-app.work-mode .vera-reasoning-queue-list {
+  list-style: decimal inside;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#vera-app.work-mode .vera-reasoning-queue-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+#vera-app.work-mode .vera-reasoning-queue-item.is-editing {
+  background: rgba(60, 90, 150, 0.25);
+}
+
+#vera-app.work-mode .vera-reasoning-queue-item-text {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: rgba(230, 240, 255, 0.96);
+}
+
+#vera-app.work-mode .vera-reasoning-queue-edit-input {
+  flex: 1 1 auto;
+  font: inherit;
+  color: rgba(240, 244, 255, 0.98);
+  background: rgba(15, 22, 36, 0.85);
+  border: 1px solid rgba(120, 160, 220, 0.55);
+  border-radius: 5px;
+  padding: 4px 6px;
+  resize: vertical;
+  min-height: 32px;
+  width: 100%;
+}
+
+#vera-app.work-mode .vera-reasoning-queue-item-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+}
+
+#vera-app.work-mode .vera-reasoning-queue-btn {
+  appearance: none;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(220, 230, 245, 0.85);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#vera-app.work-mode .vera-reasoning-queue-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(245, 250, 255, 1);
+}
+
+#vera-app.work-mode .vera-reasoning-queue-btn--delete:hover {
+  background: rgba(220, 80, 80, 0.25);
+  border-color: rgba(220, 80, 80, 0.55);
+  color: rgba(255, 220, 220, 1);
+}
+
 #vera-app.work-mode .vera-reasoning-turn-sep {
   padding: 10px 0 6px;
 }

@@ -6959,6 +6959,9 @@ function closeReasoningTab(index) {
   }
   workModeReasoningLaneBusy.delete(laneIdx);
   laneReasoningChainTail.delete(laneIdx);
+  // Drop any pending follow-ups attached to the removed panel — they have
+  // no UI host left and the originating lane index is going away.
+  workModeReasoningPanelFollowUpQueue.delete(laneIdx);
   const wasActive = victim.classList.contains("is-active");
   victim.remove();
   if (wasActive) {
@@ -8056,7 +8059,318 @@ function releaseWorkModeReasoningLane(idx) {
   workModeReasoningLaneBusy.set(laneIdx, false);
   syncWorkModeReasoningCancelButton();
   drainWorkModeReasoningLaneWaitQueue();
+  scheduleReasoningPanelFollowUpQueueDrain(laneIdx);
 }
+
+// Phrases that should NOT be sent to the per-panel queue, because they
+// route to non-reasoning subsystems (checklist edits, panel navigation,
+// music transport, plan sync) and should run immediately even while a
+// panel is generating elsewhere.
+function shouldQueueFollowUpForBusyReasoningPanel(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return false;
+  if (isLikelyWorkChecklistEditIntent(t)) return false;
+  if (isExplicitWorkModePanelNavigationIntent(t)) return false;
+  if (/\b(?:clear|reset|erase|wipe)\s+(?:out\s+)?(?:the\s+|my\s+|all\s+)?checklist\b/.test(t)) return false;
+  if (/\b(?:sync|push|send)\s+(?:the\s+)?plan\b/.test(t)) return false;
+  if (/\b(play|pause|resume|skip|stop|mute|unmute|volume)\b.*\b(music|song|track|playlist|spotify)\b/.test(t)) return false;
+  if (/\b(open|show|close|hide)\s+(?:the\s+)?(music|spotify|news|finance|weather)\s+(?:panel|tab)\b/.test(t)) return false;
+  if (/\b(?:set|start|cancel|stop|pause)\s+(?:a\s+|the\s+)?timer\b/.test(t)) return false;
+  if (/\b(undo\s+that|restore\s+the\s+checklist)\b/.test(t)) return false;
+  return true;
+}
+
+// =========================
+// Per-panel follow-up queue (visible in each reasoning panel)
+// =========================
+// Map<laneIdx (number), Array<{ id, text, opts, createdAt, panelLabel }>>.
+// Distinct from the global `workModeTypedTurnQueue` and the lane wait queue:
+// this queue is *visible* inside the targeted panel so the user can review,
+// edit, or delete their follow-ups before the panel starts running them.
+const workModeReasoningPanelFollowUpQueue = new Map();
+const REASONING_PANEL_QUEUE_MAX = 6;
+
+function getReasoningPanelFollowUpQueueForIdx(laneIdx) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return [];
+  let q = workModeReasoningPanelFollowUpQueue.get(idx);
+  if (!Array.isArray(q)) {
+    q = [];
+    workModeReasoningPanelFollowUpQueue.set(idx, q);
+  }
+  return q;
+}
+
+function newReasoningPanelQueueItemId() {
+  return `wmq-${Date.now().toString(36)}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
+}
+
+function getReasoningPanelElementByLaneIdx(laneIdx) {
+  return document.querySelector(
+    `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${Number(laneIdx)}"]`
+  );
+}
+
+function renderReasoningPanelFollowUpQueueUi(laneIdx) {
+  const panel = getReasoningPanelElementByLaneIdx(laneIdx);
+  if (!(panel instanceof HTMLElement)) return;
+  const queue = getReasoningPanelFollowUpQueueForIdx(laneIdx);
+  let host = panel.querySelector(":scope > .vera-reasoning-queue-host");
+  if (!queue.length) {
+    if (host) host.remove();
+    return;
+  }
+  if (!host) {
+    host = document.createElement("div");
+    host.className = "vera-reasoning-queue-host";
+    host.setAttribute("aria-live", "polite");
+    panel.insertBefore(host, panel.firstChild);
+  }
+  const heading = document.createElement("div");
+  heading.className = "vera-reasoning-queue-heading";
+  heading.textContent = `Queued (${queue.length})`;
+  const list = document.createElement("ol");
+  list.className = "vera-reasoning-queue-list";
+  queue.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "vera-reasoning-queue-item";
+    li.dataset.queueItemId = String(item.id || "");
+
+    const textWrap = document.createElement("div");
+    textWrap.className = "vera-reasoning-queue-item-text";
+    textWrap.textContent = String(item.text || "");
+
+    const actions = document.createElement("div");
+    actions.className = "vera-reasoning-queue-item-actions";
+
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "vera-reasoning-queue-btn vera-reasoning-queue-btn--edit";
+    editBtn.textContent = "edit";
+    editBtn.title = "Edit this queued follow-up";
+    editBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      beginEditReasoningPanelQueueItem(laneIdx, item.id);
+    });
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "vera-reasoning-queue-btn vera-reasoning-queue-btn--delete";
+    delBtn.textContent = "delete";
+    delBtn.title = "Remove this queued follow-up";
+    delBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      deleteReasoningPanelQueueItem(laneIdx, item.id);
+    });
+
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+    li.appendChild(textWrap);
+    li.appendChild(actions);
+    list.appendChild(li);
+  });
+  host.replaceChildren(heading, list);
+}
+
+function enqueueReasoningPanelFollowUp(laneIdx, text, opts = {}) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return null;
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return null;
+  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
+  if (queue.length >= REASONING_PANEL_QUEUE_MAX) {
+    try {
+      console.warn("[QUEUE_DEBUG][enqueue_rejected]", {
+        panel_id: idx,
+        reason: "panel_queue_max",
+        queue_length: queue.length,
+        max: REASONING_PANEL_QUEUE_MAX
+      });
+    } catch (_) {}
+    return null;
+  }
+  const panel = getReasoningPanelElementByLaneIdx(idx);
+  const panelLabel =
+    (panel instanceof HTMLElement && getReasoningTabTopicLabel(panel)) ||
+    getWorkModeReasoningLaneLabel(idx) ||
+    `Panel ${idx + 1}`;
+  const item = {
+    id: newReasoningPanelQueueItemId(),
+    text: trimmed,
+    opts: { ...(opts || {}) },
+    createdAt: Date.now(),
+    panelLabel
+  };
+  queue.push(item);
+  renderReasoningPanelFollowUpQueueUi(idx);
+  try {
+    console.info("[QUEUE_DEBUG][enqueue]", {
+      panel_id: idx,
+      panel_title: panelLabel,
+      queued_text: trimmed.slice(0, 160),
+      queue_length_after: queue.length
+    });
+  } catch (_) {}
+  return item;
+}
+
+function deleteReasoningPanelQueueItem(laneIdx, itemId) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return false;
+  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
+  const beforeLen = queue.length;
+  const next = queue.filter((it) => it.id !== itemId);
+  if (next.length === beforeLen) return false;
+  workModeReasoningPanelFollowUpQueue.set(idx, next);
+  renderReasoningPanelFollowUpQueueUi(idx);
+  try {
+    console.info("[QUEUE_DEBUG][delete]", {
+      panel_id: idx,
+      queue_item_id: itemId,
+      queue_length_after: next.length
+    });
+  } catch (_) {}
+  return true;
+}
+
+function editReasoningPanelQueueItem(laneIdx, itemId, newText) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return false;
+  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
+  const target = queue.find((it) => it.id === itemId);
+  if (!target) return false;
+  const nextText = String(newText || "").trim();
+  if (!nextText) {
+    deleteReasoningPanelQueueItem(idx, itemId);
+    return true;
+  }
+  const oldText = target.text;
+  if (oldText === nextText) {
+    renderReasoningPanelFollowUpQueueUi(idx);
+    return false;
+  }
+  target.text = nextText;
+  renderReasoningPanelFollowUpQueueUi(idx);
+  try {
+    console.info("[QUEUE_DEBUG][edit]", {
+      panel_id: idx,
+      queue_item_id: itemId,
+      old_text: String(oldText || "").slice(0, 160),
+      new_text: nextText.slice(0, 160)
+    });
+  } catch (_) {}
+  return true;
+}
+
+function beginEditReasoningPanelQueueItem(laneIdx, itemId) {
+  const panel = getReasoningPanelElementByLaneIdx(laneIdx);
+  if (!(panel instanceof HTMLElement)) return;
+  const li = panel.querySelector(
+    `.vera-reasoning-queue-item[data-queue-item-id="${itemId}"]`
+  );
+  if (!(li instanceof HTMLElement)) return;
+  const textEl = li.querySelector(".vera-reasoning-queue-item-text");
+  if (!(textEl instanceof HTMLElement)) return;
+  if (li.classList.contains("is-editing")) return;
+  li.classList.add("is-editing");
+  const oldText = textEl.textContent || "";
+  const input = document.createElement("textarea");
+  input.className = "vera-reasoning-queue-edit-input";
+  input.rows = 2;
+  input.value = oldText;
+  textEl.replaceWith(input);
+  input.focus();
+  input.select();
+  const finish = (commit) => {
+    if (!li.classList.contains("is-editing")) return;
+    li.classList.remove("is-editing");
+    if (commit) {
+      editReasoningPanelQueueItem(laneIdx, itemId, input.value);
+    } else {
+      renderReasoningPanelFollowUpQueueUi(laneIdx);
+    }
+  };
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) {
+      ev.preventDefault();
+      finish(true);
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+function scheduleReasoningPanelFollowUpQueueDrain(laneIdx) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return;
+  window.setTimeout(() => drainReasoningPanelFollowUpQueue(idx), 0);
+}
+
+async function drainReasoningPanelFollowUpQueue(laneIdx) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return;
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
+  if (workModeReasoningLaneBusy.get(idx) === true) return;
+  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
+  if (!queue.length) return;
+  const next = queue.shift();
+  workModeReasoningPanelFollowUpQueue.set(idx, queue);
+  renderReasoningPanelFollowUpQueueUi(idx);
+  try {
+    console.info("[QUEUE_DEBUG][dequeue_run]", {
+      panel_id: idx,
+      queue_item_id: next?.id || null,
+      text: String(next?.text || "").slice(0, 160),
+      queue_length_after: queue.length
+    });
+  } catch (_) {}
+  // Switch to the originating panel so the frozen turn context picks the
+  // right lane. The user can switch back manually after; this guarantees
+  // the queued follow-up runs in the panel where it was queued.
+  try {
+    const activeIdxNow = getActiveReasoningLaneIndex();
+    if (activeIdxNow !== idx && typeof activateReasoningTab === "function") {
+      activateReasoningTab(idx);
+    }
+  } catch (_) {}
+  try {
+    await sendVeraWorkModeTypedInferTurn(next.text, {
+      ...(next.opts || {}),
+      __fromReasoningPanelQueue: true,
+      __reasoningPanelQueueLaneIdx: idx
+    });
+  } catch (err) {
+    try {
+      console.warn("[QUEUE_DEBUG][dequeue_run_error]", {
+        panel_id: idx,
+        queue_item_id: next?.id || null,
+        error: String((err && err.message) || err || "")
+      });
+    } catch (_) {}
+  }
+}
+
+function clearReasoningPanelFollowUpQueueForIdx(laneIdx) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return;
+  workModeReasoningPanelFollowUpQueue.delete(idx);
+  renderReasoningPanelFollowUpQueueUi(idx);
+}
+
+window.workModeReasoningPanelQueue = {
+  enqueue: enqueueReasoningPanelFollowUp,
+  delete: deleteReasoningPanelQueueItem,
+  edit: editReasoningPanelQueueItem,
+  render: renderReasoningPanelFollowUpQueueUi,
+  drain: drainReasoningPanelFollowUpQueue,
+  clear: clearReasoningPanelFollowUpQueueForIdx,
+  list: (laneIdx) =>
+    getReasoningPanelFollowUpQueueForIdx(laneIdx).map((it) => ({ ...it }))
+};
 
 function workModeTypedQueueItemHasPayload(item) {
   const txt = String(item?.text ?? "").trim();
@@ -19313,11 +19627,13 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   const trimmed = String(text ?? "").trim();
   const path = opts.path || "work-typed";
   const fromQueue = Boolean(opts.__fromQueue);
+  const fromPanelQueue = Boolean(opts.__fromReasoningPanelQueue);
   const queuedFiles =
     Array.isArray(opts.reasoningAttachments) && opts.reasoningAttachments.length
       ? opts.reasoningAttachments.filter((f) => f instanceof File && f.size)
       : [];
-  const pendingFiles = fromQueue ? queuedFiles : getWorkModePendingAttachmentFiles();
+  const pendingFiles =
+    fromQueue || fromPanelQueue ? queuedFiles : getWorkModePendingAttachmentFiles();
   if ((!trimmed && !pendingFiles.length) || !isVeraWorkModeOn() || appModePrefix() !== "vera") return;
 
   const statusLine = uiEl("status");
@@ -19333,6 +19649,38 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   }
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
     return;
+  }
+
+  /* If the user typed a follow-up while the panel they are looking at is
+     still generating, queue it visibly inside that panel instead of racing
+     for the next idle panel. The user keeps full control: they can edit or
+     delete the queued item before it runs, and once the panel finishes,
+     `releaseWorkModeReasoningLane` triggers the drain via
+     `scheduleReasoningPanelFollowUpQueueDrain`. */
+  if (!fromQueue && !fromPanelQueue && trimmed) {
+    const activeIdx = getActiveReasoningLaneIndex();
+    if (
+      activeIdx != null &&
+      Number.isFinite(Number(activeIdx)) &&
+      workModeReasoningLaneBusy.get(Number(activeIdx)) === true &&
+      shouldQueueFollowUpForBusyReasoningPanel(trimmed)
+    ) {
+      const queued = enqueueReasoningPanelFollowUp(Number(activeIdx), trimmed, {
+        ...opts,
+        path,
+        reasoningAttachments: pendingFiles
+      });
+      if (queued) {
+        clearComposerAttachmentsAfterSubmit(null, "reasoning_panel_followup_queue");
+        const panelEl = getReasoningPanelElementByLaneIdx(Number(activeIdx));
+        const labelForStatus =
+          (panelEl instanceof HTMLElement && getReasoningTabTopicLabel(panelEl)) ||
+          getWorkModeReasoningLaneLabel(Number(activeIdx)) ||
+          `panel ${Number(activeIdx) + 1}`;
+        setStatus(`Queued for ${labelForStatus}`, "idle");
+        return;
+      }
+    }
   }
 
   /* Safety length cap (defense in depth for any caller that bypasses the
