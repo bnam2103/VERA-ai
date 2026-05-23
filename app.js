@@ -1,4 +1,20 @@
 /* =========================
+   STARTUP BANNER — proves this build of app.js actually loaded.
+   If you do NOT see this line in DevTools console after a hard refresh,
+   the browser is still serving an older cached copy (check Network tab:
+   app.js?v=46 should be the URL).
+========================= */
+try {
+  // Use console.warn so it shows up even when the DevTools console level
+  // filter has "Info" disabled. It also renders in bright yellow so it is
+  // impossible to miss while debugging the Work Mode sync flow.
+  console.warn(
+    "%c[VERA] app.js build v46 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
+    "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
+  );
+} catch (_) {}
+
+/* =========================
    SESSION — VERA vs BMO (separate conversation memory on the server)
 ========================= */
 
@@ -14363,7 +14379,10 @@ function getPlanSyncPanelMetaForLane(laneId, fallbackTitle = "") {
 function logPlanSyncDebug(kind, payload = {}) {
   try {
     const enriched = { timestamp: new Date().toISOString(), ...payload };
-    console.info(`[PLAN_SYNC_DEBUG][${kind}]`, enriched);
+    // console.warn (not info) so the DevTools "Default" level filter cannot
+    // hide these — Chrome hides Info entries when "Info" is toggled off but
+    // always shows Warnings. Bright yellow row in the console UI.
+    console.warn(`[PLAN_SYNC_DEBUG][${kind}]`, enriched);
   } catch (_) {}
 }
 
@@ -14442,6 +14461,15 @@ function veraDebugSyncStateSnapshot() {
 
 try {
   window.__veraDebugSyncState = veraDebugSyncStateSnapshot;
+  // Confirm the helper is wired and callable. If you see this line in the
+  // console but typing `window.__veraDebugSyncState()` says "not a function",
+  // you are inspecting a different frame than the page (check the DevTools
+  // context dropdown — it must be "top" / the page, not an iframe).
+  console.warn(
+    "%c[VERA] window.__veraDebugSyncState() is ready — typeof: " +
+      typeof window.__veraDebugSyncState,
+    "color:#06d6a0;font-weight:bold;"
+  );
 } catch (_) {}
 
 /** Snapshot of "where am I right now" used by sync debug logs and the
