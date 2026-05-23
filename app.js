@@ -4394,6 +4394,15 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
     .filter((x) => x && Boolean(x.done))
     .map((x) => String(x.text || "").trim())
     .filter(Boolean);
+  const checklistSnapshotItems = checklistItems
+    .filter((x) => x && String(x.text || "").trim())
+    .slice(0, 120)
+    .map((x) => ({
+      id: String(x.id || "").slice(0, 80),
+      text: String(x.text || "").trim().slice(0, 200),
+      done: Boolean(x.done),
+      parent_id: x.parent_id == null ? null : String(x.parent_id || "").slice(0, 80)
+    }));
 
   const activeLaneIdx = inWorkMode ? getActiveReasoningLaneIndex() : null;
   const focusedLaneId = inWorkMode ? getFocusedWorkModeLaneId() : "";
@@ -4444,6 +4453,7 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
           ongoing_count: ongoing.length,
           completed_count: completed.length,
           ongoing_items: ongoing.slice(0, 8),
+          items: checklistSnapshotItems,
         }
       : null,
     reasoning:
@@ -13842,6 +13852,10 @@ function buildChecklistProposalFromMarkdown(markdown) {
     /(?:^|\n)#{1,6}\s*SYNC CHECKLIST\s*\n([\s\S]*?)(?=\n#{1,6}\s+|\s*$)/i
   );
   const source = syncBlockMatch ? syncBlockMatch[1] : full;
+  const hasExplicitSyncBlock = Boolean(syncBlockMatch);
+  const planishMarkdown = /\b(plan|schedule|outline|essay|draft|revise|revision|research|write|study|prepare|time\s*block|hour|deadline|due)\b/i.test(
+    full.slice(0, 5000)
+  );
   const rawLines = source.split("\n");
   const proposals = [];
   let currentTop = "";
@@ -13877,7 +13891,12 @@ function buildChecklistProposalFromMarkdown(markdown) {
         proposals.push({ depth: 1, text });
         subCountByTopText.set(topKey, cur + 1);
       } else {
-        if (!timeTitlePattern.test(text)) continue;
+        // Preferred plan output has `[time-time]: task` top-level bullets, but
+        // real planning turns sometimes produce normal bullets. If the markdown
+        // is explicitly a sync block, or the saved pending turn is clearly a
+        // plan, accept practical top-level bullets so the Sync button does not
+        // disappear after a useful plan.
+        if (!hasExplicitSyncBlock && !timeTitlePattern.test(text) && !planishMarkdown) continue;
         proposals.push({ depth: 0, text });
         currentTop = text;
         subCountByTopText.set(text.toLowerCase(), 0);
@@ -14625,7 +14644,7 @@ function shouldPlayMusicThisInvocation(payload, op) {
 function workModeReasoningDedupeKey(payload) {
   if (!payload || payload.panel_type !== "work_mode_reasoning") return "";
   const op = String(payload.op || "");
-  if (op === "open_new") return "open_new";
+  if (op === "open_new") return `open_new:${Math.max(1, Number(payload.count) || 1)}`;
   if (op === "activate" && payload.panel_index != null) {
     return `activate:${Number(payload.panel_index)}`;
   }
@@ -14755,7 +14774,8 @@ function applyActionPayload(data) {
     if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
     const op = payload.op || "";
     if (op === "open_new") {
-      addReasoningTab();
+      const count = Math.max(1, Math.min(REASONING_TABS_MAX, Number(payload.count) || 1));
+      for (let i = 0; i < count; i += 1) addReasoningTab();
       return;
     }
     if (op === "activate" && payload.panel_index != null) {
