@@ -300,6 +300,27 @@ function veraCheckTypedInputLength(text, intent, feature) {
   return out;
 }
 
+function logInputLimitDebug(fields = {}) {
+  try {
+    console.info("[INPUT_LIMIT_DEBUG]", {
+      raw_char_count: Number(fields.raw_char_count) || 0,
+      estimated_tokens: Number(fields.estimated_tokens) || 0,
+      input_surface: String(fields.input_surface || "keyboard"),
+      active_mode_before_submit: String(fields.active_mode_before_submit || appModePrefix() || ""),
+      work_mode_enabled_before_submit: Boolean(fields.work_mode_enabled_before_submit),
+      selected_limit: Number(fields.selected_limit) || 0,
+      blocked: Boolean(fields.blocked),
+      block_reason: String(fields.block_reason || ""),
+      route_attempted: Boolean(fields.route_attempted),
+      backend_call_attempted: Boolean(fields.backend_call_attempted),
+      reasoning_panel_started: Boolean(fields.reasoning_panel_started),
+      work_mode_enabled_after_submit: Boolean(fields.work_mode_enabled_after_submit),
+      did_toggle_work_mode: Boolean(fields.did_toggle_work_mode),
+      function_that_changed_work_mode: String(fields.function_that_changed_work_mode || "")
+    });
+  } catch (_) {}
+}
+
 /** Inline bubble used for any safety block (length or capability failure). */
 function veraShowSafetyFailureBubble(message) {
   try {
@@ -7799,6 +7820,8 @@ function applyWorkModeReasoningAttachmentFile(f) {
 const workModeReasoningLaneBusy = new Map();
 const workModeReasoningLaneWaitQueue = [];
 const workModeReasoningAbortControllers = new Map();
+const workModeReasoningFinalStatusByTurnId = new Map();
+const workModeReasoningFinalStatusByLaneId = new Map();
 /** Abort hung reasoning streams; idempotent cleanup is guarded separately. */
 const WORK_MODE_REASONING_WATCHDOG_MS = 110000;
 const workModeReasoningWatchdogByLaneIdx = new Map();
@@ -7848,12 +7871,68 @@ function getActiveReasoningLaneIndex() {
   return Number.isFinite(idx) ? idx : null;
 }
 
+function setWorkModeReasoningFinalStatus({ turnId, laneId, status, reason }) {
+  const row = {
+    turn_id: String(turnId || "").trim(),
+    lane_id: String(laneId || "").trim(),
+    status: String(status || "").trim() || "unknown",
+    reason: String(reason || "").trim(),
+    at: Date.now()
+  };
+  if (row.turn_id) workModeReasoningFinalStatusByTurnId.set(row.turn_id, row);
+  if (row.lane_id) workModeReasoningFinalStatusByLaneId.set(row.lane_id, row);
+  return row;
+}
+
+function getWorkModeReasoningFinalStatus(prep) {
+  const turnId = String(prep?.turnContext?.turn_id || "").trim();
+  const laneId = String(prep?.turnContext?.turn_lane_id || prep?.reasoningLaneId || "").trim();
+  let row = (turnId && workModeReasoningFinalStatusByTurnId.get(turnId)) || null;
+  if (!row && laneId) row = workModeReasoningFinalStatusByLaneId.get(laneId) || null;
+  if (!row && laneId) {
+    const panel = getReasoningPanelElementByLaneId(laneId);
+    const st = String(panel?.dataset?.generationStatus || "").trim();
+    if (st) row = { turn_id: turnId, lane_id: laneId, status: st, reason: "panel_dataset", at: 0 };
+  }
+  return row;
+}
+
+function logStage2ReasoningStatus(prep, statusRow, stage2Text, shouldSpeak, fallbackReason = "") {
+  try {
+    const status = String(statusRow?.status || "").trim();
+    console.info("[STAGE2_DEBUG][reasoning_status]", {
+      panel_id: statusRow?.lane_id || prep?.turnContext?.turn_lane_id || prep?.reasoningLaneId || null,
+      lane_id: statusRow?.lane_id || prep?.turnContext?.turn_lane_id || prep?.reasoningLaneId || null,
+      reasoning_status: status || "unknown",
+      was_cancelled: status === "cancelled" || status === "user_stopped",
+      was_error: /failed|error|timed_out|http|throw/i.test(status),
+      was_completed: status === "complete" || status === "completed",
+      stage2_text: String(stage2Text || "").slice(0, 240),
+      stage2_should_speak: Boolean(shouldSpeak),
+      fallback_reason: String(fallbackReason || statusRow?.reason || "")
+    });
+  } catch (_) {}
+}
+
 function cancelWorkModeReasoningLane(idx) {
   const laneIdx = Number(idx);
   const ctl = workModeReasoningAbortControllers.get(laneIdx);
   if (!ctl) return false;
   const reasoningLaneId = getWorkModeReasoningLaneId(laneIdx);
   const turnId = workModeReasoningStreamTurnByLaneId[String(reasoningLaneId || "")];
+  setWorkModeReasoningFinalStatus({
+    turnId,
+    laneId: reasoningLaneId,
+    status: "cancelled",
+    reason: "user_cancelled"
+  });
+  try {
+    const panel = getReasoningPanelElementByLaneId(reasoningLaneId);
+    if (panel instanceof HTMLElement) {
+      panel.dataset.generationStatus = "cancelled";
+      panel.dataset.generating = "0";
+    }
+  } catch (_) {}
   try {
     console.info("[turn_cancel_request]", {
       turn_id: turnId || null,
@@ -10111,6 +10190,8 @@ function clearWorkModeLaneRegistry() {
   for (const k of Object.keys(workModeStage2SameTurnByTurnId)) {
     delete workModeStage2SameTurnByTurnId[k];
   }
+  workModeReasoningFinalStatusByTurnId.clear();
+  workModeReasoningFinalStatusByLaneId.clear();
   activeWorkModeReasoningContext = null;
 }
 
@@ -12237,6 +12318,29 @@ function resolveEffectiveStage2Reply(prep, generatedReply, ttsStage) {
   if ((ttsStage ?? 2) !== 2 || !prep?.voiceTwoStage?.reasoningRouted) {
     return passthrough;
   }
+  const finalStatus = getWorkModeReasoningFinalStatus(prep);
+  const finalStatusName = String(finalStatus?.status || "").trim().toLowerCase();
+  if (finalStatusName === "cancelled" || finalStatusName === "user_stopped") {
+    const stopped = "I stopped that reasoning request.";
+    logStage2ReasoningStatus(prep, finalStatus, stopped, false, "reasoning_cancelled");
+    return {
+      effective_stage2_reply: stopped,
+      generated_stage2_text,
+      used_override: true,
+      override_reason: "reasoning_cancelled"
+    };
+  }
+  if (finalStatusName && /failed|error|timed_out/.test(finalStatusName)) {
+    const failed = VERA_SAFETY_LIMITS.messages.llmFailure;
+    logStage2ReasoningStatus(prep, finalStatus, failed, false, "reasoning_failed");
+    return {
+      effective_stage2_reply: failed,
+      generated_stage2_text,
+      used_override: true,
+      override_reason: "reasoning_failed"
+    };
+  }
+  logStage2ReasoningStatus(prep, finalStatus, generated_stage2_text, true, "");
   const detected = getWorkModeStage2ResultStatusFromPrep(prep);
   if (shouldUseCannedStage2SpokenLine(detected.status, detected)) {
     const fixed = buildWorkModeStage2SpokenLine(
@@ -12900,13 +13004,26 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       reasoningLifecycleReleased = true;
       clearWorkModeReasoningWatchdog(laneIdx);
       const st = reason || (laneAbortController.signal.aborted ? "cancelled" : "completed");
+      const finalStatus =
+        st === "stream_completed" || st === "completed"
+          ? "complete"
+          : laneAbortController.signal.aborted || st === "cancelled"
+            ? "cancelled"
+            : /failed|error|throw|timed_out|no_|http/i.test(st)
+              ? "failed"
+              : st;
+      setWorkModeReasoningFinalStatus({
+        turnId: turnIdForLifecycle,
+        laneId: streamLaneId,
+        status: finalStatus,
+        reason: st
+      });
       try {
         const panel = getReasoningPanelElementByLaneId(streamLaneId);
         if (panel instanceof HTMLElement) {
           panel.dataset.generating = "0";
           if (String(panel.dataset.generationStatus || "") !== "complete") {
-            panel.dataset.generationStatus =
-              st === "stream_completed" || st === "completed" ? "complete" : st;
+            panel.dataset.generationStatus = finalStatus;
           }
         }
       } catch (_) {}
@@ -14450,6 +14567,19 @@ function getWorkChecklistSyncSourceCandidate() {
   const candidates = getWorkModeReasoningMarkdownCandidates();
   for (const cand of candidates) {
     const rows = buildChecklistProposalFromMarkdown(cand.markdown);
+    logPlanSyncDebug("parse", {
+      panel_id: cand?.meta?.panel_id || null,
+      lane_id: cand?.meta?.lane_id || null,
+      panel_title: cand?.meta?.panel_title || "",
+      source: cand?.source || "",
+      markdown_length: String(cand?.markdown || "").length,
+      has_sync_heading: /(?:^|\n)\s*(?:#{1,6}\s*)?(?:SYNC CHECKLIST|Checklist|Plan checklist|Tasks)\b/i.test(
+        String(cand?.markdown || "")
+      ),
+      sync_candidate_count: rows.length,
+      candidates_preview: planSyncPreviewRows(rows),
+      reason_if_zero: rows.length ? "" : "no_parseable_bullets_in_candidate"
+    });
     if (rows.length > 0) {
       return { ...cand, rows };
     }
@@ -14641,10 +14771,31 @@ function setWorkChecklistSyncPreviewEditing(editing) {
 function showWorkChecklistSyncPreview(text) {
   const panel = document.getElementById("vera-wm-checklist-sync-preview");
   const textarea = document.getElementById("vera-wm-checklist-sync-preview-text");
-  if (!(panel instanceof HTMLElement) || !(textarea instanceof HTMLTextAreaElement)) return;
+  const rows = parseChecklistProposalText(text);
+  if (!(panel instanceof HTMLElement) || !(textarea instanceof HTMLTextAreaElement)) {
+    logPlanSyncDebug("preview_open", {
+      preview_visible: false,
+      candidate_count: rows.filter((x) => x && String(x.text || "").trim()).length,
+      preview_items_preview: rows
+        .filter((x) => x && String(x.text || "").trim())
+        .slice(0, 6)
+        .map((x) => String(x.text || "").trim()),
+      reason_if_not_opened: "missing_preview_dom"
+    });
+    return;
+  }
   textarea.value = String(text || "").slice(0, WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS);
   panel.hidden = false;
   setWorkChecklistSyncPreviewEditing(false);
+  logPlanSyncDebug("preview_open", {
+    preview_visible: !panel.hidden,
+    candidate_count: rows.filter((x) => x && String(x.text || "").trim()).length,
+    preview_items_preview: rows
+      .filter((x) => x && String(x.text || "").trim())
+      .slice(0, 6)
+      .map((x) => String(x.text || "").trim()),
+    reason_if_not_opened: panel.hidden ? "panel_hidden_after_open" : ""
+  });
 }
 
 function hideWorkChecklistSyncPreview() {
@@ -14655,10 +14806,26 @@ function hideWorkChecklistSyncPreview() {
 
 function applyWorkChecklistSyncPreview() {
   const textarea = document.getElementById("vera-wm-checklist-sync-preview-text");
-  if (!(textarea instanceof HTMLTextAreaElement)) return false;
+  if (!(textarea instanceof HTMLTextAreaElement)) {
+    logPlanSyncDebug("accept_apply", {
+      accepted: false,
+      inserted_count: 0,
+      checklist_count_before: readChecklistItemsFromStorageSafe().filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_after: readChecklistItemsFromStorageSafe().filter((x) => x && String(x.text || "").trim()).length,
+      reason_if_failed: "missing_preview_textarea"
+    });
+    return false;
+  }
   const beforeItems = readChecklistItemsFromStorageSafe();
   const items = parseChecklistProposalText(textarea.value);
   if (!items.length) {
+    logPlanSyncDebug("accept_apply", {
+      accepted: false,
+      inserted_count: 0,
+      checklist_count_before: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_after: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
+      reason_if_failed: "preview_parse_empty"
+    });
     flashWorkChecklistPlanHint("Nothing to apply. Keep '-' bullets in the proposal.");
     return false;
   }
@@ -14680,12 +14847,26 @@ function applyWorkChecklistSyncPreview() {
       source_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
       source_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || ""
     });
+    logPlanSyncDebug("accept_apply", {
+      accepted: true,
+      inserted_count: items.filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_before: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_after: items.filter((x) => x && String(x.text || "").trim()).length,
+      reason_if_failed: ""
+    });
     workChecklistSyncPendingMarkdown = "";
     workChecklistSyncPendingPlanMeta = null;
     syncWorkChecklistSyncPlanButton();
     flashWorkChecklistPlanHint("Checklist updated from plan.");
     return true;
-  } catch (_) {
+  } catch (err) {
+    logPlanSyncDebug("accept_apply", {
+      accepted: false,
+      inserted_count: 0,
+      checklist_count_before: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_after: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
+      reason_if_failed: String(err?.message || err || "apply_throw").slice(0, 200)
+    });
     flashWorkChecklistPlanHint("Could not update checklist from plan.");
     return false;
   }
@@ -14717,6 +14898,13 @@ function runWorkChecklistSyncFromLatestPlan() {
   const selected = getWorkChecklistSyncSourceCandidate();
   const activeLaneId = getActiveDomReasoningLaneId();
   if (!selected?.markdown) {
+    logPlanSyncDebug("button_click", {
+      sync_button_enabled: !Boolean(document.getElementById("vera-wm-checklist-sync-plan")?.disabled),
+      panel_id: null,
+      lane_id: null,
+      sync_candidate_count: 0,
+      clicked: true
+    });
     logPlanSyncDebug("voice_sync_request", {
       user_text: "",
       active_panel_id: activeLaneId || null,
@@ -14733,6 +14921,13 @@ function runWorkChecklistSyncFromLatestPlan() {
   }
   const rows = selected.rows || buildChecklistProposalFromMarkdown(selected.markdown);
   if (!rows.length) {
+    logPlanSyncDebug("button_click", {
+      sync_button_enabled: !Boolean(document.getElementById("vera-wm-checklist-sync-plan")?.disabled),
+      panel_id: selected.meta?.panel_id || null,
+      lane_id: selected.meta?.lane_id || null,
+      sync_candidate_count: 0,
+      clicked: true
+    });
     logPlanSyncDebug("voice_sync_request", {
       user_text: "",
       active_panel_id: activeLaneId || null,
@@ -14747,6 +14942,13 @@ function runWorkChecklistSyncFromLatestPlan() {
     flashWorkChecklistPlanHint("Could not parse checklist bullets from the visible plan.");
     return false;
   }
+  logPlanSyncDebug("button_click", {
+    sync_button_enabled: !Boolean(document.getElementById("vera-wm-checklist-sync-plan")?.disabled),
+    panel_id: selected.meta?.panel_id || null,
+    lane_id: selected.meta?.lane_id || null,
+    sync_candidate_count: rows.length,
+    clicked: true
+  });
   // Bind the visible/rendered fallback source as the current plan source so
   // Apply and voice-sync logs point at the panel that actually supplied rows.
   workChecklistSyncPendingMarkdown = selected.markdown;
@@ -14975,15 +15177,34 @@ function wireWorkModeChecklistAndComposer() {
   });
 
   const submitWorkModeReasoningComposer = async () => {
-    const t = ri?.value.trim() ?? "";
+    const rawT = ri?.value ?? "";
+    const t = rawT.trim();
     const files = getWorkModePendingAttachmentFiles();
     if (!t && !files.length) return;
     if (!isVeraWorkModeOn()) return;
     /* Safety: reasoning composer gets the larger workReasoning cap.
        Length check runs before the hard-cap so users see the proper reason. */
     if (t) {
-      const lenBlock = veraCheckTypedInputLength(t, "work_reasoning", "keyboard");
+      const modeBeforeSubmit = appModePrefix();
+      const workModeBeforeSubmit = isVeraWorkModeOn();
+      const lenBlock = veraCheckTypedInputLength(rawT, "work_reasoning", "keyboard");
       if (lenBlock) {
+        logInputLimitDebug({
+          raw_char_count: rawT.length,
+          estimated_tokens: lenBlock.estimated_tokens,
+          input_surface: "work_mode_reasoning_composer",
+          active_mode_before_submit: modeBeforeSubmit,
+          work_mode_enabled_before_submit: workModeBeforeSubmit,
+          selected_limit: lenBlock.char_limit,
+          blocked: true,
+          block_reason: lenBlock.reason,
+          route_attempted: false,
+          backend_call_attempted: false,
+          reasoning_panel_started: false,
+          work_mode_enabled_after_submit: isVeraWorkModeOn(),
+          did_toggle_work_mode: workModeBeforeSubmit !== isVeraWorkModeOn(),
+          function_that_changed_work_mode: ""
+        });
         veraShowSafetyFailureBubble(lenBlock.message);
         veraSetSafetyStatus("Reasoning prompt too long — shorten or upload as a file");
         preserveComposerAttachments("typed_length_cap_reached", null);
@@ -19871,7 +20092,8 @@ async function handleUtterance() {
  * reasoning-stream prep via maybePrepareWorkModeReasoning), not the separate `/text` handler.
  */
 async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
-  const trimmed = String(text ?? "").trim();
+  const rawText = String(text ?? "");
+  const trimmed = rawText.trim();
   const path = opts.path || "work-typed";
   const fromQueue = Boolean(opts.__fromQueue);
   const fromPanelQueue = Boolean(opts.__fromReasoningPanelQueue);
@@ -19882,6 +20104,32 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   const pendingFiles =
     fromQueue || fromPanelQueue ? queuedFiles : getWorkModePendingAttachmentFiles();
   if ((!trimmed && !pendingFiles.length) || !isVeraWorkModeOn() || appModePrefix() !== "vera") return;
+
+  const modeBeforeSubmit = appModePrefix();
+  const workModeBeforeSubmit = isVeraWorkModeOn();
+  const hardWorkLimit = VERA_SAFETY_LIMITS.charLimits.workReasoning;
+  if (!fromQueue && !fromPanelQueue && rawText.length > hardWorkLimit) {
+    logInputLimitDebug({
+      raw_char_count: rawText.length,
+      estimated_tokens: Math.ceil(rawText.length / 4),
+      input_surface: path || "work-typed",
+      active_mode_before_submit: modeBeforeSubmit,
+      work_mode_enabled_before_submit: workModeBeforeSubmit,
+      selected_limit: hardWorkLimit,
+      blocked: true,
+      block_reason: "work_mode_typed_char_limit",
+      route_attempted: false,
+      backend_call_attempted: false,
+      reasoning_panel_started: false,
+      work_mode_enabled_after_submit: isVeraWorkModeOn(),
+      did_toggle_work_mode: workModeBeforeSubmit !== isVeraWorkModeOn(),
+      function_that_changed_work_mode: ""
+    });
+    veraShowSafetyFailureBubble(VERA_SAFETY_LIMITS.messages.inputTooLongKeyboard);
+    veraSetSafetyStatus("Message too long — shorten or upload as a file");
+    preserveComposerAttachments("typed_length_cap_reached", null);
+    return;
+  }
 
   const statusLine = uiEl("status");
   if (statusLine?.classList.contains("offline")) {
@@ -19933,12 +20181,26 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   /* Safety length cap (defense in depth for any caller that bypasses the
      UI-side guard). Use the reasoning limit when the path indicates the
      prompt is heading into a reasoning panel, otherwise the chat limit. */
-  if (!fromQueue && trimmed) {
-    const intent = String(path || "").includes("reasoning")
-      ? "work_reasoning"
-      : "work_command";
+  if (!fromQueue && !fromPanelQueue && trimmed) {
+    const intent = "work_reasoning";
     const lenBlock = veraCheckTypedInputLength(trimmed, intent, "keyboard");
     if (lenBlock) {
+      logInputLimitDebug({
+        raw_char_count: rawText.length,
+        estimated_tokens: lenBlock.estimated_tokens,
+        input_surface: path || "work-typed",
+        active_mode_before_submit: modeBeforeSubmit,
+        work_mode_enabled_before_submit: workModeBeforeSubmit,
+        selected_limit: lenBlock.char_limit,
+        blocked: true,
+        block_reason: lenBlock.reason,
+        route_attempted: false,
+        backend_call_attempted: false,
+        reasoning_panel_started: false,
+        work_mode_enabled_after_submit: isVeraWorkModeOn(),
+        did_toggle_work_mode: workModeBeforeSubmit !== isVeraWorkModeOn(),
+        function_that_changed_work_mode: ""
+      });
       veraShowSafetyFailureBubble(lenBlock.message);
       veraSetSafetyStatus("Message too long — shorten or upload as a file");
       preserveComposerAttachments("typed_length_cap_reached", null);
@@ -20148,7 +20410,8 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
 async function sendTextMessage() {
   const textInput = uiEl("text-input");
   const statusLine = uiEl("status");
-  const text = textInput?.value.trim() ?? "";
+  const rawText = textInput?.value ?? "";
+  const text = rawText.trim();
   const inVeraWorkMode = isVeraWorkModeOn() && appModePrefix() === "vera";
 
   // 🔑 recover from offline
@@ -20162,8 +20425,26 @@ async function sendTextMessage() {
   if (!text) return;
   if (inVeraWorkMode) {
     /* Safety: length cap BEFORE any state mutation so the user can edit + retry. */
-    const lenBlock = veraCheckTypedInputLength(text, "work_command", "keyboard");
+    const modeBeforeSubmit = appModePrefix();
+    const workModeBeforeSubmit = isVeraWorkModeOn();
+    const lenBlock = veraCheckTypedInputLength(rawText, "work_reasoning", "keyboard");
     if (lenBlock) {
+      logInputLimitDebug({
+        raw_char_count: rawText.length,
+        estimated_tokens: lenBlock.estimated_tokens,
+        input_surface: "main_work_mode_text_input",
+        active_mode_before_submit: modeBeforeSubmit,
+        work_mode_enabled_before_submit: workModeBeforeSubmit,
+        selected_limit: lenBlock.char_limit,
+        blocked: true,
+        block_reason: lenBlock.reason,
+        route_attempted: false,
+        backend_call_attempted: false,
+        reasoning_panel_started: false,
+        work_mode_enabled_after_submit: isVeraWorkModeOn(),
+        did_toggle_work_mode: workModeBeforeSubmit !== isVeraWorkModeOn(),
+        function_that_changed_work_mode: ""
+      });
       veraShowSafetyFailureBubble(lenBlock.message);
       veraSetSafetyStatus("Message too long — shorten or upload as a file");
       return;
