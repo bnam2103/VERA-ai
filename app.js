@@ -2,14 +2,14 @@
    STARTUP BANNER — proves this build of app.js actually loaded.
    If you do NOT see this line in DevTools console after a hard refresh,
    the browser is still serving an older cached copy (check Network tab:
-   app.js?v=50 should be the URL).
+   app.js?v=51 should be the URL).
 ========================= */
 try {
   // Use console.warn so it shows up even when the DevTools console level
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v50 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
+    "%c[VERA] app.js build v51 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -2576,13 +2576,62 @@ function freeMusicOrderedTracks(prefix, playlist) {
   return out.length === base.length ? out : base;
 }
 
+function freeMusicTrackId(track) {
+  return String(track?.url || track?.id || track?.name || track?.filename || "").trim();
+}
+
+function logFreeMusicQueueDebug(kind, payload = {}) {
+  try {
+    console.info(`[MUSIC_QUEUE_DEBUG][${kind}]`, payload);
+  } catch (_) {}
+}
+
+function freeMusicPlaylistTracksEl(prefix, playlistId) {
+  const sid = freeMusicDomIdSafe(playlistId);
+  const byId = document.getElementById(`${prefix}-free-pl-tracks-${sid}`);
+  if (byId instanceof HTMLElement) return byId;
+  const safePlaylistId =
+    typeof CSS !== "undefined" && typeof CSS.escape === "function"
+      ? CSS.escape(String(playlistId || ""))
+      : String(playlistId || "").replace(/"/g, '\\"');
+  const card = document.querySelector(
+    `[data-productivity-root="${prefix}"] .free-music-playlist-card[data-free-playlist-id="${safePlaylistId}"]`
+  );
+  return card?.querySelector(".free-music-playlist-tracks") || null;
+}
+
+function freeMusicVisibleOrderUrls(prefix, playlistId) {
+  const tracksEl = freeMusicPlaylistTracksEl(prefix, playlistId);
+  if (!(tracksEl instanceof HTMLElement)) return null;
+  const urls = [...tracksEl.querySelectorAll(".free-music-track-row[data-free-track-url]")]
+    .map((r) => r.getAttribute("data-free-track-url") || "")
+    .filter(Boolean);
+  return urls.length ? urls : null;
+}
+
+function freeMusicTracksInVisibleOrder(prefix, playlist) {
+  const base = Array.isArray(playlist?.tracks) ? playlist.tracks.slice() : [];
+  const playlistId = String(playlist?.id || "");
+  if (!base.length || !playlistId) return base;
+  const visible = freeMusicVisibleOrderUrls(prefix, playlistId);
+  if (!visible?.length) return freeMusicOrderedTracks(prefix, playlist);
+  const byUrl = new Map(base.map((t) => [String(t.url || ""), t]));
+  const out = [];
+  for (const url of visible) {
+    const track = byUrl.get(String(url));
+    if (track) out.push(track);
+  }
+  return out.length ? out : freeMusicOrderedTracks(prefix, playlist);
+}
+
 function freeMusicPersistOrderFromDom(prefix, playlistId, tracksEl) {
-  if (!tracksEl) return;
+  if (!tracksEl) return [];
   const urls = [...tracksEl.querySelectorAll(".free-music-track-row[data-free-track-url]")]
     .map((r) => r.getAttribute("data-free-track-url") || "")
     .filter(Boolean);
   const pl = findFreeMusicPlaylist(prefix, playlistId);
   if (pl && urls.length === (pl.tracks || []).length) freeMusicWriteStoredOrder(prefix, playlistId, urls);
+  return urls;
 }
 
 function freeMusicDomIdSafe(s) {
@@ -2665,6 +2714,7 @@ function wireFreeMusicCatalogInteractions(prefix) {
   window.__veraFreeMusicListAbort[prefix] = ac;
   const { signal } = ac;
   let dragRow = null;
+  let dragOldOrder = [];
 
   cat.addEventListener(
     "click",
@@ -2721,6 +2771,12 @@ function wireFreeMusicCatalogInteractions(prefix) {
       const row = handle.closest(".free-music-track-row");
       if (!row || !cat.contains(row)) return;
       dragRow = row;
+      const tracksEl = row.closest(".free-music-playlist-tracks");
+      dragOldOrder = tracksEl instanceof HTMLElement
+        ? [...tracksEl.querySelectorAll(".free-music-track-row[data-free-track-url]")]
+            .map((r) => r.getAttribute("data-free-track-url") || "")
+            .filter(Boolean)
+        : [];
       row.classList.add("free-music-track-row--dragging");
       try {
         e.dataTransfer.effectAllowed = "move";
@@ -2736,6 +2792,7 @@ function wireFreeMusicCatalogInteractions(prefix) {
         el.classList.remove("free-music-track-row--dragging");
       });
       dragRow = null;
+      dragOldOrder = [];
     },
     { signal }
   );
@@ -2767,12 +2824,37 @@ function wireFreeMusicCatalogInteractions(prefix) {
       const pid = card?.getAttribute("data-free-playlist-id");
       const tracksEl = card?.querySelector(".free-music-playlist-tracks");
       if (pid && tracksEl) {
-        freeMusicPersistOrderFromDom(prefix, pid, tracksEl);
+        const currentSt = window.__veraFreeMusicPlayback;
+        const currentTrackId =
+          currentSt?.mode === "playlist"
+            ? String(currentSt.currentTrackId || freeMusicTrackId(currentSt.queue?.[Number(currentSt.index) || 0]) || "")
+            : "";
+        const currentIndexBefore = currentTrackId ? dragOldOrder.indexOf(currentTrackId) : -1;
+        const newOrder = freeMusicPersistOrderFromDom(prefix, pid, tracksEl);
         [...tracksEl.querySelectorAll(".free-music-track-row")].forEach((r, i) => {
           r.setAttribute("data-track-index", String(i));
         });
+        freeMusicRefreshPlaybackQueueFromVisibleOrder(prefix, pid, { debug: false });
+        const nextSt = window.__veraFreeMusicPlayback;
+        const currentIndexAfter =
+          currentTrackId && nextSt?.mode === "playlist"
+            ? (nextSt.queue || []).map(freeMusicTrackId).indexOf(currentTrackId)
+            : -1;
+        const nextTrack =
+          nextSt?.mode === "playlist" && nextSt.queue?.length
+            ? nextSt.queue[((Number(nextSt.index) || 0) + 1) % nextSt.queue.length]
+            : null;
+        logFreeMusicQueueDebug("reorder", {
+          old_order: dragOldOrder,
+          new_order: newOrder,
+          currently_playing_track_id: currentTrackId || null,
+          current_index_before: currentIndexBefore,
+          current_index_after: currentIndexAfter,
+          next_track_after_reorder: freeMusicTrackId(nextTrack) || null
+        });
       }
       dragRow = null;
+      dragOldOrder = [];
     },
     { signal }
   );
@@ -2790,6 +2872,75 @@ function syncFreeMusicTransportFlags() {
   const multi = st.queue.length > 1;
   st.canNext = multi;
   st.canPrev = multi;
+}
+
+function freeMusicRefreshPlaybackQueueFromVisibleOrder(prefix, playlistId, { debug = true } = {}) {
+  const st = window.__veraFreeMusicPlayback;
+  if (!st || st.mode !== "playlist") return null;
+  const activePlaylistId = String(st.playlistId || "");
+  const pid = String(playlistId || activePlaylistId || "");
+  if (!pid || (activePlaylistId && activePlaylistId !== pid)) return null;
+  const playlist = findFreeMusicPlaylist(prefix, pid);
+  if (!playlist) return null;
+  const oldQueue = Array.isArray(st.queue) ? st.queue.slice() : [];
+  const oldOrder = oldQueue.map(freeMusicTrackId);
+  const currentTrackId = String(st.currentTrackId || freeMusicTrackId(oldQueue[Number(st.index) || 0]) || "");
+  const currentIndexBefore = currentTrackId ? oldOrder.indexOf(currentTrackId) : -1;
+  const tracks = freeMusicTracksInVisibleOrder(prefix, playlist);
+  const newQueue = tracks.map((t) => ({ url: t.url, name: t.name || t.filename || "" }));
+  const newOrder = newQueue.map(freeMusicTrackId);
+  const currentIndexAfter = currentTrackId ? newOrder.indexOf(currentTrackId) : -1;
+  const a = document.getElementById(`${prefix}-free-music-audio`);
+  st.playlistId = pid;
+  st.queue = newQueue;
+  if (currentIndexAfter >= 0) {
+    st.index = currentIndexAfter;
+    st.currentTrackId = currentTrackId;
+  } else {
+    st.index = 0;
+    st.currentTrackId = freeMusicTrackId(newQueue[0]) || "";
+    if (a && !a.paused && newQueue[0]?.url) {
+      void freeMusicPlayQueueIndex(prefix, 0);
+    } else if (!newQueue.length) {
+      stopBuiltinFreeMusic(prefix);
+    }
+  }
+  syncFreeMusicTransportFlags();
+  freeMusicSyncNowFromAudio(prefix);
+  const nextTrack = newQueue.length
+    ? newQueue[((Number(st.index) || 0) + 1) % newQueue.length]
+    : null;
+  if (debug) {
+    logFreeMusicQueueDebug("reorder", {
+      old_order: oldOrder,
+      new_order: newOrder,
+      currently_playing_track_id: currentTrackId || null,
+      current_index_before: currentIndexBefore,
+      current_index_after: currentIndexAfter,
+      next_track_after_reorder: freeMusicTrackId(nextTrack) || null
+    });
+  }
+  return st;
+}
+
+function freeMusicGetAdjacentQueueIndex(prefix, direction) {
+  let st = window.__veraFreeMusicPlayback;
+  if (!st || st.mode !== "playlist" || !st.queue?.length) return null;
+  if (st.playlistId) st = freeMusicRefreshPlaybackQueueFromVisibleOrder(prefix, st.playlistId, { debug: false }) || st;
+  if (!st.queue?.length) return null;
+  const visibleOrder = st.queue.map(freeMusicTrackId);
+  const currentTrackId = String(st.currentTrackId || freeMusicTrackId(st.queue[Number(st.index) || 0]) || "");
+  let currentIndex = currentTrackId ? visibleOrder.indexOf(currentTrackId) : -1;
+  if (currentIndex < 0) currentIndex = Math.max(0, Math.min(st.queue.length - 1, Number(st.index) || 0));
+  const delta = direction === "previous" ? -1 : 1;
+  const nextIndex = (currentIndex + delta + st.queue.length) % st.queue.length;
+  const target = st.queue[nextIndex];
+  logFreeMusicQueueDebug(direction === "previous" ? "previous" : "next", {
+    visible_order: visibleOrder,
+    current_track_id: currentTrackId || null,
+    [direction === "previous" ? "previous_track_id" : "next_track_id"]: freeMusicTrackId(target) || null
+  });
+  return nextIndex;
 }
 
 function freeMusicSyncNowFromAudio(prefix) {
@@ -2831,6 +2982,7 @@ async function freeMusicPlayQueueIndex(prefix, index) {
   const i = Math.max(0, Math.min(st.queue.length - 1, index));
   st.index = i;
   const item = st.queue[i];
+  st.currentTrackId = freeMusicTrackId(item);
   a.src = freeMusicAbsUrl(item.url);
   a.volume = Math.min(1, Math.max(0, spotifyGetVolume()));
   await a.play().catch(() => {});
@@ -2839,17 +2991,20 @@ async function freeMusicPlayQueueIndex(prefix, index) {
 
 async function playFreeMusicPlaylistFrom(prefix, playlist, startIndex) {
   await pauseSpotifyLayersForBuiltin(prefix);
-  const tracks = freeMusicOrderedTracks(prefix, playlist);
+  const tracks = freeMusicTracksInVisibleOrder(prefix, playlist);
   if (!tracks.length) return;
   const a = document.getElementById(`${prefix}-free-music-audio`);
   if (!a) return;
   a.loop = false;
   const i0 = Math.max(0, Math.min(tracks.length - 1, Number(startIndex) || 0));
+  const playlistId = String(playlist.id || "");
   window.__veraFreeMusicPlayback = {
     mode: "playlist",
+    playlistId,
     playlistTitle: String(playlist.title || playlist.id || "Playlist"),
     queue: tracks.map((t) => ({ url: t.url, name: t.name || t.filename || "" })),
     index: i0,
+    currentTrackId: freeMusicTrackId(tracks[i0]),
     loopOne: false
   };
   syncFreeMusicTransportFlags();
@@ -2993,7 +3148,8 @@ function wireFreeMusicAudioElement(prefix) {
     const st = window.__veraFreeMusicPlayback;
     if (!st) return;
     if (st.mode === "playlist" && st.queue.length > 1) {
-      const next = ((Number(st.index) || 0) + 1) % st.queue.length;
+      const next = freeMusicGetAdjacentQueueIndex(prefix, "next");
+      if (next == null) return;
       void freeMusicPlayQueueIndex(prefix, next);
       return;
     }
@@ -5327,7 +5483,8 @@ function wireProductivityPanelEvents(prefix) {
     if (getProductivityMusicSource(prefix) === "builtin") {
       const st = window.__veraFreeMusicPlayback;
       if (st?.mode === "playlist" && st.queue?.length > 1) {
-        const next = ((Number(st.index) || 0) + 1) % st.queue.length;
+        const next = freeMusicGetAdjacentQueueIndex(prefix, "next");
+        if (next == null) return;
         void freeMusicPlayQueueIndex(prefix, next);
       }
       return;
@@ -5345,7 +5502,8 @@ function wireProductivityPanelEvents(prefix) {
           freeMusicSyncNowFromAudio(prefix);
           return;
         }
-        const prev = ((Number(st.index) || 0) + st.queue.length - 1) % st.queue.length;
+        const prev = freeMusicGetAdjacentQueueIndex(prefix, "previous");
+        if (prev == null) return;
         void freeMusicPlayQueueIndex(prefix, prev);
       }
       return;
