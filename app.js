@@ -9,7 +9,7 @@ try {
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v46 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
+    "%c[VERA] app.js build v48 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -15200,8 +15200,11 @@ function isWorkChecklistPlanShortcutIntent(text) {
 function isWorkChecklistSyncCommandIntent(text) {
   const t = String(text || "").toLowerCase().trim();
   if (!t) return false;
-  if (!/\b(sync|synced|synchroniz(?:e|ed|ing))\b/.test(t)) return false;
   const compact = t.replace(/\s+/g, " ");
+  const hasSyncVerb = /\b(sync|synced|synchroniz(?:e|ed|ing))\b/.test(t);
+  const hasChecklistWord = /\b(check\s*list|checklist|to-?do|todo|task\s*list|my\s+tasks?)\b/.test(t);
+  const hasPlanWord = /\b(plan|planning|reasoning|schedule|tasks?)\b/.test(t);
+  const hasApplyVerb = /\b(add|apply|copy|load|import|move|pull|put|send|turn|transfer|update|use)\b/.test(t);
   if (
     /^(hey\s+vera[,!\s]+)?(please\s+|can\s+you\s+|will\s+you\s+|could\s+you\s+|would\s+you\s+)?(just\s+)?sync(\s+(it|that|this|now))?\s*[.?!]*$/i.test(
       compact
@@ -15211,17 +15214,58 @@ function isWorkChecklistSyncCommandIntent(text) {
   }
   if (/^sync(\s+(it|that|this|now))?\s*[.?!]*$/i.test(compact)) return true;
   if (/\bsync\s+(that|it|this)\b/.test(t)) return true;
-  const checklistWord = /\b(check\s*list|checklist|to-?do|todo|task\s*list|my\s+tasks?)\b/;
-  if (checklistWord.test(t)) return true;
-  if (/\b(sync|synchroniz).{0,160}\b(from|with)\s+(my\s+)?(plan|reasoning)\b/.test(t)) return true;
-  if (/\b(sync|synchroniz).{0,120}\b(the\s+)?plan\b/.test(t)) return true;
+  if (hasSyncVerb && (hasChecklistWord || hasPlanWord)) return true;
+  if (hasSyncVerb && /\b(from|with)\s+(my\s+)?(plan|reasoning)\b/.test(t)) return true;
+  if (hasSyncVerb && /\b(the\s+)?plan\b/.test(t)) return true;
+  if (hasApplyVerb && hasChecklistWord && /\b(plan|reasoning|that|this|it)\b/.test(t)) return true;
+  if (/\b(make|create|fill|populate)\b.{0,80}\b(check\s*list|checklist|to-?do|todo|task\s*list)\b.{0,80}\b(from|with|using)\b.{0,40}\b(plan|reasoning|that|this|it)\b/.test(t)) {
+    return true;
+  }
   return false;
 }
 
 async function maybeHandleWorkChecklistSyncShortcut(text) {
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
-  if (!isWorkChecklistSyncCommandIntent(text)) return false;
   const userText = String(text || "").trim();
+  const inWorkMode = isVeraWorkModeOn();
+  const mode = appModePrefix();
+  const looksRelevant = /\b(sync|synced|synchroniz|check\s*list|checklist|to-?do|todo|task\s*list|plan|reasoning)\b/i.test(
+    userText
+  );
+  if (!inWorkMode || mode !== "vera") {
+    if (looksRelevant) {
+      logPlanSyncDebug("shortcut_gate", {
+        user_text: userText,
+        matched_intent: false,
+        handled: false,
+        reason_if_ignored: !inWorkMode ? "not_in_work_mode" : "not_vera_mode",
+        in_work_mode: inWorkMode,
+        app_mode: mode
+      });
+    }
+    return false;
+  }
+  const matchedIntent = isWorkChecklistSyncCommandIntent(userText);
+  if (!matchedIntent) {
+    if (looksRelevant) {
+      logPlanSyncDebug("shortcut_gate", {
+        user_text: userText,
+        matched_intent: false,
+        handled: false,
+        reason_if_ignored: "sync_intent_regex_no_match",
+        in_work_mode: inWorkMode,
+        app_mode: mode
+      });
+    }
+    return false;
+  }
+  logPlanSyncDebug("shortcut_gate", {
+    user_text: userText,
+    matched_intent: true,
+    handled: true,
+    reason_if_ignored: "",
+    in_work_mode: inWorkMode,
+    app_mode: mode
+  });
   const ctx = describePlanSyncActiveContext();
   const selected = getWorkChecklistSyncSourceCandidate();
   logPlanSyncDebug("voice_sync_request", {
@@ -15385,6 +15429,12 @@ function wireWorkModeChecklistAndComposer() {
     const files = getWorkModePendingAttachmentFiles();
     if (!t && !files.length) return;
     if (!isVeraWorkModeOn()) return;
+    if (t && !files.length && (await maybeHandleWorkChecklistSyncShortcut(t))) {
+      if (ri) ri.value = "";
+      closeWorkModeAttachmentPreviewModal();
+      setWorkModeAttachmentMeta("");
+      return;
+    }
     /* Safety: reasoning composer gets the larger workReasoning cap.
        Length check runs before the hard-cap so users see the proper reason. */
     if (t) {
@@ -20627,6 +20677,12 @@ async function sendTextMessage() {
 
   if (!text) return;
   if (inVeraWorkMode) {
+    if (await maybeHandleWorkChecklistSyncShortcut(text)) {
+      if (textInput) textInput.value = "";
+      setStatus("Ready", "idle");
+      updateMuteInputButton();
+      return;
+    }
     /* Safety: length cap BEFORE any state mutation so the user can edit + retry. */
     const modeBeforeSubmit = appModePrefix();
     const workModeBeforeSubmit = isVeraWorkModeOn();
