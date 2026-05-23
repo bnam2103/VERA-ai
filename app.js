@@ -390,6 +390,146 @@ function veraShowCapabilityFailureBubble(feature, message, opts = {}) {
 }
 
 /* =========================
+   PENDING STATUS BUBBLES (slow external/tool requests)
+   ========================= */
+
+/**
+ * Heuristic for "this typed/voice utterance is going to trigger Serper /
+ * news.latest". We can't ask the server (the whole point is to show feedback
+ * before the network round-trip), so this stays simple — false positives are
+ * cheap: the bubble vanishes the moment a real reply arrives.
+ */
+function looksLikeNewsSearchRequest(text) {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return false;
+  if (/\b(?:latest|breaking|recently|right now|today|tonight)\b/.test(raw) && /\b(?:news|update|story|stories|headline|headlines)\b/.test(raw))
+    return true;
+  if (/\b(?:headlines?|articles?)\b/.test(raw)) return true;
+  if (/\bsources?\??\s*$/.test(raw)) return true;
+  if (/\bdo you have (?:any )?sources?\b/.test(raw)) return true;
+  if (/\bshow\s+(?:me\s+)?(?:the\s+)?(?:sources?|articles?|news|headlines?|the link)\b/.test(raw)) return true;
+  if (/\bwhat(?:'?s| is)\s+(?:happening|going on)\s+with\b/.test(raw)) return true;
+  if (/\bwhat\s+(?:happened|happens)\b/.test(raw)) return true;
+  if (/\blatest\s+(?:on|about|for|news on|news about)\b/.test(raw)) return true;
+  if (/\bany\s+(?:news|updates?)\b/.test(raw)) return true;
+  if (/\btell\s+me\s+(?:about\s+)?(?:the\s+)?(?:news|latest|recent)\b/.test(raw)) return true;
+  if (/\bwhat\s+(?:is|are)\s+the\s+latest\b/.test(raw)) return true;
+  if (/\bcan\s+you\s+(?:search|google|look\s+up)\b/.test(raw)) return true;
+  if (/\bdid\s+(?:he|she|they|it|that)\s+(?:happen|do)\b/.test(raw)) return false; // pronoun follow-up — covered by news follow-up resolver, no need for new bubble
+  return false;
+}
+
+let pendingNewsStatusBubble = null;
+let pendingNewsStatusTimerId = null;
+const PENDING_NEWS_STATUS_TIMEOUT_MS = 25000;
+const PENDING_NEWS_STATUS_TEXT = "Searching news…";
+
+function _clearPendingNewsStatusTimer() {
+  if (pendingNewsStatusTimerId != null) {
+    try { clearTimeout(pendingNewsStatusTimerId); } catch (_) {}
+    pendingNewsStatusTimerId = null;
+  }
+}
+
+/**
+ * Show a "Searching news…" bubble if `userText` looks like a news/search ask.
+ * The bubble is text-only (never enqueued to TTS) and not persisted to chat
+ * state (it's transient by design). Auto-replaces with the search/news
+ * failure message after PENDING_NEWS_STATUS_TIMEOUT_MS so it can never get
+ * stuck forever. Returns the bubble element or null when nothing was shown.
+ */
+function armPendingNewsStatusBubble(userText, { force = false } = {}) {
+  if (!force && !looksLikeNewsSearchRequest(userText)) return null;
+  const utteranceKey = String(userText || "").trim().toLowerCase();
+  // Idempotent: NDJSON `meta.transcript` can fire more than once with the
+  // same text — keep the existing bubble (and timer) instead of flashing
+  // a new one in its place.
+  if (
+    pendingNewsStatusBubble?.isConnected &&
+    pendingNewsStatusBubble.dataset?.pendingForText === utteranceKey
+  ) {
+    return pendingNewsStatusBubble;
+  }
+  // Drop any stale pending bubble before installing a new one (e.g. a prior
+  // search that never reached resolution before the user sent again).
+  cancelPendingNewsStatusBubble("superseded");
+  try {
+    pendingNewsStatusBubble = addBubble(PENDING_NEWS_STATUS_TEXT, "vera", {
+      path: "pending-status-news",
+      bubbleClass: "vera-pending-status vera-pending-status-news"
+    });
+    if (pendingNewsStatusBubble?.dataset) {
+      pendingNewsStatusBubble.dataset.pendingStatus = "news";
+      pendingNewsStatusBubble.dataset.pendingForText = utteranceKey;
+      pendingNewsStatusBubble.setAttribute("aria-live", "polite");
+    }
+  } catch (e) {
+    try { console.warn("[pending_news_bubble] create failed", e); } catch (_) {}
+    pendingNewsStatusBubble = null;
+    return null;
+  }
+  try {
+    console.info("[pending_status_bubble]", {
+      kind: "news",
+      action: "armed",
+      user_text: String(userText || "").slice(0, 120)
+    });
+  } catch (_) {}
+  _clearPendingNewsStatusTimer();
+  pendingNewsStatusTimerId = setTimeout(() => {
+    pendingNewsStatusTimerId = null;
+    failPendingNewsStatusBubble("timeout");
+  }, PENDING_NEWS_STATUS_TIMEOUT_MS);
+  return pendingNewsStatusBubble;
+}
+
+/**
+ * A real assistant reply (or abort) has arrived — drop the placeholder
+ * bubble without leaving any trace. Safe to call when no pending bubble
+ * exists. `reason` is for log scraping.
+ */
+function cancelPendingNewsStatusBubble(reason = "resolved") {
+  _clearPendingNewsStatusTimer();
+  const bubble = pendingNewsStatusBubble;
+  pendingNewsStatusBubble = null;
+  if (!bubble) return false;
+  try {
+    const row = bubble.closest(".message-row");
+    if (row?.parentNode) row.parentNode.removeChild(row);
+    else if (bubble.parentNode) bubble.parentNode.removeChild(bubble);
+  } catch (_) {}
+  try {
+    console.info("[pending_status_bubble]", { kind: "news", action: "cancelled", reason });
+  } catch (_) {}
+  try { persistVeraChatState(); } catch (_) {}
+  return true;
+}
+
+/**
+ * Network / server / timeout failure: keep the bubble in place but rewrite it
+ * with the standardized "Search/news information is not available right now."
+ * message so the user gets a clear failure signal in the same spot.
+ */
+function failPendingNewsStatusBubble(reason = "failure") {
+  _clearPendingNewsStatusTimer();
+  const bubble = pendingNewsStatusBubble;
+  pendingNewsStatusBubble = null;
+  if (!bubble?.isConnected) return false;
+  try {
+    bubble.textContent =
+      VERA_SAFETY_LIMITS?.messages?.searchNewsFailure ||
+      "Search/news information is not available right now.";
+    bubble.classList.remove("vera-pending-status", "vera-pending-status-news");
+    bubble.classList.add("vera-pending-status-failed", "vera-safety-failure");
+  } catch (_) {}
+  try {
+    console.warn("[pending_status_bubble]", { kind: "news", action: "failed", reason });
+  } catch (_) {}
+  try { persistVeraChatState(); } catch (_) {}
+  return true;
+}
+
+/* =========================
    VOICE DURATION CAP (60s after speech-start)
 ========================= */
 
@@ -5486,6 +5626,10 @@ function persistVeraChatState() {
     const bubble = row.querySelector(".bubble");
     if (!(bubble instanceof HTMLElement)) continue;
     if (bubble.classList.contains("interrupt-preview")) continue;
+    // Transient pending-status bubbles ("Searching news…") are not part of
+    // chat history. They live only for one in-flight request; on reload the
+    // request is gone and the placeholder would have nothing to resolve to.
+    if (bubble.classList.contains("vera-pending-status")) continue;
     const text = String(bubble.textContent || "").trim();
     if (!text) continue;
     const replyStage = Number(row.dataset.replyStage || 0);
@@ -14733,6 +14877,10 @@ function applyAssistantReplyAndPanels(data) {
   }
   applyActionPayload(data);
   if (data.reply == null || data.reply === "") return;
+  // Real reply is taking over — drop the "Searching news…" placeholder
+  // before the actual assistant bubble appears so the user only sees the
+  // final answer (no double-bubble flash).
+  cancelPendingNewsStatusBubble("assistant_reply_applied");
   addBubble(data.reply, "vera");
 }
 
@@ -14765,6 +14913,9 @@ function applyNdjsonStreamingReplySoFar(replySoFar, state) {
       state.bubble.textContent = text;
     }
   } else {
+    // Streaming reply is about to create the real bubble — drop the
+    // "Searching news…" placeholder so they don't sit side-by-side.
+    cancelPendingNewsStatusBubble("ndjson_reply_so_far");
     let opts = { path: "ndjson-reply-so-far" };
     if (state.pendingReplyBack) {
       opts = mergeReplyBackIntoBubbleMeta(opts, state.pendingReplyBack);
@@ -14826,6 +14977,9 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   }
   /* Must assign state.bubble so applyNdjsonStreamingReplySoFar doesn't add a second bubble if done arrives before first audio (defer path). */
   applyActionPayload(merged);
+  // Streaming finalized without ever calling onReplyProgress (no partials),
+  // so we drop the pending bubble here just before creating the final one.
+  cancelPendingNewsStatusBubble("ndjson_finalize");
   let finOpts = { path: "ndjson-final" };
   if (state.pendingReplyBack) {
     finOpts = mergeReplyBackIntoBubbleMeta(finOpts, state.pendingReplyBack);
@@ -15643,6 +15797,9 @@ function interruptAssistantPipelineForTypedMessage() {
   }
   processing = false;
   requestInFlight = false;
+  // The prior assistant request is gone — any pending "Searching news…"
+  // bubble that was waiting on it would never resolve.
+  cancelPendingNewsStatusBubble("pipeline_interrupted_by_typed");
   clearInterruptDetectionBubble();
   interruptBargeInLatched = false;
   voiceUxTurn = null;
@@ -15705,6 +15862,7 @@ function cancelVoicePipelineAndResetState() {
   hasSpoken = false;
   lastVoiceTime = 0;
   waveState = "idle";
+  cancelPendingNewsStatusBubble("voice_pipeline_reset");
   clearVoiceMaxDurationTimer();
   setStatus("Ready", "idle");
   updateMuteInputButton();
@@ -18120,6 +18278,11 @@ async function runInferMainPipeline(formData, opts = {}) {
                   applyWorkModeLaneDebugFromInferMeta(meta);
                   if (meta.transcript) {
                     applyNdjsonUserTranscriptBubble(meta.transcript, "main-ndjson");
+                    // Arm pending news bubble for voice — we only know the
+                    // utterance once the server returns the ASR transcript.
+                    // Cancelled by applyNdjsonStreamingReplySoFar /
+                    // finalizeNdjsonStreamingReply when the real reply hits.
+                    armPendingNewsStatusBubble(meta.transcript);
                   }
                 },
                 onReplyProgress: (replySoFar) => {
@@ -18288,13 +18451,16 @@ async function runInferMainPipeline(formData, opts = {}) {
       hideSidePanel();
       processing = false;
       requestInFlight = false;
+      cancelPendingNewsStatusBubble("abort");
       return;
     }
     hideSidePanel();
     processing = false;
     requestInFlight = false;
     setStatus("Server error", "offline");
-    void veraSurfaceLlmFetchFailure({ feature: "infer_main", error: e });
+    if (!failPendingNewsStatusBubble("infer_main_error")) {
+      void veraSurfaceLlmFetchFailure({ feature: "infer_main", error: e });
+    }
   }
 }
 
@@ -18342,6 +18508,7 @@ async function runInferInterruptPipeline(formData) {
               }
               if (meta.transcript) {
                 applyNdjsonUserTranscriptBubble(meta.transcript, "interrupt-ndjson");
+                armPendingNewsStatusBubble(meta.transcript);
               }
             },
             onReplyProgress: (replySoFar) => {
@@ -18415,13 +18582,16 @@ async function runInferInterruptPipeline(formData) {
       hideSidePanel();
       requestInFlight = false;
       processing = false;
+      cancelPendingNewsStatusBubble("abort");
       return;
     }
     hideSidePanel();
     requestInFlight = false;
     setStatus("Server error", "offline");
     listening = true;
-    void veraSurfaceLlmFetchFailure({ feature: "infer_interrupt", error: e });
+    if (!failPendingNewsStatusBubble("infer_interrupt_error")) {
+      void veraSurfaceLlmFetchFailure({ feature: "infer_interrupt", error: e });
+    }
   }
 }
 
@@ -19033,6 +19203,11 @@ async function sendTextMessage() {
 
   addBubble(text, "user", { path: "typed-text" });
   ensureChatStartedLayout();
+  // Show "Searching news…" immediately for likely Serper-backed requests.
+  // Cancelled when a real reply arrives via applyAssistantReplyAndPanels /
+  // applyNdjsonStreamingReplySoFar / finalizeNdjsonStreamingReply, and
+  // replaced with the failure message on network/server errors or timeout.
+  armPendingNewsStatusBubble(text);
   try {
     await flushWorkChecklistSyncBeforeCommand();
     const textFetchStart = performance.now();
@@ -19150,6 +19325,7 @@ async function sendTextMessage() {
       requestInFlight = false;
       processing = false;
       textUxTurn = null;
+      cancelPendingNewsStatusBubble("abort");
       return;
     }
     console.error(err);
@@ -19158,7 +19334,13 @@ async function sendTextMessage() {
     processing = false;
     textUxTurn = null;
     setStatus("Server error", "offline");
-    void veraSurfaceLlmFetchFailure({ feature: "text_endpoint", error: err });
+    // If we had armed a "Searching news…" bubble, swap it for the standard
+    // search/news failure copy (one specific bubble is better than two).
+    // If no pending bubble was armed, fall back to the generic LLM-failure
+    // bubble so the user still sees something.
+    if (!failPendingNewsStatusBubble("text_endpoint_error")) {
+      void veraSurfaceLlmFetchFailure({ feature: "text_endpoint", error: err });
+    }
   }
 }
 

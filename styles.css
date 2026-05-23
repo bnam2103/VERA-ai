@@ -6755,6 +6755,41 @@ body.bmo-open .bubble.user.interrupt-preview {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+/* Transient placeholder while a slow external/tool request (e.g. Serper
+   news search) is in flight. Replaced in-place by the final reply, or by
+   the failure copy if the request times out / errors. Not persisted. */
+.bubble.vera.vera-pending-status {
+  font-style: italic;
+  opacity: 0.78;
+  background: linear-gradient(
+    100deg,
+    rgba(47, 58, 68, 0.92) 0%,
+    rgba(70, 85, 100, 0.92) 50%,
+    rgba(47, 58, 68, 0.92) 100%
+  );
+  background-size: 220% 100%;
+  animation: vera-pending-status-shimmer 1.6s linear infinite;
+}
+
+.bubble.vera.vera-pending-status-failed {
+  font-style: normal;
+  opacity: 1;
+  background: rgba(120, 50, 50, 0.55);
+  border-left: 3px solid rgba(255, 120, 120, 0.65);
+  padding-left: 0.65rem;
+}
+
+@keyframes vera-pending-status-shimmer {
+  0%   { background-position: 220% 0; }
+  100% { background-position: 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble.vera.vera-pending-status {
+    animation: none;
+  }
+}
+
 /* =========================
    INPUT BAR
 ========================= */
