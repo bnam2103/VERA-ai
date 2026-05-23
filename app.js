@@ -2,14 +2,14 @@
    STARTUP BANNER — proves this build of app.js actually loaded.
    If you do NOT see this line in DevTools console after a hard refresh,
    the browser is still serving an older cached copy (check Network tab:
-   app.js?v=46 should be the URL).
+   app.js?v=50 should be the URL).
 ========================= */
 try {
   // Use console.warn so it shows up even when the DevTools console level
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v49 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
+    "%c[VERA] app.js build v50 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -9158,6 +9158,7 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
       if (done) break;
     }
   } catch (_) {}
+  if (opts.signal?.aborted) return;
   if (typeof opts.onDone === "function") {
     try {
       opts.onDone({ markdownAcc, summaryText });
@@ -13046,6 +13047,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           }
         }
       } catch (_) {}
+      scheduleSyncPlanButtonRefresh(0);
       try {
         console.info("[turn_done]", { turn_id: turnIdForLifecycle, lane_id: streamLaneId, state: st });
         console.info("[turn_cleanup]", {
@@ -13281,6 +13283,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       await drainReasoningNdjsonMarkdownTail(reader, lineBuf, turnEl, decoder, {
         turnContext,
         streamLaneId,
+        signal: laneAbortController.signal,
         onDone: ({ markdownAcc, summaryText }) => {
           const mdFromDom = String(turnEl?.dataset?.markdownAcc || "").trim();
           const mdDone = mdFromDom || String(markdownAcc || "").trim();
@@ -13400,6 +13403,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
               workChecklistSyncPendingPlanMeta = {
                 ...panelMeta,
                 source: "reasoning_stream_done",
+                source_panel_generating: false,
+                source_panel_generation_status: "complete",
                 created_at: Date.now()
               };
               logPlanSyncDebug("created", {
@@ -13520,6 +13525,30 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
     composerLifecycleReleased = true;
     clearWorkModeReasoningWatchdog(laneIdx);
     const st = reason || (laneAbortController.signal.aborted ? "cancelled" : "completed");
+    const finalStatus =
+      st === "stream_completed" || st === "completed"
+        ? "complete"
+        : laneAbortController.signal.aborted || st === "cancelled"
+          ? "cancelled"
+          : /failed|error|throw|timed_out|no_|http/i.test(st)
+            ? "failed"
+            : st;
+    setWorkModeReasoningFinalStatus({
+      turnId: turnIdLc,
+      laneId: streamLaneId,
+      status: finalStatus,
+      reason: st
+    });
+    try {
+      const panel = getReasoningPanelElementByLaneId(streamLaneId);
+      if (panel instanceof HTMLElement) {
+        panel.dataset.generating = "0";
+        if (String(panel.dataset.generationStatus || "") !== "complete") {
+          panel.dataset.generationStatus = finalStatus;
+        }
+      }
+    } catch (_) {}
+    scheduleSyncPlanButtonRefresh(0);
     try {
       console.info("[turn_done]", { turn_id: turnIdLc, lane_id: streamLaneId, state: st });
       console.info("[turn_cleanup]", {
@@ -13544,6 +13573,14 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
   );
   workModeReasoningAbortControllers.set(laneIdx, laneAbortController);
   syncWorkModeReasoningCancelButton();
+  try {
+    const panelAtStart = getReasoningPanelElementByLaneId(streamLaneId);
+    if (panelAtStart instanceof HTMLElement) {
+      panelAtStart.dataset.generationStatus = "generating";
+      panelAtStart.dataset.generating = "1";
+      scheduleSyncPlanButtonRefresh(0);
+    }
+  } catch (_) {}
   try {
     console.info("[turn_start]", { turn_id: turnIdLc, lane_id: streamLaneId });
   } catch (_) {}
@@ -13580,15 +13617,20 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         feature: "reasoning_stream_secondary",
         response: sr
       });
+      safeComposerLaneRelease("stream_http_error");
       return;
     }
     if (!sr.body) {
       setWorkModeAttachmentMeta("Reasoning failed: empty response body.");
+      safeComposerLaneRelease("stream_empty_body");
       return;
     }
 
     const turnEl = appendReasoningTurnMount(scrollEl);
-    if (!turnEl) return;
+    if (!turnEl) {
+      safeComposerLaneRelease("no_turn_el");
+      return;
+    }
     turnEl.dataset.markdownAcc = "";
     turnEl.dataset.summaryText = "";
 
@@ -13651,8 +13693,18 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         if (done) break;
       }
     } catch (_) {}
+    if (laneAbortController.signal.aborted) {
+      safeComposerLaneRelease("cancelled");
+      return;
+    }
     const panelForTitle = getReasoningPanelElementByLaneId(streamLaneId) || turnEl.closest(".vera-reasoning-tab-panel");
     const mdDone = String(markdownAcc || "").trim();
+    if (panelForTitle instanceof HTMLElement) {
+      panelForTitle.dataset.generationStatus = "complete";
+      panelForTitle.dataset.generating = "0";
+      panelForTitle.dataset.latestMarkdownLength = String(mdDone.length);
+      panelForTitle.dataset.lastCompletedAt = String(Date.now());
+    }
     const excerptCap = 12000;
     const excerpt = mdDone.length > excerptCap ? `${mdDone.slice(0, excerptCap)}\n…` : mdDone;
     const summaryLine = extractWorkModeReasoningSummaryAnswerLine(summaryText);
@@ -13711,6 +13763,43 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
       });
       reasoningTitleUpdateDebugLog(streamLaneId || null, "(unknown)", "", false, "skip_title_panel_dom_miss_composer_path");
     }
+    if (mdDone) {
+      const hasSyncHeading = /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdDone);
+      if (hasSyncHeading) {
+        const rows = buildChecklistProposalFromMarkdown(mdDone);
+        const panelMeta = getPlanSyncPanelMetaForLane(
+          streamLaneId || turnContext?.turn_lane_id || "",
+          turnContext?.turn_lane_title || ""
+        );
+        workChecklistSyncPlanVersion += 1;
+        workChecklistSyncPendingMarkdown = mdDone;
+        workChecklistSyncPendingPlanMeta = {
+          ...panelMeta,
+          source: "reasoning_stream_done",
+          source_panel_generating: false,
+          source_panel_generation_status: "complete",
+          created_at: Date.now()
+        };
+        logPlanSyncDebug("created", {
+          lane_id: panelMeta.lane_id || null,
+          panel_id: panelMeta.panel_id || null,
+          panel_title: panelMeta.panel_title || "",
+          active_panel_id: panelMeta.active_panel_id || null,
+          is_plan_detected: true,
+          syncable: rows.length > 0,
+          has_sync_metadata: true,
+          sync_candidate_count: rows.length,
+          sync_candidates_preview: planSyncPreviewRows(rows),
+          reason_if_not_syncable: rows.length ? "" : "no_checklist_candidates_extracted",
+          response_kind: "sync_checklist_markdown",
+          route_kind: "reasoning_composer_route",
+          source: turnContext?.source || "reasoning_route"
+        });
+        syncWorkChecklistSyncPlanButton();
+        flashWorkChecklistPlanHint("Updated plan in reasoning — tap Sync to refresh checklist bullets.");
+      }
+    }
+    safeComposerLaneRelease("stream_completed");
     maybeReasoningScrollToLatest(scrollEl);
   } catch (streamErr) {
     try {
@@ -14533,9 +14622,50 @@ function syncWorkChecklistHelpPlanButton() {
   btn.disabled = collectWorkChecklistOngoingTexts().length === 0;
 }
 
-/** Throttled refresh so chunk appends / tab switches don't spam the parser.
- *  Coalesces calls into a trailing tick (~250ms) so the Sync button enables
- *  promptly once the SYNC CHECKLIST heading lands in the live markdown. */
+function planSyncPanelGenerationInfo(panel) {
+  if (!(panel instanceof HTMLElement)) {
+    return {
+      source_panel_generating: false,
+      source_panel_generation_status: "unknown",
+      reason_if_disabled: "no_parseable_plan_candidates"
+    };
+  }
+  const generating = String(panel.dataset.generating || "") === "1";
+  const rawStatus = String(panel.dataset.generationStatus || "").trim();
+  const hasMarkdown = Boolean(getLatestMarkdownInReasoningScroll(panel).trim());
+  const status = rawStatus || (generating ? "generating" : hasMarkdown ? "complete" : "unknown");
+  let reason = "";
+  if (generating || status === "generating") reason = "panel_still_generating";
+  else if (status === "cancelled" || status === "user_stopped") reason = "panel_cancelled";
+  else if (/failed|error|timed_out|http|throw/i.test(status)) reason = "panel_failed";
+  return {
+    source_panel_generating: generating || status === "generating",
+    source_panel_generation_status: status,
+    reason_if_disabled: reason
+  };
+}
+
+function getActivePlanSyncBlockingState() {
+  const activeLaneId = getActiveDomReasoningLaneId();
+  const panel = activeLaneId ? getReasoningPanelElementByLaneId(activeLaneId) : null;
+  if (!(panel instanceof HTMLElement)) return null;
+  const info = planSyncPanelGenerationInfo(panel);
+  if (info.reason_if_disabled) {
+    const markdown = getLatestMarkdownInReasoningScroll(panel) || renderedChecklistMarkdownFromPanel(panel);
+    return {
+      ...info,
+      panel,
+      source_panel_id: activeLaneId,
+      source_panel_title: getReasoningTabTopicLabel(panel),
+      markdown_length: String(markdown || "").trim().length
+    };
+  }
+  return null;
+}
+
+/** Throttled refresh so chunk appends / tab switches don't spam the button state.
+ *  During generation this only logs/keeps disabled; parsing happens after the
+ *  panel is marked complete. */
 let __syncPlanButtonRefreshTimer = null;
 function scheduleSyncPlanButtonRefresh(delayMs = 250) {
   if (__syncPlanButtonRefreshTimer) return;
@@ -14550,18 +14680,54 @@ function scheduleSyncPlanButtonRefresh(delayMs = 250) {
 function syncWorkChecklistSyncPlanButton() {
   const btn = document.getElementById("vera-wm-checklist-sync-plan");
   if (!(btn instanceof HTMLButtonElement)) return;
+  const ctx = describePlanSyncActiveContext();
+  const blocked = getActivePlanSyncBlockingState();
+  if (blocked) {
+    btn.disabled = true;
+    btn.title =
+      blocked.reason_if_disabled === "panel_still_generating"
+        ? "Available after the plan finishes."
+        : "No completed checklist-ready plan available.";
+    logPlanSyncDebug("button", {
+      sync_button_visible: !btn.hidden,
+      sync_button_enabled: false,
+      active_panel_id: ctx.active_panel_id,
+      active_panel_title: ctx.active_panel_title,
+      active_lane_id: ctx.active_lane_id,
+      source_panel_id: blocked.source_panel_id || null,
+      source_panel_title: blocked.source_panel_title || "",
+      source_panel_generating: blocked.source_panel_generating,
+      source_panel_generation_status: blocked.source_panel_generation_status,
+      markdown_length: blocked.markdown_length,
+      sync_candidate_count: 0,
+      reason_if_disabled: blocked.reason_if_disabled,
+      lane_id: blocked.source_panel_id || null,
+      panel_id: blocked.source_panel_id || null,
+      panel_title: blocked.source_panel_title || "",
+      syncable: false,
+      has_sync_metadata: false
+    });
+    return;
+  }
   const selected = getWorkChecklistSyncSourceCandidate();
   const canUseSync = Boolean(selected?.markdown);
   btn.disabled = !canUseSync;
-  const ctx = describePlanSyncActiveContext();
+  btn.title = canUseSync ? "Sync checklist from latest completed plan" : "No completed checklist-ready plan available.";
+  const sourcePanelId = selected?.meta?.panel_id || null;
+  const sourcePanel =
+    sourcePanelId ? getReasoningPanelElementByLaneId(sourcePanelId) : null;
+  const sourceInfo = planSyncPanelGenerationInfo(sourcePanel);
   logPlanSyncDebug("button", {
     sync_button_visible: !btn.hidden,
     sync_button_enabled: !btn.disabled,
     active_panel_id: ctx.active_panel_id,
     active_panel_title: ctx.active_panel_title,
     active_lane_id: ctx.active_lane_id,
-    source_panel_id: selected?.meta?.panel_id || null,
+    source_panel_id: sourcePanelId,
     source_panel_title: selected?.meta?.panel_title || "",
+    source_panel_generating: sourceInfo.source_panel_generating,
+    source_panel_generation_status: sourceInfo.source_panel_generation_status,
+    markdown_length: String(selected?.markdown || "").length,
     sync_candidate_count: selected?.rows?.length || 0,
     reason_if_disabled: canUseSync ? "" : "no_parseable_plan_candidates",
     /* Legacy fields kept for older tooling that already filters on these. */
@@ -14669,11 +14835,14 @@ function renderedChecklistMarkdownFromPanel(panel) {
 }
 
 function getWorkModeReasoningMarkdownCandidates() {
+  if (getActivePlanSyncBlockingState()) return [];
   const candidates = [];
   const seen = new Set();
   const push = (md, source, meta = {}) => {
     const text = String(md || "").trim();
     if (!text || seen.has(text)) return;
+    const status = String(meta.source_panel_generation_status || meta.generation_status || "").trim();
+    if (status && status !== "complete" && status !== "completed") return;
     seen.add(text);
     candidates.push({ markdown: text, source, meta });
   };
@@ -14682,7 +14851,12 @@ function getWorkModeReasoningMarkdownCandidates() {
   push(workChecklistSyncPendingMarkdown, "pending_plan", workChecklistSyncPendingPlanMeta || {});
   const activeLaneId = getActiveDomReasoningLaneId();
   const activePanel = activeLaneId ? getReasoningPanelElementByLaneId(activeLaneId) : null;
-  const activeMeta = getPlanSyncPanelMetaForLane(activeLaneId);
+  const activeStatus = planSyncPanelGenerationInfo(activePanel);
+  const activeMeta = {
+    ...getPlanSyncPanelMetaForLane(activeLaneId),
+    source_panel_generating: activeStatus.source_panel_generating,
+    source_panel_generation_status: activeStatus.source_panel_generation_status
+  };
   push(getLatestWorkModeReasoningMarkdown(), "active_reasoning_tab", activeMeta);
   push(renderedChecklistMarkdownFromPanel(activePanel), "active_reasoning_tab_rendered", {
     ...activeMeta,
@@ -14700,13 +14874,18 @@ function getWorkModeReasoningMarkdownCandidates() {
       const scroll =
         panel.querySelector(".vera-reasoning-md-panel") ||
         panel.querySelector(".vera-reasoning-scroll");
-      push(getLatestMarkdownInReasoningScroll(scroll), "reasoning_tab", {
-        ...getPlanSyncPanelMetaForLane(laneId),
-        panel_title: getReasoningTabTopicLabel(panel)
-      });
-      push(renderedChecklistMarkdownFromPanel(panel), "reasoning_tab_rendered", {
+      const panelStatus = planSyncPanelGenerationInfo(panel);
+      const panelMeta = {
         ...getPlanSyncPanelMetaForLane(laneId),
         panel_title: getReasoningTabTopicLabel(panel),
+        source_panel_generating: panelStatus.source_panel_generating,
+        source_panel_generation_status: panelStatus.source_panel_generation_status
+      };
+      push(getLatestMarkdownInReasoningScroll(scroll), "reasoning_tab", {
+        ...panelMeta
+      });
+      push(renderedChecklistMarkdownFromPanel(panel), "reasoning_tab_rendered", {
+        ...panelMeta,
         source_detail: "rendered_dom_fallback"
       });
     }
@@ -14732,6 +14911,8 @@ function getWorkChecklistSyncSourceCandidate() {
       lane_id: cand?.meta?.lane_id || null,
       panel_title: cand?.meta?.panel_title || "",
       source: cand?.source || "",
+      source_panel_generating: Boolean(cand?.meta?.source_panel_generating),
+      source_panel_generation_status: cand?.meta?.source_panel_generation_status || "",
       markdown_length: md.length,
       markdown_preview_first_500: md.slice(0, 500),
       has_sync_heading: Boolean(headingMatch),
@@ -15072,6 +15253,30 @@ function runWorkChecklistSyncFromLatestPlan(opts = {}) {
   const btnEnabled = !Boolean(
     document.getElementById("vera-wm-checklist-sync-plan")?.disabled
   );
+  const blocked = getActivePlanSyncBlockingState();
+  if (blocked) {
+    logPlanSyncDebug("button_click", {
+      clicked: true,
+      sync_button_enabled: false,
+      active_panel_id: ctx.active_panel_id,
+      active_panel_title: ctx.active_panel_title,
+      source_panel_id: blocked.source_panel_id || null,
+      source_panel_title: blocked.source_panel_title || "",
+      source_panel_generating: blocked.source_panel_generating,
+      source_panel_generation_status: blocked.source_panel_generation_status,
+      markdown_length: blocked.markdown_length,
+      sync_candidate_count: 0,
+      candidates_preview: [],
+      reason_if_ignored: blocked.reason_if_disabled
+    });
+    flashWorkChecklistPlanHint(
+      blocked.reason_if_disabled === "panel_still_generating"
+        ? "Sync is available after the plan finishes."
+        : "No completed checklist-ready plan available."
+    );
+    syncWorkChecklistSyncPlanButton();
+    return false;
+  }
   const selected = getWorkChecklistSyncSourceCandidate();
   if (!selected?.markdown) {
     logPlanSyncDebug("button_click", {
