@@ -14362,8 +14362,106 @@ function getPlanSyncPanelMetaForLane(laneId, fallbackTitle = "") {
 
 function logPlanSyncDebug(kind, payload = {}) {
   try {
-    console.info(`[PLAN_SYNC_DEBUG][${kind}]`, payload);
+    const enriched = { timestamp: new Date().toISOString(), ...payload };
+    console.info(`[PLAN_SYNC_DEBUG][${kind}]`, enriched);
   } catch (_) {}
+}
+
+/** Manual one-shot debug helper. Returns AND console.tables the full sync
+ *  state without mutating anything. Usage in DevTools:
+ *      window.__veraDebugSyncState()
+ *  Safe to call any time — does not touch checklist or panel state. */
+function veraDebugSyncStateSnapshot() {
+  const ctx = describePlanSyncActiveContext();
+  const activePanel = ctx.active_panel_id
+    ? getReasoningPanelElementByLaneId(ctx.active_panel_id)
+    : null;
+  const activeMarkdown =
+    activePanel instanceof HTMLElement
+      ? String(
+          activePanel.querySelector(".vera-reasoning-turn:last-of-type")?.dataset?.markdownAcc ||
+            activePanel.innerText ||
+            ""
+        )
+      : "";
+  const selected = getWorkChecklistSyncSourceCandidate();
+  const rows = selected?.rows || [];
+  const btn = document.getElementById("vera-wm-checklist-sync-plan");
+  const previewPanel = document.getElementById("vera-wm-checklist-sync-preview");
+  let checklistCount = 0;
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const items = raw ? JSON.parse(raw) : [];
+    checklistCount = Array.isArray(items)
+      ? items.filter((x) => x && String(x.text || "").trim()).length
+      : 0;
+  } catch (_) {}
+  const snapshot = {
+    timestamp: new Date().toISOString(),
+    active_panel_id: ctx.active_panel_id,
+    active_panel_title: ctx.active_panel_title,
+    active_lane_id: ctx.active_lane_id,
+    last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
+    last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
+    current_panel_markdown_length: activeMarkdown.length,
+    current_panel_markdown_preview_first_500: activeMarkdown.slice(0, 500),
+    selected_source: selected?.source || "",
+    selected_source_panel_id: selected?.meta?.panel_id || null,
+    selected_source_panel_title: selected?.meta?.panel_title || "",
+    selected_source_markdown_length: String(selected?.markdown || "").length,
+    sync_candidate_count: rows.length,
+    sync_candidates_preview: planSyncPreviewRows(rows, 12),
+    sync_button_visible: btn instanceof HTMLButtonElement ? !btn.hidden : null,
+    sync_button_enabled: btn instanceof HTMLButtonElement ? !btn.disabled : null,
+    preview_open: previewPanel instanceof HTMLElement ? !previewPanel.hidden : null,
+    checklist_item_count: checklistCount
+  };
+  try {
+    console.group("[__veraDebugSyncState]");
+    console.table([
+      {
+        active_panel_id: snapshot.active_panel_id,
+        active_panel_title: snapshot.active_panel_title,
+        last_plan_panel_id: snapshot.last_plan_panel_id,
+        last_plan_panel_title: snapshot.last_plan_panel_title,
+        markdown_len: snapshot.current_panel_markdown_length,
+        sync_candidate_count: snapshot.sync_candidate_count,
+        sync_button_enabled: snapshot.sync_button_enabled,
+        preview_open: snapshot.preview_open,
+        checklist_item_count: snapshot.checklist_item_count
+      }
+    ]);
+    if (snapshot.sync_candidates_preview.length) {
+      console.table(snapshot.sync_candidates_preview.map((t, i) => ({ idx: i, text: t })));
+    }
+    console.info("[full]", snapshot);
+    console.groupEnd();
+  } catch (_) {}
+  return snapshot;
+}
+
+try {
+  window.__veraDebugSyncState = veraDebugSyncStateSnapshot;
+} catch (_) {}
+
+/** Snapshot of "where am I right now" used by sync debug logs and the
+ *  window.__veraDebugSyncState() helper. Pure read — no mutation. */
+function describePlanSyncActiveContext() {
+  const activeLaneId = getActiveDomReasoningLaneId();
+  const activePanel =
+    document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active") ||
+    (activeLaneId ? getReasoningPanelElementByLaneId(activeLaneId) : null);
+  const activeLaneIdResolved =
+    activePanel instanceof HTMLElement
+      ? getWorkModeReasoningLaneId(Number(activePanel.dataset.tabIndex)) || activeLaneId
+      : activeLaneId;
+  const activePanelTitle =
+    activePanel instanceof HTMLElement ? getReasoningTabTopicLabel(activePanel) : "";
+  return {
+    active_panel_id: activeLaneIdResolved || null,
+    active_panel_title: activePanelTitle || "",
+    active_lane_id: activeLaneIdResolved || null
+  };
 }
 
 function collectWorkChecklistOngoingTexts() {
@@ -14408,16 +14506,23 @@ function syncWorkChecklistSyncPlanButton() {
   const selected = getWorkChecklistSyncSourceCandidate();
   const canUseSync = Boolean(selected?.markdown);
   btn.disabled = !canUseSync;
+  const ctx = describePlanSyncActiveContext();
   logPlanSyncDebug("button", {
+    sync_button_visible: !btn.hidden,
+    sync_button_enabled: !btn.disabled,
+    active_panel_id: ctx.active_panel_id,
+    active_panel_title: ctx.active_panel_title,
+    active_lane_id: ctx.active_lane_id,
+    source_panel_id: selected?.meta?.panel_id || null,
+    source_panel_title: selected?.meta?.panel_title || "",
+    sync_candidate_count: selected?.rows?.length || 0,
+    reason_if_disabled: canUseSync ? "" : "no_parseable_plan_candidates",
+    /* Legacy fields kept for older tooling that already filters on these. */
     lane_id: selected?.meta?.lane_id || null,
     panel_id: selected?.meta?.panel_id || null,
     panel_title: selected?.meta?.panel_title || "",
-    sync_button_visible: !btn.hidden,
-    sync_button_enabled: !btn.disabled,
     syncable: canUseSync,
-    has_sync_metadata: Boolean(selected?.markdown),
-    sync_candidate_count: selected?.rows?.length || 0,
-    reason_if_disabled: canUseSync ? "" : "no_parseable_plan_candidates"
+    has_sync_metadata: Boolean(selected?.markdown)
   });
 }
 
@@ -14565,18 +14670,27 @@ function getWorkModeReasoningMarkdownCandidates() {
 
 function getWorkChecklistSyncSourceCandidate() {
   const candidates = getWorkModeReasoningMarkdownCandidates();
+  const ctx = describePlanSyncActiveContext();
   for (const cand of candidates) {
     const rows = buildChecklistProposalFromMarkdown(cand.markdown);
+    const md = String(cand?.markdown || "");
+    const headingMatch = md.match(
+      /(?:^|\n)\s*(?:#{1,6}\s*)?(SYNC CHECKLIST|Checklist|Plan checklist|Tasks)\b[^\n]*/i
+    );
     logPlanSyncDebug("parse", {
+      active_panel_id: ctx.active_panel_id,
+      active_panel_title: ctx.active_panel_title,
+      active_lane_id: ctx.active_lane_id,
       panel_id: cand?.meta?.panel_id || null,
       lane_id: cand?.meta?.lane_id || null,
       panel_title: cand?.meta?.panel_title || "",
       source: cand?.source || "",
-      markdown_length: String(cand?.markdown || "").length,
-      has_sync_heading: /(?:^|\n)\s*(?:#{1,6}\s*)?(?:SYNC CHECKLIST|Checklist|Plan checklist|Tasks)\b/i.test(
-        String(cand?.markdown || "")
-      ),
+      markdown_length: md.length,
+      markdown_preview_first_500: md.slice(0, 500),
+      has_sync_heading: Boolean(headingMatch),
+      sync_heading_matched: headingMatch ? headingMatch[0].trim().slice(0, 120) : "",
       sync_candidate_count: rows.length,
+      sync_candidates_preview: planSyncPreviewRows(rows),
       candidates_preview: planSyncPreviewRows(rows),
       reason_if_zero: rows.length ? "" : "no_parseable_bullets_in_candidate"
     });
@@ -14772,15 +14886,18 @@ function showWorkChecklistSyncPreview(text) {
   const panel = document.getElementById("vera-wm-checklist-sync-preview");
   const textarea = document.getElementById("vera-wm-checklist-sync-preview-text");
   const rows = parseChecklistProposalText(text);
+  const nonEmpty = rows.filter((x) => x && String(x.text || "").trim());
+  const previewItemsPreview = nonEmpty.slice(0, 6).map((x) => String(x.text || "").trim());
   if (!(panel instanceof HTMLElement) || !(textarea instanceof HTMLTextAreaElement)) {
     logPlanSyncDebug("preview_open", {
       preview_visible: false,
-      candidate_count: rows.filter((x) => x && String(x.text || "").trim()).length,
-      preview_items_preview: rows
-        .filter((x) => x && String(x.text || "").trim())
-        .slice(0, 6)
-        .map((x) => String(x.text || "").trim()),
-      reason_if_not_opened: "missing_preview_dom"
+      candidate_count: nonEmpty.length,
+      preview_items_preview: previewItemsPreview,
+      reason_if_not_opened: !panel
+        ? "missing_panel_dom"
+        : !textarea
+          ? "missing_textarea_dom"
+          : "missing_preview_dom"
     });
     return;
   }
@@ -14789,11 +14906,8 @@ function showWorkChecklistSyncPreview(text) {
   setWorkChecklistSyncPreviewEditing(false);
   logPlanSyncDebug("preview_open", {
     preview_visible: !panel.hidden,
-    candidate_count: rows.filter((x) => x && String(x.text || "").trim()).length,
-    preview_items_preview: rows
-      .filter((x) => x && String(x.text || "").trim())
-      .slice(0, 6)
-      .map((x) => String(x.text || "").trim()),
+    candidate_count: nonEmpty.length,
+    preview_items_preview: previewItemsPreview,
     reason_if_not_opened: panel.hidden ? "panel_hidden_after_open" : ""
   });
 }
@@ -14806,24 +14920,31 @@ function hideWorkChecklistSyncPreview() {
 
 function applyWorkChecklistSyncPreview() {
   const textarea = document.getElementById("vera-wm-checklist-sync-preview-text");
+  const safeBeforeCount = () =>
+    readChecklistItemsFromStorageSafe().filter((x) => x && String(x.text || "").trim()).length;
   if (!(textarea instanceof HTMLTextAreaElement)) {
+    const before = safeBeforeCount();
     logPlanSyncDebug("accept_apply", {
       accepted: false,
+      candidate_count: 0,
       inserted_count: 0,
-      checklist_count_before: readChecklistItemsFromStorageSafe().filter((x) => x && String(x.text || "").trim()).length,
-      checklist_count_after: readChecklistItemsFromStorageSafe().filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_before: before,
+      checklist_count_after: before,
       reason_if_failed: "missing_preview_textarea"
     });
     return false;
   }
   const beforeItems = readChecklistItemsFromStorageSafe();
+  const beforeCount = beforeItems.filter((x) => x && String(x.text || "").trim()).length;
   const items = parseChecklistProposalText(textarea.value);
+  const candidateCount = items.filter((x) => x && String(x.text || "").trim()).length;
   if (!items.length) {
     logPlanSyncDebug("accept_apply", {
       accepted: false,
+      candidate_count: candidateCount,
       inserted_count: 0,
-      checklist_count_before: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
-      checklist_count_after: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_before: beforeCount,
+      checklist_count_after: beforeCount,
       reason_if_failed: "preview_parse_empty"
     });
     flashWorkChecklistPlanHint("Nothing to apply. Keep '-' bullets in the proposal.");
@@ -14836,10 +14957,11 @@ function applyWorkChecklistSyncPreview() {
     loadWorkChecklistItems();
     hideWorkChecklistSyncPreview();
     workChecklistSyncConsumedPlanVersion = workChecklistSyncPlanVersion;
+    const insertedCount = items.filter((x) => x && String(x.text || "").trim()).length;
     logPlanSyncDebug("checklist_insert", {
-      inserted_count: items.filter((x) => x && String(x.text || "").trim()).length,
-      checklist_count_before: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
-      checklist_count_after: items.filter((x) => x && String(x.text || "").trim()).length,
+      inserted_count: insertedCount,
+      checklist_count_before: beforeCount,
+      checklist_count_after: insertedCount,
       inserted_items_preview: items
         .filter((x) => x && String(x.text || "").trim())
         .slice(0, 6)
@@ -14849,9 +14971,10 @@ function applyWorkChecklistSyncPreview() {
     });
     logPlanSyncDebug("accept_apply", {
       accepted: true,
-      inserted_count: items.filter((x) => x && String(x.text || "").trim()).length,
-      checklist_count_before: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
-      checklist_count_after: items.filter((x) => x && String(x.text || "").trim()).length,
+      candidate_count: candidateCount,
+      inserted_count: insertedCount,
+      checklist_count_before: beforeCount,
+      checklist_count_after: insertedCount,
       reason_if_failed: ""
     });
     workChecklistSyncPendingMarkdown = "";
@@ -14862,9 +14985,10 @@ function applyWorkChecklistSyncPreview() {
   } catch (err) {
     logPlanSyncDebug("accept_apply", {
       accepted: false,
+      candidate_count: candidateCount,
       inserted_count: 0,
-      checklist_count_before: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
-      checklist_count_after: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_before: beforeCount,
+      checklist_count_after: beforeCount,
       reason_if_failed: String(err?.message || err || "apply_throw").slice(0, 200)
     });
     flashWorkChecklistPlanHint("Could not update checklist from plan.");
@@ -14894,60 +15018,84 @@ function eraseEntireWorkChecklist() {
   }
 }
 
-function runWorkChecklistSyncFromLatestPlan() {
+function runWorkChecklistSyncFromLatestPlan(opts = {}) {
+  const triggerSource = String(opts.triggerSource || "button");
+  const userText = String(opts.userText || "");
+  const ctx = describePlanSyncActiveContext();
+  const btnEnabled = !Boolean(
+    document.getElementById("vera-wm-checklist-sync-plan")?.disabled
+  );
   const selected = getWorkChecklistSyncSourceCandidate();
-  const activeLaneId = getActiveDomReasoningLaneId();
   if (!selected?.markdown) {
     logPlanSyncDebug("button_click", {
-      sync_button_enabled: !Boolean(document.getElementById("vera-wm-checklist-sync-plan")?.disabled),
-      panel_id: null,
-      lane_id: null,
+      clicked: true,
+      sync_button_enabled: btnEnabled,
+      active_panel_id: ctx.active_panel_id,
+      active_panel_title: ctx.active_panel_title,
+      source_panel_id: null,
+      source_panel_title: "",
       sync_candidate_count: 0,
-      clicked: true
+      candidates_preview: [],
+      reason_if_ignored: "no_sync_source_markdown"
     });
     logPlanSyncDebug("voice_sync_request", {
-      user_text: "",
-      active_panel_id: activeLaneId || null,
-      active_panel_title: getWorkModeLaneTitle(activeLaneId) || "",
+      user_text: userText,
+      active_panel_id: ctx.active_panel_id,
+      active_panel_title: ctx.active_panel_title,
       last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
       last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
-      selected_sync_source_panel_id: null,
-      selected_sync_source_panel_title: "",
+      selected_source_panel_id: null,
+      selected_source_panel_title: "",
       sync_candidate_count: 0,
-      reason_if_failed: "no_sync_source_markdown"
+      opened_preview: false,
+      auto_applied: false,
+      reason_if_failed: "no_sync_source_markdown",
+      trigger_source: triggerSource
     });
     flashWorkChecklistPlanHint("No checklist-ready plan found yet. Ask VERA for a plan first.");
     return false;
   }
   const rows = selected.rows || buildChecklistProposalFromMarkdown(selected.markdown);
+  const candidatesPreview = planSyncPreviewRows(rows);
   if (!rows.length) {
     logPlanSyncDebug("button_click", {
-      sync_button_enabled: !Boolean(document.getElementById("vera-wm-checklist-sync-plan")?.disabled),
-      panel_id: selected.meta?.panel_id || null,
-      lane_id: selected.meta?.lane_id || null,
+      clicked: true,
+      sync_button_enabled: btnEnabled,
+      active_panel_id: ctx.active_panel_id,
+      active_panel_title: ctx.active_panel_title,
+      source_panel_id: selected.meta?.panel_id || null,
+      source_panel_title: selected.meta?.panel_title || "",
       sync_candidate_count: 0,
-      clicked: true
+      candidates_preview: [],
+      reason_if_ignored: "selected_source_parse_empty"
     });
     logPlanSyncDebug("voice_sync_request", {
-      user_text: "",
-      active_panel_id: activeLaneId || null,
-      active_panel_title: getWorkModeLaneTitle(activeLaneId) || "",
+      user_text: userText,
+      active_panel_id: ctx.active_panel_id,
+      active_panel_title: ctx.active_panel_title,
       last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
       last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
-      selected_sync_source_panel_id: selected.meta?.panel_id || null,
-      selected_sync_source_panel_title: selected.meta?.panel_title || "",
+      selected_source_panel_id: selected.meta?.panel_id || null,
+      selected_source_panel_title: selected.meta?.panel_title || "",
       sync_candidate_count: 0,
-      reason_if_failed: "selected_source_parse_empty"
+      opened_preview: false,
+      auto_applied: false,
+      reason_if_failed: "selected_source_parse_empty",
+      trigger_source: triggerSource
     });
     flashWorkChecklistPlanHint("Could not parse checklist bullets from the visible plan.");
     return false;
   }
   logPlanSyncDebug("button_click", {
-    sync_button_enabled: !Boolean(document.getElementById("vera-wm-checklist-sync-plan")?.disabled),
-    panel_id: selected.meta?.panel_id || null,
-    lane_id: selected.meta?.lane_id || null,
+    clicked: true,
+    sync_button_enabled: btnEnabled,
+    active_panel_id: ctx.active_panel_id,
+    active_panel_title: ctx.active_panel_title,
+    source_panel_id: selected.meta?.panel_id || null,
+    source_panel_title: selected.meta?.panel_title || "",
     sync_candidate_count: rows.length,
-    clicked: true
+    candidates_preview: candidatesPreview,
+    reason_if_ignored: ""
   });
   // Bind the visible/rendered fallback source as the current plan source so
   // Apply and voice-sync logs point at the panel that actually supplied rows.
@@ -14957,18 +15105,23 @@ function runWorkChecklistSyncFromLatestPlan() {
     source: selected.source || selected.meta?.source || "sync_source_candidate",
     created_at: selected.meta?.created_at || Date.now()
   };
+  showWorkChecklistSyncPreview(formatChecklistProposalText(rows));
+  const previewPanel = document.getElementById("vera-wm-checklist-sync-preview");
+  const previewOpened = previewPanel instanceof HTMLElement ? !previewPanel.hidden : false;
   logPlanSyncDebug("voice_sync_request", {
-    user_text: "",
-    active_panel_id: activeLaneId || null,
-    active_panel_title: getWorkModeLaneTitle(activeLaneId) || "",
+    user_text: userText,
+    active_panel_id: ctx.active_panel_id,
+    active_panel_title: ctx.active_panel_title,
     last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
     last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
-    selected_sync_source_panel_id: selected.meta?.panel_id || null,
-    selected_sync_source_panel_title: selected.meta?.panel_title || "",
+    selected_source_panel_id: selected.meta?.panel_id || null,
+    selected_source_panel_title: selected.meta?.panel_title || "",
     sync_candidate_count: rows.length,
-    reason_if_failed: ""
+    opened_preview: previewOpened,
+    auto_applied: false,
+    reason_if_failed: previewOpened ? "" : "preview_did_not_open",
+    trigger_source: triggerSource
   });
-  showWorkChecklistSyncPreview(formatChecklistProposalText(rows));
   syncWorkChecklistSyncPlanButton();
   return true;
 }
@@ -15040,23 +15193,45 @@ function isWorkChecklistSyncCommandIntent(text) {
 async function maybeHandleWorkChecklistSyncShortcut(text) {
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
   if (!isWorkChecklistSyncCommandIntent(text)) return false;
-  const activeLaneId = getActiveDomReasoningLaneId();
+  const userText = String(text || "").trim();
+  const ctx = describePlanSyncActiveContext();
   const selected = getWorkChecklistSyncSourceCandidate();
   logPlanSyncDebug("voice_sync_request", {
-    user_text: String(text || "").trim(),
-    active_panel_id: activeLaneId || null,
-    active_panel_title: getWorkModeLaneTitle(activeLaneId) || "",
+    user_text: userText,
+    active_panel_id: ctx.active_panel_id,
+    active_panel_title: ctx.active_panel_title,
     last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
     last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
-    selected_sync_source_panel_id: selected?.meta?.panel_id || null,
-    selected_sync_source_panel_title: selected?.meta?.panel_title || "",
+    selected_source_panel_id: selected?.meta?.panel_id || null,
+    selected_source_panel_title: selected?.meta?.panel_title || "",
     sync_candidate_count: selected?.rows?.length || 0,
-    reason_if_failed: selected?.rows?.length ? "" : "no_sync_candidates_before_apply"
+    opened_preview: false,
+    auto_applied: false,
+    reason_if_failed: selected?.rows?.length ? "" : "no_sync_candidates_before_apply",
+    trigger_source: "voice_or_typed_shortcut"
   });
-  const ok = runWorkChecklistSyncFromLatestPlan();
+  const ok = runWorkChecklistSyncFromLatestPlan({
+    triggerSource: "voice_or_typed_shortcut",
+    userText
+  });
+  let autoApplied = false;
   if (ok) {
-    applyWorkChecklistSyncPreview();
+    autoApplied = applyWorkChecklistSyncPreview();
   }
+  logPlanSyncDebug("voice_sync_request", {
+    user_text: userText,
+    active_panel_id: ctx.active_panel_id,
+    active_panel_title: ctx.active_panel_title,
+    last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
+    last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
+    selected_source_panel_id: selected?.meta?.panel_id || null,
+    selected_source_panel_title: selected?.meta?.panel_title || "",
+    sync_candidate_count: selected?.rows?.length || 0,
+    opened_preview: ok,
+    auto_applied: Boolean(autoApplied),
+    reason_if_failed: ok ? "" : "run_plan_returned_false",
+    trigger_source: "voice_or_typed_shortcut_completed"
+  });
   return true;
 }
 
@@ -15309,7 +15484,7 @@ function wireWorkModeChecklistAndComposer() {
   if (syncPlanBtn && syncPlanBtn.dataset.wiredSyncPlan !== "1") {
     syncPlanBtn.dataset.wiredSyncPlan = "1";
     syncPlanBtn.addEventListener("click", () => {
-      runWorkChecklistSyncFromLatestPlan();
+      runWorkChecklistSyncFromLatestPlan({ triggerSource: "button_click_sync_plan" });
     });
   }
   if (syncCancelBtn && syncCancelBtn.dataset.wiredSyncCancel !== "1") {
