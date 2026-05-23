@@ -394,14 +394,31 @@ function veraShowCapabilityFailureBubble(feature, message, opts = {}) {
    ========================= */
 
 /**
+ * Strong current/public-event clues. When one of these co-occurs with a
+ * vague "do you know if/whether ..." opener, we treat the request as a
+ * news/search ask. Without one, we leave it alone and let the backend
+ * pending_tool meta arm the bubble later if it actually routes to news.
+ */
+const NEWS_EVENT_CLUE_RE = /\b(?:today|yesterday|last\s+(?:week|night|month|year)|earlier\s+today|tonight|this\s+(?:week|morning|afternoon|evening|month)|recent|recently|latest|current|currently|breaking|news|headline|headlines|article|articles?|report|reports?|sources?|earnings|market|election|stock|trial|lawsuit|hearing|verdict|investigation|press\s+conference|press\s+release|statement|interview|tweet|post|filing|deal|merger|acquisition|visited|sued|released|announced|won|lost|died|arrested|fired|hired|launched|signed|acquired|sold|bought|resigned|retired|elected|indicted|settled|merged|killed|attacked|crashed|hacked|leaked|revealed|appointed|nominated)\b/;
+
+/**
+ * Known public figures, companies, countries, institutions, and event series.
+ * A "do you know if" or "did <X>" opener paired with any of these is a
+ * strong news signal even without an explicit time/news noun.
+ */
+const NEWS_NAMED_ENTITY_RE = /\b(?:trump|biden|harris|obama|putin|zelensky|xi(?:\s+jinping)?|netanyahu|musk|elon|bezos|altman|sam\s+altman|pichai|nadella|zuckerberg|nvidia|apple|tesla|spacex|openai|anthropic|microsoft|google|amazon|meta|facebook|twitter|alphabet|netflix|disney|samsung|sony|intel|amd|ibm|oracle|fda|sec|fbi|cia|nasa|congress|senate|fed|federal\s+reserve|white\s+house|pentagon|supreme\s+court|israel|gaza|ukraine|russia|china|taiwan|iran|north\s+korea|syria|nato|the\s+un|the\s+eu|wnba|nba|nfl|mlb|nhl|fifa|olympics|world\s+cup|super\s+bowl)\b/;
+
+/**
  * Heuristic for "this typed/voice utterance is going to trigger Serper /
  * news.latest / external search". Runs purely client-side BEFORE the network
  * round-trip so the pending bubble can appear immediately.
  *
- * Conservative by design: false negatives just mean no placeholder (the user
- * still sees the real reply), but false positives would briefly show
- * "Searching news…" for a local command — so we explicitly exclude obvious
- * local intents (music, volume, checklist edits, timer, basic greetings).
+ * Intentionally conservative: false negatives just mean no immediate
+ * placeholder (the backend pending_tool meta can still arm the bubble at
+ * TTFB). False positives are worse — they'd flash "Searching news…" on
+ * personal/knowledge questions like "what do you know about me" or "do you
+ * know what tennis is" — so generic "do you know" without a strong
+ * current/public-event clue is NOT a trigger here.
  */
 function looksLikeNewsSearchRequest(text) {
   const raw = String(text || "").trim().toLowerCase();
@@ -421,6 +438,22 @@ function looksLikeNewsSearchRequest(text) {
   if (/\b(?:thank\s+you|thanks|cool|nice|got\s+it|okay|ok|alright|sure)\b\s*[.?!]?\s*$/.test(raw)) return false;
   if (/\b(?:open|show|bring\s+up|switch\s+to|go\s+to)\s+(?:the\s+|my\s+)?(?:work\s+mode|reasoning|tab|panel|page|space|lane)\b/.test(raw)) return false;
 
+  // Personal / general-knowledge "know" questions are NEVER news triggers.
+  // Catches things like:
+  //   - what do you know about me
+  //   - do you know my name
+  //   - do you know what tennis is
+  //   - do you know how to cook pasta
+  //   - do you know why people get tired
+  //   - do you know what I mean
+  // The bare "do you know" opener used to fall through to a generic positive
+  // rule; that rule is now removed and replaced by a tight "do you know
+  // if/whether ..." gate that requires a strong event clue or named entity.
+  if (/\bwhat\s+do\s+you\s+know\s+about\b/.test(raw)) return false;
+  if (/\bdo\s+you\s+know\s+my\b/.test(raw)) return false;
+  if (/\bdo\s+you\s+know\s+(?:what|who|where|when|why|how)\s+(?:to|i|we|you|he|she|they|it|that|this|tennis|cooking|pasta|programming|coding|chess|history|math|science|people)\b/.test(raw)) return false;
+  if (/\bdo\s+you\s+know\s+(?:what|who|where|when|why|how)\s+\w+\s+(?:is|are|was|were|do|does|did|can|should|means|works|tastes|feels|looks|sounds)\b/.test(raw)) return false;
+
   // Strong single-word/phrase triggers (user-specified vocabulary).
   if (/\bnews\b/.test(raw)) return true;
   if (/\bheadlines?\b/.test(raw)) return true;
@@ -438,8 +471,20 @@ function looksLikeNewsSearchRequest(text) {
   if (/\bwhat(?:'?s)?(?:\s+is)?\s+happen(?:ed|ing|s)\b/.test(raw)) return true;
   // Match "what's going on", "what is going on", "what's new", "what's the latest".
   if (/\bwhat(?:'?s|\s+is)\s+(?:going\s+on|new|the\s+latest)\b/.test(raw)) return true;
-  if (/\bdo\s+you\s+know\s+(?:if|whether|about|that)\b/.test(raw)) return true;
-  if (/\bdid\s+(?:he|she|they|it|that|trump|biden|musk|elon|nvidia|apple|tesla|openai|microsoft|google|amazon|meta)\b/.test(raw)) return true;
+  // Tight "do you know if/whether ..." rule: must co-occur with a strong
+  // current/public-event clue OR a named public entity in the tail. The
+  // bare opener is intentionally NOT a trigger — the personal/knowledge
+  // negative filter above covers the false-positive cases.
+  const dykMatch = raw.match(/\bdo\s+you\s+know\s+(?:if|whether)\s+(.+)$/);
+  if (dykMatch) {
+    const tail = dykMatch[1];
+    if (NEWS_EVENT_CLUE_RE.test(tail) || NEWS_NAMED_ENTITY_RE.test(tail)) return true;
+  }
+  // "did <named public entity> ..." — strong news signal on its own.
+  // Pronoun forms ("did he go", "did that happen") are intentionally NOT
+  // matched: those are usually follow-ups the backend deictic resolver
+  // handles, or unrelated knowledge questions.
+  if (/\bdid\s+/.test(raw) && NEWS_NAMED_ENTITY_RE.test(raw)) return true;
   if (/\b(?:any|got\s+any)\s+(?:news|updates?)\b/.test(raw)) return true;
   if (/\btell\s+me\s+(?:about\s+)?(?:the\s+)?(?:news|latest|recent)\b/.test(raw)) return true;
   if (/\bshow\s+(?:me\s+)?(?:the\s+)?(?:sources?|articles?|news|headlines?|link)\b/.test(raw)) return true;
