@@ -451,7 +451,12 @@ function looksLikeNewsSearchRequest(text) {
 
 let pendingNewsStatusBubble = null;
 let pendingNewsStatusTimerId = null;
-const PENDING_NEWS_STATUS_TIMEOUT_MS = 25000;
+let pendingNewsStatusToken = 0;
+// This is a stuck-request backstop, not the normal failure path. Real network
+// and server failures go through fetch/catch handlers. Keep it long enough
+// that a slow-but-successful Serper + LLM turn does not briefly show a false
+// red failure bubble before the final answer arrives.
+const PENDING_NEWS_STATUS_TIMEOUT_MS = 90000;
 const PENDING_NEWS_STATUS_TEXT = "Searching news…";
 
 function _clearPendingNewsStatusTimer() {
@@ -464,9 +469,9 @@ function _clearPendingNewsStatusTimer() {
 /**
  * Show a "Searching news…" bubble if `userText` looks like a news/search ask.
  * The bubble is text-only (never enqueued to TTS) and not persisted to chat
- * state (it's transient by design). Auto-replaces with the search/news
- * failure message after PENDING_NEWS_STATUS_TIMEOUT_MS so it can never get
- * stuck forever. Returns the bubble element or null when nothing was shown.
+ * state (it's transient by design). A long timeout is only a stuck-request
+ * backstop; normal failures are driven by fetch/catch handlers. Returns the
+ * bubble element or null when nothing was shown.
  */
 function armPendingNewsStatusBubble(userText, { force = false } = {}) {
   if (!force && !looksLikeNewsSearchRequest(userText)) return null;
@@ -476,13 +481,15 @@ function armPendingNewsStatusBubble(userText, { force = false } = {}) {
   // a new one in its place.
   if (
     pendingNewsStatusBubble?.isConnected &&
-    pendingNewsStatusBubble.dataset?.pendingForText === utteranceKey
+    pendingNewsStatusBubble.dataset?.pendingForText === utteranceKey &&
+    pendingNewsStatusBubble.dataset?.pendingStatus === "news"
   ) {
     return pendingNewsStatusBubble;
   }
   // Drop any stale pending bubble before installing a new one (e.g. a prior
   // search that never reached resolution before the user sent again).
   cancelPendingNewsStatusBubble("superseded");
+  const token = ++pendingNewsStatusToken;
   try {
     pendingNewsStatusBubble = addBubble(PENDING_NEWS_STATUS_TEXT, "vera", {
       path: "pending-status-news",
@@ -491,6 +498,7 @@ function armPendingNewsStatusBubble(userText, { force = false } = {}) {
     if (pendingNewsStatusBubble?.dataset) {
       pendingNewsStatusBubble.dataset.pendingStatus = "news";
       pendingNewsStatusBubble.dataset.pendingForText = utteranceKey;
+      pendingNewsStatusBubble.dataset.pendingToken = String(token);
       pendingNewsStatusBubble.setAttribute("aria-live", "polite");
     }
   } catch (e) {
@@ -507,6 +515,7 @@ function armPendingNewsStatusBubble(userText, { force = false } = {}) {
   } catch (_) {}
   _clearPendingNewsStatusTimer();
   pendingNewsStatusTimerId = setTimeout(() => {
+    if (token !== pendingNewsStatusToken) return;
     pendingNewsStatusTimerId = null;
     failPendingNewsStatusBubble("timeout");
   }, PENDING_NEWS_STATUS_TIMEOUT_MS);
@@ -520,6 +529,7 @@ function armPendingNewsStatusBubble(userText, { force = false } = {}) {
  */
 function cancelPendingNewsStatusBubble(reason = "resolved") {
   _clearPendingNewsStatusTimer();
+  pendingNewsStatusToken += 1;
   const bubble = pendingNewsStatusBubble;
   pendingNewsStatusBubble = null;
   if (!bubble) return false;
@@ -536,14 +546,24 @@ function cancelPendingNewsStatusBubble(reason = "resolved") {
 }
 
 /**
- * Network / server / timeout failure: keep the bubble in place but rewrite it
- * with the standardized "Search/news information is not available right now."
- * message so the user gets a clear failure signal in the same spot.
+ * Network / server / timeout failure: rewrite the tracked bubble with the
+ * standardized "Search/news information is not available right now." message.
+ *
+ * Important: keep `pendingNewsStatusBubble` pointing at this failed bubble.
+ * If the timeout fired too early but the request later succeeds, success
+ * handlers call cancelPendingNewsStatusBubble(...) before rendering the real
+ * reply. That removes the red bubble and enforces:
+ *
+ *   pending -> success
+ *   pending -> failure
+ *
+ * never:
+ *
+ *   pending -> failure + success
  */
 function failPendingNewsStatusBubble(reason = "failure") {
   _clearPendingNewsStatusTimer();
   const bubble = pendingNewsStatusBubble;
-  pendingNewsStatusBubble = null;
   if (!bubble?.isConnected) return false;
   try {
     bubble.textContent =
@@ -551,6 +571,7 @@ function failPendingNewsStatusBubble(reason = "failure") {
       "Search/news information is not available right now.";
     bubble.classList.remove("vera-pending-status", "vera-pending-status-news");
     bubble.classList.add("vera-pending-status-failed", "vera-safety-failure");
+    if (bubble.dataset) bubble.dataset.pendingStatus = "news_failed";
   } catch (_) {}
   try {
     console.warn("[pending_status_bubble]", { kind: "news", action: "failed", reason });
