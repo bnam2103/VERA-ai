@@ -197,6 +197,309 @@ let interruptRecording = false;
 let audioChunks = [];
 let hasSpoken = false;
 let lastVoiceTime = 0;
+/* Speech-start guarded voice-duration cap. Pre-speech silence is governed
+   by the existing no-speech / idle timeouts; this fires only AFTER the user
+   actually starts speaking. See `armVoiceMaxDurationTimer`. */
+let voiceSpeechStartedAt = 0;
+let voiceMaxDurationTimerId = null;
+let voiceMaxDurationLastFiredAt = 0;
+
+/* =========================
+   SAFETY LIMITS (frontend)
+   Mirror the values in safety_limits.py. Tuned together if you change one.
+========================= */
+const VERA_SAFETY_LIMITS = Object.freeze({
+  /** Char caps for typed input, by mode. Block before any /text or /infer call. */
+  charLimits: Object.freeze({
+    normalChat: 4000,
+    workReasoning: 12000,
+    checklistOrCommand: 2000
+  }),
+  /** Voice recording cap measured from FIRST detected speech (not from listen-start). */
+  voiceMaxDurationAfterSpeechSec: 60,
+  /** Standardized user-facing copy. Keep wording aligned with FallbackMessages in safety_limits.py. */
+  messages: Object.freeze({
+    inputTooLongKeyboard:
+      "This message is too long for one request. Please shorten it or upload it as a file.",
+    voiceDurationLimit:
+      "I stopped recording to keep the request manageable. Use a shorter voice command or type longer details.",
+    asrFailure:
+      "My listening capability has malfunctioned. Please use the keyboard.",
+    ttsFailure:
+      "My speaking capability has malfunctioned. Please refer to the text bubble.",
+    llmFailure:
+      "My reasoning capability is temporarily unavailable. Please come back later.",
+    musicFailure: "Music playback is not available right now.",
+    weatherFailure: "Weather information is not available right now.",
+    searchNewsFailure: "Search/news information is not available right now.",
+    financeFailure: "Finance information is not available right now.",
+    bmoStateFailure: "BMO's emotion display is temporarily unavailable."
+  })
+});
+
+/**
+ * Char cap for typed input given current UI mode. Centralized so all four
+ * submit paths (sendTextMessage non-work, sendVeraWorkModeTypedInferTurn,
+ * submitWorkModeReasoningComposer, checklist composer) share the same
+ * thresholds and copy.
+ *
+ * `intent` values:
+ *   - "normal_chat"
+ *   - "work_command" (typed line in Work Mode that isn't going to reasoning)
+ *   - "work_reasoning" (composer submission that opens / continues a panel)
+ *   - "checklist" (checklist sync / plan command short-circuits)
+ */
+function veraCharLimitFor(intent) {
+  switch (intent) {
+    case "work_reasoning":
+      return VERA_SAFETY_LIMITS.charLimits.workReasoning;
+    case "checklist":
+      return VERA_SAFETY_LIMITS.charLimits.checklistOrCommand;
+    case "work_command":
+    case "normal_chat":
+    default:
+      return VERA_SAFETY_LIMITS.charLimits.normalChat;
+  }
+}
+
+/**
+ * If `text` exceeds the limit for `intent`, log + return a block payload.
+ * Returns null if the input is fine. Callers should:
+ *   - NOT clear the input field (so the user can edit and retry)
+ *   - addBubble(blocked.message, "vera") so the user sees the same copy
+ *     that backend would otherwise return as a 413
+ *   - return early before any /text or /infer call
+ */
+function veraCheckTypedInputLength(text, intent, feature) {
+  const t = String(text || "");
+  const limit = veraCharLimitFor(intent);
+  if (t.length <= limit) return null;
+  const out = {
+    ok: false,
+    reason: "input_too_long",
+    char_count: t.length,
+    char_limit: limit,
+    estimated_tokens: Math.ceil(t.length / 4),
+    message: VERA_SAFETY_LIMITS.messages.inputTooLongKeyboard,
+    intent: String(intent || "normal_chat"),
+    feature: String(feature || "keyboard")
+  };
+  try {
+    console.warn("[safety_guard]", {
+      reason: out.reason,
+      mode: intent === "work_reasoning" || intent === "work_command"
+        ? "work_mode"
+        : "non_work",
+      feature: out.feature,
+      char_count: out.char_count,
+      estimated_tokens: out.estimated_tokens,
+      char_limit: out.char_limit
+    });
+  } catch (_) {}
+  return out;
+}
+
+/** Inline bubble used for any safety block (length or capability failure). */
+function veraShowSafetyFailureBubble(message) {
+  try {
+    addBubble(String(message || ""), "vera", { path: "safety-fallback" });
+  } catch (e) {
+    try { console.warn("[safety_guard] bubble failed", e); } catch (_) {}
+  }
+}
+
+/** Status-line helper used by safety guards (kept short to fit the strip). */
+function veraSetSafetyStatus(text) {
+  try {
+    setStatus(String(text || "").slice(0, 80), "idle");
+  } catch (_) {}
+}
+
+/**
+ * Inspect a failed fetch / response and surface the right user bubble.
+ *  - 413 => input-too-long bubble (server enforced the same cap)
+ *  - 5xx / network / parse errors => LLM-failure bubble (the model path
+ *    is the user-facing surface most of these failures sit on).
+ * Returns the bubble feature key actually shown, or null if nothing
+ * was shown (AbortError).
+ */
+async function veraSurfaceLlmFetchFailure({
+  feature = "llm",
+  response = null,
+  error = null,
+  extra = null
+} = {}) {
+  if (error && error.name === "AbortError") return null;
+  const status = response?.status ?? 0;
+  if (status === 413) {
+    let serverMsg = "";
+    try {
+      const body = await response.clone().json();
+      serverMsg = String(body?.detail || body?.message || "").trim();
+    } catch (_) {}
+    const msg = serverMsg || VERA_SAFETY_LIMITS.messages.inputTooLongKeyboard;
+    logVeraCapabilityFailure(feature, "input_too_long_server", {
+      status,
+      server_message: serverMsg.slice(0, 200),
+      ...(extra || {})
+    });
+    veraShowCapabilityFailureBubble("safety_413", msg);
+    return "safety_413";
+  }
+  logVeraCapabilityFailure(feature, "llm_fetch_failed", {
+    status: status || null,
+    error_name: error?.name || null,
+    error_message: error ? String(error.message || error).slice(0, 200) : null,
+    ...(extra || {})
+  });
+  veraShowCapabilityFailureBubble(
+    "llm_failure",
+    VERA_SAFETY_LIMITS.messages.llmFailure
+  );
+  return "llm_failure";
+}
+
+/** Generic capability-failure logger used by frontend service-error handlers. */
+function logVeraCapabilityFailure(feature, reason, extra) {
+  try {
+    const payload = { feature, reason };
+    if (extra && typeof extra === "object") {
+      for (const [k, v] of Object.entries(extra)) {
+        if (!(k in payload)) payload[k] = v;
+      }
+    }
+    console.warn("[capability_failure]", payload);
+  } catch (_) {}
+}
+
+/**
+ * Show a capability-failure bubble at most once per ~6s per (feature) so a
+ * burst of failures (e.g. multiple TTS chunks erroring back-to-back) does
+ * not spam the conversation with duplicate copy.
+ */
+const _veraCapabilityFailureLastShownAt = new Map();
+function veraShowCapabilityFailureBubble(feature, message, opts = {}) {
+  const now = Date.now();
+  const key = String(feature || "generic");
+  const last = _veraCapabilityFailureLastShownAt.get(key) || 0;
+  const minMs = Number.isFinite(opts.minIntervalMs) ? opts.minIntervalMs : 6000;
+  if (now - last < minMs) return false;
+  _veraCapabilityFailureLastShownAt.set(key, now);
+  veraShowSafetyFailureBubble(message);
+  return true;
+}
+
+/* =========================
+   VOICE DURATION CAP (60s after speech-start)
+========================= */
+
+/**
+ * Clear any pending voice-duration timer. Always safe to call; no-op if
+ * the timer was never armed.
+ */
+function clearVoiceMaxDurationTimer() {
+  if (voiceMaxDurationTimerId != null) {
+    try { clearTimeout(voiceMaxDurationTimerId); } catch (_) {}
+    voiceMaxDurationTimerId = null;
+  }
+  voiceSpeechStartedAt = 0;
+}
+
+/**
+ * Arm the 60s post-speech-start cap exactly once per utterance. Safe to
+ * call from every spot where `hasSpoken` flips to true (browser ASR
+ * partial / MediaRecorder VAD speech-frame); subsequent calls during the
+ * same utterance are no-ops.
+ *
+ * When the timer fires it gracefully stops whichever recorder is alive:
+ *   - For browser SpeechRecognition continuous: lets the current partial
+ *     turn finalize via the normal end-of-utterance scheduling so a
+ *     substantive transcript is not lost. If there is no transcript yet,
+ *     just stops the recognizer and shows the duration bubble.
+ *   - For MediaRecorder: calls `.stop()` which routes through the normal
+ *     `handleUtterance` upload path, then shows the bubble.
+ *
+ * The fallback bubble appears at most once per ~5s to avoid duplicates
+ * when both paths happen to be alive.
+ */
+function armVoiceMaxDurationTimer(reason) {
+  if (voiceMaxDurationTimerId != null) return; // already armed
+  voiceSpeechStartedAt = Date.now();
+  const ms = Math.max(
+    5000,
+    Number(VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec) * 1000
+  );
+  try {
+    console.info("[voice_speech_started]", {
+      reason: String(reason || "first_partial"),
+      max_duration_sec: VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec
+    });
+  } catch (_) {}
+  voiceMaxDurationTimerId = setTimeout(() => {
+    voiceMaxDurationTimerId = null;
+    handleVoiceMaxDurationLimit();
+  }, ms);
+}
+
+function handleVoiceMaxDurationLimit() {
+  const now = Date.now();
+  // Burst guard — only one fallback per 5s even if both pipes trip.
+  if (now - voiceMaxDurationLastFiredAt < 5000) return;
+  voiceMaxDurationLastFiredAt = now;
+  try {
+    console.warn("[voice_duration_limit]", {
+      reason: "voice_duration_limit",
+      mode: isVeraWorkModeOn?.() ? "work_mode" : "non_work",
+      feature: "voice",
+      max_duration_sec: VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec
+    });
+  } catch (_) {}
+
+  // 1) Try to stop the Web Speech recognizer cleanly, preserving any
+  //    accumulated transcript so the normal /infer flow can still run.
+  let webStopped = false;
+  try {
+    if (typeof mainBrowserRecognition !== "undefined" && mainBrowserRecognition) {
+      try { mainBrowserRecognition.stop(); } catch (_) {
+        try { mainBrowserRecognition.abort(); } catch (_) {}
+      }
+      webStopped = true;
+    }
+  } catch (_) {}
+
+  // 2) Stop active MediaRecorder so its `onstop` fires `handleUtterance`.
+  let mediaStopped = false;
+  try {
+    if (typeof mediaRecorder !== "undefined" && mediaRecorder &&
+        mediaRecorder.state === "recording") {
+      try { mediaRecorder.stop(); } catch (_) {}
+      mediaStopped = true;
+    }
+  } catch (_) {}
+
+  // 3) Reset wave / listening UI so the strip cannot appear stuck.
+  try {
+    listening = false;
+    processing = false;
+    waveState = "idle";
+    if (typeof updateMuteInputButton === "function") updateMuteInputButton();
+    setStatus("Ready", "idle");
+  } catch (_) {}
+
+  /* 4) Bubble — keep wording exactly to spec; voice + work-mode both show
+        this in the conversation strip (not inside the reasoning panel).
+        Skip if no recorder was actually stopped: the recording session
+        must have ended cleanly while the timer was still scheduled (e.g.
+        normal silence-stop landed milliseconds before the cap fired). */
+  if (webStopped || mediaStopped) {
+    veraShowCapabilityFailureBubble(
+      "voice_duration_limit",
+      VERA_SAFETY_LIMITS.messages.voiceDurationLimit,
+      { minIntervalMs: 5000 }
+    );
+  }
+  clearVoiceMaxDurationTimer();
+}
 
 let listening = false;
 let processing = false;
@@ -1415,6 +1718,7 @@ function setContinuousInputMuted(nextMuted) {
     audioChunks = [];
     hasSpoken = false;
     lastVoiceTime = 0;
+    clearVoiceMaxDurationTimer();
     showMutedStatusIfIdle();
   } else if (listeningMode === "continuous" && !requestInFlight && getAudioEl()?.paused) {
     listening = true;
@@ -12052,6 +12356,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           if (reasoningUploadState) reasoningUploadState.failed = true;
           /* Lane attachment block already committed; composer tray stays cleared. */
           safeReasoningLaneRelease("upload_failed");
+          /* For 413 (input/file too large) the server detail is the right
+             user-facing copy. For 5xx surface the standard LLM-failure bubble. */
+          if (sr.status >= 500) {
+            void veraSurfaceLlmFetchFailure({
+              feature: "reasoning_stream_upload",
+              response: sr
+            });
+          } else if (sr.status === 413) {
+            void veraSurfaceLlmFetchFailure({
+              feature: "reasoning_stream_upload",
+              response: sr
+            });
+          }
           return "reasoning-upload-failed";
         }
         if (!sr.body) {
@@ -12074,12 +12391,22 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         });
         if (!sr.ok || !sr.body) {
           safeReasoningLaneRelease("stream_http_error");
+          void veraSurfaceLlmFetchFailure({
+            feature: "reasoning_stream",
+            response: sr
+          });
           return;
         }
       }
     } catch (err) {
       if (reasoningUploadState) reasoningUploadState.failed = true;
       safeReasoningLaneRelease("fetch_throw");
+      if (err?.name !== "AbortError") {
+        void veraSurfaceLlmFetchFailure({
+          feature: "reasoning_stream_throw",
+          error: err
+        });
+      }
       throw err;
     }
 
@@ -12115,7 +12442,16 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           } catch {
             continue;
           }
-          if (o.type === "error") break;
+          if (o.type === "error") {
+            logVeraCapabilityFailure("llm", "reasoning_stream_error", {
+              message: String(o.message || "").slice(0, 200)
+            });
+            veraShowCapabilityFailureBubble(
+              "llm_failure",
+              VERA_SAFETY_LIMITS.messages.llmFailure
+            );
+            break;
+          }
           if (o.type === "summary" && o.text) {
             const normalizedSummary = normalizeWorkModeReasoningSummary(String(o.text), laneLabel, {
               outputLaneIdx: laneIdx,
@@ -12379,6 +12715,10 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         /* ignore */
       }
       setWorkModeAttachmentMeta(msg);
+      void veraSurfaceLlmFetchFailure({
+        feature: "reasoning_stream_secondary",
+        response: sr
+      });
       return;
     }
     if (!sr.body) {
@@ -13622,6 +13962,17 @@ function wireWorkModeChecklistAndComposer() {
     const files = getWorkModePendingAttachmentFiles();
     if (!t && !files.length) return;
     if (!isVeraWorkModeOn()) return;
+    /* Safety: reasoning composer gets the larger workReasoning cap.
+       Length check runs before the hard-cap so users see the proper reason. */
+    if (t) {
+      const lenBlock = veraCheckTypedInputLength(t, "work_reasoning", "keyboard");
+      if (lenBlock) {
+        veraShowSafetyFailureBubble(lenBlock.message);
+        veraSetSafetyStatus("Reasoning prompt too long — shorten or upload as a file");
+        preserveComposerAttachments("typed_length_cap_reached", null);
+        return;
+      }
+    }
     if (isWorkModeTypedTurnAtHardCap()) {
       setStatus("Wait for VERA response before sending more", "idle");
       try {
@@ -14543,8 +14894,12 @@ function onBrowserInterruptBargeInFromDetect(event) {
   }
   mainBrowserFinalTranscript = finalP;
   mainBrowserLastInterim = interimBuf;
+  const _wasSpokenInterruptOnResult = hasSpoken;
   hasSpoken =
     mainBrowserFinalTranscript.trim().length > 0 || interimBuf.trim().length > 0;
+  if (hasSpoken && !_wasSpokenInterruptOnResult) {
+    armVoiceMaxDurationTimer("browser_asr_first_partial_interrupt");
+  }
   if (hasSpoken && speechWaitTimeoutId != null) {
     clearTimeout(speechWaitTimeoutId);
     speechWaitTimeoutId = null;
@@ -15350,6 +15705,7 @@ function cancelVoicePipelineAndResetState() {
   hasSpoken = false;
   lastVoiceTime = 0;
   waveState = "idle";
+  clearVoiceMaxDurationTimer();
   setStatus("Ready", "idle");
   updateMuteInputButton();
 }
@@ -15863,7 +16219,25 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
       },
       { once: true }
     );
-    await el.play();
+    const onSingleAudioError = (ev) => {
+      try { el.removeEventListener("error", onSingleAudioError); } catch (_) {}
+      logVeraCapabilityFailure("tts", "audio_element_error", {
+        src: el.src,
+        error_code: el.error?.code
+      });
+      mainTtsPlaybackActive = false;
+      veraShowCapabilityFailureBubble(
+        "tts_failure",
+        VERA_SAFETY_LIMITS.messages.ttsFailure
+      );
+      if (onPlayEnd) onPlayEnd();
+    };
+    el.addEventListener("error", onSingleAudioError, { once: true });
+    try {
+      await el.play();
+    } catch (err) {
+      onSingleAudioError(err);
+    }
     return;
   }
 
@@ -16274,7 +16648,25 @@ async function initMic() {
         autoGainControl: false,
       };
 
-  micStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+  } catch (err) {
+    /* Mic capture failed (permission denied, no device, hardware in use).
+       This is the strongest signal that ASR is unrecoverable for this
+       session — show the standard ASR-failure bubble so the user knows
+       to type instead. Re-raise so callers (PTT / continuous start) can
+       reset their wave state. */
+    logVeraCapabilityFailure("asr", "mic_capture_failed", {
+      error_name: err?.name,
+      error_message: String(err?.message || err || "").slice(0, 200)
+    });
+    veraShowCapabilityFailureBubble(
+      "asr_failure",
+      VERA_SAFETY_LIMITS.messages.asrFailure
+    );
+    try { setStatus("Listening unavailable — use the keyboard", "offline"); } catch (_) {}
+    throw err;
+  }
 
   if (!audioCtx) {
     audioCtx = new AudioContext({ sampleRate: 16000 });
@@ -16643,6 +17035,9 @@ function detectSpeech() {
   const now = performance.now();
 
   if (listeningFrameIsSpeechLike(buf, rms)) {
+    if (!hasSpoken) {
+      armVoiceMaxDurationTimer("vad_speech_frame");
+    }
     hasSpoken = true;
     lastVoiceTime = now;
   }
@@ -16669,6 +17064,10 @@ function clearSpeechWaitTimerAndDetectRaf() {
     cancelAnimationFrame(rafId);
     rafId = null;
   }
+  /* Voice-duration cap is bound to an active recording session. When the
+     session is torn down (silence stop, abort, pipeline reset, PTT switch,
+     etc.) the timer must not survive into the next utterance. */
+  clearVoiceMaxDurationTimer();
 }
 
 /**
@@ -17072,7 +17471,11 @@ function startMainBrowserRecognitionContinuous() {
       }
     }
     mainBrowserLastInterim = interimBuf;
+    const wasSpoken = hasSpoken;
     hasSpoken = mainBrowserFinalTranscript.trim().length > 0 || interimBuf.trim().length > 0;
+    if (hasSpoken && !wasSpoken) {
+      armVoiceMaxDurationTimer("browser_asr_first_partial_main");
+    }
     if (hasSpoken && speechWaitTimeoutId != null) {
       clearTimeout(speechWaitTimeoutId);
       speechWaitTimeoutId = null;
@@ -17213,8 +17616,12 @@ function startInterruptBrowserPartialDetection() {
         }
       }
       mainBrowserLastInterim = interimBuf;
+      const _wasSpokenPostInterrupt = hasSpoken;
       hasSpoken =
         mainBrowserFinalTranscript.trim().length > 0 || interimBuf.trim().length > 0;
+      if (hasSpoken && !_wasSpokenPostInterrupt) {
+        armVoiceMaxDurationTimer("browser_asr_first_partial_post_interrupt");
+      }
       if (hasSpoken && speechWaitTimeoutId != null) {
         clearTimeout(speechWaitTimeoutId);
         speechWaitTimeoutId = null;
@@ -17887,6 +18294,7 @@ async function runInferMainPipeline(formData, opts = {}) {
     processing = false;
     requestInFlight = false;
     setStatus("Server error", "offline");
+    void veraSurfaceLlmFetchFailure({ feature: "infer_main", error: e });
   }
 }
 
@@ -18013,6 +18421,7 @@ async function runInferInterruptPipeline(formData) {
     requestInFlight = false;
     setStatus("Server error", "offline");
     listening = true;
+    void veraSurfaceLlmFetchFailure({ feature: "infer_interrupt", error: e });
   }
 }
 
@@ -18026,10 +18435,15 @@ async function handleUtterance() {
     processing = false;
     audioChunks = [];
     hasSpoken = false;
+    clearVoiceMaxDurationTimer();
     voiceUxTurn = null;
     showMutedStatusIfIdle();
     return;
   }
+  /* Utterance is being handled now (uploaded or sent to /infer). Cap timer
+     is bound to the recording session — clear it so it cannot fire
+     mid-upload and double-stop. */
+  clearVoiceMaxDurationTimer();
 
   if (listeningMode === "continuous" && inputMuted) {
     processing = false;
@@ -18111,6 +18525,10 @@ async function handleUtterance() {
         requestInFlight = false;
         voiceUxTurn = null;
         setStatus("Server error", "offline");
+        void veraSurfaceLlmFetchFailure({
+          feature: "infer_preflight",
+          response: preRes
+        });
         if (listeningMode === "continuous" && listening && !inputMuted) {
           startListening();
         }
@@ -18129,12 +18547,16 @@ async function handleUtterance() {
       let preData;
       try {
         preData = await preRes.json();
-      } catch (_) {
+      } catch (parseErr) {
         hideSidePanel();
         processing = false;
         requestInFlight = false;
         voiceUxTurn = null;
         setStatus("Server error", "offline");
+        void veraSurfaceLlmFetchFailure({
+          feature: "infer_preflight_parse",
+          error: parseErr
+        });
         if (listeningMode === "continuous" && listening && !inputMuted) {
           startListening();
         }
@@ -18267,6 +18689,10 @@ async function handleUtterance() {
       requestInFlight = false;
       voiceUxTurn = null;
       setStatus("Server error", "offline");
+      void veraSurfaceLlmFetchFailure({
+        feature: "infer_preflight_workmode",
+        error: err
+      });
       if (listeningMode === "continuous" && listening && !inputMuted) {
         startListening();
       }
@@ -18309,6 +18735,32 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   }
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
     return;
+  }
+
+  /* Safety length cap (defense in depth for any caller that bypasses the
+     UI-side guard). Use the reasoning limit when the path indicates the
+     prompt is heading into a reasoning panel, otherwise the chat limit. */
+  if (!fromQueue && trimmed) {
+    const intent = String(path || "").includes("reasoning")
+      ? "work_reasoning"
+      : "work_command";
+    const lenBlock = veraCheckTypedInputLength(trimmed, intent, "keyboard");
+    if (lenBlock) {
+      veraShowSafetyFailureBubble(lenBlock.message);
+      veraSetSafetyStatus("Message too long — shorten or upload as a file");
+      preserveComposerAttachments("typed_length_cap_reached", null);
+      try {
+        console.info("[reasoning_queue_omitted]", {
+          turn_id: null,
+          lane_id: null,
+          reason: "typed_length_cap_reached",
+          char_count: trimmed.length,
+          char_limit: lenBlock.char_limit,
+          intent
+        });
+      } catch (_) {}
+      return;
+    }
   }
 
   /* Hard cap: at most WORK_MODE_TYPED_PENDING_MAX typed turns in flight or queued.
@@ -18465,6 +18917,10 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
       requestInFlight = false;
       voiceUxTurn = null;
       setStatus("Server error", "offline");
+      void veraSurfaceLlmFetchFailure({
+        feature: "infer_workmode_typed",
+        error: err
+      });
     }
   });
 
@@ -18508,6 +18964,13 @@ async function sendTextMessage() {
 
   if (!text) return;
   if (inVeraWorkMode) {
+    /* Safety: length cap BEFORE any state mutation so the user can edit + retry. */
+    const lenBlock = veraCheckTypedInputLength(text, "work_command", "keyboard");
+    if (lenBlock) {
+      veraShowSafetyFailureBubble(lenBlock.message);
+      veraSetSafetyStatus("Message too long — shorten or upload as a file");
+      return;
+    }
     if (isWorkModeTypedTurnAtHardCap()) {
       setStatus("Wait for VERA response before sending more", "idle");
       try {
@@ -18520,6 +18983,14 @@ async function sendTextMessage() {
     }
     if (textInput) textInput.value = "";
     await sendVeraWorkModeTypedInferTurn(text, { path: "typed-text" });
+    return;
+  }
+  /* Non-work-mode keyboard: chat length cap. Bubble shows the same copy as
+     the backend 413 so the UX is identical for FE-block vs BE-block. */
+  const lenBlockChat = veraCheckTypedInputLength(text, "normal_chat", "keyboard");
+  if (lenBlockChat) {
+    veraShowSafetyFailureBubble(lenBlockChat.message);
+    veraSetSafetyStatus("Message too long — shorten or upload as a file");
     return;
   }
   const consecutiveUserTail = (() => {
@@ -18687,6 +19158,7 @@ async function sendTextMessage() {
     processing = false;
     textUxTurn = null;
     setStatus("Server error", "offline");
+    void veraSurfaceLlmFetchFailure({ feature: "text_endpoint", error: err });
   }
 }
 
