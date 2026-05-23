@@ -9,7 +9,7 @@ try {
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v48 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
+    "%c[VERA] app.js build v49 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -7043,6 +7043,7 @@ function wireReasoningTabStrip() {
     const tab = e.target.closest("button.vera-reasoning-tab");
     if (tab && tab.dataset.tabIndex != null) {
       activateReasoningTab(Number(tab.dataset.tabIndex));
+      scheduleSyncPlanButtonRefresh(0);
     }
   });
   panelsRoot.addEventListener("pointerdown", (e) => {
@@ -7052,6 +7053,7 @@ function wireReasoningTabStrip() {
     if (!Number.isFinite(idx)) return;
     setFocusedWorkModeLaneFromIndex(idx);
     if (!panel.classList.contains("is-active")) activateReasoningTab(idx);
+    scheduleSyncPlanButtonRefresh(0);
   });
   const reasoningInput = document.getElementById("vera-reasoning-input");
   reasoningInput?.addEventListener("focus", () => {
@@ -9150,6 +9152,7 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
           renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
           const scrollHost = mdEl.closest(".vera-reasoning-scroll") || mdEl;
           maybeReasoningScrollToLatest(scrollHost);
+          scheduleSyncPlanButtonRefresh();
         }
       }
       if (done) break;
@@ -13642,6 +13645,7 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
             turnEl.dataset.markdownAcc = markdownAcc;
             renderWorkModeMarkdown(turnEl, markdownAcc, summaryText);
             maybeReasoningScrollToLatest(scrollEl);
+            scheduleSyncPlanButtonRefresh();
           }
         }
         if (done) break;
@@ -14292,6 +14296,7 @@ function loadWorkChecklistItems() {
   }
   syncWorkChecklistEraseButton();
   syncWorkChecklistHelpPlanButton();
+  scheduleSyncPlanButtonRefresh(0);
 }
 
 function persistWorkChecklistToggle(id, done) {
@@ -14526,6 +14531,20 @@ function syncWorkChecklistHelpPlanButton() {
   const btn = document.getElementById("vera-wm-checklist-help-plan");
   if (!btn) return;
   btn.disabled = collectWorkChecklistOngoingTexts().length === 0;
+}
+
+/** Throttled refresh so chunk appends / tab switches don't spam the parser.
+ *  Coalesces calls into a trailing tick (~250ms) so the Sync button enables
+ *  promptly once the SYNC CHECKLIST heading lands in the live markdown. */
+let __syncPlanButtonRefreshTimer = null;
+function scheduleSyncPlanButtonRefresh(delayMs = 250) {
+  if (__syncPlanButtonRefreshTimer) return;
+  __syncPlanButtonRefreshTimer = window.setTimeout(() => {
+    __syncPlanButtonRefreshTimer = null;
+    try {
+      syncWorkChecklistSyncPlanButton();
+    } catch (_) {}
+  }, Math.max(0, delayMs));
 }
 
 function syncWorkChecklistSyncPlanButton() {
