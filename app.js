@@ -167,6 +167,7 @@ function resetVeraSessionAndUi() {
   workChecklistSyncPlanVersion = 0;
   workChecklistSyncConsumedPlanVersion = 0;
   workChecklistSyncPendingMarkdown = "";
+  workChecklistSyncPendingPlanMeta = null;
   syncWorkChecklistSyncPlanButton();
 
   clearWorkModeLaneRegistry();
@@ -8932,7 +8933,7 @@ function isLikelyWorkModePlanningIntent(text) {
   const multiWork =
     /\b(i have|i've got|i am juggling|working on|need to do|need to finish|due|homework|assignments?)\b/.test(t) &&
     /\b(and|plus|also|,)\b/.test(t);
-  const workload = /\b(essay|essays|math|science|reading|paper|papers|exam|exams|problem sets?|projects?|classes?|courses?)\b/.test(
+  const workload = /\b(essay|essays|math|stat|stats|statistics|science|reading|paper|papers|exam|exams|problem sets?|projects?|classes?|courses?)\b/.test(
     t
   );
   if (planningCue && (multiWork || workload)) return true;
@@ -12016,6 +12017,42 @@ function logStage2EffectiveReply(prep, pack, bubbleTextFinal, ttsTextFinal) {
   } catch (_) {}
 }
 
+function logStage2Debug(prep, extra = {}) {
+  const tc = prep?.turnContext || {};
+  const laneId = String(tc.turn_lane_id || prep?.reasoningLaneId || "").trim();
+  const activeLaneId = getActiveDomReasoningLaneId();
+  const reasoningContext = laneId ? resolveWorkModeLaneHandoffForInfer(laneId, { silentResyncLog: true }) : null;
+  try {
+    console.info("[STAGE2_DEBUG]", {
+      muted_input: Boolean(inputMuted),
+      work_mode_muted: Boolean(isWorkModeMuteEnabled()),
+      tts_muted: Boolean(appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled()),
+      user_text_present: Boolean(String(tc.user_text || "").trim()),
+      user_text_length: String(tc.user_text || "").trim().length,
+      transcript_present: Boolean(String(extra.transcript || tc.user_text || "").trim()),
+      transcript_length: String(extra.transcript || tc.user_text || "").trim().length,
+      lane_id: laneId || null,
+      active_panel_id: activeLaneId || null,
+      reasoning_context_present: Boolean(reasoningContext),
+      reasoning_context_length: String(
+        reasoningContext?.main_context_excerpt ||
+          reasoningContext?.latest_final_answer_excerpt ||
+          reasoningContext?.latest_markdown_preview ||
+          ""
+      ).length,
+      reasoning_completed: Boolean(extra.reasoning_completed),
+      reasoning_success: Boolean(extra.reasoning_success),
+      stage2_requested: Boolean(prep?.voiceTwoStage?.reasoningRouted),
+      stage2_payload_valid: Boolean(extra.stage2_payload_valid),
+      stage2_text_generated: Boolean(String(extra.stage2_text || "").trim()),
+      stage2_tts_requested: Boolean(extra.stage2_tts_requested),
+      stage2_tts_suppressed_due_to_mute: Boolean(extra.stage2_tts_suppressed_due_to_mute),
+      stage2_error: extra.stage2_error ? String(extra.stage2_error).slice(0, 300) : "",
+      fallback_reason: String(extra.fallback_reason || "")
+    });
+  } catch (_) {}
+}
+
 /**
  * @returns {{ text: string, effective_stage2_reply: string, usedOverride: boolean, overrideReason: string | null }}
  */
@@ -12235,6 +12272,14 @@ function enqueueWorkModeAssistantTtsPlayback(
 function scheduleWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtStage1End }) {
   void (async () => {
     try {
+      logStage2Debug(prep, {
+        transcript: _readInferFormDataTranscript(formData),
+        reasoning_completed: true,
+        reasoning_success: true,
+        stage2_payload_valid: formData instanceof FormData,
+        stage2_tts_requested: shouldStreamTts(),
+        stage2_tts_suppressed_due_to_mute: isWorkModeMuteEnabled()
+      });
       const also = workModeVoiceInferTurnSeq > seqAtStage1End;
       const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prep, {
         signal: workModeDeferredStage2AbortController.signal,
@@ -12251,6 +12296,14 @@ function scheduleWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtS
       }
     } catch (e) {
       if (e?.name === "AbortError") return;
+      logStage2Debug(prep, {
+        transcript: _readInferFormDataTranscript(formData),
+        reasoning_completed: true,
+        reasoning_success: false,
+        stage2_payload_valid: formData instanceof FormData,
+        stage2_error: e?.message || e,
+        fallback_reason: "deferred_stage2_throw"
+      });
       console.warn("[WorkMode] deferred reasoning stage-2 infer", e);
     }
   })();
@@ -12804,8 +12857,33 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           if (mdDone) {
             const hasSyncHeading = /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdDone);
             if (planningIntent || hasSyncHeading) {
+              const rows = buildChecklistProposalFromMarkdown(mdDone);
+              const panelMeta = getPlanSyncPanelMetaForLane(
+                streamLaneId || turnContext?.turn_lane_id || "",
+                turnContext?.turn_lane_title || ""
+              );
               workChecklistSyncPlanVersion += 1;
               workChecklistSyncPendingMarkdown = mdDone;
+              workChecklistSyncPendingPlanMeta = {
+                ...panelMeta,
+                source: "reasoning_stream_done",
+                created_at: Date.now()
+              };
+              logPlanSyncDebug("created", {
+                lane_id: panelMeta.lane_id || null,
+                panel_id: panelMeta.panel_id || null,
+                panel_title: panelMeta.panel_title || "",
+                active_panel_id: panelMeta.active_panel_id || null,
+                is_plan_detected: Boolean(planningIntent),
+                syncable: rows.length > 0,
+                has_sync_metadata: hasSyncHeading || rows.length > 0,
+                sync_candidate_count: rows.length,
+                sync_candidates_preview: planSyncPreviewRows(rows),
+                reason_if_not_syncable: rows.length ? "" : "no_checklist_candidates_extracted",
+                response_kind: hasSyncHeading ? "sync_checklist_markdown" : "plan_markdown",
+                route_kind: planningIntent ? "planning_route" : "reasoning_route",
+                source: turnContext?.source || "reasoning_route"
+              });
               syncWorkChecklistSyncPlanButton();
               flashWorkChecklistPlanHint(
                 planningIntent
@@ -13730,6 +13808,41 @@ let workChecklistSyncPlanVersion = 0;
 let workChecklistSyncConsumedPlanVersion = 0;
 /** Markdown snapshot for the latest unsynced plan (with checklist). Survives later non-plan reasoning turns; replaced when a newer plan arrives; cleared on successful Apply. */
 let workChecklistSyncPendingMarkdown = "";
+let workChecklistSyncPendingPlanMeta = null;
+
+function planSyncPreviewRows(rows, limit = 5) {
+  return (Array.isArray(rows) ? rows : [])
+    .slice(0, limit)
+    .map((row) => String(row?.text || "").trim())
+    .filter(Boolean);
+}
+
+function getPlanSyncPanelMetaForLane(laneId, fallbackTitle = "") {
+  const lid = String(laneId || "").trim();
+  const panel = lid ? getReasoningPanelElementByLaneId(lid) : null;
+  const activePanel = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active");
+  const activeLaneId =
+    activePanel instanceof HTMLElement
+      ? getWorkModeReasoningLaneId(Number(activePanel.dataset.tabIndex))
+      : getActiveDomReasoningLaneId();
+  return {
+    lane_id: lid,
+    panel_id: lid,
+    panel_title:
+      (panel instanceof HTMLElement ? getReasoningTabTopicLabel(panel) : "") ||
+      String(fallbackTitle || "").trim() ||
+      (lid ? getWorkModeLaneTitle(lid) : ""),
+    active_panel_id: String(activeLaneId || "").trim(),
+    active_panel_title:
+      activePanel instanceof HTMLElement ? getReasoningTabTopicLabel(activePanel) : ""
+  };
+}
+
+function logPlanSyncDebug(kind, payload = {}) {
+  try {
+    console.info(`[PLAN_SYNC_DEBUG][${kind}]`, payload);
+  } catch (_) {}
+}
 
 function collectWorkChecklistOngoingTexts() {
   const ul = document.getElementById("vera-wm-checklist-ongoing");
@@ -13770,8 +13883,20 @@ function syncWorkChecklistHelpPlanButton() {
 function syncWorkChecklistSyncPlanButton() {
   const btn = document.getElementById("vera-wm-checklist-sync-plan");
   if (!(btn instanceof HTMLButtonElement)) return;
-  const canUseSync = Boolean(getWorkChecklistSyncSourceMarkdown());
+  const selected = getWorkChecklistSyncSourceCandidate();
+  const canUseSync = Boolean(selected?.markdown);
   btn.disabled = !canUseSync;
+  logPlanSyncDebug("button", {
+    lane_id: selected?.meta?.lane_id || null,
+    panel_id: selected?.meta?.panel_id || null,
+    panel_title: selected?.meta?.panel_title || "",
+    sync_button_visible: !btn.hidden,
+    sync_button_enabled: !btn.disabled,
+    syncable: canUseSync,
+    has_sync_metadata: Boolean(selected?.markdown),
+    sync_candidate_count: selected?.rows?.length || 0,
+    reason_if_disabled: canUseSync ? "" : "no_parseable_plan_candidates"
+  });
 }
 
 function getLatestWorkModeReasoningMarkdown() {
@@ -13798,16 +13923,17 @@ function getLatestMarkdownInReasoningScroll(scroll) {
 function getWorkModeReasoningMarkdownCandidates() {
   const candidates = [];
   const seen = new Set();
-  const push = (md, source) => {
+  const push = (md, source, meta = {}) => {
     const text = String(md || "").trim();
     if (!text || seen.has(text)) return;
     seen.add(text);
-    candidates.push({ markdown: text, source });
+    candidates.push({ markdown: text, source, meta });
   };
 
   // Pending is the newest server-confirmed plan while the page stays alive.
-  push(workChecklistSyncPendingMarkdown, "pending_plan");
-  push(getLatestWorkModeReasoningMarkdown(), "active_reasoning_tab");
+  push(workChecklistSyncPendingMarkdown, "pending_plan", workChecklistSyncPendingPlanMeta || {});
+  const activeLaneId = getActiveDomReasoningLaneId();
+  push(getLatestWorkModeReasoningMarkdown(), "active_reasoning_tab", getPlanSyncPanelMetaForLane(activeLaneId));
 
   // Also scan all reasoning tabs so Sync remains available after accepting
   // once, switching lanes, or when the visible active tab is not the plan tab.
@@ -13815,23 +13941,37 @@ function getWorkModeReasoningMarkdownCandidates() {
   if (root instanceof HTMLElement) {
     const panels = [...root.querySelectorAll(".vera-reasoning-tab-panel")];
     for (const panel of panels) {
+      const idx = Number(panel.dataset.tabIndex);
+      const laneId = Number.isFinite(idx) ? getWorkModeReasoningLaneId(idx) : "";
       const scroll =
         panel.querySelector(".vera-reasoning-md-panel") ||
         panel.querySelector(".vera-reasoning-scroll");
-      push(getLatestMarkdownInReasoningScroll(scroll), "reasoning_tab");
+      push(getLatestMarkdownInReasoningScroll(scroll), "reasoning_tab", {
+        ...getPlanSyncPanelMetaForLane(laneId),
+        panel_title: getReasoningTabTopicLabel(panel)
+      });
     }
   }
 
   return candidates;
 }
 
-/** Markdown used for checklist Sync: first parseable pending/active/any-tab plan. */
-function getWorkChecklistSyncSourceMarkdown() {
+function getWorkChecklistSyncSourceCandidate() {
   const candidates = getWorkModeReasoningMarkdownCandidates();
   for (const cand of candidates) {
-    if (buildChecklistProposalFromMarkdown(cand.markdown).length > 0) {
-      return cand.markdown;
+    const rows = buildChecklistProposalFromMarkdown(cand.markdown);
+    if (rows.length > 0) {
+      return { ...cand, rows };
     }
+  }
+  return null;
+}
+
+/** Markdown used for checklist Sync: first parseable pending/active/any-tab plan. */
+function getWorkChecklistSyncSourceMarkdown() {
+  const selected = getWorkChecklistSyncSourceCandidate();
+  if (selected?.markdown) {
+    return selected.markdown;
   }
   return "";
 }
@@ -13912,6 +14052,28 @@ function buildChecklistProposalFromMarkdown(markdown) {
     seen.add(key);
     cleaned.push(row);
   }
+  if (!cleaned.length && planishMarkdown) {
+    const fallbackRows = [];
+    const fallbackSeen = new Set();
+    for (const raw of rawLines) {
+      const line = String(raw || "").trim();
+      if (!line || line.startsWith("```") || /^#{1,6}\s+/.test(line)) continue;
+      if (/^\|/.test(line) || /^[-*_]{3,}$/.test(line)) continue;
+      const withoutMarker = line.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|(?:step|part)\s+\d+\s*[:.)-]\s*)/i, "");
+      const text = normalizeChecklistLineText(withoutMarker);
+      if (!text || text.length < 4 || text.length > 140) continue;
+      if (/\?$/.test(text)) continue;
+      if (!/\b(write|read|review|finish|draft|outline|solve|practice|submit|check|revise|research|study|plan|pick|choose|organize|complete|work|start|prepare|edit|proofread|summarize)\b/i.test(text)) {
+        continue;
+      }
+      const key = text.toLowerCase();
+      if (fallbackSeen.has(key)) continue;
+      fallbackSeen.add(key);
+      fallbackRows.push({ depth: 0, text });
+      if (fallbackRows.length >= 24) break;
+    }
+    return fallbackRows;
+  }
   return cleaned.slice(0, 80);
 }
 
@@ -13989,6 +14151,7 @@ function hideWorkChecklistSyncPreview() {
 function applyWorkChecklistSyncPreview() {
   const textarea = document.getElementById("vera-wm-checklist-sync-preview-text");
   if (!(textarea instanceof HTMLTextAreaElement)) return false;
+  const beforeItems = readChecklistItemsFromStorageSafe();
   const items = parseChecklistProposalText(textarea.value);
   if (!items.length) {
     flashWorkChecklistPlanHint("Nothing to apply. Keep '-' bullets in the proposal.");
@@ -14001,7 +14164,19 @@ function applyWorkChecklistSyncPreview() {
     loadWorkChecklistItems();
     hideWorkChecklistSyncPreview();
     workChecklistSyncConsumedPlanVersion = workChecklistSyncPlanVersion;
+    logPlanSyncDebug("checklist_insert", {
+      inserted_count: items.filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_before: beforeItems.filter((x) => x && String(x.text || "").trim()).length,
+      checklist_count_after: items.filter((x) => x && String(x.text || "").trim()).length,
+      inserted_items_preview: items
+        .filter((x) => x && String(x.text || "").trim())
+        .slice(0, 6)
+        .map((x) => String(x.text || "").trim()),
+      source_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
+      source_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || ""
+    });
     workChecklistSyncPendingMarkdown = "";
+    workChecklistSyncPendingPlanMeta = null;
     syncWorkChecklistSyncPlanButton();
     flashWorkChecklistPlanHint("Checklist updated from plan.");
     return true;
@@ -14034,16 +14209,50 @@ function eraseEntireWorkChecklist() {
 }
 
 function runWorkChecklistSyncFromLatestPlan() {
-  const markdown = getWorkChecklistSyncSourceMarkdown();
-  if (!markdown) {
+  const selected = getWorkChecklistSyncSourceCandidate();
+  const activeLaneId = getActiveDomReasoningLaneId();
+  if (!selected?.markdown) {
+    logPlanSyncDebug("voice_sync_request", {
+      user_text: "",
+      active_panel_id: activeLaneId || null,
+      active_panel_title: getWorkModeLaneTitle(activeLaneId) || "",
+      last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
+      last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
+      selected_sync_source_panel_id: null,
+      selected_sync_source_panel_title: "",
+      sync_candidate_count: 0,
+      reason_if_failed: "no_sync_source_markdown"
+    });
     flashWorkChecklistPlanHint("No checklist-ready plan found yet. Ask VERA for a plan first.");
     return false;
   }
-  const rows = buildChecklistProposalFromMarkdown(markdown);
+  const rows = selected.rows || buildChecklistProposalFromMarkdown(selected.markdown);
   if (!rows.length) {
+    logPlanSyncDebug("voice_sync_request", {
+      user_text: "",
+      active_panel_id: activeLaneId || null,
+      active_panel_title: getWorkModeLaneTitle(activeLaneId) || "",
+      last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
+      last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
+      selected_sync_source_panel_id: selected.meta?.panel_id || null,
+      selected_sync_source_panel_title: selected.meta?.panel_title || "",
+      sync_candidate_count: 0,
+      reason_if_failed: "selected_source_parse_empty"
+    });
     flashWorkChecklistPlanHint("Could not parse checklist bullets from the visible plan.");
     return false;
   }
+  logPlanSyncDebug("voice_sync_request", {
+    user_text: "",
+    active_panel_id: activeLaneId || null,
+    active_panel_title: getWorkModeLaneTitle(activeLaneId) || "",
+    last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
+    last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
+    selected_sync_source_panel_id: selected.meta?.panel_id || null,
+    selected_sync_source_panel_title: selected.meta?.panel_title || "",
+    sync_candidate_count: rows.length,
+    reason_if_failed: ""
+  });
   showWorkChecklistSyncPreview(formatChecklistProposalText(rows));
   syncWorkChecklistSyncPlanButton();
   return true;
@@ -14116,6 +14325,19 @@ function isWorkChecklistSyncCommandIntent(text) {
 async function maybeHandleWorkChecklistSyncShortcut(text) {
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
   if (!isWorkChecklistSyncCommandIntent(text)) return false;
+  const activeLaneId = getActiveDomReasoningLaneId();
+  const selected = getWorkChecklistSyncSourceCandidate();
+  logPlanSyncDebug("voice_sync_request", {
+    user_text: String(text || "").trim(),
+    active_panel_id: activeLaneId || null,
+    active_panel_title: getWorkModeLaneTitle(activeLaneId) || "",
+    last_plan_panel_id: workChecklistSyncPendingPlanMeta?.panel_id || null,
+    last_plan_panel_title: workChecklistSyncPendingPlanMeta?.panel_title || "",
+    selected_sync_source_panel_id: selected?.meta?.panel_id || null,
+    selected_sync_source_panel_title: selected?.meta?.panel_title || "",
+    sync_candidate_count: selected?.rows?.length || 0,
+    reason_if_failed: selected?.rows?.length ? "" : "no_sync_candidates_before_apply"
+  });
   const ok = runWorkChecklistSyncFromLatestPlan();
   if (ok) {
     applyWorkChecklistSyncPreview();
@@ -14147,8 +14369,31 @@ async function runWorkChecklistHelpPlan({ signal } = {}) {
     await streamWorkModeReasoningComposer(text, signal, { turnContext });
     const mdAfterHelp = getLatestWorkModeReasoningMarkdown();
     if (mdAfterHelp && /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdAfterHelp)) {
+      const rows = buildChecklistProposalFromMarkdown(mdAfterHelp);
+      const activeLaneId = getActiveDomReasoningLaneId();
+      const panelMeta = getPlanSyncPanelMetaForLane(activeLaneId);
       workChecklistSyncPlanVersion += 1;
       workChecklistSyncPendingMarkdown = mdAfterHelp;
+      workChecklistSyncPendingPlanMeta = {
+        ...panelMeta,
+        source: "checklist_help_plan",
+        created_at: Date.now()
+      };
+      logPlanSyncDebug("created", {
+        lane_id: panelMeta.lane_id || null,
+        panel_id: panelMeta.panel_id || null,
+        panel_title: panelMeta.panel_title || "",
+        active_panel_id: panelMeta.active_panel_id || null,
+        is_plan_detected: true,
+        syncable: rows.length > 0,
+        has_sync_metadata: true,
+        sync_candidate_count: rows.length,
+        sync_candidates_preview: planSyncPreviewRows(rows),
+        reason_if_not_syncable: rows.length ? "" : "no_checklist_candidates_extracted",
+        response_kind: "sync_checklist_markdown",
+        route_kind: "checklist_help_plan",
+        source: "checklist_shortcut"
+      });
       syncWorkChecklistSyncPlanButton();
     }
   } finally {
@@ -18383,7 +18628,10 @@ async function runInferMainPipeline(formData, opts = {}) {
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (main — TTFB)");
 
-    if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
+    const responseIsNdjson = res.ok && isNdjsonTtsResponse(res);
+    const ttsSuppressedDueToMute =
+      appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled();
+    if (responseIsNdjson) {
       requestInFlight = false;
 
       let ndjsonMeta = null;
@@ -18467,6 +18715,15 @@ async function runInferMainPipeline(formData, opts = {}) {
                       used_tts_fallback: Boolean(wmStage2EffectivePack?.used_override),
                       tts_override_reason: wmStage2EffectivePack?.override_reason ?? null
                     });
+                    logStage2Debug(inferPrep, {
+                      transcript: inferUserText,
+                      reasoning_completed: true,
+                      reasoning_success: true,
+                      stage2_payload_valid: true,
+                      stage2_text: effectiveReply,
+                      stage2_tts_requested: !ttsSuppressedDueToMute,
+                      stage2_tts_suppressed_due_to_mute: ttsSuppressedDueToMute
+                    });
                     try {
                       console.table([
                         {
@@ -18534,9 +18791,25 @@ async function runInferMainPipeline(formData, opts = {}) {
                       inferPrep?.effectiveStage2Reply?.effective_stage2_reply ||
                       ""
                   ).trim();
-                  if (phrase) {
+                  if (phrase && !ttsSuppressedDueToMute) {
                     await playWorkModeTtsOnlyPhrase(phrase, inferSignal);
+                  } else if (phrase && ttsSuppressedDueToMute) {
+                    logStage2Debug(inferPrep, {
+                      transcript: inferUserText,
+                      reasoning_completed: true,
+                      reasoning_success: true,
+                      stage2_payload_valid: true,
+                      stage2_text: phrase,
+                      stage2_tts_requested: false,
+                      stage2_tts_suppressed_due_to_mute: true
+                    });
                   }
+                  playbackEnd.wrappedOnFinish();
+                } else if (ttsSuppressedDueToMute) {
+                  await runNdjsonTtsPlayback(res, {
+                    ...ndjsonOpts,
+                    skipAudio: true
+                  });
                   playbackEnd.wrappedOnFinish();
                 } else {
                   await runNdjsonTtsPlayback(res, {
@@ -18600,6 +18873,16 @@ async function runInferMainPipeline(formData, opts = {}) {
     processing = false;
     requestInFlight = false;
     setStatus("Server error", "offline");
+    if (isWmStage2Voice) {
+      logStage2Debug(inferPrep, {
+        transcript: inferUserText,
+        reasoning_completed: true,
+        reasoning_success: false,
+        stage2_payload_valid: false,
+        stage2_error: e?.message || e,
+        fallback_reason: "infer_main_error"
+      });
+    }
     if (!failPendingNewsStatusBubble("infer_main_error")) {
       void veraSurfaceLlmFetchFailure({ feature: "infer_main", error: e });
     }
