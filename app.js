@@ -12367,6 +12367,44 @@ function logStage2Debug(prep, extra = {}) {
   } catch (_) {}
 }
 
+function getWorkModeStage2TtsDecision(stage2Text = "") {
+  const inWork = appModePrefix() === "vera" && isVeraWorkModeOn();
+  const workModeMuted = inWork && isWorkModeMuteEnabled();
+  const mutedInput = Boolean(inputMuted);
+  const ttsMuted = Boolean(workModeMuted || (inWork && mutedInput));
+  let suppressionReason = "";
+  if (!String(stage2Text || "").trim()) {
+    suppressionReason = "empty_stage2_text";
+  } else if (workModeMuted) {
+    suppressionReason = "work_mode_muted";
+  } else if (mutedInput) {
+    suppressionReason = "input_output_muted";
+  }
+  return {
+    stage2_text_present: Boolean(String(stage2Text || "").trim()),
+    muted_input: mutedInput,
+    work_mode_muted: workModeMuted,
+    tts_muted: ttsMuted,
+    should_enqueue_tts: Boolean(String(stage2Text || "").trim()) && !ttsMuted,
+    suppression_reason: suppressionReason
+  };
+}
+
+function logStage2TtsDecision(prep, decision) {
+  try {
+    console.info("[STAGE2_DEBUG][tts_decision]", {
+      turn_id: prep?.turnContext?.turn_id || null,
+      lane_id: prep?.turnContext?.turn_lane_id || prep?.reasoningLaneId || null,
+      stage2_text_present: Boolean(decision?.stage2_text_present),
+      muted_input: Boolean(decision?.muted_input),
+      work_mode_muted: Boolean(decision?.work_mode_muted),
+      tts_muted: Boolean(decision?.tts_muted),
+      should_enqueue_tts: Boolean(decision?.should_enqueue_tts),
+      suppression_reason: String(decision?.suppression_reason || "")
+    });
+  } catch (_) {}
+}
+
 /**
  * @returns {{ text: string, effective_stage2_reply: string, usedOverride: boolean, overrideReason: string | null }}
  */
@@ -12532,7 +12570,7 @@ async function kickWorkModeTtsDrain() {
 async function playWorkModeTtsOnlyPhrase(text, abortSignal) {
   const s = String(text || "").trim();
   if (!s || !isVeraWorkModeOn()) return;
-  if (isWorkModeMuteEnabled()) return;
+  if (isWorkModeMuteEnabled() || inputMuted) return;
   const res = await fetch(`${API_URL}/text`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -12591,8 +12629,8 @@ function scheduleWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtS
         reasoning_completed: true,
         reasoning_success: true,
         stage2_payload_valid: formData instanceof FormData,
-        stage2_tts_requested: shouldStreamTts(),
-        stage2_tts_suppressed_due_to_mute: isWorkModeMuteEnabled()
+        stage2_tts_requested: getWorkModeStage2TtsDecision("(pending-stage2-text)").should_enqueue_tts,
+        stage2_tts_suppressed_due_to_mute: getWorkModeStage2TtsDecision("(pending-stage2-text)").tts_muted
       });
       const also = workModeVoiceInferTurnSeq > seqAtStage1End;
       const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prep, {
@@ -12863,6 +12901,16 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       clearWorkModeReasoningWatchdog(laneIdx);
       const st = reason || (laneAbortController.signal.aborted ? "cancelled" : "completed");
       try {
+        const panel = getReasoningPanelElementByLaneId(streamLaneId);
+        if (panel instanceof HTMLElement) {
+          panel.dataset.generating = "0";
+          if (String(panel.dataset.generationStatus || "") !== "complete") {
+            panel.dataset.generationStatus =
+              st === "stream_completed" || st === "completed" ? "complete" : st;
+          }
+        }
+      } catch (_) {}
+      try {
         console.info("[turn_done]", { turn_id: turnIdForLifecycle, lane_id: streamLaneId, state: st });
         console.info("[turn_cleanup]", {
           turn_id: turnIdForLifecycle,
@@ -12895,6 +12943,13 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       safeReasoningLaneRelease("no_scroll");
       return;
     }
+    try {
+      const panelAtStart = getReasoningPanelElementByLaneId(streamLaneId) || scrollEl.closest(".vera-reasoning-tab-panel");
+      if (panelAtStart instanceof HTMLElement) {
+        panelAtStart.dataset.generationStatus = "generating";
+        panelAtStart.dataset.generating = "1";
+      }
+    } catch (_) {}
     try {
     if (hasUpload && turnContext?.turn_id) {
       const uploadDescriptors = attachmentList.map((file) => {
@@ -13094,6 +13149,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           const mdFromDom = String(turnEl?.dataset?.markdownAcc || "").trim();
           const mdDone = mdFromDom || String(markdownAcc || "").trim();
           const panelForTitle = getReasoningPanelElementByLaneId(streamLaneId) || turnEl.closest(".vera-reasoning-tab-panel");
+          if (panelForTitle instanceof HTMLElement) {
+            panelForTitle.dataset.generationStatus = "complete";
+            panelForTitle.dataset.generating = "0";
+            panelForTitle.dataset.latestMarkdownLength = String(mdDone.length);
+            panelForTitle.dataset.lastCompletedAt = String(Date.now());
+          }
           const excerptCap = 12000;
           const excerpt = mdDone.length > excerptCap ? `${mdDone.slice(0, excerptCap)}\n…` : mdDone;
           const summaryLine = extractWorkModeReasoningSummaryAnswerLine(summaryText);
@@ -13143,6 +13204,28 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             turnId: turnContext?.turn_id ?? null,
             calledFrom: titlePathLabel
           });
+          try {
+            console.info("[REASONING_COMPLETE_DEBUG]", {
+              panel_id:
+                panelForTitle instanceof HTMLElement
+                  ? String(panelForTitle.dataset.laneId || streamLaneId || "")
+                  : streamLaneId || null,
+              lane_id: streamLaneId || null,
+              stream_done_received: true,
+              generation_status:
+                panelForTitle instanceof HTMLElement
+                  ? String(panelForTitle.dataset.generationStatus || "")
+                  : "unknown",
+              markdown_length_rendered: String(panelForTitle?.textContent || "").length,
+              markdown_length_stored: mdDone.length,
+              has_final_chunk: Boolean(mdDone),
+              has_error: false,
+              marked_complete:
+                panelForTitle instanceof HTMLElement &&
+                panelForTitle.dataset.generationStatus === "complete",
+              reason_if_incomplete: mdDone ? "" : "empty_markdown_done"
+            });
+          } catch (_) {}
           if (panelForTitle instanceof HTMLElement) {
             queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panelForTitle, {
               userPrompt: streamUserRequest,
@@ -14132,9 +14215,17 @@ function planSyncPreviewRows(rows, limit = 5) {
 }
 
 function getPlanSyncPanelMetaForLane(laneId, fallbackTitle = "") {
-  const lid = String(laneId || "").trim();
-  const panel = lid ? getReasoningPanelElementByLaneId(lid) : null;
   const activePanel = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active");
+  let lid = String(laneId || "").trim();
+  if (!lid && activePanel instanceof HTMLElement) {
+    const activeIdx = Number(activePanel.dataset.tabIndex);
+    if (Number.isFinite(activeIdx)) {
+      lid = getWorkModeReasoningLaneId(activeIdx);
+    } else {
+      lid = String(activePanel.dataset.laneId || "").trim();
+    }
+  }
+  const panel = lid ? getReasoningPanelElementByLaneId(lid) : activePanel;
   const activeLaneId =
     activePanel instanceof HTMLElement
       ? getWorkModeReasoningLaneId(Number(activePanel.dataset.tabIndex))
@@ -14234,6 +14325,80 @@ function getLatestMarkdownInReasoningScroll(scroll) {
   return "";
 }
 
+function isChecklistSyncHeadingText(text) {
+  const t = normalizeChecklistLineText(text).replace(/[:#]+$/g, "").trim().toLowerCase();
+  return /^(sync\s+checklist|checklist|plan\s+checklist|tasks?)$/.test(t);
+}
+
+function listItemsToChecklistMarkdown(items) {
+  const lines = [];
+  for (const li of items) {
+    if (!(li instanceof HTMLElement)) continue;
+    const clone = li.cloneNode(true);
+    if (clone instanceof HTMLElement) {
+      clone.querySelectorAll("ul,ol").forEach((nested) => nested.remove());
+    }
+    const text = normalizeChecklistLineText(clone.textContent || li.textContent || "");
+    if (!text || /\?$/.test(text)) continue;
+    lines.push(`- ${text}`);
+    const nested = li.querySelectorAll(":scope > ul > li, :scope > ol > li");
+    for (const sub of nested) {
+      const subText = normalizeChecklistLineText(sub.textContent || "");
+      if (subText && !/\?$/.test(subText)) lines.push(`  - ${subText}`);
+    }
+  }
+  return lines;
+}
+
+function renderedChecklistMarkdownFromPanel(panel) {
+  if (!(panel instanceof HTMLElement)) return "";
+  const scroll =
+    panel.querySelector(".vera-reasoning-md-panel") ||
+    panel.querySelector(".vera-reasoning-scroll") ||
+    panel;
+  if (!(scroll instanceof HTMLElement)) return "";
+
+  // Preferred path: rendered markdown headings followed by UL/OL siblings.
+  const headingEls = [...scroll.querySelectorAll("h1,h2,h3,h4,h5,h6,p,div,strong,b")]
+    .filter((el) => el instanceof HTMLElement && isChecklistSyncHeadingText(el.textContent || ""));
+  for (const heading of headingEls) {
+    const lines = [];
+    let node = heading instanceof HTMLElement ? heading.nextElementSibling : null;
+    while (node) {
+      const tag = String(node.tagName || "").toLowerCase();
+      if (/^h[1-6]$/.test(tag)) break;
+      if (isChecklistSyncHeadingText(node.textContent || "") && node !== heading) break;
+      if (tag === "ul" || tag === "ol") {
+        lines.push(...listItemsToChecklistMarkdown(node.querySelectorAll(":scope > li")));
+      } else if (tag === "li") {
+        lines.push(...listItemsToChecklistMarkdown([node]));
+      }
+      node = node.nextElementSibling;
+    }
+    if (lines.length) return `## SYNC CHECKLIST\n${lines.join("\n")}`;
+  }
+
+  // Fallback path for markdown rendered as plain text in the panel.
+  const plain = String(scroll.innerText || scroll.textContent || "").replace(/\r/g, "");
+  const lines = plain.split("\n");
+  const start = lines.findIndex((line) => isChecklistSyncHeadingText(line));
+  if (start >= 0) {
+    const out = ["## SYNC CHECKLIST"];
+    for (let i = start + 1; i < lines.length; i += 1) {
+      const line = normalizeChecklistLineText(lines[i]);
+      if (!line) continue;
+      if (isChecklistSyncHeadingText(line) || /^#{1,6}\s+/.test(line)) break;
+      if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(lines[i])) {
+        out.push(lines[i]);
+      } else if (/^\s*\[[^\]]+\]\s*:/.test(line) || /\b(read|open|highlight|draft|write|review|revise|submit|finish|complete|study|solve|practice)\b/i.test(line)) {
+        out.push(`- ${line}`);
+      }
+    }
+    if (out.length > 1) return out.join("\n");
+  }
+  return "";
+}
+
 function getWorkModeReasoningMarkdownCandidates() {
   const candidates = [];
   const seen = new Set();
@@ -14247,7 +14412,13 @@ function getWorkModeReasoningMarkdownCandidates() {
   // Pending is the newest server-confirmed plan while the page stays alive.
   push(workChecklistSyncPendingMarkdown, "pending_plan", workChecklistSyncPendingPlanMeta || {});
   const activeLaneId = getActiveDomReasoningLaneId();
-  push(getLatestWorkModeReasoningMarkdown(), "active_reasoning_tab", getPlanSyncPanelMetaForLane(activeLaneId));
+  const activePanel = activeLaneId ? getReasoningPanelElementByLaneId(activeLaneId) : null;
+  const activeMeta = getPlanSyncPanelMetaForLane(activeLaneId);
+  push(getLatestWorkModeReasoningMarkdown(), "active_reasoning_tab", activeMeta);
+  push(renderedChecklistMarkdownFromPanel(activePanel), "active_reasoning_tab_rendered", {
+    ...activeMeta,
+    source_detail: "rendered_dom_fallback"
+  });
 
   // Also scan all reasoning tabs so Sync remains available after accepting
   // once, switching lanes, or when the visible active tab is not the plan tab.
@@ -14263,6 +14434,11 @@ function getWorkModeReasoningMarkdownCandidates() {
       push(getLatestMarkdownInReasoningScroll(scroll), "reasoning_tab", {
         ...getPlanSyncPanelMetaForLane(laneId),
         panel_title: getReasoningTabTopicLabel(panel)
+      });
+      push(renderedChecklistMarkdownFromPanel(panel), "reasoning_tab_rendered", {
+        ...getPlanSyncPanelMetaForLane(laneId),
+        panel_title: getReasoningTabTopicLabel(panel),
+        source_detail: "rendered_dom_fallback"
       });
     }
   }
@@ -14291,7 +14467,18 @@ function getWorkChecklistSyncSourceMarkdown() {
 }
 
 function normalizeChecklistLineText(text) {
-  return String(text || "")
+  let raw = String(text || "");
+  // Some rendered markdown snapshots carry HTML entities back into text
+  // (`&#58;` for `:`). Decode before parsing so visible SYNC CHECKLIST bullets
+  // are treated the same as original markdown bullets.
+  try {
+    if (/[&][a-zA-Z0-9#]+;/.test(raw) && typeof document !== "undefined") {
+      const ta = document.createElement("textarea");
+      ta.innerHTML = raw;
+      raw = ta.value;
+    }
+  } catch (_) {}
+  return raw
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
@@ -14302,9 +14489,13 @@ function normalizeChecklistLineText(text) {
 
 function buildChecklistProposalFromMarkdown(markdown) {
   const full = String(markdown || "").replace(/\r/g, "");
-  const syncBlockMatch = full.match(
-    /(?:^|\n)#{1,6}\s*SYNC CHECKLIST\s*\n([\s\S]*?)(?=\n#{1,6}\s+|\s*$)/i
-  );
+  const syncBlockMatch =
+    full.match(
+      /(?:^|\n)#{1,6}\s*(?:SYNC CHECKLIST|Checklist|Plan checklist|Tasks)\s*\n([\s\S]*?)(?=\n#{1,6}\s+|\s*$)/i
+    ) ||
+    full.match(
+      /(?:^|\n)\s*(?:SYNC CHECKLIST|Checklist|Plan checklist|Tasks)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:#{1,6}\s+|[A-Z][A-Z0-9 \-/]{2,}:?\s*\n)|\s*$)/i
+    );
   const source = syncBlockMatch ? syncBlockMatch[1] : full;
   const hasExplicitSyncBlock = Boolean(syncBlockMatch);
   const planishMarkdown = /\b(plan|schedule|outline|essay|draft|revise|revision|research|write|study|prepare|time\s*block|hour|deadline|due)\b/i.test(
@@ -14556,6 +14747,14 @@ function runWorkChecklistSyncFromLatestPlan() {
     flashWorkChecklistPlanHint("Could not parse checklist bullets from the visible plan.");
     return false;
   }
+  // Bind the visible/rendered fallback source as the current plan source so
+  // Apply and voice-sync logs point at the panel that actually supplied rows.
+  workChecklistSyncPendingMarkdown = selected.markdown;
+  workChecklistSyncPendingPlanMeta = {
+    ...(selected.meta || {}),
+    source: selected.source || selected.meta?.source || "sync_source_candidate",
+    created_at: selected.meta?.created_at || Date.now()
+  };
   logPlanSyncDebug("voice_sync_request", {
     user_text: "",
     active_panel_id: activeLaneId || null,
@@ -18844,6 +19043,28 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
       stage2ReplyBack
     );
   }
+  const isJsonWmStage2Voice = Boolean(inferPrep?.voiceTwoStage?.reasoningRouted && ttsStage === 2);
+  if (isJsonWmStage2Voice) {
+    const decision = getWorkModeStage2TtsDecision(playData?.reply || "");
+    logStage2TtsDecision(inferPrep, decision);
+    if (!decision.should_enqueue_tts) {
+      logStage2Debug(inferPrep, {
+        transcript: String(inferPrep?.turnContext?.user_text || playData?.transcript || "").trim(),
+        reasoning_completed: true,
+        reasoning_success: true,
+        stage2_payload_valid: true,
+        stage2_text: playData?.reply || "",
+        stage2_tts_requested: false,
+        stage2_tts_suppressed_due_to_mute: Boolean(decision.tts_muted),
+        fallback_reason: decision.suppression_reason
+      });
+      if (!(inferPrep?.stage2VoiceBubble instanceof HTMLElement && inferPrep.stage2VoiceBubble.isConnected)) {
+        applyAssistantReplyAndPanels(playData);
+      }
+      resumeAfterAssistantReplyPlayback();
+      return;
+    }
+  }
   const playMainAnswerPromise = (async () => {
     resetAudioHandlers();
     try {
@@ -18944,7 +19165,11 @@ async function runInferMainPipeline(formData, opts = {}) {
 
     const responseIsNdjson = res.ok && isNdjsonTtsResponse(res);
     const ttsSuppressedDueToMute =
-      appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled();
+      isWmStage2Voice
+        ? getWorkModeStage2TtsDecision("").tts_muted
+        : appModePrefix() === "vera" &&
+          isVeraWorkModeOn() &&
+          (isWorkModeMuteEnabled() || Boolean(inputMuted));
     if (responseIsNdjson) {
       requestInFlight = false;
 
@@ -19105,9 +19330,11 @@ async function runInferMainPipeline(formData, opts = {}) {
                       inferPrep?.effectiveStage2Reply?.effective_stage2_reply ||
                       ""
                   ).trim();
-                  if (phrase && !ttsSuppressedDueToMute) {
+                  const liveStage2TtsDecision = getWorkModeStage2TtsDecision(phrase);
+                  logStage2TtsDecision(inferPrep, liveStage2TtsDecision);
+                  if (phrase && liveStage2TtsDecision.should_enqueue_tts) {
                     await playWorkModeTtsOnlyPhrase(phrase, inferSignal);
-                  } else if (phrase && ttsSuppressedDueToMute) {
+                  } else if (phrase && liveStage2TtsDecision.tts_muted) {
                     logStage2Debug(inferPrep, {
                       transcript: inferUserText,
                       reasoning_completed: true,
@@ -19115,7 +19342,8 @@ async function runInferMainPipeline(formData, opts = {}) {
                       stage2_payload_valid: true,
                       stage2_text: phrase,
                       stage2_tts_requested: false,
-                      stage2_tts_suppressed_due_to_mute: true
+                      stage2_tts_suppressed_due_to_mute: true,
+                      fallback_reason: liveStage2TtsDecision.suppression_reason
                     });
                   }
                   playbackEnd.wrappedOnFinish();
@@ -19136,7 +19364,26 @@ async function runInferMainPipeline(formData, opts = {}) {
                 await playbackEnd.donePromise;
               };
               const textPreview = isWmStage2Voice ? "(wm-stage2)" : "";
-              if (serializeTtsPlayback) {
+              if (isWmStage2Voice) {
+                const preDecision = getWorkModeStage2TtsDecision("(pending-stage2-text)");
+                if (preDecision.tts_muted) {
+                  logStage2TtsDecision(inferPrep, {
+                    ...preDecision,
+                    stage2_text_present: true,
+                    should_enqueue_tts: false
+                  });
+                  await consumeNdjsonTextOnly();
+                  resumeAfterAssistantReplyPlayback();
+                } else if (serializeTtsPlayback) {
+                  await enqueueWorkModeAssistantTtsPlayback(playTask, ttsTurn, {
+                    stage: opts.ttsStage ?? 2,
+                    text: textPreview,
+                    prep: inferPrep,
+                    onDrop: consumeNdjsonTextOnly,
+                    abortSignal: inferSignal
+                  });
+                } else await playTask();
+              } else if (serializeTtsPlayback) {
                 await enqueueWorkModeAssistantTtsPlayback(playTask, ttsTurn, {
                   stage: opts.ttsStage ?? 2,
                   text: textPreview,
