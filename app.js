@@ -2,14 +2,14 @@
    STARTUP BANNER — proves this build of app.js actually loaded.
    If you do NOT see this line in DevTools console after a hard refresh,
    the browser is still serving an older cached copy (check Network tab:
-   app.js?v=51 should be the URL).
+   app.js?v=52 should be the URL).
 ========================= */
 try {
   // Use console.warn so it shows up even when the DevTools console level
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v51 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
+    "%c[VERA] app.js build v52 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -241,11 +241,11 @@ const VERA_SAFETY_LIMITS = Object.freeze({
     voiceDurationLimit:
       "I stopped recording to keep the request manageable. Use a shorter voice command or type longer details.",
     asrFailure:
-      "My listening capability has malfunctioned. Please use the keyboard.",
+      "Listening is not available right now. Please use the keyboard.",
     ttsFailure:
-      "My speaking capability has malfunctioned. Please refer to the text bubble.",
+      "Speaking is not available right now. Please read the text response.",
     llmFailure:
-      "My reasoning capability is temporarily unavailable. Please come back later.",
+      "Reasoning is temporarily unavailable. Please try again later.",
     musicFailure: "Music playback is not available right now.",
     weatherFailure: "Weather information is not available right now.",
     searchNewsFailure: "Search/news information is not available right now.",
@@ -369,6 +369,7 @@ async function veraSurfaceLlmFetchFailure({
 } = {}) {
   if (error && error.name === "AbortError") return null;
   const status = response?.status ?? 0;
+  const turnId = extra?.turn_id || extra?.user_message_id || null;
   if (status === 413) {
     let serverMsg = "";
     try {
@@ -381,18 +382,41 @@ async function veraSurfaceLlmFetchFailure({
       server_message: serverMsg.slice(0, 200),
       ...(extra || {})
     });
-    veraShowCapabilityFailureBubble("safety_413", msg);
+    logCapabilityFallbackDebug({
+      capability: "reasoning",
+      failure_kind: "api_error",
+      should_show_bubble: true,
+      turn_id: turnId,
+      source_function: `veraSurfaceLlmFetchFailure:${feature}`,
+      raw_error_message: `HTTP 413 ${serverMsg.slice(0, 120)}`
+    });
+    veraShowCapabilityFailureBubble("safety_413", msg, { actionId: turnId });
     return "safety_413";
   }
+  const rawErrorMessage =
+    response?.status != null
+      ? `HTTP ${response.status}`
+      : error
+        ? String(error.message || error)
+        : "";
   logVeraCapabilityFailure(feature, "llm_fetch_failed", {
     status: status || null,
     error_name: error?.name || null,
     error_message: error ? String(error.message || error).slice(0, 200) : null,
     ...(extra || {})
   });
+  logCapabilityFallbackDebug({
+    capability: "reasoning",
+    failure_kind: status >= 500 ? "backend_error" : status >= 400 ? "api_error" : "module_unavailable",
+    should_show_bubble: true,
+    turn_id: turnId,
+    source_function: `veraSurfaceLlmFetchFailure:${feature}`,
+    raw_error_message: rawErrorMessage
+  });
   veraShowCapabilityFailureBubble(
     "llm_failure",
-    VERA_SAFETY_LIMITS.messages.llmFailure
+    VERA_SAFETY_LIMITS.messages.llmFailure,
+    { actionId: turnId }
   );
   return "llm_failure";
 }
@@ -410,19 +434,91 @@ function logVeraCapabilityFailure(feature, reason, extra) {
   } catch (_) {}
 }
 
+/** Structured fallback-debug log used to verify whether a fallback bubble
+ *  was suppressed (permission/setup state) or actually surfaced (module
+ *  failure). One log per fallback decision; emitted for both bubble and
+ *  no-bubble paths so the cause is visible in the console. */
+function logCapabilityFallbackDebug(fields = {}) {
+  try {
+    console.warn("[CAPABILITY_FALLBACK_DEBUG]", {
+      capability: String(fields.capability || ""),
+      failure_kind: String(fields.failure_kind || ""),
+      should_show_bubble: Boolean(fields.should_show_bubble),
+      turn_id: fields.turn_id || fields.user_message_id || null,
+      source_function: String(fields.source_function || ""),
+      raw_error_message: fields.raw_error_message
+        ? String(fields.raw_error_message).slice(0, 200)
+        : null
+    });
+  } catch (_) {}
+}
+
+/** Classify a MediaDevices/getUserMedia error into a CAPABILITY_FALLBACK_DEBUG
+ *  failure_kind. Permission/setup states return a kind that callers must NOT
+ *  bubble; only `module_unavailable` / `inference_error` should surface a
+ *  listening fallback bubble. */
+function classifyMicMediaError(err) {
+  const name = String(err?.name || "").trim();
+  const message = String(err?.message || err || "").trim();
+  if (!navigator?.mediaDevices || typeof navigator?.mediaDevices?.getUserMedia !== "function") {
+    return "no_stream";
+  }
+  if (name === "NotAllowedError" || name === "SecurityError" || /permission/i.test(message)) {
+    return "permission_denied";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError" || name === "OverconstrainedError") {
+    return "no_device";
+  }
+  if (name === "NotSupportedError") {
+    return "module_unavailable";
+  }
+  if (name === "NotReadableError" || name === "TrackStartError" || name === "AbortError") {
+    return "inference_error";
+  }
+  if (name === "TypeError" && /mediaDevices|getUserMedia/i.test(message)) {
+    return "no_stream";
+  }
+  return "inference_error";
+}
+
+/** Microphone permission states that must NOT raise a Vera fallback bubble.
+ *  Listening fallback may only surface for true module/inference failures. */
+function micFailureKindIsPermissionOrSetup(kind) {
+  return (
+    kind === "permission_pending" ||
+    kind === "permission_denied" ||
+    kind === "no_device" ||
+    kind === "no_stream"
+  );
+}
+
 /**
  * Show a capability-failure bubble at most once per ~6s per (feature) so a
  * burst of failures (e.g. multiple TTS chunks erroring back-to-back) does
- * not spam the conversation with duplicate copy.
+ * not spam the conversation with duplicate copy. Pass `actionId` (e.g. a
+ * voice turn id) to enforce at-most-one bubble per user action even across
+ * different capabilities.
  */
 const _veraCapabilityFailureLastShownAt = new Map();
+const _veraCapabilityFailureBubblesPerAction = new Set();
 function veraShowCapabilityFailureBubble(feature, message, opts = {}) {
   const now = Date.now();
   const key = String(feature || "generic");
+  const actionId = opts.actionId != null ? String(opts.actionId) : "";
+  if (actionId && _veraCapabilityFailureBubblesPerAction.has(actionId)) {
+    return false;
+  }
   const last = _veraCapabilityFailureLastShownAt.get(key) || 0;
   const minMs = Number.isFinite(opts.minIntervalMs) ? opts.minIntervalMs : 6000;
   if (now - last < minMs) return false;
   _veraCapabilityFailureLastShownAt.set(key, now);
+  if (actionId) {
+    _veraCapabilityFailureBubblesPerAction.add(actionId);
+    /* Bound the set; clear after 60s to avoid leaking long-lived turn ids. */
+    window.setTimeout(() => {
+      _veraCapabilityFailureBubblesPerAction.delete(actionId);
+    }, 60000);
+  }
   veraShowSafetyFailureBubble(message);
   return true;
 }
@@ -13414,9 +13510,18 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             logVeraCapabilityFailure("llm", "reasoning_stream_error", {
               message: String(o.message || "").slice(0, 200)
             });
+            logCapabilityFallbackDebug({
+              capability: "reasoning",
+              failure_kind: "backend_error",
+              should_show_bubble: true,
+              turn_id: turnContext?.turn_id || null,
+              source_function: "reasoning_stream.error_chunk",
+              raw_error_message: String(o.message || "")
+            });
             veraShowCapabilityFailureBubble(
               "llm_failure",
-              VERA_SAFETY_LIMITS.messages.llmFailure
+              VERA_SAFETY_LIMITS.messages.llmFailure,
+              { actionId: turnContext?.turn_id || null }
             );
             break;
           }
@@ -18113,6 +18218,13 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
         src: el.src,
         error_code: el.error?.code
       });
+      logCapabilityFallbackDebug({
+        capability: "speaking",
+        failure_kind: "inference_error",
+        should_show_bubble: true,
+        source_function: "playTtsFromApi.onSingleAudioError",
+        raw_error_message: `audio_error_code=${el.error?.code ?? "?"}`
+      });
       mainTtsPlaybackActive = false;
       veraShowCapabilityFailureBubble(
         "tts_failure",
@@ -18539,20 +18651,37 @@ async function initMic() {
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
   } catch (err) {
-    /* Mic capture failed (permission denied, no device, hardware in use).
-       This is the strongest signal that ASR is unrecoverable for this
-       session — show the standard ASR-failure bubble so the user knows
-       to type instead. Re-raise so callers (PTT / continuous start) can
-       reset their wave state. */
+    /* Separate permission/setup state (no bubble) from true module/inference
+       failure (bubble). getUserMedia rejections cover both: a NotAllowedError
+       just means the user hasn't granted mic access yet, while NotReadable /
+       NotSupported / TrackStartError mean the listening module itself is
+       broken on this device. Only the latter should surface a Vera bubble. */
+    const failureKind = classifyMicMediaError(err);
+    const rawMessage = String(err?.message || err || "").slice(0, 200);
+    const isPermissionOrSetup = micFailureKindIsPermissionOrSetup(failureKind);
     logVeraCapabilityFailure("asr", "mic_capture_failed", {
       error_name: err?.name,
-      error_message: String(err?.message || err || "").slice(0, 200)
+      error_message: rawMessage,
+      failure_kind: failureKind,
+      bubble_suppressed: isPermissionOrSetup
     });
-    veraShowCapabilityFailureBubble(
-      "asr_failure",
-      VERA_SAFETY_LIMITS.messages.asrFailure
-    );
-    try { setStatus("Listening unavailable — use the keyboard", "offline"); } catch (_) {}
+    logCapabilityFallbackDebug({
+      capability: "listening",
+      failure_kind: failureKind,
+      should_show_bubble: !isPermissionOrSetup,
+      source_function: "initMic",
+      raw_error_message: rawMessage
+    });
+    if (!isPermissionOrSetup) {
+      veraShowCapabilityFailureBubble(
+        "asr_failure",
+        VERA_SAFETY_LIMITS.messages.asrFailure
+      );
+      try { setStatus("Listening unavailable — use the keyboard", "offline"); } catch (_) {}
+    }
+    /* Re-raise so PTT / continuous start can reset wave state. Permission
+       paths simply unwind silently — the browser permission prompt is the
+       canonical UX, not a Vera fallback bubble. */
     throw err;
   }
 
