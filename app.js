@@ -2,14 +2,14 @@
    STARTUP BANNER — proves this build of app.js actually loaded.
    If you do NOT see this line in DevTools console after a hard refresh,
    the browser is still serving an older cached copy (check Network tab:
-   app.js?v=52 should be the URL).
+   app.js?v=57 should be the URL).
 ========================= */
 try {
   // Use console.warn so it shows up even when the DevTools console level
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v52 loaded — PLAN_SYNC_DEBUG active. Type window.__veraDebugSyncState() in this console to dump sync state.",
+    "%c[VERA] app.js build v57 loaded — PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + MATH_PROBLEM_CLASSIFY_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG active.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -210,6 +210,13 @@ let mediaRecorder = null;
 let interruptRecorder = null;
 let interruptChunks = [];
 let interruptRecording = false;
+let interruptPrearmRecorder = null;
+let interruptPrearmChunks = [];
+let interruptPrearmStartedAt = 0;
+let interruptPrearmCommittedAt = 0;
+let interruptPrearmTtsId = "";
+let interruptPrearmTurnId = "";
+let interruptPrearmSuccess = false;
 
 let audioChunks = [];
 let hasSpoken = false;
@@ -588,7 +595,9 @@ function looksLikeNewsSearchRequest(text) {
   if (/\bdo\s+you\s+know\s+(?:what|who|where|when|why|how)\s+(?:to|i|we|you|he|she|they|it|that|this|tennis|cooking|pasta|programming|coding|chess|history|math|science|people)\b/.test(raw)) return false;
   if (/\bdo\s+you\s+know\s+(?:what|who|where|when|why|how)\s+\w+\s+(?:is|are|was|were|do|does|did|can|should|means|works|tastes|feels|looks|sounds)\b/.test(raw)) return false;
 
-  // Strong single-word/phrase triggers (user-specified vocabulary).
+  // Strong single-word/phrase triggers (user-specified vocabulary). These
+  // imply the user is actually asking about news / external info and fire
+  // immediately without further checks.
   if (/\bnews\b/.test(raw)) return true;
   if (/\bheadlines?\b/.test(raw)) return true;
   if (/\blatest\b/.test(raw)) return true;
@@ -596,9 +605,30 @@ function looksLikeNewsSearchRequest(text) {
   if (/\barticles?\b/.test(raw)) return true;
   if (/\bsources?\??\s*$/.test(raw)) return true;
   if (/\b(?:search|google|look\s*up|search\s*for|look\s*it\s*up)\b/.test(raw)) return true;
-  if (/\b(?:current|currently)\b/.test(raw)) return true;
-  if (/\b(?:today|tonight|this\s+(?:week|morning|afternoon|evening))\b/.test(raw)) return true;
-  if (/\b(?:recently|recent)\b/.test(raw)) return true;
+
+  // Weak recency words (today / tonight / this week / current(ly) / recent(ly))
+  // are NOT triggers on their own — that produced false positives like
+  // "I have a lot of homework today" or "I'm tired today" flashing
+  // "Searching news…". Require BOTH a real request shape AND a STRONG
+  // public-news indicator (news verb, news noun, or named public entity)
+  // before arming the bubble. We intentionally use a stricter regex than
+  // NEWS_EVENT_CLUE_RE because that pattern includes the recency words
+  // themselves (otherwise "today" would gate itself).
+  const hasWeakRecency = /\b(?:today|tonight|this\s+(?:week|morning|afternoon|evening)|current(?:ly)?|recent(?:ly)?)\b/.test(
+    raw
+  );
+  if (hasWeakRecency) {
+    const isRequest =
+      typeof isLikelyRequestShape === "function" ? isLikelyRequestShape(raw) : false;
+    const strongNewsTail =
+      /\b(?:news|headlines?|articles?|reports?|stor(?:y|ies)|coverage|press|earnings|election|stock|market|trial|lawsuit|investigation|interview|filing|deal|merger|acquisition|launched|announced|released|sued|arrested|fired|hired|signed|elected|indicted|won|lost|died|killed|attacked|crashed|hacked|leaked|revealed|appointed|nominated|happened|happening|going\s+on)\b/.test(
+        raw
+      );
+    const hasPublicNewsIntent = strongNewsTail || NEWS_NAMED_ENTITY_RE.test(raw);
+    if (isRequest && hasPublicNewsIntent) return true;
+    /* Otherwise fall through — the strong rules below may still match
+       (e.g. "what happened today"), but bare recency alone does NOT trigger. */
+  }
 
   // Phrase triggers.
   // Match "what happened", "what happens", "what's happening", "what is happening".
@@ -1122,6 +1152,58 @@ function logFinalTranscriptSentToLlm(path, text) {
   console.log("[VOICE][LLM-INPUT]", { path, text: text ?? "" });
 }
 
+function logInterruptTranscriptDebug(phase, payload = {}) {
+  try {
+    console.warn(`[INTERRUPT_TRANSCRIPT_DEBUG][${phase}]`, {
+      timestamp: new Date().toISOString(),
+      ...payload
+    });
+  } catch (_) {}
+}
+
+function interruptTranscriptNewTtsId() {
+  return `tts-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+async function getMicPermissionStateForInterrupt() {
+  try {
+    if (micStream && micStream.active) return "granted";
+    const tracks = micStream?.getAudioTracks?.() || [];
+    if (tracks.some((t) => t && t.readyState === "live")) return "granted";
+  } catch (_) {}
+  try {
+    if (navigator.permissions?.query) {
+      const status = await navigator.permissions.query({ name: "microphone" });
+      return String(status?.state || "unknown");
+    }
+  } catch (_) {}
+  return "unknown";
+}
+
+function stopInterruptPrearmRecorder(reason = "") {
+  try {
+    if (interruptPrearmRecorder && interruptPrearmRecorder.state !== "inactive") {
+      interruptPrearmRecorder.ondataavailable = null;
+      interruptPrearmRecorder.onstop = null;
+      interruptPrearmRecorder.stop();
+    }
+  } catch (_) {}
+  interruptPrearmRecorder = null;
+  interruptPrearmChunks = [];
+  interruptPrearmStartedAt = 0;
+  interruptPrearmCommittedAt = 0;
+  interruptPrearmSuccess = false;
+  if (reason) {
+    logInterruptTranscriptDebug("prearm", {
+      stream_active: Boolean(micStream?.active),
+      media_recorder_ready: false,
+      rolling_buffer_enabled: false,
+      preroll_ms: INTERRUPTION_PREROLL_MS,
+      reason
+    });
+  }
+}
+
 function beginTextUxTurn() {
   textUxTurn = {
     sendAt: performance.now(),
@@ -1216,6 +1298,9 @@ const MAX_WAIT_FOR_BROWSER_ASR_INITIAL_MS = 0;
 const MAX_WAIT_FOR_MEDIA_RECORDER_INITIAL_MS = 60000;
 const MIN_AUDIO_BYTES = 1500;
 const INTERRUPT_MIN_FRAMES = 1;
+const INTERRUPTION_PREROLL_MS = 750;
+const MAX_INTERRUPTION_PREROLL_MS = 1000;
+const MIN_INTERRUPTION_PREROLL_MS = 300;
 
 /**
  * End-of-utterance (continuous listen + interrupt capture): a frame only resets the
@@ -1237,7 +1322,7 @@ const INTERRUPT_RMS = 0.0105;
  * Interrupt fires only on a speechLike frame after this threshold.
  * Phone viewports use a shorter window for faster interrupt.
  */
-const INTERRUPT_SUSTAIN_MS_DESKTOP = 350;
+const INTERRUPT_SUSTAIN_MS_DESKTOP = 240;
 const INTERRUPT_SUSTAIN_MS_PHONE = 100;
 
 function getInterruptSustainMs() {
@@ -1260,7 +1345,7 @@ let browserAsrMainSilenceMs = 1300;
 /** Main browser-ASR only: minimum visible chars before showing partial bubble. `Infinity` = hide until utterance finalizes. */
 let mainAsrPartialMinChars = 20;
 /** Min accumulated ms of changing partial transcript to count as interrupt (vs VAD on audio). */
-let browserAsrInterruptSustainMs = 350;
+let browserAsrInterruptSustainMs = 220;
 /** Reset interrupt sustain if no transcript change for this long (ms). */
 let browserAsrInterruptGapMs = 120;
 /** Fire interrupt when browser partial ASR reaches this many words, or when partial text is stable long enough. */
@@ -9585,6 +9670,202 @@ function isExplicitWorkModePanelNavigationIntent(text) {
 }
 
 /** Multi-item planning / scheduling — route to reasoning and enable checklist Sync from markdown. */
+/**
+ * Shared request-shape gate used by:
+ *   - looksLikeNewsSearchRequest (so weak recency words like "today" do not
+ *     trigger the "Searching news…" placeholder on personal statements)
+ *   - maybePrepareWorkModeReasoning (extra veto signal that the message is
+ *     just a personal statement, not an actual request)
+ *
+ * Returns true when the message looks like a real request, command, question,
+ * or explicit work task. Returns false for plain declarative personal
+ * statements (e.g. "I have a lot of homework today", "I'm tired today").
+ *
+ * Single source of truth: keep the logic here and call this helper from any
+ * gate that needs to know "did the user actually ask for something?".
+ */
+function isLikelyRequestShape(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  const low = raw.toLowerCase();
+
+  /* A trailing question mark is the strongest single signal. */
+  if (/\?\s*$/.test(raw)) return true;
+
+  /* Question-word openers. */
+  if (/^\s*(what|who|whom|whose|where|when|why|how|which)\b/.test(low)) return true;
+
+  /* Auxiliary/question-form openers (do, did, does, is, are, can, could, should,
+     would, will, has, have, had, may, might, was, were, am, won't, wouldn't). */
+  if (
+    /^\s*(do|does|did|don'?t|is|isn'?t|are|aren'?t|was|wasn'?t|were|weren'?t|am|can|can'?t|cannot|could|couldn'?t|should|shouldn'?t|would|wouldn'?t|will|won'?t|shall|shan'?t|has|have|had|hasn'?t|haven'?t|hadn'?t|may|might|must|mustn'?t)\b/.test(
+      low
+    )
+  ) {
+    return true;
+  }
+
+  /* Politeness / explicit ask openers. */
+  if (
+    /^\s*(please|pls|kindly|hey\s+vera[, ]+|vera[, ]+|could\s+you|can\s+you|would\s+you|will\s+you|i\s+need\s+you\s+to|i'?d\s+like\s+you\s+to|i\s+want\s+you\s+to|let'?s|lets)\b/.test(
+      low
+    )
+  ) {
+    return true;
+  }
+
+  /* Imperative verbs anywhere (voice and short-form commands often skip the opener). */
+  if (
+    /\b(tell\s+me|show\s+me|find\s+(?:me\s+)?(?:the|a|an|some)?|search\s+(?:for\s+)?|google|look\s*up|look\s+it\s+up|explain|describe|define|summari[sz]e|write|draft|compose|polish|rewrite|edit|proofread|plan|organize|organise|schedule|prioriti[sz]e|solve|calculate|compute|evaluate|prove|derive|simulate|analy[sz]e|review|audit|assess|critique|compare|create|make|build|generate|produce|set\s+up|help\s+me|guide\s+me|walk\s+me\s+through|coach\s+me|teach\s+me|give\s+me|email|call)\b/.test(
+      low
+    )
+  ) {
+    return true;
+  }
+
+  /* Direct task asks ("I need to...", "I want to..."). */
+  if (/\b(i\s+need|i\s+want|i'?d\s+like|i\s+would\s+like)\s+(?:to|you|a|an|some|help|the)\b/.test(low)) {
+    return true;
+  }
+
+  /* "Help with X", "any tips on", "give me a hand" style imperatives. */
+  if (/\b(help\s+(?:me\s+)?(?:with|on|out)|any\s+(?:tips|advice|ideas|thoughts)\s+(?:on|for|about)|give\s+(?:me\s+)?(?:a\s+hand|some\s+help))\b/.test(low)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Frontend safety veto for the over-broad backend classifier:
+ *
+ * The `/work_mode/classify` LLM sometimes returns prompt_reasoning=true for
+ * personal-narrative / advice-seeking utterances like
+ *   "I got pulled over and it felt unfair, should I file a complaint?"
+ *   "I have a lot of homework today"
+ *   "I'm not feeling very good"
+ * which should stay in normal chat. These helpers veto the route when the
+ * message looks like first-person venting / advice-seeking AND no explicit
+ * work-artifact verb is present.
+ *
+ * See [REASONING_ROUTE_DEBUG] logs emitted from maybePrepareWorkModeReasoning
+ * for the per-turn decision trace.
+ */
+function _veraWordCount(text) {
+  const t = String(text || "").trim();
+  if (!t) return 0;
+  return (t.match(/\S+/g) || []).length;
+}
+
+/**
+ * Heuristic: does this utterance read like personal venting / advice-seeking
+ * (first-person narrative + emotion words OR a "should I / what should I do"
+ * pattern), with no obvious structured artifact ask?
+ */
+function looksLikePersonalAdviceOrVenting(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return { matched: [], score: 0, isVenting: false };
+  const low = raw.toLowerCase();
+  const wc = _veraWordCount(low);
+
+  const firstPersonHits = (low.match(/\b(i|i'm|i've|i'd|i'll|me|my|mine|myself)\b/g) || []).length;
+  const firstPersonDensity = wc > 0 ? firstPersonHits / wc : 0;
+  const heavyFirstPerson = firstPersonHits >= 3 || firstPersonDensity >= 0.18;
+  const anyFirstPerson = firstPersonHits >= 1;
+
+  const emotionWords =
+    /\b(unfair|frustrat(?:ed|ing)|stress(?:ed|ful|ing)|anxious|anxiety|worried|worry|sad|sadd?en|down|low|depress(?:ed|ing)|lonely|tired|exhausted|overwhelmed|burnt?\s*out|burned\s*out|upset|annoyed|angry|mad|hurt|embarrassed|ashamed|guilty|scared|afraid|nervous|hopeless|helpless|lost|defeat(?:ed)?|drained|fed\s*up|sucks?|ranting?|vent(?:ing)?|feel(?:s|ing)?|felt|bad\s+day|rough\s+day|hard\s+day|tough\s+day|long\s+day|crying|cried|complain(?:ed|ing)?\b(?!\s+(?:letter|email|form|filing))|whining?)\b/i;
+
+  /* Strong advice-seeking openers (count for 2 points). Includes the very
+     common "I don't know what to do" / "no idea what to do" stuck-on-life
+     openers that have no structured artifact intent. */
+  const adviceSeeking =
+    /\b(should\s+i|do\s+you\s+think\s+i\s+should|what\s+should\s+i\s+do|i\s+(?:don'?t|do\s+not)\s+know\s+(?:if|what|whether|how)\s+(?:i\s+should|to\s+do|what\s+to\s+do)|i\s+(?:don'?t|do\s+not)\s+know\s+what\s+to\s+do|(?:i\s+have\s+)?no\s+idea\s+what\s+to\s+do|is\s+it\s+worth|would\s+it\s+be\s+(?:bad|wrong|ok|okay|fine)\s+(?:if|to)|am\s+i\s+(?:wrong|right|crazy|overreacting)|do\s+you\s+think\s+(?:i'm|it's)|can\s+i\s+rant|can\s+i\s+vent|need\s+to\s+vent|just\s+venting)\b/i;
+
+  const narrativeOpeners =
+    /^\s*(so\s+(?:basically|like|then)?|basically|okay\s+so|ok\s+so|alright\s+so|today|earlier|yesterday|last\s+night|this\s+morning|this\s+afternoon|this\s+evening|just\s+now|the\s+other\s+day)\b/i;
+
+  const negativeLifeNouns =
+    /\b(ticket|pulled\s+over|cop|police|officer|fight|argument|breakup|broke\s+up|professor|teacher|boss|manager|landlord|roommate|parents?|mom|dad|sister|brother|friend|girlfriend|boyfriend|partner|crush|date|class|exam|test|interview|deadline|homework|assignment|presentation|family|drama)\b/i;
+
+  /* Passive workload mentions: "I have a lot of homework today", "I've got an
+     exam tomorrow", "I'm dealing with finals" — these are venting/context
+     statements, not requests for an artifact. Worth 2 points so the veto
+     fires without needing additional signals. */
+  const passiveWorkloadMention =
+    /\b(i\s+(?:have|got|got\s+a\s+lot\s+of|have\s+a\s+lot\s+of|have\s+so\s+much|am\s+swamped\s+with|am\s+drowning\s+in|am\s+dealing\s+with)|i'?ve\s+(?:got|been|got\s+a\s+lot\s+of)|i'?m\s+(?:dealing\s+with|drowning\s+in|swamped\s+with|behind\s+on|stuck\s+on))\s+(?:a\s+lot\s+of\s+|so\s+much\s+|tons?\s+of\s+|loads?\s+of\s+|a\s+ton\s+of\s+|an?\s+|the\s+|some\s+|my\s+)?(?:homework|assignments?|classes|class|exams?|tests?|projects?|essays?|papers?|readings?|midterms?|finals?|presentations?|deadlines?|coursework|schoolwork|work)\b/i;
+
+  let signals = 0;
+  const matched = [];
+  if (heavyFirstPerson) { signals += 1; matched.push("heavy_first_person"); }
+  if (emotionWords.test(low)) { signals += 1; matched.push("emotion_word"); }
+  if (adviceSeeking.test(low)) { signals += 2; matched.push("advice_seeking"); }
+  if (narrativeOpeners.test(low)) { signals += 1; matched.push("narrative_opener"); }
+  if (negativeLifeNouns.test(low) && anyFirstPerson) { signals += 1; matched.push("life_noun_plus_first_person"); }
+  if (passiveWorkloadMention.test(low)) { signals += 2; matched.push("passive_workload_mention"); }
+
+  return { matched, score: signals, isVenting: signals >= 2 };
+}
+
+/** Alias for spec compatibility — same heuristic, friendlier name. */
+const looksLikePersonalStatementOrVenting = looksLikePersonalAdviceOrVenting;
+
+/**
+ * Heuristic: explicit work-artifact verb that overrides the personal-advice
+ * veto (user is asking us to actually produce / analyze something structured).
+ */
+function hasExplicitWorkArtifactIntent(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return { matched: [], hasIntent: false };
+  const low = raw.toLowerCase();
+  const matched = [];
+
+  const writeVerb =
+    /\b(write|draft|compose|polish|rewrite|edit|proofread)\s+(?:a|an|the|my|me|us|some|this)?\s*(?:complaint|letter|email|appeal|essay|paper|report|memo|outline|cover\s*letter|proposal|statement|application|response|note|reply|review|paragraph|article|blog|script|speech|story|thesis|summary)?/i;
+  const planVerb =
+    /\b(plan|organize|organise|schedule|prioriti[sz]e|break\s+(?:it|this|that)\s+down|time[-\s]?block|map\s+out|lay\s+out)\b/i;
+  const analyzeVerb =
+    /\b(analy[sz]e|review|audit|evaluate|assess|critique|examine|inspect|interpret|summari[sz]e|compare)\b/i;
+  const solveVerb =
+    /\b(solve|calculate|compute|evaluate|find\s+(?:the\s+)?(?:value|price|premium|probability|expected\s+value|mean|variance|standard\s+deviation|max(?:imum)?|min(?:imum)?|drawdown|delta|gamma|theta|vega|rho|var|cvar|sharpe|yield|return|payoff|npv|irr|present\s+value|future\s+value)|simulate|monte\s*carlo|prove|derive|debug|refactor|implement)\b/i;
+  const explainVerb =
+    /\b(explain|describe|define|walk\s+me\s+through|guide\s+me|coach\s+me)\b/i;
+  const makeArtifact =
+    /\b(make|create|build|generate|produce|set\s+up)\s+(?:a|an|the|my|us|some)?\s*(?:checklist|to[- ]?do|task\s+list|plan|outline|table|spreadsheet|csv|chart|diagram|roadmap|schedule|study\s+plan|cheat\s*sheet|template|draft|summary)\b/i;
+  const fileTask =
+    /\b(?:upload(?:ed)?|attach(?:ed|ment)?|the\s+(?:pdf|file|image|screenshot|doc|document|spreadsheet))\b/i;
+  const helpDoArtifact =
+    /\b(help\s+me\s+(?:write|draft|plan|organize|organise|prepare|build|make|create|do|solve|analy[sz]e|study|outline|debug|fix|figure\s+out|work\s+(?:through|on)|put\s+together)|i\s+need\s+(?:help|to)\s+(?:write|draft|plan|organize|prepare|build|make|create|outline)|can\s+you\s+(?:write|draft|plan|organize|prepare|build|make|create|outline|analy[sz]e|review))\b/i;
+
+  if (writeVerb.test(low)) matched.push("write_artifact");
+  if (planVerb.test(low)) matched.push("plan_verb");
+  if (analyzeVerb.test(low)) matched.push("analyze_verb");
+  if (solveVerb.test(low)) matched.push("solve_verb");
+  if (explainVerb.test(low)) matched.push("explain_verb");
+  if (makeArtifact.test(low)) matched.push("make_artifact");
+  if (fileTask.test(low)) matched.push("file_task");
+  if (helpDoArtifact.test(low)) matched.push("help_do_artifact");
+
+  return { matched, hasIntent: matched.length > 0 };
+}
+
+/**
+ * Structured per-turn log for the Work Mode reasoning routing decision.
+ * Emitted from maybePrepareWorkModeReasoning right after the route is finalized.
+ *
+ * Tag is [REQUEST_SHAPE_ROUTE_DEBUG] (single source of truth for the
+ * shared request-shape gate — news placeholder + reasoning veto + classifier
+ * decision all surface here per turn).
+ */
+function logReasoningRouteDebug(payload) {
+  try {
+    console.warn(
+      `[REQUEST_SHAPE_ROUTE_DEBUG]`,
+      Object.assign({ timestamp: new Date().toISOString() }, payload || {})
+    );
+  } catch (_) {}
+}
+
 function isLikelyWorkModePlanningIntent(text) {
   const raw = String(text ?? "").trim();
   if (!raw) return false;
@@ -11877,11 +12158,37 @@ function buildWorkModeReasoningStage1AckText(trimmed, opts = {}) {
   const o = opts || {};
   if (o.hasUpload) return "I'll work from your file in the reasoning space.";
   if (o.planningIntent) return "I'll lay out the plan in the reasoning space.";
+  if (o.requestHasComputationalNumericIntent) return "I'll compute that with Python in the reasoning panel.";
   if (o.requestHasCodeIntent) return "Sure — I'll put the detailed code in the reasoning space.";
   if (o.requestHasProofIntent) return "I'll work through the proof in the reasoning space.";
   if (o.requestHasDenseMathIntent) return "I'll work the full solution in the reasoning space.";
   if (o.requestHasTableIntent) return "I'll put the full table in the reasoning space.";
   return "I'll work through this in the reasoning space.";
+}
+
+/**
+ * Frontend heuristic for "this turn will route to code_first_reasoning server-side".
+ * The authoritative decision is made by CHAT_REASONING.classify_math_problem_mode
+ * (see [MATH_PROBLEM_CLASSIFY_DEBUG] server logs); this client check only picks the
+ * Stage-1 ack text spoken before the round-trip. Intentionally conservative:
+ * false negatives just mean the generic ack is spoken instead.
+ */
+function detectWorkModeRequestHasComputationalNumericIntent(trimmed) {
+  const t = String(trimmed || "").toLowerCase();
+  if (!t) return false;
+  const computeVerb =
+    /\b(calculate|compute|evaluate|find\s+(?:the\s+)?(?:value|price|premium|probability|expected\s+value|mean|variance|standard\s+deviation|max(?:imum)?|min(?:imum)?|drawdown|delta|gamma|theta|vega|rho|var|cvar|sharpe|yield|return|payoff|npv|irr|present\s+value|future\s+value)|price\s+(?:this|the|an?)\s+(?:option|call|put|bond|swap|derivative)|solve\s+(?:this|the|a|for)|work\s+out|run\s+the\s+numbers|how\s+much\s+(?:is|would|will)|what\s+(?:is|will|would)\s+the\s+value|simulate|monte\s*carlo|plot)\b/.test(
+      t
+    );
+  if (!computeVerb) return false;
+  const hasNumbers = /(?:[a-z_][a-z0-9_]*\s*=\s*[-+]?\d|[$£€]\s*\d|\b\d+(?:\.\d+)?\s*%|\b\d{2,}\b)/i.test(
+    trimmed || ""
+  );
+  const numericDomain =
+    /\b(black[-\s]?scholes|binomial(?:\s+(?:tree|lattice|model))?|trinomial|monte\s*carlo|delta\s+hedg|gamma\s+hedg|option\s+price|call\s+price|put\s+price|premium|payoff|var\b|cvar|value[-\s]?at[-\s]?risk|sharpe|sortino|drawdown|npv|irr|present\s+value|future\s+value|amortiz|annuity|bond\s+price|yield\s+to\s+maturity|ytm|duration|convexity|poisson|binomial\s+distribution|normal\s+distribution|expected\s+value|variance|covariance|correlation|regression|hypothesis\s+test|p[-\s]?value|chi[-\s]?square|t[-\s]?test|z[-\s]?test|confidence\s+interval|standard\s+deviation|standard\s+error|integral|integrate|differentiate|matrix\s+(?:multiply|inverse)|eigen(?:value|vector)|determinant)\b/.test(
+      t
+    );
+  return hasNumbers || numericDomain;
 }
 
 /**
@@ -13079,6 +13386,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
 
   let classifyRoute = false;
   let continuePriorLane = false;
+  let classifyCategory = null;
+  let classifyConfidence = null;
   try {
     const classifyBody = { session_id: getSessionId(), text: effectiveUserText };
     const classifyLaneGuess =
@@ -13104,12 +13413,20 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       const cj = await cr.json();
       classifyRoute = Boolean(cj.prompt_reasoning || cj.reasoning);
       continuePriorLane = Boolean(cj.continue_prior_lane);
+      classifyCategory = typeof cj.category === "string" ? cj.category : null;
+      const confRaw = cj.confidence;
+      if (typeof confRaw === "number" && Number.isFinite(confRaw)) classifyConfidence = confRaw;
     }
   } catch {
     /* ignore */
   }
 
   let routeReasoning = Boolean(hasUpload);
+  let _routeDebugReason = "no_route";
+  let _routeDebugHeuristicReasoning = false;
+  let _routeDebugPersonalAdviceVeto = false;
+  let _routeDebugArtifactIntent = { matched: [], hasIntent: false };
+  let _routeDebugVentingSignals = { matched: [], score: 0, isVenting: false };
   if (!hasUpload) {
     const taskFollowUpContinuing =
       !planningIntent &&
@@ -13152,8 +13469,117 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         explainReasoningAsk
       );
     })();
+    _routeDebugHeuristicReasoning = Boolean(heuristicReasoning);
+
+    /* Frontend safety veto for the over-broad backend classifier:
+       when classify says "reasoning" but the local heuristic disagrees AND
+       the message reads like personal venting / advice-seeking with no
+       explicit work-artifact verb, force chat. forceActiveLaneReasoningContent
+       is exempt — that path means we're continuing an already-open lane.
+       isLikelyRequestShape() is mixed in via the venting score: real requests
+       cancel one venting point so e.g. "should I file a complaint?" still has
+       its advice-seeking signal but pure declaratives like "I have a lot of
+       homework today" decisively veto. */
+    _routeDebugArtifactIntent = hasExplicitWorkArtifactIntent(trimmed);
+    _routeDebugVentingSignals = looksLikePersonalStatementOrVenting(trimmed);
+    const _isRequestShape = isLikelyRequestShape(trimmed);
+
+    /* Adjusted venting score: if the message has no request shape at all,
+       declarative-personal status is even stronger evidence for veto. */
+    const _adjustedVentingScore = _routeDebugVentingSignals.score + (_isRequestShape ? 0 : 1);
+    const _adjustedIsVenting = _adjustedVentingScore >= 2;
+
+    let effectiveClassifyRoute = classifyRoute;
+    const personalAdviceVeto =
+      effectiveClassifyRoute === true &&
+      heuristicReasoning === false &&
+      !forceActiveLaneReasoningContent &&
+      _adjustedIsVenting &&
+      !_routeDebugArtifactIntent.hasIntent;
+    if (personalAdviceVeto) {
+      _routeDebugPersonalAdviceVeto = true;
+      effectiveClassifyRoute = false;
+    }
+
+    /* News-lookup veto: if the message looks like a news / external-search
+       lookup (e.g. "any news today?", "what happened today?") AND has no
+       explicit work-artifact verb, do NOT also route to reasoning even when
+       the backend classifier returns true. News asks are handled by the
+       news placeholder / Serper path, not by a reasoning panel. */
+    let _routeDebugNewsLookupVeto = false;
+    if (
+      effectiveClassifyRoute === true &&
+      heuristicReasoning === false &&
+      !forceActiveLaneReasoningContent &&
+      !_routeDebugArtifactIntent.hasIntent &&
+      typeof looksLikeNewsSearchRequest === "function" &&
+      looksLikeNewsSearchRequest(trimmed)
+    ) {
+      _routeDebugNewsLookupVeto = true;
+      effectiveClassifyRoute = false;
+    }
+
     routeReasoning =
-      (classifyRoute || heuristicReasoning || forceActiveLaneReasoningContent) && !taskFollowUpContinuing;
+      (effectiveClassifyRoute || heuristicReasoning || forceActiveLaneReasoningContent) &&
+      !taskFollowUpContinuing;
+
+    let finalRoute = "chat";
+    if (routeReasoning) finalRoute = "reasoning";
+
+    if (personalAdviceVeto) {
+      _routeDebugReason = "personal_statement_veto";
+    } else if (_routeDebugNewsLookupVeto) {
+      _routeDebugReason = "news_lookup_veto";
+    } else if (taskFollowUpContinuing) {
+      _routeDebugReason = "task_follow_up_continuing_chat";
+    } else if (heuristicReasoning) {
+      _routeDebugReason = "heuristic_reasoning";
+    } else if (forceActiveLaneReasoningContent) {
+      _routeDebugReason = "force_active_lane_followup";
+    } else if (effectiveClassifyRoute) {
+      _routeDebugReason = "backend_classifier";
+    } else if (classifyRoute) {
+      _routeDebugReason = "no_route_after_veto";
+    } else {
+      _routeDebugReason = "no_route_neither_signal";
+    }
+
+    /* News placeholder probe (same heuristic that armPendingNewsStatusBubble
+       uses at submit time) — purely informational for the consolidated debug. */
+    let _newsPlaceholderTriggered = false;
+    try {
+      _newsPlaceholderTriggered =
+        typeof looksLikeNewsSearchRequest === "function" &&
+        Boolean(looksLikeNewsSearchRequest(trimmed));
+    } catch (_) { _newsPlaceholderTriggered = false; }
+
+    let finalRouteForLog = finalRoute;
+    if (!routeReasoning && _newsPlaceholderTriggered) finalRouteForLog = "news";
+
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      is_likely_request_shape: _isRequestShape,
+      looks_personal_statement: Boolean(_routeDebugVentingSignals.isVenting),
+      news_placeholder_triggered: _newsPlaceholderTriggered,
+      backend_classify_route: Boolean(classifyRoute),
+      backend_category: classifyCategory,
+      backend_confidence: classifyConfidence,
+      heuristic_reasoning: _routeDebugHeuristicReasoning,
+      personal_statement_veto: _routeDebugPersonalAdviceVeto,
+      news_lookup_veto: _routeDebugNewsLookupVeto,
+      venting_signals: _routeDebugVentingSignals.matched,
+      venting_score: _routeDebugVentingSignals.score,
+      adjusted_venting_score: _adjustedVentingScore,
+      explicit_artifact_intent: _routeDebugArtifactIntent.hasIntent,
+      artifact_signals: _routeDebugArtifactIntent.matched,
+      force_active_lane: Boolean(forceActiveLaneReasoningContent),
+      task_follow_up_continuing: Boolean(taskFollowUpContinuing),
+      planning_intent: Boolean(planningIntent),
+      final_route: finalRouteForLog,
+      final_route_reasoning: Boolean(routeReasoning),
+      reason: _routeDebugReason
+    });
+
     if (!routeReasoning) {
       if (!isGenericExampleFollowUpText(trimmed)) {
         workModeLastSubstantiveUserText = trimmed;
@@ -13165,6 +13591,34 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         noRouteMeta
       );
     }
+  } else {
+    /* Upload path always routes; emit debug too so the dashboard sees every turn. */
+    let _newsPlaceholderTriggered = false;
+    try {
+      _newsPlaceholderTriggered =
+        typeof looksLikeNewsSearchRequest === "function" &&
+        Boolean(looksLikeNewsSearchRequest(trimmed));
+    } catch (_) { _newsPlaceholderTriggered = false; }
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      is_likely_request_shape: isLikelyRequestShape(trimmed),
+      looks_personal_statement: false,
+      news_placeholder_triggered: _newsPlaceholderTriggered,
+      backend_classify_route: null,
+      backend_category: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: true,
+      artifact_signals: ["upload_present"],
+      force_active_lane: Boolean(forceActiveLaneReasoningContent),
+      task_follow_up_continuing: false,
+      planning_intent: Boolean(planningIntent),
+      final_route: "reasoning",
+      final_route_reasoning: true,
+      reason: "upload_present"
+    });
   }
 
   const continueLaneForThisTurn = Boolean(continuePriorLane) || Boolean(forceActiveLaneReasoningContent);
@@ -13174,9 +13628,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     String(effectiveUserText || "").toLowerCase()
   );
   const requestHasTableIntent = /\b(table|tabular|spreadsheet|csv)\b/i.test(String(effectiveUserText || "").toLowerCase());
+  const requestHasComputationalNumericIntent =
+    detectWorkModeRequestHasComputationalNumericIntent(effectiveUserText);
   const stage1AckText = buildWorkModeReasoningStage1AckText(effectiveUserText, {
     hasUpload,
     planningIntent,
+    requestHasComputationalNumericIntent,
     requestHasCodeIntent,
     requestHasProofIntent,
     requestHasDenseMathIntent,
@@ -13184,6 +13641,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   });
   const voiceTwoStage = {
     reasoningRouted: true,
+    requestHasComputationalNumericIntent,
     requestHasCodeIntent,
     requestHasProofIntent,
     requestHasDenseMathIntent,
@@ -14696,6 +15154,9 @@ let workChecklistSyncConsumedPlanVersion = 0;
 /** Markdown snapshot for the latest unsynced plan (with checklist). Survives later non-plan reasoning turns; replaced when a newer plan arrives; cleared on successful Apply. */
 let workChecklistSyncPendingMarkdown = "";
 let workChecklistSyncPendingPlanMeta = null;
+let workChecklistSyncCommandSeq = 0;
+let activeWorkChecklistSyncCommand = "";
+let lastCompletedWorkChecklistSyncCommandTurn = null;
 
 function planSyncPreviewRows(rows, limit = 5) {
   return (Array.isArray(rows) ? rows : [])
@@ -14740,6 +15201,15 @@ function logPlanSyncDebug(kind, payload = {}) {
     // hide these — Chrome hides Info entries when "Info" is toggled off but
     // always shows Warnings. Bright yellow row in the console UI.
     console.warn(`[PLAN_SYNC_DEBUG][${kind}]`, enriched);
+  } catch (_) {}
+}
+
+function logSyncVoiceTurnDebug(phase, payload = {}) {
+  try {
+    console.warn(`[SYNC_VOICE_TURN_DEBUG][${phase}]`, {
+      timestamp: new Date().toISOString(),
+      ...payload
+    });
   } catch (_) {}
 }
 
@@ -15711,8 +16181,128 @@ function isWorkChecklistSyncCommandIntent(text) {
   return false;
 }
 
-async function maybeHandleWorkChecklistSyncShortcut(text) {
+function finalizeWorkChecklistSyncCommandTurn({
+  turnId,
+  transcript,
+  source,
+  isVoice,
+  success,
+  checklistItemsInserted,
+  previewUsed
+} = {}) {
+  const tid = String(turnId || "").trim() || `sync-plan-${++workChecklistSyncCommandSeq}`;
+  const finalTranscript = String(transcript || "").trim();
+  const fromVoice = Boolean(isVoice);
+  const replyText = success
+    ? "I synced the plan."
+    : "I couldn’t find a plan to sync yet.";
+  let transcriptFinalized = false;
+  let bubbleClosed = false;
+  try {
+    if (finalTranscript) {
+      commitServerUserTranscriptBubble(
+        finalTranscript,
+        fromVoice ? `work-mode-sync-${source || "voice"}` : "work-mode-sync-typed"
+      );
+      transcriptFinalized = true;
+    }
+  } catch (_) {}
+
+  if (fromVoice) {
+    try {
+      abortBrowserSpeechRecognizers();
+    } catch (_) {}
+    try {
+      clearVoiceMaxDurationTimer();
+    } catch (_) {}
+    try {
+      audioChunks = [];
+      hasSpoken = false;
+      mainBrowserFinalTranscript = "";
+      mainBrowserLastInterim = "";
+      mainBrowserFinalizeKind = "main";
+      interruptPartialLastText = "";
+      interruptBargeInLatched = false;
+    } catch (_) {}
+  }
+
+  try {
+    addBubble(replyText, "vera", {
+      path: success ? "work-mode-sync-command-success" : "work-mode-sync-command-failed"
+    });
+  } catch (_) {}
+
+  requestInFlight = false;
+  processing = false;
+  voiceUxTurn = null;
+  activeWorkChecklistSyncCommand = "";
+  bubbleClosed = mainBrowserLiveBubble == null;
+  setStatus("Ready", "idle");
+  updateMuteInputButton();
+
+  try {
+    window.dispatchEvent(
+      new CustomEvent("work_mode_command_completed", {
+        detail: {
+          command_type: "sync_plan",
+          turn_id: tid,
+          success: Boolean(success),
+          checklist_items_inserted: Number(checklistItemsInserted || 0),
+          preview_used: Boolean(previewUsed)
+        }
+      })
+    );
+  } catch (_) {}
+
+  logSyncVoiceTurnDebug("sync_success", {
+    turn_id: tid,
+    checklist_items_inserted: Number(checklistItemsInserted || 0),
+    preview_used: Boolean(previewUsed),
+    action_completed: true,
+    success: Boolean(success),
+    source: source || ""
+  });
+  logSyncVoiceTurnDebug("finalize", {
+    turn_id: tid,
+    transcript_finalized: transcriptFinalized,
+    bubble_closed: bubbleClosed,
+    route_state_cleared: activeWorkChecklistSyncCommand === "",
+    active_command_after_finalize: activeWorkChecklistSyncCommand || null,
+    active_transcription_turn_after_finalize:
+      mainBrowserRecognition || interruptDetectRecognition || postInterruptRecognition
+        ? "browser_asr_active"
+        : null,
+    source: source || ""
+  });
+
+  lastCompletedWorkChecklistSyncCommandTurn = {
+    turn_id: tid,
+    command_type: "sync_plan",
+    completed_at: Date.now()
+  };
+
+  if (fromVoice && listeningMode === "continuous" && listening && !inputMuted) {
+    window.setTimeout(() => {
+      if (!listening || processing || inputMuted) return;
+      startListening();
+    }, 80);
+  }
+}
+
+async function maybeHandleWorkChecklistSyncShortcut(text, opts = {}) {
   const userText = String(text || "").trim();
+  if (userText && lastCompletedWorkChecklistSyncCommandTurn) {
+    const previousTurn = lastCompletedWorkChecklistSyncCommandTurn;
+    const inheritedIntent = activeWorkChecklistSyncCommand === previousTurn.command_type;
+    logSyncVoiceTurnDebug("next_turn", {
+      previous_turn_id: previousTurn.turn_id,
+      new_turn_id: opts.turnId || null,
+      new_transcript: userText,
+      inherited_previous_intent: Boolean(inheritedIntent),
+      inherited_intent_name: inheritedIntent ? activeWorkChecklistSyncCommand : ""
+    });
+    lastCompletedWorkChecklistSyncCommandTurn = null;
+  }
   const inWorkMode = isVeraWorkModeOn();
   const mode = appModePrefix();
   const looksRelevant = /\b(sync|synced|synchroniz|check\s*list|checklist|to-?do|todo|task\s*list|plan|reasoning)\b/i.test(
@@ -15755,6 +16345,16 @@ async function maybeHandleWorkChecklistSyncShortcut(text) {
   });
   const ctx = describePlanSyncActiveContext();
   const selected = getWorkChecklistSyncSourceCandidate();
+  const turnId = String(opts.turnId || "").trim() || `sync-plan-${++workChecklistSyncCommandSeq}`;
+  activeWorkChecklistSyncCommand = "sync_plan";
+  logSyncVoiceTurnDebug("start", {
+    turn_id: turnId,
+    transcript: userText,
+    detected_command: "sync_plan",
+    active_panel_id: ctx.active_panel_id || null,
+    active_lane_id: ctx.active_panel_id || null,
+    source: opts.source || ""
+  });
   logPlanSyncDebug("voice_sync_request", {
     user_text: userText,
     active_panel_id: ctx.active_panel_id,
@@ -15790,6 +16390,15 @@ async function maybeHandleWorkChecklistSyncShortcut(text) {
     auto_applied: Boolean(autoApplied),
     reason_if_failed: ok ? "" : "run_plan_returned_false",
     trigger_source: "voice_or_typed_shortcut_completed"
+  });
+  finalizeWorkChecklistSyncCommandTurn({
+    turnId,
+    transcript: userText,
+    source: opts.source || "voice_or_typed_shortcut",
+    isVoice: opts.isVoice === true,
+    success: Boolean(ok && autoApplied),
+    checklistItemsInserted: ok && autoApplied ? selected?.rows?.length || 0 : 0,
+    previewUsed: Boolean(ok)
   });
   return true;
 }
@@ -15916,7 +16525,14 @@ function wireWorkModeChecklistAndComposer() {
     const files = getWorkModePendingAttachmentFiles();
     if (!t && !files.length) return;
     if (!isVeraWorkModeOn()) return;
-    if (t && !files.length && (await maybeHandleWorkChecklistSyncShortcut(t))) {
+    if (
+      t &&
+      !files.length &&
+      (await maybeHandleWorkChecklistSyncShortcut(t, {
+        source: "reasoning-composer",
+        isVoice: false
+      }))
+    ) {
       if (ri) ri.value = "";
       closeWorkModeAttachmentPreviewModal();
       setWorkModeAttachmentMeta("");
@@ -16865,6 +17481,7 @@ function promoteInterruptPreviewToMainLiveBubble() {
 function onBrowserInterruptBargeInFromDetect(event) {
   if (interruptBargeInLatched) return;
   interruptBargeInLatched = true;
+  const commitAt = performance.now();
   cancelBrowserInterruptTtsOnly();
   promoteInterruptPreviewToMainLiveBubble();
   mainBrowserFinalizeKind = "interrupt";
@@ -16894,6 +17511,13 @@ function onBrowserInterruptBargeInFromDetect(event) {
     speechWaitTimeoutId = null;
   }
   updateMainBrowserLiveBubble(mainBrowserFinalTranscript, interimBuf);
+  logInterruptTranscriptDebug("capture_committed", {
+    included_preroll_ms: 0,
+    live_capture_started_at_ms: Number((interruptPartialLastChangeAt || commitAt).toFixed(1)),
+    bubble_created_at_ms: Number(commitAt.toFixed(1)),
+    asr_request_started_at_ms: null,
+    browser_asr_live_stream: true
+  });
   scheduleMainBrowserEndOfUtterance();
 }
 
@@ -16910,6 +17534,15 @@ function interruptSpeech() {
   cancelBrowserInterruptTtsOnly();
 
   if (interruptRecording) {
+    interruptPrearmCommittedAt = performance.now();
+    logInterruptTranscriptDebug("capture_committed", {
+      included_preroll_ms: interruptPrearmStartedAt
+        ? Number(Math.min(MAX_INTERRUPTION_PREROLL_MS, interruptPrearmCommittedAt - interruptPrearmStartedAt).toFixed(1))
+        : Number(Math.min(MAX_INTERRUPTION_PREROLL_MS, interruptPrearmCommittedAt - (audioStartedAt || interruptPrearmCommittedAt)).toFixed(1)),
+      live_capture_started_at_ms: Number((interruptPrearmStartedAt || audioStartedAt || interruptPrearmCommittedAt).toFixed(1)),
+      bubble_created_at_ms: null,
+      asr_request_started_at_ms: null
+    });
     requestAnimationFrame(detectInterruptSpeechEnd);
   } else if (useBrowserAsr) {
     /* No MediaRecorder interrupt path: start dedicated post-interrupt SR (e.g. phone Chrome edge cases). */
@@ -17030,6 +17663,17 @@ function detectInterrupt() {
             : 0,
           frames: interruptSpeechFrames,
         };
+        logInterruptTranscriptDebug("speech_detected", {
+          tts_id: interruptPrearmTtsId || null,
+          time_since_tts_start_ms: Number((now - (audioStartedAt || now)).toFixed(1)),
+          speech_confirm_delay_ms: Number((interruptSpeechAccumMs || 0).toFixed(1)),
+          rms: Number(rms.toFixed(5)),
+          vad_score: Number((speechLike ? 1 : 0).toFixed(2)),
+          preroll_available_ms: interruptPrearmStartedAt
+            ? Number(Math.min(MAX_INTERRUPTION_PREROLL_MS, now - interruptPrearmStartedAt).toFixed(1))
+            : 0,
+          gate: "heuristic"
+        });
         interruptSpeech();
         interruptSpeechFrames = 0;
         interruptSpeechStart = 0;
@@ -17365,8 +18009,63 @@ function startInterruptCapture() {
   lastInterruptDetectTime = 0;
   interruptLastSpeechLikeTime = 0;
   lastInterruptSpeechLikeSnapshot = null;
+  interruptPrearmStartedAt = performance.now();
+
+  // ---------- START / COMMIT RECORDER ----------
+  // If TTS pre-armed a rolling recorder, keep the same recorder alive so
+  // the eventual ASR upload contains the user's first words. The old path
+  // created MediaRecorder only after VAD confirmed speech, which could miss
+  // the phrase opening ("wait actually", "pause", "stop").
+  if (
+    interruptPrearmRecorder &&
+    interruptPrearmRecorder.state === "recording"
+  ) {
+    try {
+      interruptPrearmRecorder.requestData?.();
+    } catch (_) {}
+    interruptRecorder = interruptPrearmRecorder;
+    interruptChunks = interruptPrearmChunks.map((x) => x?.blob).filter(Boolean);
+    interruptPrearmCommittedAt = performance.now();
+    interruptPrearmRecorder = null;
+    interruptPrearmChunks = [];
+    interruptRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        interruptChunks.push(e.data);
+      }
+    };
+    interruptRecorder.onstop = () => {
+      const blob = new Blob(interruptChunks, { type: "audio/webm" });
+      interruptRecorder = null;
+      interruptRecording = false;
+      interruptChunks = [];
+      handleInterruptUtterance(blob);
+    };
+    interruptRecording = true;
+    logInterruptTranscriptDebug("capture_committed", {
+      included_preroll_ms: Math.min(
+        MAX_INTERRUPTION_PREROLL_MS,
+        Math.max(0, interruptPrearmCommittedAt - interruptPrearmStartedAt)
+      ),
+      live_capture_started_at_ms: Number((interruptPrearmStartedAt || 0).toFixed(1)),
+      bubble_created_at_ms: null,
+      asr_request_started_at_ms: null
+    });
+    return;
+  }
 
   // ---------- START FRESH RECORDER ----------
+  if (!micStream || !micStream.active) {
+    interruptRecording = false;
+    interruptChunks = [];
+    logInterruptTranscriptDebug("prearm", {
+      stream_active: false,
+      media_recorder_ready: false,
+      rolling_buffer_enabled: false,
+      preroll_ms: INTERRUPTION_PREROLL_MS,
+      reason: "no_active_mic_stream"
+    });
+    return;
+  }
   interruptRecorder = new MediaRecorder(micStream);
 
   interruptRecorder.ondataavailable = (e) => {
@@ -17385,8 +18084,122 @@ function startInterruptCapture() {
     handleInterruptUtterance(blob);
   };
 
-  interruptRecorder.start();   // 🚀 clean segment start
+  interruptRecorder.start(100);   // 🚀 clean segment start
   interruptRecording = true;
+}
+
+async function prearmInterruptCaptureForTts({ turnId = "", ttsId = "" } = {}) {
+  if (listeningMode !== "continuous" || inputMuted) return false;
+  if (!isAssistantTtsPlaying()) return false;
+  const micPermissionState = await getMicPermissionStateForInterrupt();
+  const attempted =
+    micPermissionState === "granted" ||
+    Boolean(micStream?.active) ||
+    (browserAsrPreferred() && !isNarrowViewport());
+  logInterruptTranscriptDebug("tts_start", {
+    turn_id: turnId || null,
+    tts_id: ttsId || null,
+    mic_permission_state: micPermissionState,
+    prearm_attempted: attempted,
+    prearm_success: false
+  });
+  if (!attempted || micPermissionState === "prompt" || micPermissionState === "denied") {
+    return false;
+  }
+
+  interruptPrearmTtsId = ttsId || interruptPrearmTtsId || interruptTranscriptNewTtsId();
+  interruptPrearmTurnId = turnId || interruptPrearmTurnId || "";
+
+  if (browserAsrPreferred() && !isNarrowViewport()) {
+    if (!interruptDetectRecognition) {
+      startInterruptBrowserPartialDetection();
+    }
+    interruptPrearmSuccess = Boolean(interruptDetectRecognition);
+    logInterruptTranscriptDebug("prearm", {
+      stream_active: Boolean(micStream?.active),
+      media_recorder_ready: false,
+      rolling_buffer_enabled: false,
+      preroll_ms: 0,
+      browser_asr_prearmed: interruptPrearmSuccess
+    });
+    logInterruptTranscriptDebug("tts_start", {
+      turn_id: interruptPrearmTurnId || null,
+      tts_id: interruptPrearmTtsId || null,
+      mic_permission_state: micPermissionState,
+      prearm_attempted: true,
+      prearm_success: interruptPrearmSuccess
+    });
+    return interruptPrearmSuccess;
+  }
+
+  if (!micStream || !micStream.active || typeof MediaRecorder === "undefined") {
+    logInterruptTranscriptDebug("prearm", {
+      stream_active: Boolean(micStream?.active),
+      media_recorder_ready: false,
+      rolling_buffer_enabled: false,
+      preroll_ms: INTERRUPTION_PREROLL_MS,
+      reason: "no_media_recorder_or_stream"
+    });
+    return false;
+  }
+
+  try {
+    if (interruptRecorder && interruptRecorder.state === "recording") {
+      interruptPrearmSuccess = true;
+      logInterruptTranscriptDebug("prearm", {
+        stream_active: Boolean(micStream?.active),
+        media_recorder_ready: true,
+        rolling_buffer_enabled: true,
+        preroll_ms: INTERRUPTION_PREROLL_MS,
+        recorder_already_active: true
+      });
+      logInterruptTranscriptDebug("tts_start", {
+        turn_id: interruptPrearmTurnId || null,
+        tts_id: interruptPrearmTtsId || null,
+        mic_permission_state: micPermissionState,
+        prearm_attempted: true,
+        prearm_success: true
+      });
+      return true;
+    }
+    if (interruptPrearmRecorder && interruptPrearmRecorder.state !== "inactive") return true;
+    stopInterruptPrearmRecorder("");
+    interruptPrearmChunks = [];
+    interruptPrearmStartedAt = performance.now();
+    interruptPrearmRecorder = new MediaRecorder(micStream);
+    interruptPrearmRecorder.ondataavailable = (e) => {
+      if (!e.data || e.data.size <= 0) return;
+      interruptPrearmChunks.push({ blob: e.data, at: performance.now() });
+      const cutoff = performance.now() - MAX_INTERRUPTION_PREROLL_MS;
+      interruptPrearmChunks = interruptPrearmChunks.filter((x) => x.at >= cutoff);
+    };
+    interruptPrearmRecorder.onstop = () => {};
+    interruptPrearmRecorder.start(100);
+    interruptPrearmSuccess = true;
+    logInterruptTranscriptDebug("prearm", {
+      stream_active: Boolean(micStream?.active),
+      media_recorder_ready: true,
+      rolling_buffer_enabled: true,
+      preroll_ms: INTERRUPTION_PREROLL_MS
+    });
+    logInterruptTranscriptDebug("tts_start", {
+      turn_id: interruptPrearmTurnId || null,
+      tts_id: interruptPrearmTtsId || null,
+      mic_permission_state: micPermissionState,
+      prearm_attempted: true,
+      prearm_success: true
+    });
+    return true;
+  } catch (err) {
+    logInterruptTranscriptDebug("prearm", {
+      stream_active: Boolean(micStream?.active),
+      media_recorder_ready: false,
+      rolling_buffer_enabled: false,
+      preroll_ms: INTERRUPTION_PREROLL_MS,
+      error_message: String(err?.message || err || "").slice(0, 160)
+    });
+    return false;
+  }
 }
 
 async function handleInterruptUtterance(blob) {
@@ -17423,6 +18236,15 @@ async function handleInterruptUtterance(blob) {
   );
   formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
 
+  logInterruptTranscriptDebug("capture_committed", {
+    included_preroll_ms: interruptPrearmCommittedAt && interruptPrearmStartedAt
+      ? Number(Math.min(MAX_INTERRUPTION_PREROLL_MS, interruptPrearmCommittedAt - interruptPrearmStartedAt).toFixed(1))
+      : 0,
+    live_capture_started_at_ms: Number((interruptPrearmStartedAt || performance.now()).toFixed(1)),
+    bubble_created_at_ms: null,
+    asr_request_started_at_ms: Number(performance.now().toFixed(1)),
+    blob_size: blob.size
+  });
   await runInferInterruptPipeline(formData);
 }
 
@@ -17682,6 +18504,7 @@ function cancelVoicePipelineAndResetState() {
   interruptRecorder = null;
   interruptRecording = false;
   interruptChunks = [];
+  stopInterruptPrearmRecorder("");
   stopAllBrowserSpeechRecognizers();
   if (mediaRecorder && mediaRecorder.state === "recording") {
     suppressNextUtterance = true;
@@ -17707,6 +18530,7 @@ function resumeAfterAssistantReplyPlayback() {
   browserAsrMainNetworkRetries = 0;
   processing = false;
   requestInFlight = false;
+  stopInterruptPrearmRecorder("");
   if (workModeTypedTurnQueue.length > 0) scheduleWorkModeTypedQueueDrain();
   clearInterruptDetectionBubble();
   if (listeningMode === "ptt") {
@@ -17736,6 +18560,7 @@ function resumeListeningAfterInterruptPlayback() {
   browserAsrMainNetworkRetries = 0;
   processing = false;
   requestInFlight = false;
+  stopInterruptPrearmRecorder("");
   clearInterruptDetectionBubble();
   if (listeningMode === "ptt") {
     listening = false;
@@ -19365,7 +20190,12 @@ async function finalizeMainBrowserTranscript(text) {
     }
     return;
   }
-  if (await maybeHandleWorkChecklistSyncShortcut(trimmed)) {
+  if (
+    await maybeHandleWorkChecklistSyncShortcut(trimmed, {
+      source: "main-browser-asr",
+      isVoice: true
+    })
+  ) {
     return;
   }
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
@@ -19703,9 +20533,28 @@ function startInterruptBrowserPartialDetection() {
         partialText: combined,
       };
 
-      const wordGate = wc >= interruptBrowserMinWords;
+      const shortInterruptGate =
+        wc >= 1 &&
+        /\b(stop|pause|wait|hold|actually|cancel|no|explain|mute|quiet|listen)\b/i.test(
+          combined
+        );
+      const wordGate = wc >= interruptBrowserMinWords || shortInterruptGate;
       const sustainGate = wc >= 1 && interruptPartialAccumMs >= browserAsrInterruptSustainMs;
       if (wordGate || sustainGate) {
+        logInterruptTranscriptDebug("speech_detected", {
+          tts_id: interruptPrearmTtsId || null,
+          time_since_tts_start_ms: Number((now - (audioStartedAt || now)).toFixed(1)),
+          speech_confirm_delay_ms: Number((interruptPartialAccumMs || 0).toFixed(1)),
+          rms: null,
+          vad_score: null,
+          preroll_available_ms: 0,
+          gate: shortInterruptGate
+            ? "browser_asr_short_interrupt_word"
+            : wordGate
+              ? "browser_asr_word"
+              : "browser_asr_sustain",
+          word_count: wc
+        });
         onBrowserInterruptBargeInFromDetect(event);
         interruptPartialRafTime = now;
         return;
@@ -19894,6 +20743,11 @@ async function finalizeInterruptBrowserTranscript(text) {
 
   logVoiceTranscript("final", trimmed, { path: "interrupt-browser-asr" });
   logFinalTranscriptSentToLlm("interrupt-browser-asr", trimmed);
+  logInterruptTranscriptDebug("asr_result", {
+    transcript: trimmed.slice(0, 120),
+    transcript_char_count: trimmed.length,
+    possibly_cutoff: /^(explain|second|part|music)\b/i.test(trimmed)
+  });
   await runInferInterruptPipeline(formData);
 }
 
@@ -20060,16 +20914,19 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
         const onPlayStart = () => {
           logVoiceFirstAudio("main-reply");
           logVoiceMainReplyAudio();
+          waveState = "speaking";
+          audioStartedAt = performance.now();
+          const interruptTtsId = interruptTranscriptNewTtsId();
+          interruptPrearmTtsId = interruptTtsId;
+          if (micStream?.active) startInterruptCapture();
+          void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
           if (!(inferPrep?.stage2VoiceBubble instanceof HTMLElement && inferPrep.stage2VoiceBubble.isConnected)) {
             applyAssistantReplyAndPanels(playData);
           }
-          waveState = "speaking";
-          audioStartedAt = performance.now();
           setStatus(
             listeningMode === "ptt" ? "Speaking" : "Speaking… (Interruptible)",
             "speaking"
           );
-          startInterruptCapture();
         };
         await playTtsFromApi(playData, {
           onPlayStart,
@@ -20282,14 +21139,17 @@ async function runInferMainPipeline(formData, opts = {}) {
                 onPlayStart: () => {
                   logVoiceFirstAudio("main-reply");
                   logVoiceMainReplyAudio();
-                  applyActionPayload(ndjsonMeta);
                   waveState = "speaking";
                   audioStartedAt = performance.now();
+                  const interruptTtsId = interruptTranscriptNewTtsId();
+                  interruptPrearmTtsId = interruptTtsId;
+                  if (micStream?.active) startInterruptCapture();
+                  void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
+                  applyActionPayload(ndjsonMeta);
                   setStatus(
                     listeningMode === "ptt" ? "Speaking" : "Speaking… (Interruptible)",
                     "speaking"
                   );
-                  startInterruptCapture();
                 }
               };
               const consumeNdjsonTextOnly = async () => {
@@ -20483,6 +21343,12 @@ async function runInferInterruptPipeline(formData) {
               if (meta.transcript) {
                 applyNdjsonUserTranscriptBubble(meta.transcript, "interrupt-ndjson");
                 armPendingNewsStatusBubble(meta.transcript);
+                const tr = String(meta.transcript || "").trim();
+                logInterruptTranscriptDebug("asr_result", {
+                  transcript: tr.slice(0, 120),
+                  transcript_char_count: tr.length,
+                  possibly_cutoff: /^(explain|second|part|music)\b/i.test(tr)
+                });
               }
             },
             onReplyProgress: (replySoFar) => {
@@ -20546,6 +21412,14 @@ async function runInferInterruptPipeline(formData) {
     applyClientUiAction(data.client_action);
 
     commitServerUserTranscriptBubble(data.transcript, "interrupt-json");
+    {
+      const tr = String(data.transcript || "").trim();
+      logInterruptTranscriptDebug("asr_result", {
+        transcript: tr.slice(0, 120),
+        transcript_char_count: tr.length,
+        possibly_cutoff: /^(explain|second|part|music)\b/i.test(tr)
+      });
+    }
     if (data.work_mode_timer) {
       applyWorkModeTimerPayload(data.work_mode_timer);
     }
@@ -20725,7 +21599,12 @@ async function handleUtterance() {
         return;
       }
 
-      if (await maybeHandleWorkChecklistSyncShortcut(trimmed)) {
+      if (
+        await maybeHandleWorkChecklistSyncShortcut(trimmed, {
+          source: "server-asr-preflight",
+          isVoice: true
+        })
+      ) {
         requestInFlight = false;
         processing = false;
         voiceUxTurn = null;
@@ -20903,7 +21782,12 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     setStatus("Ready", "idle");
   }
 
-  if (await maybeHandleWorkChecklistSyncShortcut(trimmed)) {
+  if (
+    await maybeHandleWorkChecklistSyncShortcut(trimmed, {
+      source: path || "work-typed",
+      isVoice: false
+    })
+  ) {
     return;
   }
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
@@ -21188,7 +22072,12 @@ async function sendTextMessage() {
 
   if (!text) return;
   if (inVeraWorkMode) {
-    if (await maybeHandleWorkChecklistSyncShortcut(text)) {
+    if (
+      await maybeHandleWorkChecklistSyncShortcut(text, {
+        source: "main-work-text-input",
+        isVoice: false
+      })
+    ) {
       if (textInput) textInput.value = "";
       setStatus("Ready", "idle");
       updateMuteInputButton();
@@ -21480,7 +22369,12 @@ async function onPttClick() {
       updateMuteInputButton();
       return;
     }
-    if (await maybeHandleWorkChecklistSyncShortcut(text)) {
+    if (
+      await maybeHandleWorkChecklistSyncShortcut(text, {
+        source: "ptt-browser-asr",
+        isVoice: true
+      })
+    ) {
       setStatus("Ready", "idle");
       updateMuteInputButton();
       return;
