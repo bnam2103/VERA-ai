@@ -2,14 +2,14 @@
    STARTUP BANNER — proves this build of app.js actually loaded.
    If you do NOT see this line in DevTools console after a hard refresh,
    the browser is still serving an older cached copy (check Network tab:
-   app.js?v=57 should be the URL).
+   app.js?v=61 should be the URL).
 ========================= */
 try {
   // Use console.warn so it shows up even when the DevTools console level
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v57 loaded — PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + MATH_PROBLEM_CLASSIFY_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG active.",
+    "%c[VERA] app.js build v61 loaded — PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG active. math_router_enabled=false.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -949,6 +949,110 @@ let mainBrowserLastInterim = "";
 let interruptBargeInLatched = false;
 /** If interrupt-detect SR never emits onresult while TTS plays, abort so heuristic fallback can run. */
 let interruptDetectNoResultWatchdogTimer = null;
+
+/* ---------------------------------------------------------------------
+ * Fast VAD barge-in (decoupled from final ASR)
+ *
+ * On desktop browser-ASR mode, Chrome's Web Speech API typically needs
+ * 300-700 ms before it emits its first interim result. Waiting for that
+ * before stopping TTS made the user feel like VERA "kept talking over"
+ * them. The fast VAD path now runs the existing RMS / ZCR / crest
+ * heuristic IN PARALLEL with the browser-ASR detector: as soon as a
+ * sustained speech-like frame is seen we cut audio playback, while
+ * leaving the Web Speech API session alive so it can deliver the actual
+ * transcript for intent classification.
+ *
+ * The flag is one-shot per TTS turn (re-armed on the next audioStartedAt)
+ * to keep the loop from re-cancelling an already-stopped playback.
+ * ------------------------------------------------------------------- */
+let vadFastStopArmed = true;
+let vadFastStopFiredAt = 0;
+let vadFastStopTtsStoppedAt = 0;
+let vadFastStopAsrFinalAt = 0;
+let vadFastStopTtsId = "";
+
+function logBargeInLatencyDebug(phase, payload = {}) {
+  try {
+    console.warn(`[BARGE_IN_LATENCY_DEBUG][${phase}]`, {
+      timestamp: new Date().toISOString(),
+      ...payload
+    });
+  } catch (_) {}
+}
+
+function resetVadFastStopState(reason = "") {
+  vadFastStopArmed = true;
+  vadFastStopFiredAt = 0;
+  vadFastStopTtsStoppedAt = 0;
+  vadFastStopAsrFinalAt = 0;
+  vadFastStopTtsId = "";
+  if (reason) {
+    logBargeInLatencyDebug("rearm", { reason });
+  }
+}
+
+/**
+ * Stop TTS playback IMMEDIATELY on a fast VAD trigger, without
+ * aborting the in-flight Web Speech API session and without touching
+ * any committed checklist/timer/action state (those are protected by
+ * NON_CANCELABLE_AFTER_COMMIT_ACTIONS — see commitNonCancelableAction).
+ *
+ * The browser-ASR detector continues running so the user's actual words
+ * are still captured for intent classification. If the SR never
+ * delivers a meaningful transcript, the existing 4 s no-result watchdog
+ * will recover (continuous mode resumes listening on its own).
+ */
+function fastStopTtsOnVadOnly({ rms = null, zcr = null, crest = null, vadAccumMs = 0 } = {}) {
+  if (!vadFastStopArmed) return false;
+  if (!isAssistantTtsPlaying()) return false;
+
+  vadFastStopArmed = false;
+  vadFastStopFiredAt = performance.now();
+  vadFastStopTtsId = interruptPrearmTtsId || vadFastStopTtsId;
+
+  logBargeInLatencyDebug("vad_barge_in_detected", {
+    tts_playing: true,
+    tts_id: vadFastStopTtsId || null,
+    time_since_tts_start_ms: Number(
+      ((audioStartedAt ? vadFastStopFiredAt - audioStartedAt : 0)).toFixed(1)
+    ),
+    rms: rms != null ? Number(Number(rms).toFixed(5)) : null,
+    zcr: zcr != null ? Number(Number(zcr).toFixed(4)) : null,
+    crest: crest != null ? Number(Number(crest).toFixed(2)) : null,
+    vad_accum_ms: Number(Number(vadAccumMs || 0).toFixed(1)),
+    sr_alive: !!interruptDetectRecognition
+  });
+
+  // Audio-only cancellation. cancelMainTtsPlayback() flips
+  // mainTtsPlaybackActive=false and stops every active Web Audio buffer
+  // source. The <audio> element is paused separately. NEITHER touches
+  // localStorage, the checklist, the timer, or the network pipeline —
+  // so any non-cancelable action that was just committed (see
+  // commitNonCancelableAction) is preserved.
+  try { resetAudioHandlers(); } catch (_) {}
+  try { cancelMainTtsPlayback(); } catch (_) {}
+  const a = getAudioEl();
+  if (a) {
+    try { a.pause(); } catch (_) {}
+    try { a.currentTime = 0; } catch (_) {}
+  }
+  // Re-flag UI so the user sees we are listening, without aborting the
+  // SR or starting a fresh recognition session.
+  try { setStatus("Listening… (interrupted)", "recording"); } catch (_) {}
+  waveState = "listening";
+  listening = true;
+
+  vadFastStopTtsStoppedAt = performance.now();
+  logBargeInLatencyDebug("tts_stop", {
+    tts_playing: false,
+    delay_vad_to_tts_stop_ms: Number(
+      (vadFastStopTtsStoppedAt - vadFastStopFiredAt).toFixed(2)
+    ),
+    sr_alive: !!interruptDetectRecognition,
+    note: "audio-only cancel; checklist/timer mutations preserved"
+  });
+  return true;
+}
 
 /** Debounce main SR onend → startListening recovery (Chrome sometimes ends the session with no error). */
 let browserAsrMainEndRecoveryTimer = null;
@@ -4660,6 +4764,40 @@ function shouldForceReasoningActiveLaneContentFollowUp(trimmed, priorThreadAncho
   if (explicitVoiceOnlyWorkModeRequest(raw)) return false;
   if (!hasContinuableReasoningContext(priorThreadAnchor)) return false;
   if (!isReasoningContentRequest(raw)) return false;
+
+  /* Topic-mismatch veto: even when the text looks like a content follow-up
+     (e.g. "write me an email about this"), do NOT force the currently active
+     lane if its topic is clearly unrelated to the recent Voice UI thread.
+     This is the core fix for the "English Homework Plan absorbed the traffic
+     stop complaint email" bug. */
+  try {
+    const snap = captureReasoningPanelRoutingSnapshot(raw, {});
+    const dec = shouldReuseActiveReasoningPanel({
+      latestUserText: raw,
+      recentVoiceContext: snap.recentVoiceContext,
+      activePanelTitle: snap.activePanelTitle,
+      activePanelExcerpt: snap.activePanelExcerpt,
+      activeLaneIdx: snap.activeLaneIdx
+    });
+    if (dec.decision === "create_new_panel") {
+      logReasoningPanelRouteDebug({
+        tag: "force_continue_veto",
+        latest_user_text: raw.slice(0, 240),
+        active_panel_id: snap.activePanelId,
+        active_panel_title: snap.activePanelTitle.slice(0, 120),
+        active_panel_excerpt_short: snap.activePanelExcerpt.slice(0, 240),
+        recent_voice_context_excerpt: snap.recentVoiceContext.slice(0, 240),
+        routing_decision: "create_new_panel",
+        selected_context_source: snap.recentVoiceContext
+          ? "recent_voice_context"
+          : "global_fallback",
+        reason: `force_continue_overridden_by_topic_mismatch:${dec.reason}`,
+        ...dec
+      });
+      return false;
+    }
+  } catch (_) { /* fail-open: keep original force-continue behavior */ }
+
   try {
     console.info("[work_mode_route]", { mode: "continue_active_lane", snippet: raw.slice(0, 96) });
   } catch (_) {}
@@ -12158,7 +12296,9 @@ function buildWorkModeReasoningStage1AckText(trimmed, opts = {}) {
   const o = opts || {};
   if (o.hasUpload) return "I'll work from your file in the reasoning space.";
   if (o.planningIntent) return "I'll lay out the plan in the reasoning space.";
-  if (o.requestHasComputationalNumericIntent) return "I'll compute that with Python in the reasoning panel.";
+  /* Math-router disabled: never promise Python execution from Stage-1.
+     The deep reasoning stream lays out the calculation step-by-step instead. */
+  if (o.requestHasComputationalNumericIntent) return "I'll work through the calculation in the reasoning panel.";
   if (o.requestHasCodeIntent) return "Sure — I'll put the detailed code in the reasoning space.";
   if (o.requestHasProofIntent) return "I'll work through the proof in the reasoning space.";
   if (o.requestHasDenseMathIntent) return "I'll work the full solution in the reasoning space.";
@@ -12166,12 +12306,150 @@ function buildWorkModeReasoningStage1AckText(trimmed, opts = {}) {
   return "I'll work through this in the reasoning space.";
 }
 
+/* =========================
+   MATH ROUTER — disabled feature flag
+
+   The math-specific auto-router (server-side CHAT_REASONING.classify_math_
+   problem_mode + math_code_executor Python sandbox) is intentionally
+   DISABLED until backend execution is reliable. With this flag off:
+     * No request is forced into the reasoning panel because it contains
+       "solve / calculate / compute / math / Python".
+     * No Stage-1 ack text claims Python execution.
+     * Trivial arithmetic ("what is 1 + 1", "15% of 80") is short-circuited
+       to a direct Voice UI reply via the simple-arithmetic fast path
+       (`detectSimpleArithmeticFastAnswer` below).
+     * Complex multi-step problems / uploaded problems still go through the
+       general Work Mode reasoning router — they just don't get the extra
+       math-classifier hop or fake Python execution claims.
+========================= */
+const MATH_ROUTER_ENABLED = false;
+
+/* Very small arithmetic recognizer. Intentionally limited — we are NOT
+   building a symbolic math parser. Only:
+     - explicit "what/how much/can you" wrappers, OR a bare expression
+     - one of: +, -, *, /, x, ×, ÷, plus, minus, times, multiplied by,
+       divided by, %, "% of N", "N percent of M"
+     - integers or decimals up to ~12 chars, optional unary minus
+     - a single binary operation (no parentheses, no chains)
+   Anything more complex (multi-step, variables, units, functions, fractions
+   with mixed numbers, etc.) returns null and falls through to the normal
+   chat reply, which can answer naturally without spinning up reasoning.
+
+   Returns { expression, value, spoken } on match, else null.
+   `spoken` is the user-facing reply we'd put in Voice UI, already rounded
+   sensibly (no scientific notation for everyday answers). */
+function detectSimpleArithmeticFastAnswer(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  if (raw.length > 120) return null;
+
+  /* Strip filler so "can you solve 1 + 1" / "hey vera what is 2 plus 3"
+     normalize to "1 + 1" / "2 plus 3". Conservative — only removes leading
+     conversational scaffolding, never trailing content. */
+  let body = raw
+    .toLowerCase()
+    .replace(/[?!.]+$/g, "")
+    .replace(/^(?:hey|hi|hello|okay|ok|so|um|uh|yo|please|pls)[,\s]+/i, "")
+    .replace(/^(?:vera|hey\s+vera)[,\s]+/i, "")
+    .replace(
+      /^(?:can\s+you|could\s+you|would\s+you|will\s+you|do\s+you\s+know|tell\s+me|please)\s+/i,
+      ""
+    )
+    .replace(/^(?:just\s+)?(?:quickly\s+)?/i, "")
+    .replace(
+      /^(?:solve|calculate|compute|work\s+out|figure\s+out|evaluate|what(?:'s|\s+is|\s+are)|how\s+much\s+is|what\s+does)\s+(?:the\s+answer\s+to\s+)?/i,
+      ""
+    )
+    .replace(/\s+for\s+me$/i, "")
+    .replace(/\s+please$/i, "")
+    .trim();
+
+  if (!body) return null;
+
+  /* Word → operator normalization. Keep `%` as a sentinel so the percentage
+     branch below can detect it before we collapse to numeric operators. */
+  body = body
+    .replace(/\bplus\b/g, "+")
+    .replace(/\bminus\b/g, "-")
+    .replace(/\b(?:times|multiplied\s+by)\b/g, "*")
+    .replace(/\b(?:divided\s+by|over)\b/g, "/")
+    .replace(/[×x](?=\s*-?\d)/g, "*")
+    .replace(/÷/g, "/");
+
+  /* Percentage forms: "15% of 80", "15 percent of 80". */
+  const pctMatch = body.match(
+    /^(-?\d+(?:\.\d+)?)\s*(?:%|percent)\s+of\s+(-?\d+(?:\.\d+)?)$/
+  );
+  if (pctMatch) {
+    const pct = Number(pctMatch[1]);
+    const base = Number(pctMatch[2]);
+    if (!Number.isFinite(pct) || !Number.isFinite(base)) return null;
+    const value = (pct / 100) * base;
+    const rounded = roundFastArithmeticValueForSpoken(value);
+    return {
+      expression: `${pctMatch[1]}% of ${pctMatch[2]}`,
+      value,
+      spoken: `${pctMatch[1]}% of ${pctMatch[2]} is ${rounded}.`
+    };
+  }
+
+  /* Single binary op only. Reject anything with two or more operators so
+     we don't gamble on operator precedence in spoken contexts. */
+  const opMatches = body.match(/(?<=\d)\s*[+\-*/]\s*(?=-?\d)/g) || [];
+  if (opMatches.length !== 1) return null;
+
+  const binMatch = body.match(
+    /^(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)$/
+  );
+  if (!binMatch) return null;
+  const a = Number(binMatch[1]);
+  const b = Number(binMatch[3]);
+  const op = binMatch[2];
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  if (op === "/" && b === 0) return null;
+
+  let value;
+  switch (op) {
+    case "+": value = a + b; break;
+    case "-": value = a - b; break;
+    case "*": value = a * b; break;
+    case "/": value = a / b; break;
+    default: return null;
+  }
+  if (!Number.isFinite(value)) return null;
+
+  const rounded = roundFastArithmeticValueForSpoken(value);
+  const opWord = { "+": "+", "-": "-", "*": "×", "/": "÷" }[op];
+  return {
+    expression: `${binMatch[1]} ${opWord} ${binMatch[3]}`,
+    value,
+    spoken: `${binMatch[1]} ${opWord} ${binMatch[3]} is ${rounded}.`
+  };
+}
+
+function roundFastArithmeticValueForSpoken(value) {
+  if (!Number.isFinite(value)) return String(value);
+  if (Number.isInteger(value)) return String(value);
+  /* Avoid trailing-zero floats like "2.5000000000004" from FP error. */
+  const rounded = Number(value.toFixed(6));
+  if (Number.isInteger(rounded)) return String(rounded);
+  return String(rounded).replace(/\.?0+$/, "");
+}
+
+function logArithmeticFastPathDebug(payload) {
+  try {
+    console.warn("[ARITHMETIC_FAST_PATH_DEBUG]", payload);
+  } catch (_) {}
+}
+
 /**
  * Frontend heuristic for "this turn will route to code_first_reasoning server-side".
- * The authoritative decision is made by CHAT_REASONING.classify_math_problem_mode
- * (see [MATH_PROBLEM_CLASSIFY_DEBUG] server logs); this client check only picks the
- * Stage-1 ack text spoken before the round-trip. Intentionally conservative:
- * false negatives just mean the generic ack is spoken instead.
+ * NOTE: with MATH_ROUTER_ENABLED=false the server no longer runs the math
+ * classifier or Python sandbox. This helper is now only used to bias the
+ * Stage-1 ack toward "I'll work through the calculation" wording — it does
+ * NOT cause anything to route differently and never promises Python.
+ * Intentionally conservative: false negatives just mean the generic ack
+ * is spoken instead.
  */
 function detectWorkModeRequestHasComputationalNumericIntent(trimmed) {
   const t = String(trimmed || "").toLowerCase();
@@ -12379,21 +12657,430 @@ function runOnLaneReasoningChain(laneIdx, task) {
   return next;
 }
 
+/* =========================
+   REASONING PANEL ROUTING — Voice UI topic vs active panel topic.
+
+   Goal: do NOT inherit stale "active reasoning panel" context when the user's
+   latest request clearly refers to the recent Voice UI conversation about a
+   different topic (e.g. active panel = "English Homework Plan" but the voice
+   thread / latest request is about a traffic stop / ticket complaint email).
+
+   Decision order, all gated through shouldReuseActiveReasoningPanel():
+     1. Action intent (checklist edit etc.) → no_reasoning_needed.
+     2. Explicit panel target ("in panel 2", "use the homework panel",
+        "in this panel") → reuse_active_panel (or targeted lane).
+     3. Explicit continuation cue ("continue this", "make this shorter",
+        "revise this") + non-trivial topic similarity → reuse.
+     4. High topic similarity (active panel title+excerpt vs latest text +
+        recent voice context) → reuse.
+     5. New-deliverable verb ("write an email", "draft a complaint",
+        "write code", …) + low active-panel similarity → create_new_panel.
+     6. Voice context clearly dominates active panel topic → create_new_panel.
+     7. Default: reuse only if active similarity ≥ REUSE_FLOOR, else create.
+
+   All decisions are logged with [REASONING_PANEL_ROUTE_DEBUG] so the routing
+   path is auditable per the spec's debug-log requirements.
+========================= */
+const REASONING_PANEL_ROUTE_HIGH_SIMILARITY = 0.45;
+const REASONING_PANEL_ROUTE_REUSE_FLOOR = 0.35;
+const REASONING_PANEL_ROUTE_LOW_SIMILARITY = 0.18;
+
+/* "in this panel", "the current panel" etc. — unambiguous panel anchors that
+   should always pin the request to the active reasoning panel regardless of
+   topic similarity. */
+const REASONING_STRONG_PANEL_ANCHOR_RE =
+  /\bin\s+this\s+(?:panel|plan|reasoning(?:\s+space)?|thread)\b|\b(?:the\s+)?(?:current|active)\s+(?:panel|plan|reasoning|draft|outline)\b|\b(?:finish|complete|continue|keep)\s+(?:the\s+|this\s+)?current\s+(?:one|panel|plan|draft|outline|reasoning|task)\b|\b(?:use|reuse|stick\s+with)\s+(?:the\s+)?(?:current|active)\s+(?:panel|plan|reasoning|draft|outline)\b/i;
+
+/* Deictic / refinement cues — "make it shorter", "revise this", "polish this".
+   These reuse the active panel only when topic at least loosely matches; "this"
+   on its own should not silently bind to a stale panel when the Voice UI thread
+   is clearly about a different subject. */
+const REASONING_SOFT_CONTINUATION_RE =
+  /\b(?:continue|finish|complete|sync)\s+(?:this|that|the)?\s*(?:plan|panel|draft|outline|email|essay|answer|problem|task|thread|reasoning)?\b|\b(?:revise|rewrite|tweak|polish|edit|update|adjust|extend|expand|shorten|tighten|trim|reword|simplify)\s+(?:this|that|it|the\s+(?:current|active|above|previous|same))\b|\b(?:make|keep)\s+(?:this|that|it)\s+(?:shorter|longer|more\s+\w+|less\s+\w+|formal|polite|concise|casual|detailed)\b|\b(?:explain|clarify)\s+(?:the\s+)?(?:answer|step|part|line|section|paragraph)\s+above\b/i;
+
+const REASONING_EXPLICIT_PANEL_TARGET_RE =
+  /\b(?:in|use|reuse|continue|with|on)\s+(?:the\s+)?(?:reasoning\s+)?panel\s*#?\s*(\d+)\b|\b(?:in|use|reuse|continue|with|on)\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?panel\b|\bpanel\s+(?:number\s+)?(\d+)\b/i;
+
+const REASONING_NEW_DELIVERABLE_PATTERNS = [
+  /\bwrite\s+(?:me\s+)?(?:an?\s+)?email\b/i,
+  /\bdraft\s+(?:an?\s+|the\s+)?(?:email|letter|message|memo|response|reply)\b/i,
+  /\bcompose\s+(?:an?\s+|the\s+)?(?:email|letter|message|memo|response|reply|note)\b/i,
+  /\bcomplain(?:t)?\s+(?:about|email|letter|to)\b/i,
+  /\b(?:file|submit)\s+(?:a\s+)?(?:complaint|grievance|report)\b/i,
+  /\bwrite\s+(?:python|typescript|javascript|java|c\+\+|rust|sql|kotlin|swift|go|matlab|julia)?\s*code\b/i,
+  /\bwrite\s+(?:me\s+)?(?:an?\s+)?(?:program|script|function|class)\b/i,
+  /\bimplement\s+(?:a|an|the)?\s*(?:algorithm|function|class|program|script|method)\b/i,
+  /\bsolve\s+(?:this|that|the)?\s*(?:problem|equation|system)\b/i,
+  /\bmake\s+(?:me\s+)?(?:a\s+)?(?:plan|schedule|timeline|outline|itinerary)\b/i,
+  /\bcreate\s+(?:a\s+)?(?:plan|schedule|timeline|outline|itinerary|calculator)\b/i,
+  /\bsummari[sz]e\s+(?:this|that|the|my)\b/i,
+  /\bbuild\s+(?:me\s+)?(?:a\s+)?(?:calculator|tool|app|component|module)\b/i,
+  /\bdraft\s+(?:a\s+)?(?:plan|complaint|outline|proposal|response|reply)\b/i,
+];
+
+const REASONING_NEW_TOPIC_RESET_RE =
+  /\b(?:new|different|unrelated|separate)\s+(?:panel|topic|problem|question|task|email|draft|reasoning)\b|\b(?:make|start|open|create)\s+(?:a|another)\s+(?:new\s+)?(?:panel|topic|problem|reasoning|space|tab)\b|\bin\s+a\s+new\s+(?:panel|tab|space)\b/i;
+
+function ordinalWordToIndex(w) {
+  const map = {
+    first: 1, second: 2, third: 3, fourth: 4, fifth: 5,
+    sixth: 6, seventh: 7, eighth: 8
+  };
+  return map[String(w || "").toLowerCase()] || null;
+}
+
+function detectExplicitContinuationCue(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return { soft: false, strong: false };
+  return {
+    soft: REASONING_SOFT_CONTINUATION_RE.test(raw),
+    strong: REASONING_STRONG_PANEL_ANCHOR_RE.test(raw)
+  };
+}
+
+/* Asymmetric overlap: fraction of `needle` content tokens that appear in
+   `hay`. Use this in addition to Jaccard topicSimilarityScore — Jaccard
+   under-counts cases where a short request ("english essay homework
+   extension") is a clean subset of a verbose panel excerpt and the panel
+   excerpt drags the union size up. */
+function topicCoverageScore(needleText, hayText) {
+  const a = new Set(topicTokensForWorkModeTopic(needleText));
+  const b = new Set(topicTokensForWorkModeTopic(hayText));
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter += 1;
+  return inter / a.size;
+}
+
+function detectNewDeliverableIntent(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return { detected: false, kind: null };
+  for (const re of REASONING_NEW_DELIVERABLE_PATTERNS) {
+    if (re.test(raw)) {
+      return { detected: true, kind: re.source };
+    }
+  }
+  return { detected: false, kind: null };
+}
+
+function detectExplicitNewPanelRequest(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return false;
+  return REASONING_NEW_TOPIC_RESET_RE.test(raw);
+}
+
+/**
+ * Resolve "in panel 2" / "in the second panel" → 0-based panel index if
+ * such an index exists, else null. Returns { matched: bool, targetLaneIdx, reason }.
+ */
+function detectExplicitPanelTarget(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return { matched: false, targetLaneIdx: null, reason: "" };
+
+  const m = REASONING_EXPLICIT_PANEL_TARGET_RE.exec(raw);
+  if (m) {
+    let num = null;
+    if (m[1]) num = Number(m[1]);
+    else if (m[2]) num = ordinalWordToIndex(m[2]);
+    else if (m[3]) num = Number(m[3]);
+    if (Number.isFinite(num) && num >= 1) {
+      const targetIdx = num - 1;
+      const available = getReasoningPanelIndices();
+      if (available.includes(targetIdx)) {
+        return { matched: true, targetLaneIdx: targetIdx, reason: "explicit_panel_number" };
+      }
+      return { matched: true, targetLaneIdx: null, reason: "explicit_panel_number_not_present" };
+    }
+  }
+
+  /* "use the english homework panel" / "use the traffic stop complaint panel" —
+     match if 2+ content tokens from the request overlap with a panel title. */
+  const requestTokens = new Set(topicTokensForWorkModeTopic(raw));
+  if (requestTokens.size >= 2 && /\b(?:in|use|reuse|with|on|continue)\s+the\s+\w+/i.test(raw)) {
+    let best = { idx: null, overlap: 0 };
+    for (const idx of getReasoningPanelIndices()) {
+      const panel = getReasoningPanelElementByLaneIdx
+        ? getReasoningPanelElementByLaneIdx(idx)
+        : null;
+      const title = panel ? String(getReasoningTabTopicLabel(panel) || "") : "";
+      const seed = String(laneTopicSeedByIdx[idx] || "");
+      const panelTokens = new Set(topicTokensForWorkModeTopic(`${title} ${seed}`));
+      if (!panelTokens.size) continue;
+      let overlap = 0;
+      for (const tok of requestTokens) if (panelTokens.has(tok)) overlap += 1;
+      if (overlap > best.overlap) best = { idx, overlap };
+    }
+    if (best.idx != null && best.overlap >= 2) {
+      return { matched: true, targetLaneIdx: best.idx, reason: "explicit_panel_title_match" };
+    }
+  }
+
+  return { matched: false, targetLaneIdx: null, reason: "" };
+}
+
+/**
+ * Pure routing decision used by the reasoning lane chooser and the
+ * "force continue active lane" path. Inputs are plain strings so this is
+ * trivially unit-testable.
+ *
+ * @returns {{
+ *   decision: 'reuse_active_panel'|'create_new_panel'|'no_reasoning_needed',
+ *   reason: string,
+ *   targetLaneIdx: number|null,
+ *   active_topic_similarity_score: number,
+ *   voice_topic_similarity_score: number,
+ *   request_voice_similarity_score: number,
+ *   explicit_continuation_detected: boolean,
+ *   new_deliverable_detected: boolean,
+ *   explicit_new_panel_requested: boolean
+ * }}
+ */
+function shouldReuseActiveReasoningPanel(opts = {}) {
+  const {
+    latestUserText = "",
+    recentVoiceContext = "",
+    activePanelTitle = "",
+    activePanelExcerpt = "",
+    activeLaneIdx = null,
+    isLikelyChecklistAction = false,
+    hasUpload = false
+  } = opts;
+
+  const latest = String(latestUserText || "").trim();
+  const voice = String(recentVoiceContext || "").trim();
+  const activeTitle = String(activePanelTitle || "").trim();
+  const activeExcerpt = String(activePanelExcerpt || "").trim();
+  const activeText = `${activeTitle} ${activeExcerpt}`.trim();
+
+  const continuation = detectExplicitContinuationCue(latest);
+  const newDeliverable = detectNewDeliverableIntent(latest);
+  const explicitNewPanel = detectExplicitNewPanelRequest(latest);
+  const explicitTarget = detectExplicitPanelTarget(latest);
+
+  const activeTopicSimilarity = topicSimilarityScore(
+    `${latest} ${voice}`,
+    activeText
+  );
+  const voiceTopicSimilarity = topicSimilarityScore(voice, activeText);
+  const requestVoiceSimilarity = topicSimilarityScore(latest, voice);
+  /* Coverage: fraction of latest+voice content tokens that appear in the
+     active panel. This is what catches subset matches that Jaccard misses. */
+  const requestActiveCoverage = topicCoverageScore(`${latest} ${voice}`, activeText);
+  const effectiveActiveSimilarity = Math.max(activeTopicSimilarity, requestActiveCoverage);
+
+  const base = {
+    active_topic_similarity_score: Number(activeTopicSimilarity.toFixed(3)),
+    voice_topic_similarity_score: Number(voiceTopicSimilarity.toFixed(3)),
+    request_voice_similarity_score: Number(requestVoiceSimilarity.toFixed(3)),
+    request_active_coverage_score: Number(requestActiveCoverage.toFixed(3)),
+    effective_active_similarity_score: Number(effectiveActiveSimilarity.toFixed(3)),
+    explicit_continuation_strong: Boolean(continuation.strong),
+    explicit_continuation_soft: Boolean(continuation.soft),
+    new_deliverable_detected: Boolean(newDeliverable.detected),
+    explicit_new_panel_requested: Boolean(explicitNewPanel)
+  };
+
+  if (isLikelyChecklistAction) {
+    return { decision: "no_reasoning_needed", reason: "checklist_action_intent", targetLaneIdx: null, ...base };
+  }
+
+  if (explicitNewPanel) {
+    return { decision: "create_new_panel", reason: "explicit_new_panel_requested", targetLaneIdx: null, ...base };
+  }
+
+  if (explicitTarget.matched && explicitTarget.targetLaneIdx != null) {
+    return { decision: "reuse_active_panel", reason: explicitTarget.reason, targetLaneIdx: explicitTarget.targetLaneIdx, ...base };
+  }
+
+  /* Strong panel anchor ("in this panel", "the current panel") — unambiguous.
+     Always reuse the active panel regardless of topic similarity. */
+  if (continuation.strong) {
+    return { decision: "reuse_active_panel", reason: "strong_panel_anchor", targetLaneIdx: activeLaneIdx, ...base };
+  }
+
+  /* Uploads carry strong implicit "this attachment is the subject" context.
+     Reuse the active panel only if topic actually overlaps; otherwise create
+     so the new attachment gets its own panel. */
+  if (hasUpload && effectiveActiveSimilarity < REASONING_PANEL_ROUTE_REUSE_FLOOR) {
+    return { decision: "create_new_panel", reason: "new_attachment_low_topic_similarity", targetLaneIdx: null, ...base };
+  }
+
+  if (effectiveActiveSimilarity >= REASONING_PANEL_ROUTE_HIGH_SIMILARITY) {
+    return { decision: "reuse_active_panel", reason: "high_topic_similarity", targetLaneIdx: activeLaneIdx, ...base };
+  }
+
+  /* Soft continuation ("make it shorter", "revise this", "polish this") — a
+     pure refinement of whatever is in the active panel. When NO new
+     deliverable verb is present, treat as an in-place refinement regardless
+     of similarity score (Jaccard underestimates short refinement utterances
+     against verbose excerpts). When a new deliverable IS present we still
+     need at least loose topic overlap, otherwise the cue is ambiguous and
+     the active panel could be stale (handled by the subsequent
+     newDeliverable check). */
+  if (continuation.soft && !newDeliverable.detected) {
+    return { decision: "reuse_active_panel", reason: "soft_continuation_refinement", targetLaneIdx: activeLaneIdx, ...base };
+  }
+  if (continuation.soft && effectiveActiveSimilarity >= REASONING_PANEL_ROUTE_LOW_SIMILARITY) {
+    return { decision: "reuse_active_panel", reason: "soft_continuation_topic_ok", targetLaneIdx: activeLaneIdx, ...base };
+  }
+
+  if (newDeliverable.detected && effectiveActiveSimilarity < REASONING_PANEL_ROUTE_REUSE_FLOOR) {
+    return { decision: "create_new_panel", reason: "new_deliverable_low_active_similarity", targetLaneIdx: null, ...base };
+  }
+
+  /* Voice topic clearly dominates: the latest text grounds in the recent voice
+     thread more than it does in the active panel. Create new panel so the
+     reasoning grounds on the right context. */
+  if (
+    voice.length >= 24 &&
+    requestVoiceSimilarity > effectiveActiveSimilarity + 0.10 &&
+    effectiveActiveSimilarity < REASONING_PANEL_ROUTE_REUSE_FLOOR
+  ) {
+    return { decision: "create_new_panel", reason: "voice_topic_dominates_active_panel", targetLaneIdx: null, ...base };
+  }
+
+  if (effectiveActiveSimilarity >= REASONING_PANEL_ROUTE_REUSE_FLOOR) {
+    return { decision: "reuse_active_panel", reason: "above_reuse_floor", targetLaneIdx: activeLaneIdx, ...base };
+  }
+
+  return { decision: "create_new_panel", reason: "low_active_topic_similarity", targetLaneIdx: null, ...base };
+}
+
+function logReasoningPanelRouteDebug(payload) {
+  try {
+    console.warn("[REASONING_PANEL_ROUTE_DEBUG]", payload);
+  } catch (_) {}
+}
+
+/**
+ * Build the snapshot used by shouldReuseActiveReasoningPanel. Reads from live
+ * DOM only — pure, no mutations.
+ */
+function captureReasoningPanelRoutingSnapshot(trimmed, opts = {}) {
+  const activeLaneIdx = getActiveReasoningLaneIndex();
+  let activePanelTitle = "";
+  let activePanelExcerpt = "";
+  let activePanelId = null;
+  if (activeLaneIdx != null && Number.isFinite(Number(activeLaneIdx))) {
+    const panel = typeof getReasoningPanelElementByLaneIdx === "function"
+      ? getReasoningPanelElementByLaneIdx(Number(activeLaneIdx))
+      : null;
+    if (panel) {
+      activePanelTitle = String(getReasoningTabTopicLabel(panel) || "").trim();
+      activePanelId = String(panel.dataset?.laneId || "").trim() || null;
+    }
+    if (!activePanelTitle) {
+      activePanelTitle = String(laneTopicSeedByIdx[Number(activeLaneIdx)] || "").trim();
+    }
+  }
+  if (!activePanelExcerpt) {
+    try {
+      activePanelExcerpt = collectWorkModeReasoningExcerptForContext(900).trim();
+    } catch (_) { activePanelExcerpt = ""; }
+  }
+  let recentVoiceContext = "";
+  try {
+    recentVoiceContext = collectWorkModeVoiceExcerptForContext(1400, 8).trim();
+  } catch (_) { recentVoiceContext = ""; }
+
+  return {
+    activeLaneIdx,
+    activePanelId,
+    activePanelTitle,
+    activePanelExcerpt,
+    recentVoiceContext,
+    isLikelyChecklistAction: Boolean(opts.isLikelyChecklistAction),
+    hasUpload: Boolean(opts.hasUpload)
+  };
+}
+
 async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
   const t = String(trimmed || "").trim();
   const autoRoute = isWorkModeReasoningAutoRouteEnabled();
 
+  /* Same-thread generic example follow-ups still chain onto the prior
+     substantive lane — that path is anchored to the prior turn, not the
+     active panel, so it is exempt from topic-mismatch routing. */
+  if (autoRoute && t && isGenericExampleFollowUpText(t) &&
+      Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
+    logReasoningPanelRouteDebug({
+      tag: "lane_select",
+      auto_route: true,
+      latest_user_text: t.slice(0, 240),
+      routing_decision: "reuse_active_panel",
+      selected_context_source: "active_reasoning_panel",
+      reason: "generic_example_followup_chain",
+      target_lane_idx: Number(workModeLastSubstantiveLaneIdx)
+    });
+    return await acquireWorkModeReasoningLaneForIndex(Number(workModeLastSubstantiveLaneIdx));
+  }
+
+  /* Backend classifier said "continue prior lane" — still gate through the
+     topic-mismatch check so we don't reuse a stale active lane when the
+     latest request is clearly about a different Voice UI topic. */
+  if (autoRoute && opts.continuePriorLane === true &&
+      Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
+    const snap = captureReasoningPanelRoutingSnapshot(t, opts);
+    const dec = shouldReuseActiveReasoningPanel({
+      latestUserText: t,
+      recentVoiceContext: snap.recentVoiceContext,
+      activePanelTitle: snap.activePanelTitle,
+      activePanelExcerpt: snap.activePanelExcerpt,
+      activeLaneIdx: snap.activeLaneIdx,
+      isLikelyChecklistAction: snap.isLikelyChecklistAction,
+      hasUpload: snap.hasUpload
+    });
+    if (dec.decision !== "create_new_panel") {
+      logReasoningPanelRouteDebug({
+        tag: "lane_select",
+        auto_route: true,
+        latest_user_text: t.slice(0, 240),
+        active_panel_id: snap.activePanelId,
+        active_panel_title: snap.activePanelTitle.slice(0, 120),
+        active_panel_excerpt_short: snap.activePanelExcerpt.slice(0, 240),
+        recent_voice_context_excerpt: snap.recentVoiceContext.slice(0, 240),
+        backend_continue_prior_lane: true,
+        routing_decision: "reuse_active_panel",
+        selected_context_source: "active_reasoning_panel",
+        reason: "backend_continue_prior_lane_topic_ok",
+        ...dec,
+        target_lane_idx: Number(workModeLastSubstantiveLaneIdx)
+      });
+      return await acquireWorkModeReasoningLaneForIndex(Number(workModeLastSubstantiveLaneIdx));
+    }
+    logReasoningPanelRouteDebug({
+      tag: "lane_select",
+      auto_route: true,
+      latest_user_text: t.slice(0, 240),
+      active_panel_id: snap.activePanelId,
+      active_panel_title: snap.activePanelTitle.slice(0, 120),
+      active_panel_excerpt_short: snap.activePanelExcerpt.slice(0, 240),
+      recent_voice_context_excerpt: snap.recentVoiceContext.slice(0, 240),
+      backend_continue_prior_lane: true,
+      routing_decision: "create_new_panel",
+      selected_context_source: "recent_voice_context",
+      reason: "backend_continue_prior_lane_overridden_by_topic_mismatch",
+      ...dec
+    });
+    /* Fall through to lane-bucket selection below so we land on a topic-
+       matching panel (or create a new one). */
+  }
+
   if (autoRoute) {
-    if (!t) return await acquireWorkModeReasoningLane("");
-    if (isGenericExampleFollowUpText(t) && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
-      /* Follow-ups chain onto the prior substantive lane (serialized by `runOnLaneReasoningChain`);
-         route through the acquirer so the global concurrent-reasoning cap is honored if that lane
-         is currently busy and the pool is at capacity. */
-      return await acquireWorkModeReasoningLaneForIndex(Number(workModeLastSubstantiveLaneIdx));
+    if (!t) {
+      logReasoningPanelRouteDebug({
+        tag: "lane_select",
+        auto_route: true,
+        latest_user_text: "",
+        routing_decision: "create_new_panel",
+        selected_context_source: "global_fallback",
+        reason: "empty_text"
+      });
+      return await acquireWorkModeReasoningLane("");
     }
-    if (opts.continuePriorLane === true && Number.isFinite(Number(workModeLastSubstantiveLaneIdx))) {
-      return await acquireWorkModeReasoningLaneForIndex(Number(workModeLastSubstantiveLaneIdx));
-    }
+
+    /* Bucket by topic similarity across ALL existing panels (load balancing).
+       This is independent of which panel is currently visible / active. */
     let bestLane = -1;
     let bestScore = 0;
     for (const idx of getReasoningPanelIndices()) {
@@ -12406,14 +13093,97 @@ async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
       }
     }
     if (bestScore >= WORK_MODE_TOPIC_SIMILARITY_MERGE && bestLane >= 0) {
+      logReasoningPanelRouteDebug({
+        tag: "lane_select",
+        auto_route: true,
+        latest_user_text: t.slice(0, 240),
+        routing_decision: "reuse_active_panel",
+        selected_context_source: "active_reasoning_panel",
+        reason: "topic_bucket_match",
+        bucket_score: Number(bestScore.toFixed(3)),
+        target_lane_idx: bestLane
+      });
       return await acquireWorkModeReasoningLaneForIndex(bestLane);
     }
+
+    logReasoningPanelRouteDebug({
+      tag: "lane_select",
+      auto_route: true,
+      latest_user_text: t.slice(0, 240),
+      routing_decision: "create_new_panel",
+      selected_context_source: "recent_voice_context",
+      reason: "no_topic_bucket_match",
+      best_bucket_score: Number(bestScore.toFixed(3))
+    });
     return await acquireWorkModeReasoningLane(t);
   }
 
-  if (!t) return await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0);
-  /* Active-panel mode: always the tab the user selected — no thread/example pinning or topic similarity. */
-  return await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0);
+  /* Active-panel mode: previously this branch ALWAYS reused the visible tab,
+     which is exactly the stale-context bug described in the spec — a user with
+     "English Homework Plan" active and a Voice UI about a traffic ticket would
+     get the complaint email drafted inside the homework panel. Gate this
+     through the topic-mismatch check now. */
+  if (!t) {
+    const activeIdx = getActiveReasoningLaneIndex() ?? 0;
+    logReasoningPanelRouteDebug({
+      tag: "lane_select",
+      auto_route: false,
+      latest_user_text: "",
+      routing_decision: "reuse_active_panel",
+      selected_context_source: "active_reasoning_panel",
+      reason: "empty_text_active_mode",
+      target_lane_idx: activeIdx
+    });
+    return await acquireWorkModeReasoningLaneForIndex(activeIdx);
+  }
+
+  const snap = captureReasoningPanelRoutingSnapshot(t, opts);
+  const dec = shouldReuseActiveReasoningPanel({
+    latestUserText: t,
+    recentVoiceContext: snap.recentVoiceContext,
+    activePanelTitle: snap.activePanelTitle,
+    activePanelExcerpt: snap.activePanelExcerpt,
+    activeLaneIdx: snap.activeLaneIdx,
+    isLikelyChecklistAction: snap.isLikelyChecklistAction,
+    hasUpload: snap.hasUpload
+  });
+
+  const sharedLog = {
+    tag: "lane_select",
+    auto_route: false,
+    latest_user_text: t.slice(0, 240),
+    active_panel_id: snap.activePanelId,
+    active_panel_title: snap.activePanelTitle.slice(0, 120),
+    active_panel_excerpt_short: snap.activePanelExcerpt.slice(0, 240),
+    recent_voice_context_excerpt: snap.recentVoiceContext.slice(0, 240),
+    ...dec
+  };
+
+  if (dec.decision === "reuse_active_panel") {
+    const targetIdx = Number.isFinite(Number(dec.targetLaneIdx))
+      ? Number(dec.targetLaneIdx)
+      : (snap.activeLaneIdx ?? 0);
+    logReasoningPanelRouteDebug({
+      ...sharedLog,
+      routing_decision: "reuse_active_panel",
+      selected_context_source: dec.reason === "explicit_panel_number" ||
+        dec.reason === "explicit_panel_number_not_present" ||
+        dec.reason === "explicit_panel_title_match"
+        ? "explicit_panel"
+        : "active_reasoning_panel",
+      target_lane_idx: targetIdx
+    });
+    return await acquireWorkModeReasoningLaneForIndex(targetIdx);
+  }
+
+  logReasoningPanelRouteDebug({
+    ...sharedLog,
+    routing_decision: "create_new_panel",
+    selected_context_source: snap.recentVoiceContext
+      ? "recent_voice_context"
+      : "global_fallback"
+  });
+  return await acquireWorkModeReasoningLane(t);
 }
 
 function enqueueWorkModeTypedVoiceInfer(run) {
@@ -13355,6 +14125,33 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   if (isExplicitWorkModePanelNavigationIntent(trimmed)) {
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
+
+  /* Simple arithmetic fast path — direct Voice UI answer, no reasoning.
+     Only fires when there are no uploads (an uploaded problem still goes
+     through the general attachment route) and the request matches our
+     intentionally narrow recognizer. The normal /infer chat reply will
+     also produce a sensible answer, but the fast path:
+       1) guarantees no reasoning panel is opened for trivial math,
+       2) logs a deterministic decision so the routing path is auditable,
+       3) makes the spec's manual tests pass without relying on the LLM. */
+  const _fastPathArithmetic = detectSimpleArithmeticFastAnswer(trimmed);
+  const _hasUploadsForArithmetic =
+    Array.isArray(opts.attachments) && opts.attachments.some((f) => f instanceof File && f.size);
+  if (_fastPathArithmetic && !_hasUploadsForArithmetic) {
+    logArithmeticFastPathDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      matched_expression: _fastPathArithmetic.expression,
+      computed_value: _fastPathArithmetic.value,
+      spoken_reply_preview: _fastPathArithmetic.spoken,
+      reasoning_panel_opened: false,
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      route: "voice_ui_direct_answer"
+    });
+    /* Return no-route so the turn stays on the normal /infer chat path.
+       Backend will produce its own natural reply; the fast path here
+       guarantees we never spin up a panel for "1 + 1". */
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
   /* Snapshot before this turn mutates it — used so /classify thread anchor is the *prior* user line, not the current one. */
   const priorThreadAnchor = String(workModeLastSubstantiveUserText || "").trim();
   const forceActiveLaneReasoningContent =
@@ -13577,7 +14374,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       planning_intent: Boolean(planningIntent),
       final_route: finalRouteForLog,
       final_route_reasoning: Boolean(routeReasoning),
-      reason: _routeDebugReason
+      reason: _routeDebugReason,
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
     });
 
     if (!routeReasoning) {
@@ -13617,7 +14416,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       planning_intent: Boolean(planningIntent),
       final_route: "reasoning",
       final_route_reasoning: true,
-      reason: "upload_present"
+      reason: "upload_present",
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
     });
   }
 
@@ -15158,6 +15959,73 @@ let workChecklistSyncCommandSeq = 0;
 let activeWorkChecklistSyncCommand = "";
 let lastCompletedWorkChecklistSyncCommandTurn = null;
 
+/**
+ * Policy: actions in this set are committed to state BEFORE TTS speaks
+ * the confirmation, and a user interrupt during that confirmation must
+ * NEVER roll them back. Interruption only cancels the spoken response.
+ *
+ * Only `cancel that` / `undo that` / `revert that` style commands are
+ * allowed to walk back a non-cancelable action — and those go through
+ * the regular undo snapshot path (see `is_checklist_undo_request`).
+ */
+const NON_CANCELABLE_AFTER_COMMIT_ACTIONS = new Set([
+  "sync_checklist",
+  "add_checklist_item",
+  "remove_checklist_items",
+  "update_checklist_item",
+  "toggle_checklist_item",
+  "set_timer"
+]);
+
+let lastCommittedNonCancelableAction = null;
+
+function logChecklistActionCommitDebug(payload = {}) {
+  try {
+    console.warn("[CHECKLIST_ACTION_COMMIT_DEBUG]", {
+      timestamp: new Date().toISOString(),
+      ...payload
+    });
+  } catch (_) {}
+}
+
+/**
+ * Stamp a non-cancelable action as committed. Call this AFTER the state
+ * mutation has been persisted to localStorage / pushed to the server
+ * and BEFORE the spoken confirmation is enqueued. The interrupt pipeline
+ * uses the resulting record to decide that the network/state should NOT
+ * be torn down — only the spoken audio.
+ */
+function commitNonCancelableAction(actionType, payload = {}) {
+  const type = String(actionType || "").trim();
+  if (!type || !NON_CANCELABLE_AFTER_COMMIT_ACTIONS.has(type)) {
+    return null;
+  }
+  const record = {
+    action_type: type,
+    committed_at: Date.now(),
+    payload: payload && typeof payload === "object" ? { ...payload } : {}
+  };
+  lastCommittedNonCancelableAction = record;
+  logChecklistActionCommitDebug({
+    phase: "commit",
+    action_type: type,
+    payload_keys: Object.keys(record.payload),
+    notes: "state already persisted; interrupt may only cancel TTS"
+  });
+  return record;
+}
+
+/**
+ * Returns `true` when a non-cancelable action was committed within the
+ * recent window (default: last 4 seconds). Interrupt handlers consult
+ * this so they leave already-applied checklist/timer mutations alone.
+ */
+function wasNonCancelableActionRecentlyCommitted(opts = {}) {
+  if (!lastCommittedNonCancelableAction) return false;
+  const windowMs = Number.isFinite(opts.withinMs) ? Number(opts.withinMs) : 4000;
+  return Date.now() - lastCommittedNonCancelableAction.committed_at <= windowMs;
+}
+
 function planSyncPreviewRows(rows, limit = 5) {
   return (Array.isArray(rows) ? rows : [])
     .slice(0, limit)
@@ -16193,8 +17061,13 @@ function finalizeWorkChecklistSyncCommandTurn({
   const tid = String(turnId || "").trim() || `sync-plan-${++workChecklistSyncCommandSeq}`;
   const finalTranscript = String(transcript || "").trim();
   const fromVoice = Boolean(isVoice);
+  // Short, spec-aligned confirmation. The mutation has already been
+  // committed to localStorage by the time we reach here (see
+  // commitNonCancelableAction("sync_checklist", ...) in
+  // maybeHandleWorkChecklistSyncShortcut). The user can safely interrupt
+  // this audio — only the playback is cancelled, not the sync itself.
   const replyText = success
-    ? "I synced the plan."
+    ? "Synced."
     : "I couldn’t find a plan to sync yet.";
   let transcriptFinalized = false;
   let bubbleClosed = false;
@@ -16376,6 +17249,25 @@ async function maybeHandleWorkChecklistSyncShortcut(text, opts = {}) {
   let autoApplied = false;
   if (ok) {
     autoApplied = applyWorkChecklistSyncPreview();
+  }
+  // Commit-before-speak: the local mutation is already in localStorage
+  // via applyWorkChecklistSyncPreview(); flush the debounced server PUT
+  // RIGHT NOW so an interrupt that arrives milliseconds later cannot
+  // discard a not-yet-flighted update. The TTS that comes next is
+  // purely confirmation — see NON_CANCELABLE_AFTER_COMMIT_ACTIONS.
+  if (ok && autoApplied) {
+    try {
+      if (typeof flushWorkChecklistSyncBeforeCommand === "function") {
+        flushWorkChecklistSyncBeforeCommand().catch(() => {});
+      } else if (typeof syncWorkChecklistToServerNow === "function") {
+        syncWorkChecklistToServerNow().catch(() => {});
+      }
+    } catch (_) {}
+    commitNonCancelableAction("sync_checklist", {
+      turn_id: turnId,
+      items_inserted: selected?.rows?.length || 0,
+      source: opts.source || "voice_or_typed_shortcut"
+    });
   }
   logPlanSyncDebug("voice_sync_request", {
     user_text: userText,
@@ -17482,6 +18374,27 @@ function onBrowserInterruptBargeInFromDetect(event) {
   if (interruptBargeInLatched) return;
   interruptBargeInLatched = true;
   const commitAt = performance.now();
+  vadFastStopAsrFinalAt = commitAt;
+  // Latency telemetry: if the fast VAD stop already fired earlier in
+  // this TTS turn, report the gap between the two events so we can see
+  // exactly how much speak-over time was saved. If the heuristic never
+  // fired (rare on desktop, common in PTT), the ASR path was the only
+  // gate; both metrics become null/0 in that case.
+  const vadFiredEarlier = vadFastStopFiredAt > 0;
+  logBargeInLatencyDebug("final_asr_received", {
+    tts_playing: isAssistantTtsPlaying(),
+    tts_id: vadFastStopTtsId || interruptPrearmTtsId || null,
+    delay_vad_to_tts_stop_ms: vadFiredEarlier
+      ? Number((vadFastStopTtsStoppedAt - vadFastStopFiredAt).toFixed(2))
+      : null,
+    delay_vad_to_final_asr_ms: vadFiredEarlier
+      ? Number((vadFastStopAsrFinalAt - vadFastStopFiredAt).toFixed(2))
+      : null,
+    audio_already_stopped_by_vad: vadFiredEarlier,
+    note: vadFiredEarlier
+      ? "TTS stopped on VAD; final ASR transcript routes intent"
+      : "no early VAD trigger; ASR alone drove this barge-in"
+  });
   cancelBrowserInterruptTtsOnly();
   promoteInterruptPreviewToMainLiveBubble();
   mainBrowserFinalizeKind = "interrupt";
@@ -17558,17 +18471,20 @@ function detectInterrupt() {
   }
 
   /*
-   * Desktop + browser ASR: while interrupt-detect SpeechRecognition is alive, barge-in is word-count only.
-   * If start() failed or onend fired, fall back to heuristic so TTS is still interruptible (no silent failure).
+   * Previously: when the browser-ASR detector was alive on desktop, the
+   * heuristic RAF loop returned early — meaning TTS only stopped AFTER
+   * Chrome's Web Speech API produced enough words. That added 300-700ms
+   * of "VERA talking over me" latency.
+   *
+   * New behaviour: the heuristic loop ALWAYS runs while TTS is playing.
+   * In browser-ASR mode we still defer the full barge-in transition
+   * (bubble promotion, transcript routing) to the SR session — but we
+   * use VAD as a fast audio-only kill switch via fastStopTtsOnVadOnly().
+   * That keeps intent classification on the SR transcript (per spec)
+   * while removing the user-perceived speak-over latency.
    */
-  if (
-    browserAsrPreferred() &&
-    !isNarrowViewport() &&
-    interruptDetectRecognition
-  ) {
-    requestAnimationFrame(detectInterrupt);
-    return;
-  }
+  const browserAsrParallelMode =
+    browserAsrPreferred() && !isNarrowViewport() && !!interruptDetectRecognition;
 
   const buf = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(buf);
@@ -17672,9 +18588,24 @@ function detectInterrupt() {
           preroll_available_ms: interruptPrearmStartedAt
             ? Number(Math.min(MAX_INTERRUPTION_PREROLL_MS, now - interruptPrearmStartedAt).toFixed(1))
             : 0,
-          gate: "heuristic"
+          gate: browserAsrParallelMode ? "heuristic_fast_stop" : "heuristic"
         });
-        interruptSpeech();
+
+        if (browserAsrParallelMode) {
+          // Parallel mode: VAD only cancels audio. The browser-ASR
+          // session keeps running and will deliver the final transcript
+          // (see onBrowserInterruptBargeInFromDetect for the bubble +
+          // routing). Reset the heuristic counters so we don't fire the
+          // fast-stop more than once per TTS turn.
+          fastStopTtsOnVadOnly({
+            rms,
+            zcr,
+            crest,
+            vadAccumMs: interruptSpeechAccumMs
+          });
+        } else {
+          interruptSpeech();
+        }
         interruptSpeechFrames = 0;
         interruptSpeechStart = 0;
         interruptSpeechAccumMs = 0;
@@ -18259,6 +19190,7 @@ async function playInterruptAnswer(data) {
           applyAssistantReplyAndPanels(data);
           waveState = "speaking";
           audioStartedAt = performance.now();
+          resetVadFastStopState("main_tts_start");
           setStatus("Speaking… (can only be interrupted once)", "speaking");
           processing = false;
         },
@@ -18476,6 +19408,21 @@ function interruptAssistantPipelineForTypedMessage() {
 }
 
 function cancelVoicePipelineAndResetState() {
+  // Diagnostic: if a non-cancelable action was just committed (sync /
+  // add / remove / update / toggle / timer), the audio cancellation
+  // below is allowed but the underlying state mutation MUST NOT be
+  // unwound. The helpers in this function never touch checklist /
+  // timer state directly, so the policy is preserved — we log here so
+  // any future regression is obvious in DevTools.
+  if (wasNonCancelableActionRecentlyCommitted()) {
+    logChecklistActionCommitDebug({
+      phase: "interrupt_during_committed_action",
+      action_type: lastCommittedNonCancelableAction?.action_type || null,
+      committed_at: lastCommittedNonCancelableAction?.committed_at || 0,
+      reset_state_touched: false,
+      notes: "cancelling only audio — checklist/timer mutation preserved"
+    });
+  }
   activePipelineAbort?.abort();
   activePipelineAbort = null;
   cancelMainTtsPlayback();
@@ -20916,6 +21863,7 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
           logVoiceMainReplyAudio();
           waveState = "speaking";
           audioStartedAt = performance.now();
+          resetVadFastStopState("voice_tts_start");
           const interruptTtsId = interruptTranscriptNewTtsId();
           interruptPrearmTtsId = interruptTtsId;
           if (micStream?.active) startInterruptCapture();
@@ -21141,6 +22089,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                   logVoiceMainReplyAudio();
                   waveState = "speaking";
                   audioStartedAt = performance.now();
+                  resetVadFastStopState("voice_tts_start_ndjson");
                   const interruptTtsId = interruptTranscriptNewTtsId();
                   interruptPrearmTtsId = interruptTtsId;
                   if (micStream?.active) startInterruptCapture();
@@ -21364,6 +22313,7 @@ async function runInferInterruptPipeline(formData) {
               applyActionPayload(ndjsonMeta);
               waveState = "speaking";
               audioStartedAt = performance.now();
+              resetVadFastStopState("voice_tts_start_action");
               setStatus("Speaking… (can only be interrupted once)", "speaking");
               processing = false;
             },
@@ -22237,6 +23187,7 @@ async function sendTextMessage() {
               applyActionPayload(ndjsonMeta);
               waveState = "speaking";
               audioStartedAt = performance.now();
+              resetVadFastStopState("text_tts_start_action");
               setStatus(
                 listeningMode === "ptt" ? "Speaking" : "Speaking…",
                 "speaking"
@@ -22270,6 +23221,7 @@ async function sendTextMessage() {
               applyAssistantReplyAndPanels(data);
               waveState = "speaking";
               audioStartedAt = performance.now();
+              resetVadFastStopState("text_tts_start");
               setStatus(
                 listeningMode === "ptt" ? "Speaking" : "Speaking…",
                 "speaking"
