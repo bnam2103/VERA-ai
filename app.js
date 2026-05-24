@@ -2,14 +2,14 @@
    STARTUP BANNER — proves this build of app.js actually loaded.
    If you do NOT see this line in DevTools console after a hard refresh,
    the browser is still serving an older cached copy (check Network tab:
-   app.js?v=61 should be the URL).
+   app.js?v=64 should be the URL).
 ========================= */
 try {
   // Use console.warn so it shows up even when the DevTools console level
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v61 loaded — PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG active. math_router_enabled=false.",
+    "%c[VERA] app.js build v64 loaded — PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG (now classifies cancel-only vs action-command and routes interruptions through normal shortcut handlers) + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + CHECKLIST_INTENT_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG + MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG active. math_router_enabled=false.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -1263,6 +1263,83 @@ function logInterruptTranscriptDebug(phase, payload = {}) {
       ...payload
     });
   } catch (_) {}
+}
+
+/* =========================
+   INTERRUPTION TRANSCRIPT CLASSIFICATION
+
+   Barge-in already stopped TTS instantly (see fastStopTtsOnVadOnly). The
+   remaining decision after the ASR transcript is finalized is:
+
+     - "stop", "never mind", "shut up" → cancel-only. TTS already stopped,
+       nothing else to do; just resume listening.
+     - "stop, sync the plan" → strip the leading cancel prefix and route
+       the remainder as a normal user command.
+     - "sync the plan", "remove the first item", "set a timer", "put that
+       in the panel" → route the full transcript as a normal user command.
+
+   The "normal user command" routing reuses the SAME shortcut handlers the
+   regular voice / typed pipelines use (maybeHandleWorkChecklistSync*,
+   maybeHandleWorkChecklistPlan*, maybeHandleMoveLatestVoiceTaskToReasoning)
+   so a sync request that arrives as an interruption produces the same
+   client-side mutation a normal voice request would.
+========================= */
+
+const INTERRUPT_CANCEL_ONLY_RE =
+  /^(?:stop|stop\s+it|stop\s+talking|shut\s*up|shush|hush(?:\s+up)?|be\s+quiet|quiet|cancel(?:\s+that)?|never\s*mind|nevermind|forget\s+it|forget\s+about\s+it|pause|mute(?:\s+yourself)?|enough|that's\s+enough|thats\s+enough|okay\s+stop|ok\s+stop)$/i;
+
+const INTERRUPT_CANCEL_PREFIX_RE =
+  /^(?:stop|stop\s+talking|stop\s+it|shut\s*up|shush|hush(?:\s+up)?|be\s+quiet|quiet|cancel(?:\s+that)?|never\s*mind|nevermind|forget\s+it|forget\s+about\s+it|pause|hold\s+on|hold\s+up|wait(?:\s+a\s+(?:second|sec|minute|moment))?|actually|um|uh|no|nope|okay|ok)\b[\s,;:.\-—–]+(.+)$/i;
+
+/**
+ * Classify a finalized interruption transcript. Returns the shape the spec
+ * calls out:
+ *   { isCancelOnly, hasActionIntent, normalizedCommandText,
+ *     leadingCancelStripped, reason }
+ *
+ * Pure judgement function — no side effects, safe to call from anywhere.
+ */
+function classifyInterruptionTranscript(text) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return {
+      isCancelOnly: false,
+      hasActionIntent: false,
+      normalizedCommandText: "",
+      leadingCancelStripped: false,
+      reason: "empty"
+    };
+  }
+  const lowered = raw.toLowerCase().replace(/[.?!,;:\s]+$/g, "").trim();
+  if (INTERRUPT_CANCEL_ONLY_RE.test(lowered)) {
+    return {
+      isCancelOnly: true,
+      hasActionIntent: false,
+      normalizedCommandText: "",
+      leadingCancelStripped: false,
+      reason: "pure_cancel_phrase"
+    };
+  }
+  const m = raw.match(INTERRUPT_CANCEL_PREFIX_RE);
+  if (m) {
+    const tail = String(m[1] || "").trim();
+    if (tail && tail.split(/\s+/).filter(Boolean).length >= 1) {
+      return {
+        isCancelOnly: false,
+        hasActionIntent: true,
+        normalizedCommandText: tail,
+        leadingCancelStripped: true,
+        reason: "stripped_leading_cancel_prefix"
+      };
+    }
+  }
+  return {
+    isCancelOnly: false,
+    hasActionIntent: true,
+    normalizedCommandText: raw,
+    leadingCancelStripped: false,
+    reason: "normal_command"
+  };
 }
 
 function interruptTranscriptNewTtsId() {
@@ -4590,6 +4667,226 @@ function collectWorkModeVoiceExcerptForContext(maxChars = 3500, maxRows = 8) {
   let out = lines.join("\n");
   if (out.length > maxChars) out = `${out.slice(0, maxChars)}\n…`;
   return out;
+}
+
+/* =========================
+   MOVE LATEST VOICE RESULT → REASONING PANEL
+
+   Important distinction:
+     - "go back to the English essay panel" = panel navigation.
+     - "put that in the panel" / "do that in reasoning" = move the latest
+       Voice UI answer/task into reasoning. "that" is a task reference, not a
+       panel title.
+========================= */
+const MOVE_LATEST_VOICE_TASK_TO_REASONING_RE =
+  /\b(?:do|put|move|show|open|copy|send|transfer|continue|expand|make)\s+(?:that|this|it|the\s+(?:email|draft|answer|response|reply|version|full\s+version))\s+(?:in|into|to|on)\s+(?:the\s+)?(?:reasoning(?:\s+(?:panel|space|tab))?|panel|space|tab)\b|\b(?:make|create|open|start)\s+(?:a\s+)?(?:reasoning\s+)?panel\s+for\s+(?:that|this|it|the\s+(?:email|draft|answer|response|reply))\b|\b(?:can\s+you|could\s+you|please)\s+(?:do|put|move|show|open|copy|send|transfer|continue|expand)\s+(?:that|this|it|the\s+(?:email|draft|answer|response|reply|version|full\s+version))\s+(?:in|into|to|on)\s+(?:the\s+)?(?:reasoning(?:\s+(?:panel|space|tab))?|panel|space|tab)\b|\b(?:put|show)\s+(?:the\s+)?(?:email|draft|answer|response|reply|full\s+version)\s+(?:in|into|to|on)\s+(?:the\s+)?(?:reasoning(?:\s+(?:panel|space|tab))?|panel|space|tab)\b/i;
+
+function detectMoveLatestVoiceTaskToReasoningIntent(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return { matched: false, deictic: false };
+  const matched = MOVE_LATEST_VOICE_TASK_TO_REASONING_RE.test(raw);
+  return {
+    matched,
+    deictic: /\b(that|this|it|there)\b/i.test(raw)
+  };
+}
+
+function collectLatestRelevantVoiceAssistantOutput(maxChars = 6000) {
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return "";
+  const convo = document.getElementById("vera-conversation");
+  if (!(convo instanceof HTMLElement)) return "";
+  const rows = [...convo.querySelectorAll(".message-row")];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (!row?.classList?.contains("vera")) continue;
+    const bubble = row.querySelector(".bubble");
+    if (!(bubble instanceof HTMLElement)) continue;
+    if (
+      bubble.classList.contains("vera-work-mode-stage1-ack") ||
+      bubble.classList.contains("vera-pending-status") ||
+      bubble.classList.contains("interrupt-preview")
+    ) {
+      continue;
+    }
+    const text = String(bubble.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text || text.length < 12) continue;
+    if (/^I(?:'ll| will)\s+work\b/i.test(text)) continue;
+    if (/^Done\s+[—-]\s+I (?:put|moved|created)\b/i.test(text)) continue;
+    return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
+  }
+  return "";
+}
+
+function inferVoiceTaskPanelTitle({ latestVoiceOutput = "", recentVoiceContext = "", latestUserText = "" } = {}) {
+  const hay = `${latestUserText}\n${latestVoiceOutput}\n${recentVoiceContext}`.toLowerCase();
+  if (/\b(ticket|traffic\s+stop|pulled\s+over|police|officer|complain|complaint|dispute|citation)\b/.test(hay)) {
+    if (/\b(email|draft|letter|message)\b/.test(hay)) return "Ticket Complaint Email";
+    return "Police Ticket Review";
+  }
+  if (/\b(homework|assignment|essay|teacher|professor|extension|deadline)\b/.test(hay) && /\b(email|draft|letter|message)\b/.test(hay)) {
+    return "Homework Extension Email";
+  }
+  if (/\b(resume|résumé|cv)\b/.test(hay) && /\b(bullet|revision|rewrite|edit)\b/.test(hay)) {
+    return "Resume Bullet Revisions";
+  }
+  if (/\b(travel|trip|itinerary|flight|hotel|vacation)\b/.test(hay)) return "Travel Plan";
+  if (/\b(email|draft|letter|message)\b/.test(hay)) return "Email Draft";
+  if (/\b(plan|schedule|timeline|roadmap)\b/.test(hay)) return "Planning Draft";
+  const tokens = topicTokensForWorkModeTopic(`${latestVoiceOutput} ${recentVoiceContext}`)
+    .filter((w) => !/^(assistant|user|would|could|should|there|their|about)$/.test(w))
+    .slice(0, 4);
+  if (tokens.length) return tokens.map(toTitleCaseWord).join(" ");
+  return "Voice Answer";
+}
+
+function buildMovedVoiceTaskMarkdown({ title, latestVoiceOutput, recentVoiceContext } = {}) {
+  const t = String(title || "Voice Answer").trim();
+  const out = String(latestVoiceOutput || "").trim();
+  const ctx = String(recentVoiceContext || "").trim();
+  const contextLines = ctx
+    .split(/\n+/)
+    .filter((line) => /^User:\s*/i.test(line))
+    .slice(-3)
+    .map((line) => line.replace(/^User:\s*/i, "").trim())
+    .filter(Boolean);
+  const contextBlock = contextLines.length
+    ? contextLines.map((line) => `- ${line}`).join("\n")
+    : "- Moved from the recent Voice UI conversation.";
+  return [
+    `# ${t}`,
+    "",
+    "## Context",
+    contextBlock,
+    "",
+    "## Draft / Answer From Voice UI",
+    out || "_I could not find a recent Voice UI answer to move._",
+    "",
+    "## Notes",
+    "If you want, I can revise this here with a firmer, more formal, or shorter version."
+  ].join("\n");
+}
+
+function findRelatedReasoningLaneForVoiceTask(seedText) {
+  const seed = String(seedText || "").trim();
+  if (!seed) return { laneIdx: null, score: 0, title: "" };
+  let best = { laneIdx: null, score: 0, title: "" };
+  for (const idx of getReasoningPanelIndices()) {
+    const panel = getReasoningPanelElementByLaneIdx(idx);
+    const title = panel instanceof HTMLElement ? getReasoningTabTopicLabel(panel) : "";
+    const excerpt = collectWorkModeReasoningExcerptForLaneIndex(idx, 1200);
+    const score = Math.max(
+      topicSimilarityScore(seed, `${title} ${excerpt}`),
+      topicCoverageScore(seed, `${title} ${excerpt}`)
+    );
+    if (score > best.score) best = { laneIdx: idx, score, title };
+  }
+  return best;
+}
+
+function logMoveLatestVoiceTaskToReasoningDebug(payload) {
+  try {
+    console.warn("[MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG]", payload);
+  } catch (_) {}
+}
+
+async function maybeHandleMoveLatestVoiceTaskToReasoning(trimmed, opts = {}) {
+  const text = String(trimmed || "").trim();
+  const intent = detectMoveLatestVoiceTaskToReasoningIntent(text);
+  if (!intent.matched || !isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
+
+  const latestVoiceOutput = collectLatestRelevantVoiceAssistantOutput(7000);
+  const recentVoiceContext = collectWorkModeVoiceExcerptForContext(2500, 8);
+  const activeIdx = getActiveReasoningLaneIndex();
+  const activePanel = activeIdx != null ? getReasoningPanelElementByLaneIdx(activeIdx) : null;
+  const activePanelTitle = activePanel instanceof HTMLElement ? getReasoningTabTopicLabel(activePanel) : "";
+
+  if (!latestVoiceOutput) {
+    const reply = "Do you want me to move the latest answer into a new panel, or switch to an existing panel?";
+    commitServerUserTranscriptBubble(text, opts.path || "move-voice-task-unresolved");
+    addBubble(reply, "vera", { path: "move-latest-voice-task-clarify" });
+    logMoveLatestVoiceTaskToReasoningDebug({
+      latest_user_text: text.slice(0, 240),
+      detected_intent: "move_latest_voice_task_to_reasoning",
+      deictic_reference_detected: intent.deictic,
+      deictic_resolution: "unresolved",
+      latest_voice_output_excerpt: "",
+      recent_voice_context_excerpt: recentVoiceContext.slice(0, 240),
+      active_panel_title: activePanelTitle,
+      selected_panel_id: null,
+      create_new_panel: false,
+      new_panel_title: "",
+      reason_for_decision: "no_recent_voice_assistant_output"
+    });
+    return true;
+  }
+
+  const title = inferVoiceTaskPanelTitle({ latestVoiceOutput, recentVoiceContext, latestUserText: text });
+  const seedText = `${title}\n${latestVoiceOutput}\n${recentVoiceContext}`;
+  const related = findRelatedReasoningLaneForVoiceTask(seedText);
+  const reuseExisting = related.laneIdx != null && related.score >= REASONING_PANEL_ROUTE_REUSE_FLOOR;
+  const laneIdx = reuseExisting
+    ? await acquireWorkModeReasoningLaneForIndex(related.laneIdx)
+    : await acquireWorkModeReasoningLane(seedText);
+  const laneId = getWorkModeReasoningLaneId(laneIdx);
+  const panel = getReasoningPanelElementByLaneIdx(laneIdx);
+  const scrollEl = getReasoningScrollElByLane(laneIdx);
+  const markdown = buildMovedVoiceTaskMarkdown({ title, latestVoiceOutput, recentVoiceContext });
+
+  try {
+    activateReasoningTab(laneIdx);
+    if (panel instanceof HTMLElement) {
+      panel.dataset.laneLabel = title;
+      panel.dataset.tabTopic = title;
+      panel.dataset.tabTopicSet = "1";
+      panel.dataset.reasoningLlmTitleDone = "1";
+    }
+    try {
+      if (laneId) patchReasoningLaneRegistryTitle(laneId, title, "move_latest_voice_task_to_reasoning");
+    } catch (_) {}
+    laneTopicSeedByIdx[laneIdx] = seedText;
+    laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
+    const turnEl = appendReasoningTurnMount(scrollEl);
+    if (turnEl) {
+      turnEl.dataset.markdownAcc = markdown;
+      turnEl.dataset.summaryText = "";
+      renderWorkModeMarkdown(turnEl, markdown, "");
+      maybeReasoningScrollToLatest(scrollEl);
+      scheduleSyncPlanButtonRefresh(0);
+    }
+    renderReasoningTabStrip();
+    persistReasoningTabsState();
+  } finally {
+    endWorkModeReasoningLaneRun(laneIdx);
+  }
+
+  const itemKind = /\b(email|subject:|dear\s+)/i.test(latestVoiceOutput) ? "email draft" : "answer";
+  const reply = reuseExisting
+    ? `Done — I moved the ${itemKind} into the reasoning panel.`
+    : `Done — I put the ${itemKind} in a new reasoning panel.`;
+  commitServerUserTranscriptBubble(text, opts.path || "move-latest-voice-task");
+  addBubble(reply, "vera", { path: "move-latest-voice-task-success" });
+  if (opts.isVoice) {
+    try {
+      await playWorkModeTtsOnlyPhrase(reply, opts.signal);
+    } catch (_) {}
+  }
+  setStatus("Ready", "idle");
+  logMoveLatestVoiceTaskToReasoningDebug({
+    latest_user_text: text.slice(0, 240),
+    detected_intent: "move_latest_voice_task_to_reasoning",
+    deictic_reference_detected: intent.deictic,
+    deictic_resolution: "latest_voice_output",
+    latest_voice_output_excerpt: latestVoiceOutput.slice(0, 240),
+    recent_voice_context_excerpt: recentVoiceContext.slice(0, 240),
+    active_panel_title: activePanelTitle,
+    selected_panel_id: laneId || null,
+    selected_panel_index: laneIdx,
+    create_new_panel: !reuseExisting,
+    new_panel_title: title,
+    related_panel_score: Number((related.score || 0).toFixed(3)),
+    reason_for_decision: reuseExisting ? "existing_related_panel_high_similarity" : "no_related_panel_create_new"
+  });
+  return true;
 }
 
 /**
@@ -9723,6 +10020,7 @@ function cleanWorkModeActionQueryUi(text) {
 function goToReasoningPanelQueryHeuristicUi(userText) {
   const s = String(userText ?? "").trim();
   if (!s) return null;
+  if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return null;
   const lowered = s.toLowerCase();
   let m = s.match(
     /\b(?:can you|could you|please)\s+(?:go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
@@ -9771,6 +10069,7 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
 function isExplicitWorkModePanelNavigationIntent(text) {
   const s = String(text ?? "").trim();
   if (!s) return false;
+  if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return false;
   const low = s.toLowerCase();
   if (
     /\b(?:go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(
@@ -12611,15 +12910,369 @@ function buildVoiceUiRecentContextBlock(maxRows = 8, includePendingTypedQueue = 
   );
 }
 
-function isLikelyWorkChecklistEditIntent(text) {
-  const t = String(text || "").trim().toLowerCase();
-  if (!t) return false;
-  const hasChecklist = /\bcheck\s*list|checklist\b/.test(t);
-  if (hasChecklist && /\b(add|remove)\b/.test(t)) return true;
-  if (/\b(update|replace)\b/.test(t) && (/\bwith\b/.test(t) || /\bitem\s+\d+\b/.test(t))) {
-    return true;
+/* =========================
+   CHECKLIST INTENT DETECTION
+
+   Replaces the previous brittle gate that only fired when the literal word
+   "checklist" appeared alongside add/remove. The general detector accepts:
+
+     - ordinal-word lists: "remove first and third item",
+       "remove first, third, and fifth item", "remove the first through third"
+     - digit lists: "delete items 2 and 4", "remove items 1, 3, and 5",
+       "remove item 2"
+     - bare ordinals when paired with item/task/bullet/row/step
+     - sub-item / whole-section qualifiers
+     - removal verbs: remove, delete, take out, clear, get rid of, erase, drop
+     - add / complete / update verbs
+
+   Refuses checklist routing when the text clearly names a competing object
+   ("paragraph", "sentence", "argument", "example", …) and does NOT also
+   mention a checklist-flavored noun.
+
+   The detector returns the structured shape the spec calls out:
+     { isChecklistAction, action, indices, scope, confidence, reason,
+       detectedObjectType, removalVerbDetected,
+       explicitNonChecklistObjectDetected, checklistExists, checklistVisible }
+========================= */
+
+const CHECKLIST_ORDINAL_WORD_MAP = {
+  first: 1, second: 2, third: 3, fourth: 4, fifth: 5,
+  sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10,
+  eleventh: 11, twelfth: 12
+};
+
+const CHECKLIST_ORDINAL_WORD_RE_FRAG =
+  "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth";
+
+const CHECKLIST_REMOVAL_VERB_RE =
+  /\b(?:remove|delete|erase|take\s+out|get\s+rid\s+of|clear|drop)\b/i;
+const CHECKLIST_ADD_VERB_RE = /\b(?:add|append|create|insert)\b/i;
+const CHECKLIST_COMPLETE_VERB_RE =
+  /\b(?:complete|completed|done|finish|finished|mark|check\s+off|tick\s+off)\b/i;
+const CHECKLIST_UPDATE_VERB_RE = /\b(?:update|replace|rename|change)\b/i;
+
+const CHECKLIST_NOUN_RE =
+  /\b(?:checklist|check\s+list|to-?do(?:\s+list)?|task\s*list|item|items|task|tasks|bullet|bullets|row|rows|step|steps|sub-?item|sub-?items|sub-?bullet|sub-?bullets)\b/i;
+
+const CHECKLIST_NON_OBJECT_NOUN_RE =
+  /\b(?:paragraph|paragraphs|sentence|sentences|line\s+of\s+code|code\s+line|line\s+of\s+the\s+code|argument|arguments|example|examples|section\s+of\s+the\s+(?:essay|article|draft|paper|story|email|letter|response|reply|chapter|message|piece|post)|chapter|verse|footnote|slide|page|word\s+count|photo|photos|image|images|attachment|attachments|file|files|document|documents|note|notes)\b/i;
+
+const CHECKLIST_WHOLE_SECTION_RE =
+  /\b(?:whole|entire)\s+(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?|group|section|thing|item|bullet|task|block)\b|\b(?:including|together\s+with|along\s+with|and)\s+(?:its|the)?\s*(?:sub-?items?|children|nested|sub-?bullets?|sub-?points?|bullets?|points?)\b|\b(?:and|with)\s+everything\s+under\b/i;
+
+const CHECKLIST_SUB_ITEM_RE =
+  /\bsub-?item|sub-?items|sub-?bullet|sub-?bullets|nested\s+(?:item|bullet|row|task)|child\s+(?:item|bullet|row|task)|\bunder\s+["']?[^"']{1,80}["']?/i;
+
+function _checklistWordOrDigitOrdinal(token) {
+  const s = String(token || "").trim().toLowerCase();
+  if (!s) return null;
+  if (/^\d{1,3}(?:st|nd|rd|th)?$/.test(s)) {
+    const n = Number(s.replace(/[a-z]+$/i, ""));
+    return Number.isInteger(n) && n > 0 ? n : null;
   }
-  return false;
+  return CHECKLIST_ORDINAL_WORD_MAP[s] || null;
+}
+
+/**
+ * General ordinal parser for checklist commands.
+ *   "remove first and third item"           → [1, 3]
+ *   "first, third, and fifth"               → [1, 3, 5]
+ *   "items 1 and 3"                         → [1, 3]
+ *   "remove the first through third"        → [1, 2, 3]
+ *   "remove 1, 3, 5"                        → [1, 3, 5] (paired with noun)
+ * Returns sorted, deduped 1-based indices.
+ */
+function parseChecklistOrdinals(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return [];
+  const lower = raw.toLowerCase();
+  const candidates = [];
+
+  /* Range form: "first through third", "first to fifth". */
+  const rangeWord = lower.match(
+    new RegExp(`\\b(${CHECKLIST_ORDINAL_WORD_RE_FRAG}|\\d{1,3}(?:st|nd|rd|th)?)\\s+(?:through|to)\\s+(${CHECKLIST_ORDINAL_WORD_RE_FRAG}|\\d{1,3}(?:st|nd|rd|th)?)\\b`, "i")
+  );
+  if (rangeWord) {
+    const a = _checklistWordOrDigitOrdinal(rangeWord[1]);
+    const b = _checklistWordOrDigitOrdinal(rangeWord[2]);
+    if (a && b && a <= b && b - a < 24) {
+      for (let i = a; i <= b; i += 1) candidates.push(i);
+    }
+  }
+
+  /* "items 1, 3, and 5" / "items 1 and 3" / "items 1 3 5" (plural form). */
+  const pluralBlocks = lower.matchAll(
+    /\b(?:checklist\s+)?(?:items|tasks|bullets|rows|steps|sub-?items|sub-?bullets|todos|to-?dos)\s+([^.?!,;]+)/gi
+  );
+  for (const m of pluralBlocks) {
+    const tail = String(m[1] || "");
+    for (const tokenMatch of tail.matchAll(
+      new RegExp(`(${CHECKLIST_ORDINAL_WORD_RE_FRAG}|\\d{1,3}(?:st|nd|rd|th)?)`, "gi")
+    )) {
+      const n = _checklistWordOrDigitOrdinal(tokenMatch[1]);
+      if (n) candidates.push(n);
+    }
+  }
+
+  /* "first, third, and fifth (items)" / "1st and 3rd item" / multi-ordinal
+     bare lists. Walk the text and collect ordinal tokens whenever they're
+     joined by comma / and / & / + / or. Require ≥2 ordinals OR an explicit
+     trailing noun (item/task/bullet/etc.). */
+  const tokenRe = new RegExp(
+    `\\b(${CHECKLIST_ORDINAL_WORD_RE_FRAG}|\\d{1,3}(?:st|nd|rd|th)?)\\b`,
+    "gi"
+  );
+  const ordinalTokens = [...lower.matchAll(tokenRe)].map((m) => ({
+    idx: m.index ?? 0,
+    raw: m[1],
+    n: _checklistWordOrDigitOrdinal(m[1])
+  })).filter((t) => t.n);
+  if (ordinalTokens.length >= 2) {
+    const between = lower.slice(
+      ordinalTokens[0].idx + ordinalTokens[0].raw.length,
+      ordinalTokens[ordinalTokens.length - 1].idx
+    );
+    const sequencey = /(?:,|\band\b|\bor\b|&|\+)/.test(between);
+    if (sequencey) {
+      for (const t of ordinalTokens) candidates.push(t.n);
+    }
+  }
+
+  /* Single ordinal forms — "first item", "item 3", "delete item two". */
+  for (const m of lower.matchAll(
+    new RegExp(
+      `\\b(${CHECKLIST_ORDINAL_WORD_RE_FRAG}|\\d{1,3}(?:st|nd|rd|th)?)\\s+(?:checklist\\s+)?(?:item|items|task|tasks|bullet|bullets|row|rows|step|steps|sub-?item|sub-?items|sub-?bullet|sub-?bullets|to-?do|todos)\\b`,
+      "gi"
+    )
+  )) {
+    const n = _checklistWordOrDigitOrdinal(m[1]);
+    if (n) candidates.push(n);
+  }
+  for (const m of lower.matchAll(
+    new RegExp(
+      `\\b(?:checklist\\s+)?(?:item|task|bullet|row|step|to-?do)s?\\s+(\\d{1,3}|${CHECKLIST_ORDINAL_WORD_RE_FRAG})\\b`,
+      "gi"
+    )
+  )) {
+    const n = _checklistWordOrDigitOrdinal(m[1]);
+    if (n) candidates.push(n);
+  }
+
+  const unique = [...new Set(candidates)].filter((n) => n > 0 && n < 200);
+  unique.sort((a, b) => a - b);
+  return unique;
+}
+
+function _checklistDomState() {
+  let exists = false;
+  let visible = false;
+  try {
+    const pane = document.getElementById("vera-wm-checklist-pane");
+    if (pane instanceof HTMLElement) {
+      const rect = pane.getBoundingClientRect();
+      visible = !pane.hidden && rect.width > 0 && rect.height > 0;
+    }
+    const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
+    const completedUl = document.getElementById("vera-wm-checklist-completed");
+    const ongoingItems = ongoingUl ? ongoingUl.querySelectorAll(":scope > li").length : 0;
+    const completedItems = completedUl ? completedUl.querySelectorAll(":scope > li").length : 0;
+    exists = ongoingItems + completedItems > 0;
+    if (!exists) {
+      try {
+        const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+        const items = raw ? JSON.parse(raw) : [];
+        exists = Array.isArray(items) && items.length > 0;
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return { exists, visible };
+}
+
+function logChecklistIntentDebug(payload) {
+  try {
+    console.warn("[CHECKLIST_INTENT_DEBUG]", payload);
+  } catch (_) {}
+}
+
+/**
+ * General checklist action intent detector. Returns the structured shape
+ * the spec defines plus a confidence score so the caller can pick between
+ * direct execution, deferral, or clarification.
+ */
+function detectChecklistActionIntent(opts = {}) {
+  const latest = String(opts.latestUserText || "").trim();
+  const lower = latest.toLowerCase();
+  const dom = _checklistDomState();
+  const checklistExists = opts.checklistExists != null ? Boolean(opts.checklistExists) : dom.exists;
+  const checklistVisible = opts.checklistVisible != null ? Boolean(opts.checklistVisible) : dom.visible;
+  const recentChecklistContext = Boolean(opts.recentChecklistContext);
+  const base = {
+    isChecklistAction: false,
+    action: null,
+    indices: [],
+    scope: "unknown",
+    confidence: 0,
+    reason: "no_match",
+    detectedObjectType: "unknown",
+    removalVerbDetected: false,
+    explicitNonChecklistObjectDetected: false,
+    checklistExists,
+    checklistVisible,
+    recentChecklistContext
+  };
+  if (!latest) return { ...base, reason: "empty_text" };
+
+  const nonChecklistMatch = CHECKLIST_NON_OBJECT_NOUN_RE.exec(latest);
+  const checklistNounMatch = CHECKLIST_NOUN_RE.exec(latest);
+  if (nonChecklistMatch && !checklistNounMatch) {
+    return {
+      ...base,
+      reason: `explicit_non_checklist_object:${nonChecklistMatch[0].toLowerCase()}`,
+      detectedObjectType: nonChecklistMatch[0].toLowerCase().replace(/\s+/g, "_"),
+      explicitNonChecklistObjectDetected: true
+    };
+  }
+
+  const removalVerb = CHECKLIST_REMOVAL_VERB_RE.test(latest);
+  const addVerb = CHECKLIST_ADD_VERB_RE.test(latest);
+  const completeVerb = CHECKLIST_COMPLETE_VERB_RE.test(latest);
+  const updateVerb = CHECKLIST_UPDATE_VERB_RE.test(latest);
+  const indices = parseChecklistOrdinals(latest);
+  const wholeSection = CHECKLIST_WHOLE_SECTION_RE.test(latest);
+  const subItem = CHECKLIST_SUB_ITEM_RE.test(latest);
+  const scope = wholeSection ? "whole_section" : (subItem ? "sub_item" : (indices.length || checklistNounMatch ? "top_level" : "unknown"));
+  const explicitChecklistWord = /\bcheck\s*list|checklist\b/i.test(latest);
+
+  /* "remove the whole first section" etc. — strong signal regardless of noun. */
+  if (removalVerb && wholeSection) {
+    return {
+      ...base,
+      isChecklistAction: true,
+      action: "remove",
+      indices,
+      scope: "whole_section",
+      confidence: 0.9,
+      reason: "removal_verb_plus_whole_section_qualifier",
+      detectedObjectType: "checklist_item",
+      removalVerbDetected: true
+    };
+  }
+
+  const hasContext = checklistExists || checklistVisible || recentChecklistContext;
+
+  if (removalVerb && indices.length >= 1) {
+    const confidence = explicitChecklistWord
+      ? 0.95
+      : checklistNounMatch
+        ? (hasContext ? 0.9 : 0.75)
+        : (hasContext ? 0.7 : 0.4);
+    return {
+      ...base,
+      isChecklistAction: confidence >= 0.6,
+      action: "remove",
+      indices,
+      scope,
+      confidence,
+      reason: explicitChecklistWord
+        ? "removal_verb_plus_ordinal_plus_checklist_word"
+        : checklistNounMatch
+          ? "removal_verb_plus_ordinal_plus_checklist_noun"
+          : "removal_verb_plus_ordinal_no_noun",
+      detectedObjectType: "checklist_item",
+      removalVerbDetected: true
+    };
+  }
+
+  if (removalVerb && checklistNounMatch && hasContext) {
+    return {
+      ...base,
+      isChecklistAction: true,
+      action: "remove",
+      indices,
+      scope,
+      confidence: 0.7,
+      reason: "removal_verb_plus_checklist_noun_with_context",
+      detectedObjectType: "checklist_item",
+      removalVerbDetected: true
+    };
+  }
+
+  if (addVerb && (explicitChecklistWord || (checklistNounMatch && hasContext))) {
+    return {
+      ...base,
+      isChecklistAction: true,
+      action: "add",
+      indices,
+      scope,
+      confidence: explicitChecklistWord ? 0.85 : 0.65,
+      reason: explicitChecklistWord ? "add_verb_plus_checklist_word" : "add_verb_plus_checklist_noun_with_context",
+      detectedObjectType: "checklist_item"
+    };
+  }
+
+  if (completeVerb && (explicitChecklistWord || (checklistNounMatch && hasContext) || indices.length >= 1)) {
+    return {
+      ...base,
+      isChecklistAction: true,
+      action: "toggle",
+      indices,
+      scope,
+      confidence: explicitChecklistWord ? 0.85 : 0.7,
+      reason: explicitChecklistWord ? "complete_verb_plus_checklist_word" : "complete_verb_plus_context",
+      detectedObjectType: "checklist_item"
+    };
+  }
+
+  if (updateVerb && (explicitChecklistWord || /\bitem\s+\d+\b/i.test(latest) || /\bwith\b/i.test(latest))) {
+    return {
+      ...base,
+      isChecklistAction: true,
+      action: "edit",
+      indices,
+      scope,
+      confidence: explicitChecklistWord ? 0.8 : 0.55,
+      reason: explicitChecklistWord ? "update_verb_plus_checklist_word" : "update_verb_with_item_or_with",
+      detectedObjectType: "checklist_item"
+    };
+  }
+
+  return {
+    ...base,
+    reason: removalVerb ? "removal_verb_no_target" : "no_matching_pattern",
+    removalVerbDetected: removalVerb,
+    indices,
+    scope
+  };
+}
+
+/**
+ * Backwards-compatible boolean gate used by callers that just need to
+ * decide "skip the reasoning-prep path?". A medium-confidence detection
+ * is enough — the actual mutation still flows through the existing
+ * backend `is_checklist_action_request` path which now also generalizes
+ * the ordinal recognizer (see actions/checklist.py).
+ *
+ * Always emits a `[CHECKLIST_INTENT_DEBUG]` row so the routing decision
+ * is auditable even when the gate returns false.
+ */
+function isLikelyWorkChecklistEditIntent(text) {
+  const detection = detectChecklistActionIntent({ latestUserText: text });
+  logChecklistIntentDebug({
+    latest_user_text: String(text || "").slice(0, 240),
+    checklist_exists: detection.checklistExists,
+    checklist_visible: detection.checklistVisible,
+    recent_checklist_context: detection.recentChecklistContext,
+    removal_verb_detected: detection.removalVerbDetected,
+    ordinal_indices_detected: detection.indices,
+    explicit_non_checklist_object_detected: detection.explicitNonChecklistObjectDetected,
+    detected_object_type: detection.detectedObjectType,
+    is_checklist_action: detection.isChecklistAction,
+    action: detection.action,
+    confidence: Number((detection.confidence || 0).toFixed(2)),
+    checklist_scope: detection.scope,
+    reason: detection.reason
+  });
+  return detection.isChecklistAction && detection.confidence >= 0.6;
 }
 
 const WORK_MODE_TOPIC_STOPWORDS = new Set([
@@ -21148,6 +21801,21 @@ async function finalizeMainBrowserTranscript(text) {
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
     return;
   }
+  if (
+    await maybeHandleMoveLatestVoiceTaskToReasoning(trimmed, {
+      path: "main-browser-asr-move-voice-task",
+      isVoice: true,
+      signal: activePipelineAbort?.signal
+    })
+  ) {
+    processing = false;
+    requestInFlight = false;
+    voiceUxTurn = null;
+    waveState = "idle";
+    setStatus("Ready", "idle");
+    updateMuteInputButton();
+    return;
+  }
 
   /* Set before stopAll so a sync SpeechRecognition "onend" cannot restart ASR while we're entering infer. */
   processing = true;
@@ -21643,6 +22311,105 @@ function startPostInterruptBrowserRecognition() {
   }
 }
 
+/**
+ * Run the same client-side shortcuts the normal voice / typed pipelines use
+ * (sync plan, plan shortcut, move latest Voice UI answer to reasoning).
+ * Returns true if any shortcut handled the request, in which case the
+ * caller must NOT POST to /infer.
+ *
+ * The shortcut handlers themselves take care of committing the mutation,
+ * showing the user bubble, queueing the short confirmation, and resuming
+ * listening — exactly as they do on the normal path — so a sync request
+ * that arrives as a barge-in produces the same client-side effect as the
+ * same words spoken outside an interruption.
+ */
+async function maybeRunInterruptionClientShortcuts(routedText, originalText) {
+  if (!routedText) return false;
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
+  const baseCtx = (() => {
+    try {
+      return describePlanSyncActiveContext();
+    } catch (_) {
+      return { active_panel_id: null, active_panel_title: "", active_lane_id: null };
+    }
+  })();
+  const hasReasoningOutput = (() => {
+    try {
+      return Boolean((getLatestWorkModeReasoningMarkdown() || "").trim());
+    } catch (_) {
+      return false;
+    }
+  })();
+  const checklistState = (() => {
+    try { return _checklistDomState(); } catch (_) { return { exists: false, visible: false }; }
+  })();
+
+  try {
+    if (
+      await maybeHandleWorkChecklistSyncShortcut(routedText, {
+        source: "voice_interruption",
+        isVoice: true
+      })
+    ) {
+      logInterruptTranscriptDebug("routed_to_normal_user_turn", {
+        original_transcript: String(originalText || "").slice(0, 120),
+        normalized_command_text: routedText.slice(0, 120),
+        shortcut: "checklist_sync",
+        checklist_sync_intent_detected: true,
+        sync_action_started: true,
+        sync_source: "voice_interruption",
+        active_panel_id_at_interruption: baseCtx.active_panel_id,
+        latest_reasoning_output_available: hasReasoningOutput,
+        checklist_state_available: Boolean(checklistState.exists),
+        handled: true
+      });
+      return true;
+    }
+    if (await maybeHandleWorkChecklistPlanShortcut(routedText)) {
+      logInterruptTranscriptDebug("routed_to_normal_user_turn", {
+        original_transcript: String(originalText || "").slice(0, 120),
+        normalized_command_text: routedText.slice(0, 120),
+        shortcut: "checklist_plan",
+        checklist_sync_intent_detected: false,
+        sync_action_started: false,
+        sync_source: "voice_interruption",
+        active_panel_id_at_interruption: baseCtx.active_panel_id,
+        latest_reasoning_output_available: hasReasoningOutput,
+        checklist_state_available: Boolean(checklistState.exists),
+        handled: true
+      });
+      return true;
+    }
+    if (
+      await maybeHandleMoveLatestVoiceTaskToReasoning(routedText, {
+        path: "voice-interruption-move-voice-task",
+        isVoice: true
+      })
+    ) {
+      logInterruptTranscriptDebug("routed_to_normal_user_turn", {
+        original_transcript: String(originalText || "").slice(0, 120),
+        normalized_command_text: routedText.slice(0, 120),
+        shortcut: "move_voice_task_to_reasoning",
+        checklist_sync_intent_detected: false,
+        sync_action_started: false,
+        sync_source: "voice_interruption",
+        active_panel_id_at_interruption: baseCtx.active_panel_id,
+        latest_reasoning_output_available: hasReasoningOutput,
+        checklist_state_available: Boolean(checklistState.exists),
+        handled: true
+      });
+      return true;
+    }
+  } catch (err) {
+    logInterruptTranscriptDebug("shortcut_error", {
+      normalized_command_text: routedText.slice(0, 120),
+      error_message: String(err?.message || err || "").slice(0, 200),
+      handled: false
+    });
+  }
+  return false;
+}
+
 async function finalizeInterruptBrowserTranscript(text) {
   const trimmed = (text || "").trim();
   if (inputMuted) {
@@ -21659,16 +22426,74 @@ async function finalizeInterruptBrowserTranscript(text) {
     return;
   }
 
+  /* Classify the interruption BEFORE talking to the server so:
+       - pure cancel phrases ("stop") never spend a /infer round trip,
+       - leading cancel prefixes ("stop, sync the plan") are stripped so
+         the routing layer sees the actionable command,
+       - regular interruption commands go through the same client-side
+         shortcuts the normal voice path uses (sync plan, move-to-panel,
+         …), so a barge-in cannot swallow an actionable command. */
+  const classification = classifyInterruptionTranscript(trimmed);
+  const routedText = classification.normalizedCommandText || trimmed;
+  logInterruptTranscriptDebug("classification", {
+    transcript: trimmed.slice(0, 120),
+    is_cancel_only: classification.isCancelOnly,
+    has_action_intent: classification.hasActionIntent,
+    normalized_command_text: routedText.slice(0, 120),
+    leading_cancel_stripped: classification.leadingCancelStripped,
+    classification: classification.isCancelOnly
+      ? "cancel_only"
+      : classification.hasActionIntent
+        ? "action_command"
+        : "ignored_noise",
+    reason: classification.reason
+  });
+
+  if (classification.isCancelOnly) {
+    /* TTS already stopped on the barge-in detector path. Just resume
+       listening — do NOT POST to /infer. */
+    try { showDeferredMainBrowserUserBubbleIfNeeded(trimmed); } catch (_) {}
+    stopAllBrowserSpeechRecognizers();
+    processing = false;
+    requestInFlight = false;
+    voiceUxTurn = null;
+    listening = true;
+    setStatus("Listening…", "recording");
+    logInterruptTranscriptDebug("cancel_only_completed", {
+      transcript: trimmed.slice(0, 120),
+      routed_to_normal_user_turn: false,
+      normal_router_called: false,
+      reason: "cancel_only_no_action"
+    });
+    startListening();
+    return;
+  }
+
+  /* Show the user's actual bubble (what they said, including any "stop,"
+     prefix) before any shortcut runs, so the chat history mirrors reality. */
+  try { showDeferredMainBrowserUserBubbleIfNeeded(trimmed); } catch (_) {}
+
+  /* Run the same client-side shortcuts the normal voice path uses. If a
+     shortcut handled the command it has already committed the mutation,
+     queued the confirmation, and resumed listening — return early. */
+  const handledByShortcut = await maybeRunInterruptionClientShortcuts(
+    routedText,
+    trimmed
+  );
+  if (handledByShortcut) return;
+
+  /* Fall through: route to the /infer interrupt pipeline. Use the
+     normalized command text so the server sees the actionable part of
+     "stop, sync the plan" rather than the cancel prefix. */
   processing = true;
   requestInFlight = true;
   waveState = "idle";
   setStatus("Thinking", "thinking");
 
   abortBrowserSpeechRecognizers();
-  showDeferredMainBrowserUserBubbleIfNeeded(trimmed);
 
   const formData = new FormData();
-  formData.append("transcript", trimmed);
+  formData.append("transcript", routedText);
   formData.append("use_browser_asr", "1");
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
@@ -21688,12 +22513,17 @@ async function finalizeInterruptBrowserTranscript(text) {
   );
   formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
 
-  logVoiceTranscript("final", trimmed, { path: "interrupt-browser-asr" });
-  logFinalTranscriptSentToLlm("interrupt-browser-asr", trimmed);
+  logVoiceTranscript("final", routedText, { path: "interrupt-browser-asr" });
+  logFinalTranscriptSentToLlm("interrupt-browser-asr", routedText);
   logInterruptTranscriptDebug("asr_result", {
-    transcript: trimmed.slice(0, 120),
-    transcript_char_count: trimmed.length,
-    possibly_cutoff: /^(explain|second|part|music)\b/i.test(trimmed)
+    transcript: routedText.slice(0, 120),
+    transcript_char_count: routedText.length,
+    leading_cancel_stripped: classification.leadingCancelStripped,
+    original_transcript: trimmed.slice(0, 120),
+    routed_to_normal_user_turn: true,
+    normal_router_called: true,
+    sync_source: "voice_interruption",
+    possibly_cutoff: /^(explain|second|part|music)\b/i.test(routedText)
   });
   await runInferInterruptPipeline(formData);
 }
@@ -22570,6 +23400,21 @@ async function handleUtterance() {
         updateMuteInputButton();
         return;
       }
+      if (
+        await maybeHandleMoveLatestVoiceTaskToReasoning(trimmed, {
+          path: "work-mode-server-asr-move-voice-task",
+          isVoice: true,
+          signal: pipelineSig
+        })
+      ) {
+        requestInFlight = false;
+        processing = false;
+        voiceUxTurn = null;
+        waveState = "idle";
+        setStatus("Ready", "idle");
+        updateMuteInputButton();
+        return;
+      }
 
       ensureChatStartedLayout();
       beginVoiceUxTurn();
@@ -22741,6 +23586,14 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     return;
   }
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
+    return;
+  }
+  if (
+    await maybeHandleMoveLatestVoiceTaskToReasoning(trimmed, {
+      path: path || "work-typed-move-voice-task",
+      isVoice: false
+    })
+  ) {
     return;
   }
 
