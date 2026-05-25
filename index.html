@@ -2809,11 +2809,14 @@ document.addEventListener("click", () => {
       <div class="vera-settings-row">
         <div class="vera-settings-label">ASR mode</div>
         <div class="vera-settings-radio-row" role="radiogroup" aria-label="ASR mode">
-          <button type="button" id="vera-setting-asr-streaming" class="vera-settings-radio" data-asr-mode="streaming" aria-pressed="true">
-            <span class="dot" aria-hidden="true"></span> ASR streaming
+          <button type="button" id="vera-setting-asr-streaming" class="vera-settings-radio" data-asr-mode="streaming" aria-pressed="true" title="Fast live captions with lower accuracy.">
+            <span class="dot" aria-hidden="true"></span> Fast / Streaming
           </button>
-          <button type="button" id="vera-setting-asr-single" class="vera-settings-radio" data-asr-mode="single" aria-pressed="false">
-            <span class="dot" aria-hidden="true"></span> Single ASR pipeline
+          <button type="button" id="vera-setting-asr-whisper" class="vera-settings-radio" data-asr-mode="whisper" aria-pressed="false" title="More accurate transcription, but slower.">
+            <span class="dot" aria-hidden="true"></span> Accurate / Whisper
+          </button>
+          <button type="button" id="vera-setting-asr-hybrid" class="vera-settings-radio" data-asr-mode="hybrid" aria-pressed="false" title="Live captions with Whisper correction for selected requests.">
+            <span class="dot" aria-hidden="true"></span> Hybrid
           </button>
         </div>
       </div>
@@ -2918,7 +2921,7 @@ document.addEventListener("click", () => {
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
-<script src="app.js?v=64"></script>
+<script src="app.js?v=67"></script>
 </body>
 </html>
 
