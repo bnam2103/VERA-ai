@@ -9,7 +9,7 @@ try {
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v67 loaded — ASR_MODES (streaming default + whisper + hybrid; selective whisper-verify for risky commands; backcompat single->whisper, browser->streaming) + REASONING_PANEL_CLOSE + NEWS_PANEL_UI + NEWS_ROUTE_V2 + PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + CHECKLIST_INTENT_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG + MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG active. math_router_enabled=false.",
+    "%c[VERA] app.js build v69 loaded — MULTI_DEVICE_CONCURRENCY (per-tab session_id + ?session=new + window.veraConcurrencyDebug() + client_request_id on /infer + /text) + ASR_MODES (streaming default + whisper + hybrid; selective whisper-verify for risky commands; backcompat single->whisper, browser->streaming) + REASONING_PANEL_CLOSE + NEWS_PANEL_UI + NEWS_ROUTE_V2 + PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + CHECKLIST_INTENT_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG + MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG active. math_router_enabled=false.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -61,6 +61,154 @@ function getSessionId() {
   }
   return id;
 }
+
+/* =========================
+   MULTI-DEVICE CONCURRENCY — PART 2 + PART 10 + PART 11
+   - PART 2: Verify session_id generation. Each browser/tab gets a unique
+     UUID stored in sessionStorage; we ALSO accept ?session=new on the URL
+     for explicit testing of two distinct sessions from the same browser.
+   - PART 10: Per-tab request_id generator so /infer, /text, and reasoning
+     stream calls each carry their own id (visible in backend [REQ start]
+     logs paired with the session_id).
+   - PART 11: window.veraConcurrencyDebug() prints a one-shot snapshot of
+     this tab's session_id, last request_id, and active reasoning/audio
+     state so a tester can quickly confirm two devices are isolated.
+========================= */
+
+const _VERA_SESSION_STORAGE_KEYS_ALL = [VERA_SESSION_STORAGE_KEY, BMO_SESSION_STORAGE_KEY];
+
+/** Force a brand-new session id for ALL clients (VERA + BMO) in THIS tab. */
+function resetVeraAndBmoSessionIdsForTab() {
+  for (const key of _VERA_SESSION_STORAGE_KEYS_ALL) {
+    try {
+      const fresh = crypto.randomUUID();
+      sessionStorage.setItem(key, fresh);
+      localStorage.removeItem(key);
+    } catch (_) {}
+  }
+}
+
+/* Handle ?session=new in the URL: useful for opening two browser windows
+   on the same device and intentionally giving each one a separate session.
+   Without this, sessionStorage is per-window-target so duplicate windows
+   already get separate sessions; ?session=new is the explicit escape hatch. */
+try {
+  const _qp = new URLSearchParams(window.location.search || "");
+  if ((_qp.get("session") || "").toLowerCase() === "new") {
+    resetVeraAndBmoSessionIdsForTab();
+    _qp.delete("session");
+    const cleanQs = _qp.toString();
+    const cleanUrl =
+      window.location.pathname + (cleanQs ? "?" + cleanQs : "") + window.location.hash;
+    try { history.replaceState(null, "", cleanUrl); } catch (_) {}
+    try { console.warn("[VERA][SESSION] ?session=new applied → fresh session_id for this tab"); } catch (_) {}
+  }
+} catch (_) {}
+
+/* PART 2 verification log. Visible in DevTools on every tab so a two-device
+   tester can confirm at a glance that the sessions differ. */
+try {
+  const _veraSid = getSessionScopedId(VERA_SESSION_STORAGE_KEY) || getSessionId();
+  console.log("[VERA][SESSION]", { vera_session_id: _veraSid });
+} catch (_) {}
+
+/* PART 10: per-request id. We send this with EVERY backend call so the
+   server [REQ start] / [REQ end] logs pair up unambiguously even if the
+   same session has multiple in-flight requests (typed input vs voice vs
+   reasoning panel). The server also generates its own request_id; ours is
+   informational for debugging. */
+const VERA_LAST_REQUEST_IDS = {
+  infer: null,
+  text: null,
+  reasoning_stream: null,
+  reasoning_stream_upload: null,
+  reasoning_panel_title: null,
+  tts_emotion_route: null,
+  other: null,
+};
+function newVeraRequestId() {
+  /* req_<10 base36 chars> — short, grep-friendly, low collision in practice
+     since per-tab it's bounded to a few hundred requests. */
+  let r = "";
+  try {
+    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+      const buf = new Uint32Array(2);
+      crypto.getRandomValues(buf);
+      r = (buf[0].toString(36) + buf[1].toString(36)).slice(0, 10);
+    }
+  } catch (_) {}
+  if (!r) {
+    r = Math.random().toString(36).slice(2, 12);
+  }
+  return "req_" + r;
+}
+function recordVeraRequestId(slot, requestId) {
+  if (!slot || !requestId) return requestId;
+  try {
+    VERA_LAST_REQUEST_IDS[slot] = requestId;
+  } catch (_) {}
+  return requestId;
+}
+
+/* PART 11: window.veraConcurrencyDebug() — call from DevTools to inspect
+   the current tab's isolation state. Returns an object; also console.tables it. */
+try {
+  window.veraConcurrencyDebug = function veraConcurrencyDebug() {
+    const snap = {
+      vera_session_id: (function () {
+        try { return getSessionScopedId(VERA_SESSION_STORAGE_KEY) || ""; } catch (_) { return ""; }
+      })(),
+      bmo_session_id: (function () {
+        try { return getSessionScopedId(BMO_SESSION_STORAGE_KEY) || ""; } catch (_) { return ""; }
+      })(),
+      last_request_ids: { ...VERA_LAST_REQUEST_IDS },
+      active_reasoning_streams: (function () {
+        try {
+          return typeof workModeReasoningAbortControllers !== "undefined"
+            ? workModeReasoningAbortControllers.size
+            : 0;
+        } catch (_) { return 0; }
+      })(),
+      reasoning_lane_busy: (function () {
+        try {
+          return typeof workModeReasoningLaneBusy !== "undefined"
+            ? Array.from(workModeReasoningLaneBusy.entries())
+            : [];
+        } catch (_) { return []; }
+      })(),
+      tts_queue_size: (function () {
+        try {
+          return typeof workModeTtsQueue !== "undefined" ? workModeTtsQueue.length : null;
+        } catch (_) { return null; }
+      })(),
+      tts_currently_playing: (function () {
+        try {
+          return typeof workModeTtsCurrentlyPlaying !== "undefined"
+            ? !!workModeTtsCurrentlyPlaying
+            : null;
+        } catch (_) { return null; }
+      })(),
+      interrupt_state: (function () {
+        try {
+          return typeof interruptBargeInLatched !== "undefined" ? !!interruptBargeInLatched : null;
+        } catch (_) { return null; }
+      })(),
+      listening: (function () {
+        try { return typeof listening !== "undefined" ? !!listening : null; } catch (_) { return null; }
+      })(),
+      processing: (function () {
+        try { return typeof processing !== "undefined" ? !!processing : null; } catch (_) { return null; }
+      })(),
+      url: window.location.href,
+      build: "v68_multi_device_concurrency",
+    };
+    try { console.table(snap.last_request_ids); } catch (_) {}
+    try {
+      console.log("%c[VERA] concurrency debug snapshot", "color:#10b981;font-weight:bold;", snap);
+    } catch (_) {}
+    return snap;
+  };
+} catch (_) {}
 
 /**
  * Call when opening BMO: new backend session, empty log, voice input default, clear side panel.
@@ -24943,8 +25091,20 @@ async function runInferMainPipeline(formData, opts = {}) {
     const awaitStreamingPlayback = opts.awaitStreamingPlayback !== false;
     /* Default true: consecutive voice/work-mode turns must not start NDJSON TTS until the prior reply finishes. */
     const serializeTtsPlayback = opts.serializeTtsPlayback !== false;
+    /* PART 10/11: per-request client-side id propagated as headers + form
+       field. Server still generates its own request_id (returned in JSON
+       response or NDJSON done line); this one is used by
+       window.veraConcurrencyDebug() to show what THIS tab last fired. */
+    const _inferClientRequestId = recordVeraRequestId("infer", newVeraRequestId());
+    try { formData.set("client_request_id", _inferClientRequestId); } catch (_) {
+      try { formData.append("client_request_id", _inferClientRequestId); } catch (_) {}
+    }
     const res = await fetch(`${API_URL}/infer`, {
       method: "POST",
+      headers: {
+        "X-Vera-Request-Id": _inferClientRequestId,
+        "X-Vera-Session-Id": getSessionId(),
+      },
       body: formData,
       signal: inferSignal
     });
@@ -26166,15 +26326,24 @@ async function sendTextMessage() {
   try {
     await flushWorkChecklistSyncBeforeCommand();
     const textFetchStart = performance.now();
+    /* PART 10/11: attach a client-side request_id so the dev console can
+       pair frontend logs with backend [REQ start]/[REQ end] lines. Server
+       still generates its own (returned in `request_id` on the response). */
+    const _textClientRequestId = recordVeraRequestId("text", newVeraRequestId());
     const res = await fetch(`${API_URL}/text`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vera-Request-Id": _textClientRequestId,
+        "X-Vera-Session-Id": getSessionId(),
+      },
       body: JSON.stringify({
         text,
         session_id: getSessionId(),
         client: appModePrefix(),
         stream_tts: shouldStreamTts(),
-        context_snapshot: buildClientContextSnapshot()
+        context_snapshot: buildClientContextSnapshot(),
+        client_request_id: _textClientRequestId
       }),
       signal: attachPipelineAbortSignal()
     });
@@ -26613,12 +26782,23 @@ async function refreshVeraActiveUserLabel() {
   if (!tabUser) {
     setVeraActiveUserLabel(null);
     try {
-      await fetch(authApiUrl("/api/user/sign-out"), { method: "POST" });
+      /* PART 7: scoped sign-out so we don't clobber other devices that are
+         signed in as different users. */
+      await fetch(authApiUrl("/api/user/sign-out"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: getSessionId() }),
+      });
     } catch {}
     return;
   }
   try {
-    const res = await fetch(authApiUrl("/api/user/active"), { method: "GET" });
+    /* PART 7: include session_id so the backend returns THIS session's
+       active user, not whatever was last set process-wide. */
+    const res = await fetch(
+      authApiUrl(`/api/user/active?session_id=${encodeURIComponent(getSessionId())}`),
+      { method: "GET" }
+    );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       setVeraActiveUserLabel(null);
@@ -27063,7 +27243,11 @@ function wireVeraUserSignInHoldAndModal() {
       const res = await fetch(authApiUrl("/api/user/sign-in"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: user, password: pass })
+        /* PART 7: pass session_id so the backend can scope the active user
+           PER SESSION instead of overwriting the process-global field. Two
+           devices signing in as different users will each have their own
+           checklist / known-facts isolation. */
+        body: JSON.stringify({ username: user, password: pass, session_id: getSessionId() })
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
