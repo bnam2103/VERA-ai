@@ -7730,11 +7730,16 @@ body.bmo-open.news-panel-open #bmo-page .input-container {
 }
 
 #vera-app.work-mode
-  .vera-wm-reasoning-body-wrap:not(:has(.vera-reasoning-tab-panels .vera-reasoning-md-panel > *))
-  .vera-wm-empty-hint--reasoning,
-#vera-app.work-mode
   .vera-wm-conversation-wrap:not(:has(#vera-conversation > *))
   .vera-wm-empty-hint--voice {
+  display: flex;
+}
+
+/* PART 4 (polish): the two reasoning-area hints are now driven by JS via
+   the `hidden` attribute (renderReasoningTabStrip) so we can distinguish
+   "the active panel is empty" from "the whole workspace is empty/fresh". */
+#vera-app.work-mode .vera-wm-empty-hint--reasoning:not([hidden]),
+#vera-app.work-mode .vera-wm-empty-hint--fresh:not([hidden]) {
   display: flex;
 }
 

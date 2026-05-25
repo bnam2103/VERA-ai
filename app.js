@@ -8218,6 +8218,27 @@ function renderReasoningTabStrip() {
     );
     addBtn.title = atMax ? "Maximum 8 spaces" : `Add space (up to ${REASONING_TABS_MAX})`;
   }
+  /* PART 4: toggle the empty-state copy. The active panel gets the
+     "No reasoning in this panel yet." line when it's blank, and the
+     dedicated "Fresh workspace ready." line shows only when EVERY visible
+     panel is blank (so the user sees a workspace-style reset, not a
+     stale/failed feel). */
+  try {
+    const root = document.getElementById("vera-reasoning-pane") || document;
+    const hintPerPanel = root.querySelector(".vera-wm-empty-hint--reasoning");
+    const hintFresh = root.querySelector(".vera-wm-empty-hint--fresh");
+    const allBlank = panels.length > 0 && panels.every((p) => _isBlankReasoningPanelElement(p));
+    const activePanel = panels.find((p) => p.classList.contains("is-active")) || panels[0];
+    const activeBlank = activePanel ? _isBlankReasoningPanelElement(activePanel) : true;
+    if (hintFresh) {
+      const shouldShowFresh = allBlank;
+      hintFresh.hidden = !shouldShowFresh;
+    }
+    if (hintPerPanel) {
+      const shouldShowPerPanel = !allBlank && activeBlank;
+      hintPerPanel.hidden = !shouldShowPerPanel;
+    }
+  } catch (_) {}
 }
 
 function activateReasoningTab(index) {
@@ -8281,6 +8302,147 @@ function logReasoningCloseDebug(payload) {
       console.warn("[reasoning_close_debug] log_serialization_failed");
     } catch (_) {}
   }
+}
+
+/* PART 7: polish-layer log (separate channel so it's easy to grep without
+   getting flooded by the lower-level mutation log). */
+function logReasoningClosePolishDebug(payload) {
+  try {
+    console.info(
+      "[reasoning_close_polish_debug] " + JSON.stringify(payload, null, 0)
+    );
+  } catch (_) {
+    try {
+      console.info("[reasoning_close_polish_debug] log_serialization_failed");
+    } catch (_) {}
+  }
+}
+
+/* PART 2: per-turn close-action lock. Multiple input pipelines (interrupt
+   ASR, main browser ASR, /infer round-trip) can all try to handle the same
+   close command from the same user utterance — they used to each fire a
+   bubble + an execution. We now record a small fingerprint of the last
+   close action and short-circuit duplicates within REASONING_CLOSE_TURN_LOCK_MS. */
+const REASONING_CLOSE_TURN_LOCK_MS = 4000;
+let _lastReasoningCloseLock = null; // {at, scope, indicesKey, confirmation, source}
+
+function _reasoningCloseLockKey(scope, indices) {
+  const idxKey = Array.isArray(indices) ? indices.join(",") : "";
+  return `${scope || ""}|${idxKey}`;
+}
+function _hasActiveReasoningCloseLock() {
+  if (!_lastReasoningCloseLock) return false;
+  return (Date.now() - _lastReasoningCloseLock.at) <= REASONING_CLOSE_TURN_LOCK_MS;
+}
+function _setReasoningCloseLock(info) {
+  _lastReasoningCloseLock = {
+    at: Date.now(),
+    scope: String(info?.scope || ""),
+    indicesKey: _reasoningCloseLockKey(info?.scope, info?.indices),
+    confirmation: String(info?.confirmation || ""),
+    source: String(info?.source || ""),
+  };
+}
+function _peekReasoningCloseLock() {
+  return _lastReasoningCloseLock;
+}
+
+/* PART 3: detect generic, auto-renamable blank panel labels (mirrors the
+   server-side rule). User-set titles like "English Essay Plan" are NOT
+   renamed; "Panel 6" / "New Panel" / "Untitled" / empty are renamed in
+   _normalizeBlankPanelNamesInOrder. */
+function _isGenericBlankReasoningPanelLabel(label) {
+  const t = String(label || "").trim();
+  if (!t) return true;
+  if (/^panel\s+\d+$/i.test(t)) return true;
+  if (/^new\s+panel(\s+\d+)?$/i.test(t)) return true;
+  if (t.toLowerCase() === String(REASONING_UNTITLED_TAB_NAME || "untitled").toLowerCase()) return true;
+  return false;
+}
+
+function _isBlankReasoningPanelElement(panelEl) {
+  if (!(panelEl instanceof HTMLElement)) return false;
+  const scroll =
+    panelEl.querySelector(".vera-reasoning-md-panel") ||
+    panelEl.querySelector(".vera-reasoning-scroll");
+  const html = String(scroll?.innerHTML || "").trim();
+  return !html;
+}
+
+/* Walk panels in visual order; for every panel that is BOTH blank in
+   content AND has a generic auto-renamable title, rewrite its title to
+   "Panel <visual+1>". Meaningful titles (English Essay Plan, etc.) are
+   preserved. Returns {before, after, renamedCount}. */
+function _normalizeBlankPanelNamesInOrder() {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return { before: [], after: [], renamedCount: 0 };
+  const els = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  const before = els.map((p, i) => String(p.dataset.laneLabel || `Panel ${i + 1}`).trim());
+  let renamed = 0;
+  els.forEach((panel, visualIdx) => {
+    const current = String(panel.dataset.laneLabel || "").trim();
+    const targetLabel = `Panel ${visualIdx + 1}`;
+    const blankContent = _isBlankReasoningPanelElement(panel);
+    const genericLabel = _isGenericBlankReasoningPanelLabel(current);
+    /* Rule (PART 3):
+        - Only rename when the label is generic AND (the panel is blank
+          OR the existing label is just a misleading-numbered "Panel N"
+          carried over from before the close).
+        - Never rename a user/LLM-set meaningful title. */
+    if (!genericLabel) return;
+    if (!blankContent && /^panel\s+\d+$/i.test(current) === false) return;
+    if (current === targetLabel) return;
+    panel.dataset.laneLabel = targetLabel;
+    panel.dataset.tabTopic = panel.dataset.tabTopic && !_isGenericBlankReasoningPanelLabel(panel.dataset.tabTopic)
+      ? panel.dataset.tabTopic
+      : REASONING_UNTITLED_TAB_NAME;
+    renamed += 1;
+  });
+  const after = els.map((p, i) => String(p.dataset.laneLabel || `Panel ${i + 1}`).trim());
+  return { before, after, renamedCount: renamed };
+}
+
+/* PART 5: pick the active panel AFTER refill + rename. Preference:
+     1. previous active if it survived close
+     2. nearest right neighbor of closed active that survived
+     3. nearest left neighbor of closed active that survived
+     4. any surviving "meaningful" original (non-generic label, non-empty)
+     5. the first blank refill panel
+   This avoids leaving the user on a random "Panel 8" blank when a
+   meaningful "English Essay Plan" panel still exists. */
+function _pickActivePanelInfoAfterRefill(prevOrder, closedTabIndexSet, currentOrder) {
+  if (!Array.isArray(currentOrder) || !currentOrder.length) return null;
+  const activeBefore = prevOrder.find((p) => p.isActive);
+  if (activeBefore && !closedTabIndexSet.has(activeBefore.tabIndex)) {
+    const stillThere = currentOrder.find((p) => p.tabIndex === activeBefore.tabIndex);
+    if (stillThere) return stillThere;
+  }
+  if (activeBefore) {
+    const activeVisualIdx = activeBefore.visualIndex; // 1-based
+    for (let v = activeVisualIdx + 1; v <= prevOrder.length; v += 1) {
+      const cand = prevOrder[v - 1];
+      if (!cand || closedTabIndexSet.has(cand.tabIndex)) continue;
+      const stillThere = currentOrder.find((p) => p.tabIndex === cand.tabIndex);
+      if (stillThere) return stillThere;
+    }
+    for (let v = activeVisualIdx - 1; v >= 1; v -= 1) {
+      const cand = prevOrder[v - 1];
+      if (!cand || closedTabIndexSet.has(cand.tabIndex)) continue;
+      const stillThere = currentOrder.find((p) => p.tabIndex === cand.tabIndex);
+      if (stillThere) return stillThere;
+    }
+  }
+  /* Prefer any surviving "meaningful" original. */
+  const meaningfulOriginal = currentOrder.find((p) => {
+    const survivedTabIdx = prevOrder.some((pp) => pp.tabIndex === p.tabIndex && !closedTabIndexSet.has(pp.tabIndex));
+    if (!survivedTabIdx) return false;
+    const genericLabel = _isGenericBlankReasoningPanelLabel(p.label);
+    return !genericLabel;
+  });
+  if (meaningfulOriginal) return meaningfulOriginal;
+  /* Otherwise: first blank panel (which after _normalizeBlankPanelNamesInOrder
+     is "Panel 1"). */
+  return currentOrder[0] || null;
 }
 
 function getReasoningPanelOrder() {
@@ -8524,16 +8686,30 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
     createdBlankCount = refillReasoningPanelsToMinimum();
   }
 
-  /* If no original survived AND we created blanks, the first blank becomes
-     active (PART 9 case 3). */
-  const stillHaveActive =
-    panelsRoot.querySelector(".vera-reasoning-tab-panel.is-active") != null;
-  if (!stillHaveActive) {
+  /* PART 3: rename auto-refilled blank panels back to clean "Panel 1/2/3"
+     names so the workspace looks reset, not "accumulating". Meaningful
+     titled panels (English Essay Plan, Ticket Complaint Email, …) keep
+     their titles. */
+  const panelOrderAfterRefillBeforeRename = getReasoningPanelOrder().map((p) => ({
+    tabIndex: p.tabIndex, laneId: p.laneId, label: p.label, visualIndex: p.visualIndex,
+  }));
+  const renameInfo = _normalizeBlankPanelNamesInOrder();
+
+  /* PART 5: smarter active-tab pick AFTER refill+rename. Prefer a meaningful
+     original survivor over a random blank refill panel. */
+  syncReasoningLaneBusySlotsAfterDomChange();
+  const afterOrderForActive = getReasoningPanelOrder();
+  const chosenActive = _pickActivePanelInfoAfterRefill(prevOrder, closedTabIndexSet, afterOrderForActive);
+  if (chosenActive) {
+    afterOrderForActive.forEach((p) => p.element?.classList?.remove("is-active"));
+    const el = afterOrderForActive.find((p) => p.tabIndex === chosenActive.tabIndex)?.element;
+    if (el) el.classList.add("is-active");
+  } else {
+    /* Belt-and-suspenders fallback. */
     const first = panelsRoot.querySelector(".vera-reasoning-tab-panel");
     if (first) first.classList.add("is-active");
   }
 
-  syncReasoningLaneBusySlotsAfterDomChange();
   renderReasoningTabStrip();
 
   const afterOrder = getReasoningPanelOrder();
@@ -8568,6 +8744,29 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
     reason,
   });
 
+  /* PART 7: high-level polish-layer log (separate channel so it's easy to
+     grep without getting flooded by the lower-level mutation log). */
+  logReasoningClosePolishDebug({
+    raw_user_text: userText.slice(0, 200),
+    cleaned_command_text: String(opts_.cleanedCommandText || "").slice(0, 200),
+    close_phrases_detected: Array.isArray(opts_.allCloseSpans) ? opts_.allCloseSpans.map((s) => s.phrase) : [],
+    selected_close_phrase: opts_.selectedClosePhrase || "",
+    suppressed_close_phrases: Array.isArray(opts_.suppressedCloseSpans) ? opts_.suppressedCloseSpans.map((s) => s.phrase) : [],
+    close_action_executed_once: true,
+    confirmation_generated_once: true,
+    panel_titles_before: prevOrder.map((p) => p.label),
+    target_panel_ids: closedLaneIds,
+    target_panel_titles: closedTitles,
+    closed_count: targets.length,
+    created_blank_count: createdBlankCount,
+    panel_titles_after_before_normalization: panelOrderAfterRefillBeforeRename.map((p) => p.label),
+    panel_titles_after_normalization: afterOrder.map((p) => p.label),
+    blank_renames_applied: renameInfo.renamedCount,
+    active_panel_after: activeAfter?.label || null,
+    active_panel_was_closed: activeWasClosed,
+    reason,
+  });
+
   return {
     ok: true,
     closedTitles,
@@ -8578,6 +8777,8 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
     invalidIndices: invalidIdx,
     activeAfter: activeAfter?.label || null,
     activeWasClosed,
+    panelTitlesAfter: afterOrder.map((p) => p.label),
+    blankRenamesApplied: renameInfo.renamedCount,
   };
 }
 
@@ -8726,6 +8927,213 @@ function _parseReasoningCloseIndices(text) {
   return { indices: found, scope: "specific_indices" };
 }
 
+/* =========================================================================
+   PART 6 — ASR noise cleanup for close commands
+   --------------------------------------------------------------------------
+   Browser ASR often appends tail noise after a finalized close command:
+     - "can you hear me", "are you there", "hello"
+     - stuttered self-corrections like "I I" / "I can you"
+     - "you know" / "um" / "uh" repeats
+   Stripping these noise tails before parsing prevents the parser from
+   misreading a stray "I" as part of a different command and avoids the
+   "Closed Panel 1 ... Closed the first two panels" double-fire problem.
+   This is INTENTIONALLY only applied to close-command parsing — general
+   chat must keep the user's exact words.
+   ========================================================================= */
+const _REASONING_CLOSE_NOISE_TAIL_RES = [
+  /\s+(?:can\s+you\s+hear\s+me|are\s+you\s+there|hello|hey\s+vera|vera|hello\?+|are\s+you\s+listening)\s*[?!.,]*\s*$/i,
+  /\s+(?:um+|uh+|ah+|er+|hmm+|you\s+know|like\s+yeah)\s*[?!.,]*\s*$/i,
+];
+const _REASONING_CLOSE_NOISE_PREFIX_RES = [
+  /^\s*(?:hey\s+vera[, ]+|vera[, ]+|so[, ]+|um[, ]+|uh[, ]+|like[, ]+|you\s+know[, ]+)/i,
+];
+function _cleanCommandTextForClose(rawText) {
+  const original = String(rawText || "").trim();
+  if (!original) return "";
+  /* PART 6 hard rule: only mangle text that already looks like a close
+     command. General chat ("I really like the design, can you hear me?")
+     must come back UNCHANGED, otherwise we'd accidentally lose the user's
+     actual question whenever they said the words "can you hear me". */
+  const looksLikeClose =
+    /\b(?:close|clear|hide|dismiss|remove|delete|get\s+rid\s+of)\b/i.test(original)
+    && /\b(?:panels?|tabs?|reasoning)\b/i.test(original);
+  if (!looksLikeClose) return original;
+  let t = original;
+  /* Strip leading filler */
+  for (const re of _REASONING_CLOSE_NOISE_PREFIX_RES) {
+    t = t.replace(re, "");
+  }
+  /* Strip trailing noise tails, repeatedly (because two noise tails can
+     stack: "... close the first two panel. I. can you hear me"). */
+  let changed = true;
+  let guard = 0;
+  while (changed && guard < 6) {
+    changed = false;
+    guard += 1;
+    for (const re of _REASONING_CLOSE_NOISE_TAIL_RES) {
+      const next = t.replace(re, "");
+      if (next !== t) {
+        t = next;
+        changed = true;
+      }
+    }
+  }
+  /* Collapse pronoun stutters like "I I I" or repeated "I" with no verb.
+     Safe to do unconditionally now that the whole function is gated on
+     looksLikeClose above. */
+  t = t.replace(/\s+\bi\b(?:\s+\bi\b)*\s*[?!.,]*\s*$/i, "");
+  /* Also collapse "and you" / "and i" trailing stutters left over after
+     a duplicate-command run that we'll later collapse via the ranker. */
+  t = t.replace(/\s+\band\s+(?:you|i)\b\s*[?!.,]*\s*$/i, "");
+  return t.trim();
+}
+
+/* =========================================================================
+   PART 1 — detect ALL candidate close-command spans, rank, pick one
+   --------------------------------------------------------------------------
+   A real user utterance can contain several overlapping close phrasings,
+   either because the user self-corrected mid-sentence ("close the first
+   panel and you close the first two panels") or because the browser ASR
+   doubled a word. Rather than firing on the first match (which used to
+   produce 2-3 close confirmations), we collect every plausible close span
+   and pick the strongest by spec rank:
+        5 → close all panels
+        4 → close all other panels
+        3 → range (first/last N, "1 through 3")
+        2 → multiple specific indices
+        1 → single specific index / current_panel / by_title
+   Ties broken by latest end position (the more recently-spoken phrase
+   wins). The unselected spans are emitted as suppressed_close_phrases for
+   the spec PART 7 debug log.
+   ========================================================================= */
+
+function _scoreCloseScopeRank(scope) {
+  switch (scope) {
+    case "all_panels": return 5;
+    case "other_panels": return 4;
+    case "range":
+    case "range_first_n":
+    case "range_last_n":
+      return 3;
+    case "specific_indices_multi":
+      return 2;
+    default:
+      return 1;
+  }
+}
+
+/* Return [{scope, indices, rangeN, phrase, end}] for every close-target span
+   we can see in `text`. The end position is the regex.lastIndex of the
+   match (used as a tiebreaker so the LATEST occurrence wins). */
+function _extractAllCloseSpans(text, panelCount) {
+  const t = String(text || "").toLowerCase();
+  if (!t) return [];
+  const spans = [];
+
+  const push = (scope, indices, rangeN, phrase, end) => {
+    spans.push({
+      scope,
+      indices: Array.isArray(indices) ? indices.slice() : null,
+      rangeN: Number.isFinite(rangeN) ? rangeN : null,
+      phrase: String(phrase || "").trim(),
+      end: Number.isFinite(end) ? end : t.length,
+      rank: _scoreCloseScopeRank(scope === "specific_indices" && indices && indices.length > 1 ? "specific_indices_multi" : scope),
+    });
+  };
+
+  /* all_panels variants */
+  const allRe = /\b(?:close|clear)\s+(?:all\s+the\s+|all\s+|every\s+)?(?:reasoning\s+)?panels?\b/g;
+  let m;
+  while ((m = allRe.exec(t)) !== null) {
+    /* Filter out "all other" — that's other_panels, handled below. */
+    if (/\ball\s+other\b|\ball\s+the\s+other\b|\bother\b|\bevery\s+other\b/.test(m[0])) continue;
+    /* Must look like "all/every" or be the only panels noun in the cmd. */
+    if (/\b(?:all|every)\b/.test(m[0])) {
+      push("all_panels", null, null, m[0], allRe.lastIndex);
+    }
+  }
+  /* other_panels: "close all other panels" / "keep this one and close the rest" */
+  const otherRe = /\b(?:close|clear|hide|dismiss|remove)\s+(?:all\s+other\s+|all\s+the\s+other\s+|every\s+other\s+|the\s+other\s+|inactive\s+|other\s+)(?:reasoning\s+)?(?:panels?|tabs?)\b|\bkeep\s+this\s+one\s+(?:and\s+(?:close|hide|dismiss|remove)\s+)?(?:the\s+)?(?:rest|others?|other\s+panels?)\b/g;
+  while ((m = otherRe.exec(t)) !== null) {
+    push("other_panels", null, null, m[0], otherRe.lastIndex);
+  }
+  /* range "1 through 3" */
+  const rangeRe = /\bclose\s+(?:the\s+)?(?:reasoning\s+)?(?:panels?|tabs?)\s+(\d+)\s+(?:through|thru|to|-)\s+(\d+)\b/g;
+  while ((m = rangeRe.exec(t)) !== null) {
+    const a = parseInt(m[1], 10);
+    const b = parseInt(m[2], 10);
+    if (Number.isFinite(a) && Number.isFinite(b) && a <= b) {
+      const idx = [];
+      for (let i = a; i <= b; i += 1) idx.push(i);
+      push("range", idx, b - a + 1, m[0], rangeRe.lastIndex);
+    }
+  }
+  /* range_first_n */
+  const firstNRe = /\bclose\s+(?:the\s+)?first\s+(\d+|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
+  while ((m = firstNRe.exec(t)) !== null) {
+    const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : (REASONING_CLOSE_COUNT_WORDS.get(m[1]) || 0);
+    if (n > 0) {
+      const idx = [];
+      for (let i = 1; i <= n; i += 1) idx.push(i);
+      push("range_first_n", idx, n, m[0], firstNRe.lastIndex);
+    }
+  }
+  /* range_last_n */
+  const lastNRe = /\bclose\s+(?:the\s+)?last\s+(\d+|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
+  while ((m = lastNRe.exec(t)) !== null) {
+    const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : (REASONING_CLOSE_COUNT_WORDS.get(m[1]) || 0);
+    if (n > 0) {
+      const N = Math.max(0, Number(panelCount) || 0);
+      const k = Math.min(n, N);
+      const idx = [];
+      for (let i = N - k + 1; i <= N; i += 1) idx.push(i);
+      push("range_last_n", idx, n, m[0], lastNRe.lastIndex);
+    }
+  }
+  /* current_panel: "close this panel", "close current reasoning tab" */
+  const curRe = /\bclose\s+(?:this|the\s+current|current)\s+(?:reasoning\s+)?(?:panel|tab|space|lane)\b/g;
+  while ((m = curRe.exec(t)) !== null) {
+    push("current_panel", null, null, m[0], curRe.lastIndex);
+  }
+  /* specific_indices via ordinal words AND via "panel N" numerics */
+  const ordWordRe = /\bclose\s+(?:the\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)(?:\s+(?:and|or|,)\s+(?:the\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)){0,7}\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
+  while ((m = ordWordRe.exec(t)) !== null) {
+    const phrase = m[0];
+    const idx = [];
+    const wordsRe = /\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)\b/g;
+    let w;
+    while ((w = wordsRe.exec(phrase)) !== null) {
+      if (w[1] === "last") {
+        const N = Math.max(0, Number(panelCount) || 0);
+        if (N > 0) idx.push(N);
+      } else {
+        const n = REASONING_CLOSE_ORDINAL_WORDS.get(w[1]);
+        if (n) idx.push(n);
+      }
+    }
+    const dedup = [...new Set(idx)].sort((a, b) => a - b);
+    if (dedup.length) push("specific_indices", dedup, null, phrase, ordWordRe.lastIndex);
+  }
+  const numRe = /\bclose\s+(?:the\s+)?(?:reasoning\s+)?(?:panels?|tabs?)\s+#?\s*(\d+(?:\s*(?:,\s*and|,\s*or|and|or|,|&)\s*\d+){0,8})\b/g;
+  while ((m = numRe.exec(t)) !== null) {
+    const phrase = m[0];
+    const nums = String(m[1]).split(/\s*(?:,\s*and|,\s*or|and|or|,|&)\s*/).map((x) => parseInt(x, 10)).filter(Number.isFinite);
+    const dedup = [...new Set(nums)].sort((a, b) => a - b);
+    if (dedup.length) push("specific_indices", dedup, null, phrase, numRe.lastIndex);
+  }
+  return spans;
+}
+
+function _pickStrongestCloseSpan(spans) {
+  if (!Array.isArray(spans) || !spans.length) return null;
+  /* Sort: higher rank first; ties → later end position first. */
+  const sorted = spans.slice().sort((a, b) => {
+    if (b.rank !== a.rank) return b.rank - a.rank;
+    return b.end - a.end;
+  });
+  return sorted[0];
+}
+
 function parseCloseReasoningPanelsCommand(text, panelCount) {
   /* Spec PART 14 returns:
        {
@@ -8740,6 +9148,10 @@ function parseCloseReasoningPanelsCommand(text, panelCount) {
          failureReason: "" | "needs_clarification" | "non_reasoning_subject" |
                         "looks_like_checklist" | "invalid_index" | "no_match",
          parsedRangeType: same as closeScope,
+         rawCommandText: cleaned-and-stripped command text that was parsed,
+         allCloseSpans: [{scope, phrase, indices, rangeN, rank, end}, …],
+         suppressedCloseSpans: spans skipped in favor of the selected one,
+         selectedSpan: the chosen span (PART 1),
        }
      `panelCount` is the current number of visible reasoning panels (so we
      can resolve "last N" deterministically here). */
@@ -8753,12 +9165,21 @@ function parseCloseReasoningPanelsCommand(text, panelCount) {
     failureReason: "",
     parsedRangeType: "unresolved",
     rawIndexPhrase: "",
+    rawCommandText: "",
+    allCloseSpans: [],
+    suppressedCloseSpans: [],
+    selectedSpan: null,
   };
-  const raw = String(text || "").trim();
-  if (!raw) {
+  const original = String(text || "").trim();
+  if (!original) {
     out.failureReason = "empty_text";
     return out;
   }
+  /* PART 6: strip noisy ASR tails BEFORE parsing so we don't get a stray
+     "I" or "can you hear me" fragment dragging the parser into a different
+     scope than the user spoke. */
+  const raw = _cleanCommandTextForClose(original) || original;
+  out.rawCommandText = raw;
   const t = raw.toLowerCase();
 
   /* Undo / reopen */
@@ -8805,89 +9226,53 @@ function parseCloseReasoningPanelsCommand(text, panelCount) {
     return out;
   }
 
-  /* "close all (other) (reasoning) panels" / "close every panel" /
-     "clear reasoning panels" / "keep this one and close the rest" */
-  if (/\b(?:close|clear)\s+(?:all\s+(?:other\s+|the\s+other\s+)?|every\s+|the\s+other\s+|inactive\s+|other\s+)(?:reasoning\s+)?(?:panels?|tabs?|reasoning\s+(?:panel|tab|space)s?)\b/.test(t)
-      || /\b(?:close|clear)\s+(?:all\s+the\s+)?(?:reasoning\s+)?panels?\b/.test(t)
-      || /\bkeep\s+this\s+one\s+(?:and\s+close\s+)?(?:the\s+)?(?:rest|others?|other\s+panels?)\b/.test(t)) {
-    if (/\bother(?:s)?\b|\binactive\b|\brest\b|\bevery\s+other\b|\bkeep\s+this\b/.test(t)) {
-      out.intent = "close_reasoning_panels";
-      out.closeScope = "other_panels";
-      out.parsedRangeType = "other_panels";
-      out.reason = "all_other_panels_phrase";
+  /* PART 1: scan ALL candidate close spans, pick strongest+latest, log
+     the suppressed siblings. This collapses repeated phrases ("close the
+     first panel and you close the first two panels") into one execution. */
+  const allSpans = _extractAllCloseSpans(raw, panelCount);
+  out.allCloseSpans = allSpans.map((s) => ({
+    scope: s.scope, phrase: s.phrase, indices: s.indices, rangeN: s.rangeN, rank: s.rank, end: s.end,
+  }));
+  const selected = _pickStrongestCloseSpan(allSpans);
+  if (selected) {
+    out.selectedSpan = {
+      scope: selected.scope, phrase: selected.phrase, indices: selected.indices, rangeN: selected.rangeN, rank: selected.rank, end: selected.end,
+    };
+    out.suppressedCloseSpans = allSpans
+      .filter((s) => s !== selected)
+      .map((s) => ({ scope: s.scope, phrase: s.phrase, indices: s.indices, rangeN: s.rangeN, rank: s.rank, end: s.end }));
+    out.intent = "close_reasoning_panels";
+    out.closeScope = selected.scope;
+    out.parsedRangeType = selected.scope;
+    out.reason = "ranked_pick";
+    if (selected.scope === "all_panels") {
+      out.rawIndexPhrase = "all_panels";
+      return out;
+    }
+    if (selected.scope === "other_panels") {
       out.rawIndexPhrase = "other_panels";
       return out;
     }
-    out.intent = "close_reasoning_panels";
-    out.closeScope = "all_panels";
-    out.parsedRangeType = "all_panels";
-    out.reason = "all_panels_phrase";
-    out.rawIndexPhrase = "all_panels";
-    return out;
-  }
-
-  /* "close this panel" / "close the current panel" / "close current
-     reasoning tab" / "close this tab" / "close this reasoning panel" */
-  if (/\bclose\s+(?:this|the\s+current|current)\s+(?:reasoning\s+)?(?:panel|tab|space|lane)\b/.test(t)
-      || /\bclose\s+this\s+reasoning\s+panel\b/.test(t)) {
-    out.intent = "close_reasoning_panels";
-    out.closeScope = "current_panel";
-    out.parsedRangeType = "current_panel";
-    out.reason = "current_panel_phrase";
-    out.rawIndexPhrase = "current_panel";
-    return out;
-  }
-
-  /* Range phrases: "close the first two", "close panels 1 through 3",
-     "close the last two panels" */
-  const range = _parseReasoningCloseRange(raw);
-  if (range) {
-    out.intent = "close_reasoning_panels";
-    out.closeScope = range.scope;
-    out.parsedRangeType = range.scope;
-    out.rawIndexPhrase = `${range.scope}:${range.rangeN ?? "n/a"}`;
-    out.reason = "range_phrase";
-    if (range.scope === "range_last_n") {
-      const N = Number(panelCount) || 0;
-      const k = Math.min(Math.max(0, Number(range.rangeN) || 0), N);
-      if (!k) {
-        out.failureReason = "invalid_range";
-        return out;
-      }
-      const idx = [];
-      for (let i = N - k + 1; i <= N; i += 1) idx.push(i);
-      out.indices = idx;
-    } else {
-      out.indices = range.indices.slice();
-    }
-    return out;
-  }
-
-  /* Specific indices: "close panel 2" / "close first and third" / etc. */
-  const explicit = _parseReasoningCloseIndices(raw);
-  if (explicit) {
-    /* Resolve "LAST" sentinels (from "close the last panel") using panelCount. */
-    const N = Number(panelCount) || 0;
-    const resolved = [];
-    for (const v of explicit.indices) {
-      if (v === "LAST") {
-        if (N > 0) resolved.push(N);
-      } else if (Number.isFinite(v)) {
-        resolved.push(Number(v));
-      }
-    }
-    const dedup = [...new Set(resolved)].sort((a, b) => a - b);
-    if (!dedup.length) {
-      out.failureReason = "no_indices";
+    if (selected.scope === "current_panel") {
+      out.rawIndexPhrase = "current_panel";
       return out;
     }
-    out.intent = "close_reasoning_panels";
-    out.closeScope = "specific_indices";
-    out.parsedRangeType = "specific_indices";
-    out.indices = dedup;
-    out.reason = "explicit_ordinal_or_numeric_indices";
-    out.rawIndexPhrase = dedup.join(",");
-    return out;
+    if (selected.scope === "range" || selected.scope === "range_first_n" || selected.scope === "range_last_n") {
+      out.indices = Array.isArray(selected.indices) ? selected.indices.slice() : [];
+      out.rawIndexPhrase = `${selected.scope}:${selected.rangeN ?? "n/a"}`;
+      if (!out.indices.length) {
+        out.failureReason = "invalid_range";
+      }
+      return out;
+    }
+    if (selected.scope === "specific_indices") {
+      out.indices = Array.isArray(selected.indices) ? selected.indices.slice() : [];
+      out.rawIndexPhrase = out.indices.join(",");
+      if (!out.indices.length) {
+        out.failureReason = "no_indices";
+      }
+      return out;
+    }
   }
 
   /* "close the X panel" — by title */
@@ -9090,25 +9475,45 @@ function executeCloseReasoningPanelsCommand(parsed, opts = {}) {
     refillToMinimum: parsed.refillToMinimum !== false,
     userText,
     rawIndexPhrase: parsed.rawIndexPhrase || "",
+    cleanedCommandText: String(parsed.rawCommandText || ""),
+    allCloseSpans: Array.isArray(parsed.allCloseSpans) ? parsed.allCloseSpans : [],
+    suppressedCloseSpans: Array.isArray(parsed.suppressedCloseSpans) ? parsed.suppressedCloseSpans : [],
+    selectedClosePhrase: parsed.selectedSpan?.phrase || "",
   });
-  return {
+  const final = {
     ...result,
     closeScope,
     invalidIndices,
     totalBefore: N,
   };
+  /* PART 2: centralize confirmation generation. ANY caller that wants a
+     user-visible confirmation MUST use exec.confirmation — neither the
+     bubble layer nor the voice layer should produce its own phrasing. */
+  final.confirmation = buildCloseReasoningPanelsVoiceReply(final, parsed);
+  return final;
 }
 
-/* Build the user-facing voice confirmation (spec PART 15). */
+/* Build the user-facing voice confirmation (spec PART 15 + polish PART 2).
+   This is the single source of truth for close-confirmation phrasing.
+   Number-words ("first two", "first three") are used in preference to
+   digits when we have a count, so the voice line reads more naturally. */
+const _REASONING_CLOSE_COUNT_WORD_OUT = [
+  "", "one", "two", "three", "four", "five", "six", "seven", "eight",
+];
+function _countWordOrNumber(n) {
+  const k = Number(n);
+  if (!Number.isFinite(k) || k <= 0) return String(n);
+  return _REASONING_CLOSE_COUNT_WORD_OUT[k] || String(k);
+}
 function buildCloseReasoningPanelsVoiceReply(execResult, parsed) {
   if (!execResult) return "I couldn't close that reasoning panel.";
   if (execResult.ok) {
     const created = execResult.createdBlankCount || 0;
     const titles = execResult.closedTitles || [];
     const count = titles.length;
-    const trail = created > 0
-      ? (count > 1 ? " and opened fresh ones." : " and opened a fresh one.")
-      : ".";
+    const trailMulti = created > 0 ? " and opened fresh ones." : ".";
+    const trailSingle = created > 0 ? " and opened a fresh one." : ".";
+    const trail = count > 1 ? trailMulti : trailSingle;
     if (parsed?.closeScope === "all_panels") {
       return "Closed all panels and opened fresh ones.";
     }
@@ -9121,22 +9526,28 @@ function buildCloseReasoningPanelsVoiceReply(execResult, parsed) {
     if (parsed?.closeScope === "by_title" && titles.length === 1) {
       return `Closed the ${titles[0]} panel.`;
     }
-    if (count === 1) {
-      const isOrdinal = parsed?.closeScope === "specific_indices" && Array.isArray(parsed?.indices) && parsed.indices.length === 1;
-      return isOrdinal
-        ? `Closed Panel ${parsed.indices[0]}${trail}`
-        : `Closed ${titles[0]}${trail}`;
-    }
     if (parsed?.closeScope === "range_first_n") {
-      return `Closed the first ${count} panels${trail}`;
+      return `Closed the first ${_countWordOrNumber(count)} panels${trailMulti}`;
     }
     if (parsed?.closeScope === "range_last_n") {
-      return `Closed the last ${count} panels${trail}`;
+      return `Closed the last ${_countWordOrNumber(count)} panels${trailMulti}`;
     }
     if (parsed?.closeScope === "range") {
-      return `Closed panels ${parsed.indices?.[0]} through ${parsed.indices?.[parsed.indices.length - 1]}${trail}`;
+      return `Closed panels ${parsed.indices?.[0]} through ${parsed.indices?.[parsed.indices.length - 1]}${trailMulti}`;
     }
-    return `Closed ${count} panels${trail}`;
+    if (count === 1) {
+      const onlyTitle = titles[0];
+      /* Prefer the panel's title if it's a meaningful one. Otherwise fall
+         back to the ordinal phrasing the user spoke. */
+      if (onlyTitle && !_isGenericBlankReasoningPanelLabel(onlyTitle)) {
+        return `Closed the ${onlyTitle} panel${trail}`;
+      }
+      const isOrdinal = parsed?.closeScope === "specific_indices" && Array.isArray(parsed?.indices) && parsed.indices.length === 1;
+      return isOrdinal
+        ? `Closed panel ${parsed.indices[0]}${trail}`
+        : `Closed one panel${trail}`;
+    }
+    return `Closed ${_countWordOrNumber(count)} panels${trailMulti}`;
   }
   /* Failure paths. */
   if (execResult.failureReason === "all_indices_out_of_range") {
@@ -9163,10 +9574,21 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   const parsed = parseCloseReasoningPanelsCommand(text, order.length);
 
   if (parsed.intent === "reopen_last_reasoning_panel") {
+    if (_hasActiveReasoningCloseLock()) {
+      logReasoningClosePolishDebug({
+        stage: "shortcut_dedup_skip_reopen",
+        reason: "lock_active",
+        source: opts.reason || "client_shortcut",
+        prev_lock: _peekReasoningCloseLock(),
+        latest_user_text: String(text || "").slice(0, 200),
+      });
+      return true;
+    }
     const r = reopenLastClosedReasoningPanel({ userText: text });
     if (r.ok) {
       const title = r.reopenedTitles?.[0] || "that panel";
       const reply = `Reopened ${title}.`;
+      _setReasoningCloseLock({ scope: "reopen_last", indices: null, confirmation: reply, source: opts.reason || "client_shortcut" });
       try {
         if (typeof addBubble === "function") addBubble(reply, "assistant", { path: "reopen-reasoning-panel" });
         if (typeof speakAssistantReplyIfPossible === "function") speakAssistantReplyIfPossible(reply);
@@ -9186,6 +9608,23 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
 
   if (parsed.intent !== "close_reasoning_panels") return false;
 
+  /* PART 2: per-turn lock. If we already handled a close action in the
+     same user turn (from an earlier ASR interrupt finalize, e.g.), do not
+     execute again and do not double-bubble. We DO claim the shortcut as
+     handled so the /infer round-trip doesn't pile on another execution. */
+  if (_hasActiveReasoningCloseLock()) {
+    logReasoningClosePolishDebug({
+      stage: "shortcut_dedup_skip_close",
+      reason: "lock_active",
+      source: opts.reason || "client_shortcut",
+      prev_lock: _peekReasoningCloseLock(),
+      latest_user_text: String(text || "").slice(0, 200),
+      parsed_close_scope: parsed.closeScope,
+      parsed_indices: parsed.indices || [],
+    });
+    return true;
+  }
+
   /* Log the parse decision regardless of execute outcome. */
   logReasoningCloseDebug({
     latest_user_text: String(text || "").slice(0, 200),
@@ -9196,13 +9635,23 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
     raw_panel_index_phrase: parsed.rawIndexPhrase,
     panel_count_before: order.length,
     stage: "client_shortcut_parsed",
+    cleaned_command_text: String(parsed.rawCommandText || "").slice(0, 200),
+    selected_close_phrase: parsed.selectedSpan?.phrase || "",
+    suppressed_close_phrases: Array.isArray(parsed.suppressedCloseSpans) ? parsed.suppressedCloseSpans.map((s) => s.phrase) : [],
   });
 
   const exec = executeCloseReasoningPanelsCommand(parsed, {
     userText: text,
     reason: opts.reason || "client_shortcut",
   });
-  const reply = buildCloseReasoningPanelsVoiceReply(exec, parsed);
+  /* PART 2: use the single centralized confirmation. */
+  const reply = exec?.confirmation || buildCloseReasoningPanelsVoiceReply(exec, parsed);
+  _setReasoningCloseLock({
+    scope: parsed.closeScope,
+    indices: parsed.indices || null,
+    confirmation: reply,
+    source: opts.reason || "client_shortcut",
+  });
   try {
     if (typeof addBubble === "function") addBubble(reply, "assistant", { path: "close-reasoning-panel" });
     if (typeof speakAssistantReplyIfPossible === "function") speakAssistantReplyIfPossible(reply);
@@ -20134,20 +20583,54 @@ function applyActionPayload(data) {
        reselection stays in one place. */
     if (op === "close" || op === "close_panel" || op === "close_panels") {
       const userTextForClose = String(payload.user_text || "");
-      const parsed = payload.parsed && typeof payload.parsed === "object"
+      /* PART 2: if the client-side shortcut already executed a close for
+         this user turn, the backend round-trip is a stale echo. Skip the
+         duplicate mutation; the bubble is already on screen. */
+      if (_hasActiveReasoningCloseLock()) {
+        logReasoningClosePolishDebug({
+          stage: "backend_payload_dedup_skip",
+          reason: "client_lock_active",
+          prev_lock: _peekReasoningCloseLock(),
+          backend_op: op,
+          backend_user_text: userTextForClose.slice(0, 200),
+        });
+        return;
+      }
+      const parsedRaw = payload.parsed && typeof payload.parsed === "object"
         ? payload.parsed
         : parseCloseReasoningPanelsCommand(userTextForClose, getReasoningPanelOrder().length);
+      /* Backend "parsed" shape is the minimal subset; rerun the parser on
+         the user text so we get the full scan/rank metadata and avoid
+         losing the close-span deduplication logic. */
+      const parsedFull = (parsedRaw && parsedRaw.allCloseSpans)
+        ? parsedRaw
+        : parseCloseReasoningPanelsCommand(userTextForClose, getReasoningPanelOrder().length);
+      /* Use backend-provided slot if it carries info the user text doesn't
+         expose (e.g. by_title where title came from LLM extraction). */
+      const parsed = {
+        ...parsedFull,
+        ...(parsedRaw && parsedRaw.titleQuery ? { titleQuery: parsedRaw.titleQuery } : {}),
+        ...(parsedRaw && (parsedRaw.closeScope === "by_title" || parsedRaw.closeScope === "reopen_last")
+          ? { closeScope: parsedRaw.closeScope, parsedRangeType: parsedRaw.closeScope }
+          : {}),
+      };
       const exec = executeCloseReasoningPanelsCommand(parsed, {
         userText: userTextForClose,
         reason: payload.reason || "backend_action_payload",
       });
-      /* When the backend already spoke a reply (spoken_reply on the action
-         result), we don't speak again — but we still ensure the bubble
-         exists. The backend pipeline typically adds the bubble itself.
-         If exec.ok is false (e.g. ambiguous title), we surface a clarifying
-         bubble so the user isn't left without feedback. */
+      /* PART 2: emit exactly one bubble — exec.confirmation when ok, or
+         the failure reply otherwise. Backend's spoken_reply is NOT bubbled
+         separately by us; the chat pipeline that delivered this payload
+         is responsible for that. We set the lock so no further shortcuts
+         in the same turn double-fire. */
+      const reply = exec?.confirmation || buildCloseReasoningPanelsVoiceReply(exec, parsed);
+      _setReasoningCloseLock({
+        scope: parsed.closeScope,
+        indices: parsed.indices || null,
+        confirmation: reply,
+        source: payload.reason || "backend_action_payload",
+      });
       if (!exec.ok) {
-        const reply = buildCloseReasoningPanelsVoiceReply(exec, parsed);
         try {
           if (typeof addBubble === "function") addBubble(reply, "assistant", { path: "close-reasoning-panel-backend-failure" });
         } catch (_) {}
@@ -20155,7 +20638,19 @@ function applyActionPayload(data) {
       return;
     }
     if (op === "reopen_last") {
+      if (_hasActiveReasoningCloseLock()) {
+        logReasoningClosePolishDebug({
+          stage: "backend_payload_dedup_skip",
+          reason: "client_lock_active",
+          prev_lock: _peekReasoningCloseLock(),
+          backend_op: op,
+        });
+        return;
+      }
       const r = reopenLastClosedReasoningPanel({ userText: String(payload.user_text || "") });
+      if (r.ok) {
+        _setReasoningCloseLock({ scope: "reopen_last", indices: null, confirmation: "Bringing back the last closed panel.", source: payload.reason || "backend_action_payload" });
+      }
       if (!r.ok && r.failureReason === "stack_empty") {
         try {
           if (typeof addBubble === "function") addBubble("I don't have a recently closed panel to reopen.", "assistant", { path: "reopen-reasoning-panel-empty-backend" });
