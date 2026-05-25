@@ -9,7 +9,7 @@ try {
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v69 loaded — MULTI_DEVICE_CONCURRENCY (per-tab session_id + ?session=new + window.veraConcurrencyDebug() + client_request_id on /infer + /text) + ASR_MODES (streaming default + whisper + hybrid; selective whisper-verify for risky commands; backcompat single->whisper, browser->streaming) + REASONING_PANEL_CLOSE + NEWS_PANEL_UI + NEWS_ROUTE_V2 + PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + CHECKLIST_INTENT_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG + MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG active. math_router_enabled=false.",
+    "%c[VERA] app.js build v71 loaded — REASONING_CLOSE_CONFIRMATION_UI_TTS (close-panel confirmations render as normal VERA assistant bubbles and voice-originated shortcuts enqueue TTS once) + MUSIC_VOLUME_DEDUPE (turn up/down music applied once per command, not twice; volume_delta now joins skip_next/skip_previous in shouldApplyMusicTransportAction) + NEWS_CURRENT_FACT_ROUTE (yes/no fact-verification questions like 'Did Trump go to China last week?' now route to current_fact_search instead of general_chat) + MULTI_DEVICE_CONCURRENCY (per-tab session_id + ?session=new + window.veraConcurrencyDebug() + client_request_id on /infer + /text) + ASR_MODES (streaming default + whisper + hybrid; selective whisper-verify for risky commands; backcompat single->whisper, browser->streaming) + REASONING_PANEL_CLOSE + NEWS_PANEL_UI + NEWS_ROUTE_V2 + PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + CHECKLIST_INTENT_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG + MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG active. math_router_enabled=false.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
 } catch (_) {}
@@ -9714,6 +9714,71 @@ function buildCloseReasoningPanelsVoiceReply(execResult, parsed) {
   return "I couldn't close that reasoning panel.";
 }
 
+function isReasoningCloseVoiceSource(source, explicitIsVoice = null) {
+  if (explicitIsVoice === true) return true;
+  if (explicitIsVoice === false) return false;
+  const s = String(source || "").toLowerCase();
+  if (!s) return false;
+  if (/(?:^|[-_\s])(?:typed|text-input|work-typed|main-work-text)(?:$|[-_\s])/.test(s)) return false;
+  return /(?:^|[-_\s])(?:asr|voice|ptt|interruption|microphone|speech)(?:$|[-_\s])/.test(s);
+}
+
+function logReasoningCloseConfirmationUiDebug(payload) {
+  try {
+    console.info(
+      "[reasoning_close_confirmation_debug] " + JSON.stringify(payload, null, 0)
+    );
+  } catch (_) {
+    try {
+      console.info("[reasoning_close_confirmation_debug] log_serialization_failed");
+    } catch (_) {}
+  }
+}
+
+function renderReasoningCloseAssistantConfirmation(reply, opts = {}) {
+  const text = String(reply || "").trim();
+  const source = String(opts.source || opts.reason || "");
+  const isVoice = isReasoningCloseVoiceSource(source, opts.isVoice);
+  const muted = Boolean(
+    inputMuted ||
+    (appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled())
+  );
+  let renderPath = "unknown";
+  let ttsEnqueued = false;
+  if (text) {
+    try {
+      if (typeof addBubble === "function") {
+        addBubble(text, "vera", { path: opts.path || "close-reasoning-panel" });
+        renderPath = "assistant_bubble";
+      }
+    } catch (_) {
+      renderPath = "unknown";
+    }
+    if (isVoice && !muted && typeof enqueueAssistantTtsPlayback === "function") {
+      ttsEnqueued = true;
+      void enqueueAssistantTtsPlayback(async () => {
+        const ac = new AbortController();
+        await playWorkModeTtsOnlyPhrase(text, ac.signal);
+      });
+    }
+  }
+  logReasoningCloseConfirmationUiDebug({
+    stage: opts.stage || "render_confirmation",
+    close_panel_intent_detected: true,
+    close_action_completed: Boolean(opts.closeActionCompleted),
+    confirmation_text: text,
+    confirmation_render_path: renderPath,
+    confirmation_tts_enqueued: ttsEnqueued,
+    confirmation_tts_skipped_reason: !text
+      ? "empty_confirmation"
+      : (!isVoice ? "text_only_or_non_voice_source" : (muted ? "muted" : "")),
+    duplicate_confirmation_suppressed: Boolean(opts.duplicateConfirmationSuppressed),
+    action_result_consumed_by_normal_reply_pipeline: renderPath === "assistant_bubble",
+    source,
+  });
+  return { renderPath, ttsEnqueued };
+}
+
 /* Try to handle a voice/text command client-side. Returns true when handled. */
 function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   if (!text) return false;
@@ -9737,18 +9802,24 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
       const title = r.reopenedTitles?.[0] || "that panel";
       const reply = `Reopened ${title}.`;
       _setReasoningCloseLock({ scope: "reopen_last", indices: null, confirmation: reply, source: opts.reason || "client_shortcut" });
-      try {
-        if (typeof addBubble === "function") addBubble(reply, "assistant", { path: "reopen-reasoning-panel" });
-        if (typeof speakAssistantReplyIfPossible === "function") speakAssistantReplyIfPossible(reply);
-      } catch (_) {}
+      renderReasoningCloseAssistantConfirmation(reply, {
+        path: "reopen-reasoning-panel",
+        source: opts.reason || "client_shortcut",
+        isVoice: opts.isVoice,
+        stage: "shortcut_reopen_success",
+        closeActionCompleted: true,
+      });
       return true;
     }
     if (r.failureReason === "stack_empty") {
       const reply = "I don't have a recently closed panel to reopen.";
-      try {
-        if (typeof addBubble === "function") addBubble(reply, "assistant", { path: "reopen-reasoning-panel-empty" });
-        if (typeof speakAssistantReplyIfPossible === "function") speakAssistantReplyIfPossible(reply);
-      } catch (_) {}
+      renderReasoningCloseAssistantConfirmation(reply, {
+        path: "reopen-reasoning-panel-empty",
+        source: opts.reason || "client_shortcut",
+        isVoice: opts.isVoice,
+        stage: "shortcut_reopen_empty",
+        closeActionCompleted: false,
+      });
       return true;
     }
     return false;
@@ -9761,6 +9832,17 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
      execute again and do not double-bubble. We DO claim the shortcut as
      handled so the /infer round-trip doesn't pile on another execution. */
   if (_hasActiveReasoningCloseLock()) {
+    logReasoningCloseConfirmationUiDebug({
+      stage: "shortcut_dedup_skip_close",
+      close_panel_intent_detected: true,
+      close_action_completed: true,
+      confirmation_text: String(_peekReasoningCloseLock()?.confirmation || ""),
+      confirmation_render_path: "assistant_bubble",
+      confirmation_tts_enqueued: false,
+      duplicate_confirmation_suppressed: true,
+      action_result_consumed_by_normal_reply_pipeline: true,
+      source: opts.reason || "client_shortcut",
+    });
     logReasoningClosePolishDebug({
       stage: "shortcut_dedup_skip_close",
       reason: "lock_active",
@@ -9800,10 +9882,13 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
     confirmation: reply,
     source: opts.reason || "client_shortcut",
   });
-  try {
-    if (typeof addBubble === "function") addBubble(reply, "assistant", { path: "close-reasoning-panel" });
-    if (typeof speakAssistantReplyIfPossible === "function") speakAssistantReplyIfPossible(reply);
-  } catch (_) {}
+  renderReasoningCloseAssistantConfirmation(reply, {
+    path: "close-reasoning-panel",
+    source: opts.reason || "client_shortcut",
+    isVoice: opts.isVoice,
+    stage: "shortcut_close_confirmation",
+    closeActionCompleted: Boolean(exec?.ok),
+  });
   return true;
 }
 
@@ -20484,15 +20569,45 @@ function isRecentSameMusicPlay(payload, op) {
   return !!(prev && prev.key === key && performance.now() - prev.at < 7000);
 }
 
-/** Collapse NDJSON double ``applyActionPayload`` (finalize + first audio) for skip only — short window so real repeat skips still work. */
+/**
+ * Collapse NDJSON double ``applyActionPayload`` (finalize + first audio).
+ * Applies to non-idempotent music controls only:
+ *   - ``skip_next`` / ``skip_previous`` — each call advances/rewinds a track.
+ *   - ``volume_delta`` — each call adds ``payload.delta`` to volume, so the
+ *     double-dispatch path was actually doubling the user's "turn up / turn
+ *     down the music" command (+10% per turn instead of +5%). Keyed by
+ *     sign-of-delta so that "volume up then volume down" within the dedupe
+ *     window still applies both directions.
+ *
+ * ``pause`` / ``resume`` are idempotent (calling pause on an already-paused
+ * stream is a no-op) so we don't dedupe them.
+ *
+ * 900 ms window is short enough that legitimate consecutive commands still
+ * fire — humans don't realistically issue the same transport command twice
+ * within a second.
+ */
 function shouldApplyMusicTransportAction(payload, op) {
-  if (op !== "skip_next" && op !== "skip_previous") return true;
-  const key = `music_transport:${op}`;
+  let key;
+  if (op === "skip_next" || op === "skip_previous") {
+    key = `music_transport:${op}`;
+  } else if (op === "volume_delta") {
+    const rawDelta = Number((payload && payload.delta) || 0);
+    if (!Number.isFinite(rawDelta) || rawDelta === 0) return true;
+    const dir = rawDelta > 0 ? "+1" : "-1";
+    key = `music_transport:volume_delta:${dir}`;
+  } else {
+    return true;
+  }
   const now = performance.now();
   const prev = window.__veraMusicTransportDedupe;
   if (prev && prev.key === key && now - prev.at < 900) {
     if (op === "skip_previous") {
       console.log("[MUSIC][SKIP_PREV] dedupe-drop", { delta_ms: Math.round(now - prev.at) });
+    } else if (op === "volume_delta") {
+      console.log("[MUSIC][VOLUME] dedupe-drop", {
+        delta_ms: Math.round(now - prev.at),
+        delta: Number((payload && payload.delta) || 0),
+      });
     }
     return false;
   }
@@ -20735,6 +20850,17 @@ function applyActionPayload(data) {
          this user turn, the backend round-trip is a stale echo. Skip the
          duplicate mutation; the bubble is already on screen. */
       if (_hasActiveReasoningCloseLock()) {
+        logReasoningCloseConfirmationUiDebug({
+          stage: "backend_payload_dedup_skip",
+          close_panel_intent_detected: true,
+          close_action_completed: true,
+          confirmation_text: String(_peekReasoningCloseLock()?.confirmation || ""),
+          confirmation_render_path: "assistant_bubble",
+          confirmation_tts_enqueued: false,
+          duplicate_confirmation_suppressed: true,
+          action_result_consumed_by_normal_reply_pipeline: true,
+          source: payload.reason || "backend_action_payload",
+        });
         logReasoningClosePolishDebug({
           stage: "backend_payload_dedup_skip",
           reason: "client_lock_active",
@@ -20779,14 +20905,44 @@ function applyActionPayload(data) {
         source: payload.reason || "backend_action_payload",
       });
       if (!exec.ok) {
-        try {
-          if (typeof addBubble === "function") addBubble(reply, "assistant", { path: "close-reasoning-panel-backend-failure" });
-        } catch (_) {}
+        renderReasoningCloseAssistantConfirmation(reply, {
+          path: "close-reasoning-panel-backend-failure",
+          source: payload.reason || "backend_action_payload",
+          isVoice: false,
+          stage: "backend_payload_close_failure",
+          closeActionCompleted: false,
+        });
+      } else {
+        logReasoningCloseConfirmationUiDebug({
+          stage: "backend_payload_close_success",
+          close_panel_intent_detected: true,
+          close_action_completed: true,
+          confirmation_text: reply,
+          confirmation_render_path: "assistant_bubble",
+          confirmation_tts_enqueued: Boolean(
+            !inputMuted &&
+            !(appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled())
+          ),
+          duplicate_confirmation_suppressed: false,
+          action_result_consumed_by_normal_reply_pipeline: true,
+          source: payload.reason || "backend_action_payload",
+        });
       }
       return;
     }
     if (op === "reopen_last") {
       if (_hasActiveReasoningCloseLock()) {
+        logReasoningCloseConfirmationUiDebug({
+          stage: "backend_payload_dedup_skip_reopen",
+          close_panel_intent_detected: true,
+          close_action_completed: true,
+          confirmation_text: String(_peekReasoningCloseLock()?.confirmation || ""),
+          confirmation_render_path: "assistant_bubble",
+          confirmation_tts_enqueued: false,
+          duplicate_confirmation_suppressed: true,
+          action_result_consumed_by_normal_reply_pipeline: true,
+          source: payload.reason || "backend_action_payload",
+        });
         logReasoningClosePolishDebug({
           stage: "backend_payload_dedup_skip",
           reason: "client_lock_active",
@@ -20800,9 +20956,13 @@ function applyActionPayload(data) {
         _setReasoningCloseLock({ scope: "reopen_last", indices: null, confirmation: "Bringing back the last closed panel.", source: payload.reason || "backend_action_payload" });
       }
       if (!r.ok && r.failureReason === "stack_empty") {
-        try {
-          if (typeof addBubble === "function") addBubble("I don't have a recently closed panel to reopen.", "assistant", { path: "reopen-reasoning-panel-empty-backend" });
-        } catch (_) {}
+        renderReasoningCloseAssistantConfirmation("I don't have a recently closed panel to reopen.", {
+          path: "reopen-reasoning-panel-empty-backend",
+          source: payload.reason || "backend_action_payload",
+          isVoice: false,
+          stage: "backend_payload_reopen_empty",
+          closeActionCompleted: false,
+        });
       }
       return;
     }
@@ -20883,6 +21043,7 @@ function applyActionPayload(data) {
       return;
     }
     if (op === "volume_delta") {
+      if (!shouldApplyMusicTransportAction(payload, op)) return;
       const cur = typeof window.VeraSpotify?.getVolume === "function"
         ? window.VeraSpotify.getVolume()
         : spotifyGetVolume();
@@ -23981,7 +24142,7 @@ async function finalizeMainBrowserTranscript(text) {
      "close panel 2" / "close the first two panels" / "undo close" feel
      instant. The shortcut already filters out checklist/news/music/settings
      phrases and only fires in Work Mode. */
-  if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "main-browser-asr" })) {
+  if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "main-browser-asr", isVoice: true })) {
     processing = false;
     requestInFlight = false;
     voiceUxTurn = null;
@@ -24657,7 +24818,7 @@ async function maybeRunInterruptionClientShortcuts(routedText, originalText) {
       });
       return true;
     }
-    if (maybeHandleCloseReasoningPanelShortcut(routedText, { reason: "voice_interruption" })) {
+    if (maybeHandleCloseReasoningPanelShortcut(routedText, { reason: "voice_interruption", isVoice: true })) {
       logInterruptTranscriptDebug("routed_to_normal_user_turn", {
         original_transcript: String(originalText || "").slice(0, 120),
         normalized_command_text: routedText.slice(0, 120),
@@ -25728,7 +25889,7 @@ async function handleUtterance() {
         updateMuteInputButton();
         return;
       }
-      if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "server-asr-preflight" })) {
+      if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
         requestInFlight = false;
         processing = false;
         voiceUxTurn = null;
@@ -25924,7 +26085,7 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
     return;
   }
-  if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: path || "work-typed" })) {
+  if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: path || "work-typed", isVoice: false })) {
     return;
   }
   if (
@@ -26225,7 +26386,7 @@ async function sendTextMessage() {
       updateMuteInputButton();
       return;
     }
-    if (maybeHandleCloseReasoningPanelShortcut(text, { reason: "main-work-text-input" })) {
+    if (maybeHandleCloseReasoningPanelShortcut(text, { reason: "main-work-text-input", isVoice: false })) {
       if (textInput) textInput.value = "";
       setStatus("Ready", "idle");
       updateMuteInputButton();
@@ -26544,7 +26705,7 @@ async function onPttClick() {
       updateMuteInputButton();
       return;
     }
-    if (maybeHandleCloseReasoningPanelShortcut(text, { reason: "ptt-browser-asr" })) {
+    if (maybeHandleCloseReasoningPanelShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
       setStatus("Ready", "idle");
       updateMuteInputButton();
       return;
