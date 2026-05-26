@@ -1093,6 +1093,7 @@ let interruptPartialRafTime = 0;
 /** "main" continuous/PTT vs "interrupt" post-barge-in utterance — controls silence-timer finalize. */
 let mainBrowserFinalizeKind = "main";
 let mainBrowserLastInterim = "";
+let mainBrowserAsrTurnSeq = 0;
 /** After >2 words during TTS, barge-in latched: same SR stream continues until 1.3s silence → LLM (no second SR). */
 let interruptBargeInLatched = false;
 /** If interrupt-detect SR never emits onresult while TTS plays, abort so heuristic fallback can run. */
@@ -8473,6 +8474,186 @@ function logReasoningClosePolishDebug(payload) {
    close action and short-circuit duplicates within REASONING_CLOSE_TURN_LOCK_MS. */
 const REASONING_CLOSE_TURN_LOCK_MS = 4000;
 let _lastReasoningCloseLock = null; // {at, scope, indicesKey, confirmation, source}
+let reasoningCloseVoiceLifecycleSeq = 0;
+
+function logReasoningCloseVoiceLifecycle(payload) {
+  try {
+    console.info(
+      "[reasoning_close_voice_lifecycle] " + JSON.stringify(payload, null, 0)
+    );
+  } catch (_) {
+    try {
+      console.info("[reasoning_close_voice_lifecycle] log_serialization_failed");
+    } catch (_) {}
+  }
+}
+
+function getReasoningCloseAsrModeLabel() {
+  try {
+    const mode = String(getVeraAsrMode?.() || "").toLowerCase();
+    if (browserAsrPreferred?.()) return "browser_streaming";
+    if (mode === "hybrid") return "hybrid";
+    return "single_whisper";
+  } catch (_) {
+    return "unknown";
+  }
+}
+
+function getReasoningCloseMicStateLabel() {
+  try {
+    const statusText = (uiEl("status")?.textContent || "").trim().toLowerCase();
+    if (statusText.includes("listen")) return "listening";
+    if (statusText.includes("speak")) return "speaking";
+    if (statusText.includes("think")) return "thinking";
+    if (statusText.includes("ready")) return "ready";
+    return statusText || "unknown";
+  } catch (_) {
+    return "unknown";
+  }
+}
+
+function getReasoningCloseActiveUserBubbleId() {
+  try {
+    if (!mainBrowserLiveBubble?.isConnected) return null;
+    if (!mainBrowserLiveBubble.dataset.reasoningCloseBubbleId) {
+      mainBrowserLiveBubble.dataset.reasoningCloseBubbleId =
+        `asr-user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    }
+    return mainBrowserLiveBubble.dataset.reasoningCloseBubbleId;
+  } catch (_) {
+    return null;
+  }
+}
+
+function finalizeReasoningCloseVoiceUserTurn(text, opts = {}) {
+  const transcript = String(text || "").trim();
+  const isVoice = isReasoningCloseVoiceSource(opts.source || opts.reason || "", opts.isVoice);
+  const lifecycleId = `reasoning-close-${++reasoningCloseVoiceLifecycleSeq}`;
+  const beforeBubbleId = getReasoningCloseActiveUserBubbleId();
+  const beforeTurnSeq = mainBrowserAsrTurnSeq;
+  const beforeFinalTranscript = String(mainBrowserFinalTranscript || "");
+  const beforeInterimTranscript = String(mainBrowserLastInterim || "");
+  const shouldFinalize = Boolean(isVoice && transcript);
+  const shouldResumeListening = Boolean(
+    isVoice &&
+    listeningMode === "continuous" &&
+    listening &&
+    !inputMuted
+  );
+
+  logReasoningCloseVoiceLifecycle({
+    stage: "before_command",
+    lifecycle_id: lifecycleId,
+    action_name: "reasoning.close_panel",
+    asr_mode: getReasoningCloseAsrModeLabel(),
+    listening_mode: listeningMode === "continuous" ? "continuous" : (listeningMode || "keyboard"),
+    mic_state_before: getReasoningCloseMicStateLabel(),
+    active_user_bubble_id_before: beforeBubbleId,
+    current_turn_id_before: beforeTurnSeq,
+    browser_final_transcript_before: beforeFinalTranscript.slice(0, 200),
+    interim_transcript_before: beforeInterimTranscript.slice(0, 200),
+    latest_user_text: transcript.slice(0, 200),
+    source: opts.source || opts.reason || "",
+  });
+
+  let finalizedBubbleId = null;
+  let userBubbleFinalized = false;
+  if (shouldFinalize) {
+    try {
+      commitServerUserTranscriptBubble(
+        transcript,
+        opts.path || `reasoning-close-${opts.source || "voice"}`
+      );
+      userBubbleFinalized = true;
+      finalizedBubbleId = beforeBubbleId || "committed-user-bubble";
+    } catch (_) {}
+  }
+
+  const turnSeqBeforeIncrement = mainBrowserAsrTurnSeq;
+  if (isVoice) {
+    try {
+      clearVoiceMaxDurationTimer();
+    } catch (_) {}
+    try {
+      abortBrowserSpeechRecognizers();
+    } catch (_) {}
+    try {
+      mainBrowserFinalTranscript = "";
+      mainBrowserLastInterim = "";
+      mainBrowserFinalizeKind = "main";
+      interruptPartialLastText = "";
+      interruptBargeInLatched = false;
+      hasSpoken = false;
+      audioChunks = [];
+      mainBrowserAsrTurnSeq += 1;
+    } catch (_) {}
+  }
+
+  logReasoningCloseVoiceLifecycle({
+    stage: "finalization",
+    lifecycle_id: lifecycleId,
+    action_name: "reasoning.close_panel",
+    user_bubble_finalized: userBubbleFinalized,
+    finalized_bubble_id: finalizedBubbleId,
+    finalized_text: transcript.slice(0, 200),
+    asr_buffers_cleared: isVoice,
+    active_user_bubble_id_after_finalize: getReasoningCloseActiveUserBubbleId(),
+    turn_seq_incremented: mainBrowserAsrTurnSeq !== turnSeqBeforeIncrement,
+    current_turn_id_after_finalize: mainBrowserAsrTurnSeq,
+    should_resume_listening: shouldResumeListening,
+    source: opts.source || opts.reason || "",
+  });
+
+  return {
+    lifecycleId,
+    isVoice,
+    shouldResumeListening,
+    userBubbleFinalized,
+    finalizedBubbleId,
+    turnSeqBefore: beforeTurnSeq,
+    turnSeqAfterFinalize: mainBrowserAsrTurnSeq,
+  };
+}
+
+function finishReasoningCloseVoiceTurnAfterAssistant(opts = {}) {
+  const lifecycle = opts.lifecycle || {};
+  const shouldResume = Boolean(lifecycle.shouldResumeListening);
+  if (!lifecycle.isVoice) return;
+  requestInFlight = false;
+  processing = false;
+  voiceUxTurn = null;
+  if (shouldResume) {
+    waveState = "listening";
+    listening = true;
+    if (inputMuted) {
+      showMutedStatusIfIdle();
+    } else {
+      setStatus("Listening…", "recording");
+      window.setTimeout(() => {
+        if (!listening || processing || inputMuted) return;
+        startListening();
+      }, 80);
+    }
+  } else {
+    if (listeningMode === "ptt") {
+      listening = false;
+      pttRecording = false;
+    }
+    waveState = "idle";
+    setStatus("Ready", "idle");
+  }
+  updateMuteInputButton();
+  logReasoningCloseVoiceLifecycle({
+    stage: "after_action",
+    lifecycle_id: lifecycle.lifecycleId || "",
+    action_name: "reasoning.close_panel",
+    should_resume_listening: shouldResume,
+    mic_state_after: getReasoningCloseMicStateLabel(),
+    browser_recognition_active_after: Boolean(mainBrowserRecognition || interruptDetectRecognition || postInterruptRecognition),
+    next_user_bubble_ready: mainBrowserLiveBubble == null,
+    source: opts.source || "",
+  });
+}
 
 function _reasoningCloseLockKey(scope, indices) {
   const idxKey = Array.isArray(indices) ? indices.join(",") : "";
@@ -9745,6 +9926,7 @@ function renderReasoningCloseAssistantConfirmation(reply, opts = {}) {
   );
   let renderPath = "unknown";
   let ttsEnqueued = false;
+  let playbackPromise = null;
   if (text) {
     try {
       if (typeof addBubble === "function") {
@@ -9756,11 +9938,39 @@ function renderReasoningCloseAssistantConfirmation(reply, opts = {}) {
     }
     if (isVoice && !muted && typeof enqueueAssistantTtsPlayback === "function") {
       ttsEnqueued = true;
-      void enqueueAssistantTtsPlayback(async () => {
+      processing = true;
+      requestInFlight = false;
+      waveState = "speaking";
+      try {
+        setStatus(listeningMode === "ptt" ? "Speaking" : "Speaking… (Interruptible)", "speaking");
+      } catch (_) {}
+      playbackPromise = enqueueAssistantTtsPlayback(async () => {
         const ac = new AbortController();
         await playWorkModeTtsOnlyPhrase(text, ac.signal);
       });
+      if (opts.resumeListeningAfter) {
+        void playbackPromise.finally(() => {
+          finishReasoningCloseVoiceTurnAfterAssistant({
+            lifecycle: opts.lifecycle,
+            source,
+          });
+        });
+      } else {
+        void playbackPromise.finally(() => {
+          processing = false;
+          requestInFlight = false;
+          voiceUxTurn = null;
+        });
+      }
     }
+  }
+  if (isVoice && opts.resumeListeningAfter && !ttsEnqueued) {
+    window.setTimeout(() => {
+      finishReasoningCloseVoiceTurnAfterAssistant({
+        lifecycle: opts.lifecycle,
+        source,
+      });
+    }, 0);
   }
   logReasoningCloseConfirmationUiDebug({
     stage: opts.stage || "render_confirmation",
@@ -9776,6 +9986,18 @@ function renderReasoningCloseAssistantConfirmation(reply, opts = {}) {
     action_result_consumed_by_normal_reply_pipeline: renderPath === "assistant_bubble",
     source,
   });
+  if (opts.lifecycle) {
+    logReasoningCloseVoiceLifecycle({
+      stage: "assistant_response",
+      lifecycle_id: opts.lifecycle.lifecycleId || "",
+      action_name: "reasoning.close_panel",
+      assistant_bubble_rendered: renderPath === "assistant_bubble",
+      confirmation_text: text,
+      tts_enqueued: ttsEnqueued,
+      should_resume_listening: Boolean(opts.lifecycle.shouldResumeListening),
+      source,
+    });
+  }
   return { renderPath, ttsEnqueued };
 }
 
@@ -9785,6 +10007,7 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
   const order = getReasoningPanelOrder();
   const parsed = parseCloseReasoningPanelsCommand(text, order.length);
+  const source = opts.reason || "client_shortcut";
 
   if (parsed.intent === "reopen_last_reasoning_panel") {
     if (_hasActiveReasoningCloseLock()) {
@@ -9797,17 +10020,24 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
       });
       return true;
     }
+    const lifecycle = finalizeReasoningCloseVoiceUserTurn(text, {
+      ...opts,
+      source,
+      path: "reopen-reasoning-panel-user",
+    });
     const r = reopenLastClosedReasoningPanel({ userText: text });
     if (r.ok) {
       const title = r.reopenedTitles?.[0] || "that panel";
       const reply = `Reopened ${title}.`;
-      _setReasoningCloseLock({ scope: "reopen_last", indices: null, confirmation: reply, source: opts.reason || "client_shortcut" });
+      _setReasoningCloseLock({ scope: "reopen_last", indices: null, confirmation: reply, source });
       renderReasoningCloseAssistantConfirmation(reply, {
         path: "reopen-reasoning-panel",
-        source: opts.reason || "client_shortcut",
+        source,
         isVoice: opts.isVoice,
         stage: "shortcut_reopen_success",
         closeActionCompleted: true,
+        lifecycle,
+        resumeListeningAfter: true,
       });
       return true;
     }
@@ -9815,10 +10045,12 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
       const reply = "I don't have a recently closed panel to reopen.";
       renderReasoningCloseAssistantConfirmation(reply, {
         path: "reopen-reasoning-panel-empty",
-        source: opts.reason || "client_shortcut",
+        source,
         isVoice: opts.isVoice,
         stage: "shortcut_reopen_empty",
         closeActionCompleted: false,
+        lifecycle,
+        resumeListeningAfter: true,
       });
       return true;
     }
@@ -9870,9 +10102,26 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
     suppressed_close_phrases: Array.isArray(parsed.suppressedCloseSpans) ? parsed.suppressedCloseSpans.map((s) => s.phrase) : [],
   });
 
+  const lifecycle = finalizeReasoningCloseVoiceUserTurn(text, {
+    ...opts,
+    source,
+    path: "close-reasoning-panel-user",
+  });
+
   const exec = executeCloseReasoningPanelsCommand(parsed, {
     userText: text,
-    reason: opts.reason || "client_shortcut",
+    reason: source,
+  });
+  logReasoningCloseVoiceLifecycle({
+    stage: "action",
+    lifecycle_id: lifecycle.lifecycleId || "",
+    action_name: "reasoning.close_panel",
+    close_action_completed: Boolean(exec?.ok),
+    target_panel_ids: Array.isArray(exec?.closedPanels)
+      ? exec.closedPanels.map((p) => p?.id || p?.panel_id || p?.label || "").filter(Boolean)
+      : (parsed.indices || []),
+    panels_after: getReasoningPanelOrder().map((p) => p?.label || p?.id || "").filter(Boolean),
+    source,
   });
   /* PART 2: use the single centralized confirmation. */
   const reply = exec?.confirmation || buildCloseReasoningPanelsVoiceReply(exec, parsed);
@@ -9880,14 +10129,16 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
     scope: parsed.closeScope,
     indices: parsed.indices || null,
     confirmation: reply,
-    source: opts.reason || "client_shortcut",
+    source,
   });
   renderReasoningCloseAssistantConfirmation(reply, {
     path: "close-reasoning-panel",
-    source: opts.reason || "client_shortcut",
+    source,
     isVoice: opts.isVoice,
     stage: "shortcut_close_confirmation",
     closeActionCompleted: Boolean(exec?.ok),
+    lifecycle,
+    resumeListeningAfter: true,
   });
   return true;
 }
@@ -24143,12 +24394,6 @@ async function finalizeMainBrowserTranscript(text) {
      instant. The shortcut already filters out checklist/news/music/settings
      phrases and only fires in Work Mode. */
   if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "main-browser-asr", isVoice: true })) {
-    processing = false;
-    requestInFlight = false;
-    voiceUxTurn = null;
-    waveState = "idle";
-    setStatus("Ready", "idle");
-    updateMuteInputButton();
     return;
   }
   if (
@@ -24330,6 +24575,7 @@ function startMainBrowserRecognitionContinuous() {
 
   mainBrowserFinalTranscript = "";
   let interimBuf = "";
+  const asrTurnSeq = ++mainBrowserAsrTurnSeq;
 
   mainBrowserRecognition = new SR();
   mainBrowserRecognition.continuous = true;
@@ -24337,6 +24583,7 @@ function startMainBrowserRecognitionContinuous() {
   mainBrowserRecognition.lang = getSpeechRecognitionLang();
 
   mainBrowserRecognition.onresult = (event) => {
+    if (asrTurnSeq !== mainBrowserAsrTurnSeq) return;
     if (inputMuted) {
       stopAllBrowserSpeechRecognizers();
       showMutedStatusIfIdle();
@@ -24370,6 +24617,7 @@ function startMainBrowserRecognitionContinuous() {
   };
 
   mainBrowserRecognition.onerror = (ev) => {
+    if (asrTurnSeq !== mainBrowserAsrTurnSeq) return;
     if (browserAsrStuckDebugEnabled()) {
       logBrowserAsrStuckEvent("main onerror", { error: ev.error, message: ev.message });
     }
@@ -24400,6 +24648,7 @@ function startMainBrowserRecognitionContinuous() {
   };
 
   mainBrowserRecognition.onend = () => {
+    if (asrTurnSeq !== mainBrowserAsrTurnSeq) return;
     logBrowserAsrStuckEvent(
       "main onend (session ended — if unexpected while listening, partial ASR may look stuck)",
       { note: "scheduling guarded recovery if still in continuous listen mode" }
@@ -25890,11 +26139,6 @@ async function handleUtterance() {
         return;
       }
       if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
-        requestInFlight = false;
-        processing = false;
-        voiceUxTurn = null;
-        setStatus("Ready", "idle");
-        updateMuteInputButton();
         return;
       }
       if (
@@ -26706,8 +26950,6 @@ async function onPttClick() {
       return;
     }
     if (maybeHandleCloseReasoningPanelShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
-      setStatus("Ready", "idle");
-      updateMuteInputButton();
       return;
     }
     removeMainBrowserLiveBubble();
