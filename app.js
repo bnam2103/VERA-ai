@@ -2216,6 +2216,10 @@ function _bargeInDebugBuildSnapshot() {
 }
 
 if (typeof window !== "undefined") {
+  try {
+    window.VERA_DEBUG_BARGE_IN_UI = _bargeInDebugUiEnabled();
+  } catch (_) {}
+
   /* Imperative toggle — flips both the in-memory flag and the localStorage
    * persistence, then mounts/unmounts immediately. */
   window.toggleBargeInDebugUi = function toggleBargeInDebugUi(force) {
