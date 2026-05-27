@@ -3468,9 +3468,131 @@ function getProductivityMusicSource(prefix) {
     : "spotify";
 }
 
+/* =========================================================================
+   Global music playback state (PART 1 of the music UI refactor)
+
+   The Spotify panel and the Built-in Music panel are control surfaces, but
+   playback itself is GLOBAL. Tab selection (`getProductivityMusicSource`)
+   must not be confused with the ACTIVE PLAYBACK SOURCE. These helpers read
+   the live audio elements / Spotify SDK state to expose a single source of
+   truth used by the panel renderer and the debug log.
+========================================================================= */
+
+function getActivePlaybackSource(prefix) {
+  const p = prefix || appModePrefix?.();
+  try {
+    if (p) {
+      const builtinAudio = document.getElementById(`${p}-free-music-audio`);
+      if (
+        builtinAudio &&
+        builtinAudio.src &&
+        !builtinAudio.paused &&
+        builtinAudio.currentTime > 0
+      ) {
+        return "builtin";
+      }
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  try {
+    if (window.__veraSpotifyPlaybackActive === true) return "spotify";
+    const ns = window.__veraSpotifyNowState;
+    if (ns && ns.active === true && ns.paused === false && (ns.title || "").trim()) {
+      const st = window.__veraFreeMusicPlayback;
+      const builtinAlsoOn = !!(st && (st.queue?.length || 0) > 0);
+      if (!builtinAlsoOn) return "spotify";
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  return "none";
+}
+
+function getGlobalPlaybackState(prefix) {
+  const p = prefix || appModePrefix?.();
+  const activeSource = getActivePlaybackSource(p);
+  const ns = window.__veraSpotifyNowState || {};
+  let trackTitle = null;
+  let artist = null;
+  let albumArt = null;
+  let duration = null;
+  let currentTime = null;
+  let isPlaying = false;
+  if (activeSource === "builtin" && p) {
+    const a = document.getElementById(`${p}-free-music-audio`);
+    const st = window.__veraFreeMusicPlayback;
+    const idx = Number(st?.index) || 0;
+    const curName = st?.queue?.[idx]?.name || "";
+    trackTitle =
+      st?.mode === "playlist"
+        ? st?.playlistTitle || curName || "Built-in"
+        : curName || st?.playlistTitle || "Built-in";
+    artist =
+      st?.mode === "playlist"
+        ? `Track ${idx + 1} of ${st?.queue?.length || 0}${curName ? ` — ${curName}` : ""}`
+        : st?.loopOne
+          ? "Looping"
+          : "Built-in music";
+    albumArt = null;
+    duration =
+      a && Number.isFinite(a.duration) && a.duration > 0 ? Math.round(a.duration * 1000) : null;
+    currentTime = a ? Math.round((a.currentTime || 0) * 1000) : null;
+    isPlaying = !!(a && !a.paused && a.src);
+  } else if (activeSource === "spotify") {
+    trackTitle = (ns.title || "").trim() || null;
+    artist = (ns.artist || "").trim() || null;
+    albumArt = (ns.cover_url || "").trim() || null;
+    duration = Number.isFinite(ns.duration_ms) ? Number(ns.duration_ms) : null;
+    currentTime = Number.isFinite(ns.position_ms) ? Number(ns.position_ms) : null;
+    isPlaying = ns.paused === false && ns.active === true;
+  }
+  return {
+    activeSource,
+    isPlaying,
+    trackTitle,
+    artist,
+    albumArt,
+    duration,
+    currentTime,
+    volume: typeof window.__veraSpotifyVolume === "number" ? window.__veraSpotifyVolume : null,
+    updatedAt: Date.now(),
+  };
+}
+
+function logMusicPlaybackDebug(stage, extra = {}) {
+  try {
+    const prefix = extra.prefix || appModePrefix?.() || "";
+    const selectedTab = prefix ? getProductivityMusicSource(prefix) : "";
+    const gs = getGlobalPlaybackState(prefix);
+    const payload = {
+      tag: "music_playback_debug",
+      stage,
+      selectedMusicTab: selectedTab,
+      activePlaybackSource: gs.activeSource,
+      isPlaying: gs.isPlaying,
+      trackTitle: gs.trackTitle,
+      artist: gs.artist,
+      stale_playback_state_prevented: extra.stale_playback_state_prevented ?? null,
+      ui_rendered_source: extra.ui_rendered_source ?? null,
+      ...extra,
+    };
+    delete payload.prefix;
+    // eslint-disable-next-line no-console
+    console.log(`[music_playback_debug] ${JSON.stringify(payload)}`);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+window.veraGetGlobalPlaybackState = getGlobalPlaybackState;
+window.veraGetActivePlaybackSource = getActivePlaybackSource;
+
 function setProductivityMusicSource(prefix, source) {
-  const builtin = source === "builtin";
   const root = document.querySelector(`[data-productivity-root="${prefix}"]`);
+  const selectedBefore = String(root?.dataset.musicSource || "spotify").toLowerCase();
+  const activeBefore = getActivePlaybackSource(prefix);
+  const builtin = source === "builtin";
   if (root instanceof HTMLElement) root.dataset.musicSource = builtin ? "builtin" : "spotify";
   document.getElementById(`${prefix}-music-tab-spotify`)?.classList.toggle("active", !builtin);
   document.getElementById(`${prefix}-music-tab-spotify`)?.classList.add("spotify-source-tab");
@@ -3485,6 +3607,18 @@ function setProductivityMusicSource(prefix, source) {
   const builtinStack = document.getElementById(`${prefix}-builtin-stack`);
   if (spotifyStack) spotifyStack.hidden = builtin;
   if (builtinStack) builtinStack.hidden = !builtin;
+
+  // PART 2 — tab selection MUST NOT overwrite the active playback source.
+  // We record the transition for the debug log so any regression that
+  // copies stale playback state into the newly-selected tab shows up here.
+  logMusicPlaybackDebug("set_music_source", {
+    prefix,
+    selectedMusicTab_before: selectedBefore,
+    selectedMusicTab_after: builtin ? "builtin" : "spotify",
+    activePlaybackSource_before: activeBefore,
+    activePlaybackSource_after: getActivePlaybackSource(prefix),
+    stale_playback_state_prevented: true,
+  });
 }
 
 function freeMusicAbsUrl(path) {
@@ -3526,6 +3660,33 @@ async function pauseSpotifyLayersForBuiltin(prefix) {
     } catch (_) {
       /* ignore */
     }
+  }
+}
+
+/* PART 6 — call this BEFORE starting any Spotify playback so we don't end
+   up with two providers playing at once. Mirror of
+   `pauseSpotifyLayersForBuiltin` for the opposite direction. Safe to call
+   even when built-in isn't playing; it's a no-op in that case. */
+function _veraSpotifyAcquirePlayback(prefix, callerLabel) {
+  const p = prefix || appModePrefix?.();
+  if (!p) return;
+  try {
+    const a = document.getElementById(`${p}-free-music-audio`);
+    const builtinPlaying = !!(a && a.src && !a.paused && a.currentTime > 0);
+    if (builtinPlaying) {
+      logMusicPlaybackDebug("provider_switch_stop_builtin", {
+        prefix: p,
+        reason: callerLabel || "spotify_play",
+        ui_rendered_source: "spotify_active",
+      });
+      try {
+        stopBuiltinFreeMusic(p);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  } catch (_) {
+    /* ignore */
   }
 }
 
@@ -6286,6 +6447,64 @@ function spotifyApplyNowStateToPanel(prefix) {
   const total = document.getElementById(`${prefix}-spotify-time-total`);
   const playBtn = document.getElementById(`${prefix}-spotify-play`);
 
+  // Source-aware UI (PART 3-5): the shared `.spotify-now-playing` block
+  // displays whoever is actually playing, but the source badge and the
+  // per-stack inactive-source banner make ownership explicit. When the
+  // selected tab does not own the playback, the panel root carries
+  // `data-inactive-tab="1"` so CSS can dim non-essential controls.
+  const selectedTab = getProductivityMusicSource(prefix);
+  const activeSource = getActivePlaybackSource(prefix);
+  const badgeEl = document.getElementById(`${prefix}-music-source-badge`);
+  const panelRoot = document.querySelector(`[data-productivity-root="${prefix}"]`);
+  const spotifyBanner = document.getElementById(`${prefix}-spotify-inactive-banner`);
+  const builtinBanner = document.getElementById(`${prefix}-builtin-inactive-banner`);
+  const spotifyBannerText = document.getElementById(`${prefix}-spotify-inactive-banner-text`);
+  const builtinBannerText = document.getElementById(`${prefix}-builtin-inactive-banner-text`);
+
+  if (badgeEl) {
+    badgeEl.dataset.activeSource = activeSource;
+    if (activeSource === "builtin") {
+      badgeEl.textContent = "Playing from Built-in Music";
+    } else if (activeSource === "spotify") {
+      badgeEl.textContent = "Playing from Spotify";
+    } else {
+      badgeEl.textContent = "Not playing";
+    }
+  }
+
+  const inactiveTab = activeSource !== "none" && activeSource !== selectedTab;
+  if (panelRoot instanceof HTMLElement) {
+    panelRoot.dataset.inactiveTab = inactiveTab ? "1" : "0";
+    panelRoot.dataset.activePlaybackSource = activeSource;
+  }
+
+  if (spotifyBanner instanceof HTMLElement) {
+    if (selectedTab === "spotify" && activeSource === "builtin") {
+      if (spotifyBannerText) {
+        const tt = (s.title || "").trim();
+        spotifyBannerText.textContent = tt
+          ? `Built-in Music is currently playing — ${tt}`
+          : "Built-in Music is currently playing.";
+      }
+      spotifyBanner.hidden = false;
+    } else {
+      spotifyBanner.hidden = true;
+    }
+  }
+  if (builtinBanner instanceof HTMLElement) {
+    if (selectedTab === "builtin" && activeSource === "spotify") {
+      if (builtinBannerText) {
+        const tt = (s.title || "").trim();
+        builtinBannerText.textContent = tt
+          ? `Spotify is currently playing — ${tt}`
+          : "Spotify is currently playing.";
+      }
+      builtinBanner.hidden = false;
+    } else {
+      builtinBanner.hidden = true;
+    }
+  }
+
   if (titleEl) titleEl.textContent = s.title || "Nothing playing";
   if (artistEl) {
     artistEl.textContent =
@@ -6630,16 +6849,84 @@ function wireProductivityPanelEvents(prefix) {
   wireFreeMusicAudioElement(prefix);
 
   document.getElementById(`${prefix}-music-tab-spotify`)?.addEventListener("click", () => {
+    // PART 2 — selecting the Spotify tab changes the control surface only.
+    // We do NOT stop Built-in music here; if Built-in is currently the
+    // active source, the panel renders the inactive-source banner so the
+    // user can explicitly switch via the banner CTA or by starting a
+    // Spotify track from the search/playlist controls.
     setProductivityMusicSource(prefix, "spotify");
     spotifyApplyNowStateToPanel(prefix);
     spotifySyncPlayButtonUi(prefix);
     void spotifyRefreshWebPlaybackStateToUi(prefix);
   });
-  document.getElementById(`${prefix}-music-tab-builtin`)?.addEventListener("click", async () => {
-    await pauseSpotifyLayersForBuiltin(prefix);
+
+  // PART 6 — explicit "Switch to <provider>" CTAs in the inactive-source
+  // banners. These are the only places the tab switch is allowed to STOP
+  // the other provider, because the user explicitly opted in.
+  document.getElementById(`${prefix}-spotify-inactive-switch`)?.addEventListener("click", async () => {
+    logMusicPlaybackDebug("inactive_banner_switch_clicked", {
+      prefix,
+      requested_source: "spotify",
+    });
+    try {
+      stopBuiltinFreeMusic(prefix);
+    } catch (_) {
+      /* ignore */
+    }
+    setProductivityMusicSource(prefix, "spotify");
+    const resume = window.VeraSpotify?.resumePlayback;
+    if (typeof resume === "function") {
+      try {
+        await resume();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    spotifyApplyNowStateToPanel(prefix);
+    spotifySyncPlayButtonUi(prefix);
+    void spotifyRefreshWebPlaybackStateToUi(prefix);
+  });
+  document.getElementById(`${prefix}-builtin-inactive-switch`)?.addEventListener("click", async () => {
+    logMusicPlaybackDebug("inactive_banner_switch_clicked", {
+      prefix,
+      requested_source: "builtin",
+    });
+    try {
+      await pauseSpotifyLayersForBuiltin(prefix);
+    } catch (_) {
+      /* ignore */
+    }
     setProductivityMusicSource(prefix, "builtin");
     const fa = document.getElementById(`${prefix}-free-music-audio`);
-    if (!fa?.src || fa.ended) {
+    if (fa?.src && fa.paused) {
+      try {
+        await fa.play();
+      } catch (_) {
+        /* ignore */
+      }
+      freeMusicSyncNowFromAudio(prefix);
+    }
+    await ensureFreeMusicCatalogUi(prefix);
+    spotifyApplyNowStateToPanel(prefix);
+    spotifySyncPlayButtonUi(prefix);
+  });
+  document.getElementById(`${prefix}-music-tab-builtin`)?.addEventListener("click", async () => {
+    // PART 2 — switching to the Built-in tab is a CONTROL-SURFACE change.
+    // It must not stop or reset Spotify playback just because the user
+    // clicked the tab; it also must not overwrite the shared now-state
+    // with a stale "Nothing playing" placeholder when Spotify is actually
+    // playing. The previous implementation paused Spotify on every tab
+    // click — that's now reserved for explicit "Switch playback to
+    // Built-in" intents (the inactive-source-banner button or the play
+    // controls inside the Built-in stack itself).
+    setProductivityMusicSource(prefix, "builtin");
+    const fa = document.getElementById(`${prefix}-free-music-audio`);
+    const builtinHasMedia = !!(fa?.src && !fa.ended);
+    const activeSource = getActivePlaybackSource(prefix);
+    if (builtinHasMedia) {
+      freeMusicSyncNowFromAudio(prefix);
+    } else if (activeSource === "none") {
+      // Only blank the shared now-state when nothing is playing globally.
       spotifyUpdateNowState({
         title: "Nothing playing",
         artist: "Choose a playlist or sound below.",
@@ -6652,8 +6939,6 @@ function wireProductivityPanelEvents(prefix) {
         queue_previous_count: 0,
         disallow_skip_prev: false
       });
-    } else {
-      freeMusicSyncNowFromAudio(prefix);
     }
     await ensureFreeMusicCatalogUi(prefix);
     spotifyApplyNowStateToPanel(prefix);
@@ -6726,6 +7011,7 @@ function wireProductivityPanelEvents(prefix) {
       const ttl = detail?.querySelector(".spotify-search-detail-title")?.textContent || "Album";
       const sub = detail?.querySelector(".spotify-search-detail-sub")?.textContent || "";
       if (albumUri && window.VeraSpotify?.playPlaylist) {
+        _veraSpotifyAcquirePlayback(prefix, "search_album_play");
         window.VeraSpotify
           .playPlaylist(albumUri, { playlist_name: ttl, context_subtitle: sub })
           .catch(() => {});
@@ -6764,6 +7050,7 @@ function wireProductivityPanelEvents(prefix) {
       }
       const play = window.VeraSpotify?.playTrack;
       if (typeof play === "function" && uri) {
+        _veraSpotifyAcquirePlayback(prefix, "search_detail_track_click");
         play(uri, { title, artist, preview_url: previewUrl, open_url: openUrl }).catch(() => {});
       }
       return;
@@ -6808,6 +7095,7 @@ function wireProductivityPanelEvents(prefix) {
     }
     const play = window.VeraSpotify?.playTrack;
     if (typeof play === "function" && uri) {
+      _veraSpotifyAcquirePlayback(prefix, "search_row_click");
       play(uri, { title, artist, preview_url: previewUrl, open_url: openUrl }).catch(() => {});
     }
   });
@@ -6831,6 +7119,7 @@ function wireProductivityPanelEvents(prefix) {
       const ttl = detail?.querySelector(".spotify-search-detail-title")?.textContent || "Playlist";
       const sub = detail?.querySelector(".spotify-search-detail-sub")?.textContent || "";
       if (uri && window.VeraSpotify?.playPlaylist) {
+        _veraSpotifyAcquirePlayback(prefix, "playlist_album_play");
         window.VeraSpotify.playPlaylist(uri, { playlist_name: ttl, context_subtitle: sub }).catch(() => {});
       }
       return;
@@ -6857,11 +7146,13 @@ function wireProductivityPanelEvents(prefix) {
       const ctxUri = String(detailRoot?.dataset.spotifyPlaylistContextUri || uiState.selectedPlaylistUri || "").trim();
       const playFromPlaylist = window.VeraSpotify?.playPlaylistTrack;
       if (typeof playFromPlaylist === "function" && ctxUri && uri) {
+        _veraSpotifyAcquirePlayback(prefix, "playlist_detail_track_play");
         playFromPlaylist(ctxUri, uri, { title, artist, preview_url: previewUrl }).catch(() => {});
         return;
       }
       const play = window.VeraSpotify?.playTrack;
       if (typeof play === "function" && uri) {
+        _veraSpotifyAcquirePlayback(prefix, "playlist_detail_track_fallback");
         play(uri, { title, artist, preview_url: previewUrl, open_url: openUrl }).catch(() => {});
       }
       return;
@@ -6889,7 +7180,32 @@ function wireProductivityPanelEvents(prefix) {
 
   const playBtn = document.getElementById(`${prefix}-spotify-play`);
   playBtn?.addEventListener("click", () => {
-    if (getProductivityMusicSource(prefix) === "builtin") {
+    const selectedTab = getProductivityMusicSource(prefix);
+    const activeSource = getActivePlaybackSource(prefix);
+    // PART 6 — if the user presses Play on a tab that doesn't own the
+    // current playback, treat it as an explicit "switch to this provider"
+    // intent: stop the other provider, then attempt to play/resume this
+    // one. This mirrors the inactive-source-banner CTA.
+    if (
+      activeSource !== "none" &&
+      activeSource !== selectedTab &&
+      activeSource !== "spotify" // (when active is spotify and tab is spotify, this branch is skipped)
+    ) {
+      // We're on the Spotify tab while Built-in is active: switch to Spotify.
+      if (selectedTab === "spotify") {
+        document.getElementById(`${prefix}-spotify-inactive-switch`)?.click();
+        return;
+      }
+    }
+    if (
+      activeSource === "spotify" &&
+      selectedTab === "builtin"
+    ) {
+      // We're on the Built-in tab while Spotify is active: switch to Built-in.
+      document.getElementById(`${prefix}-builtin-inactive-switch`)?.click();
+      return;
+    }
+    if (selectedTab === "builtin") {
       const a = document.getElementById(`${prefix}-free-music-audio`);
       if (!a?.src) return;
       if (a.paused) {
@@ -7090,8 +7406,9 @@ function renderProductivityPanel() {
         <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
       </div>
     </div>
-    <div class="spotify-panel-body" data-productivity-root="${prefix}" data-music-source="spotify">
+    <div class="spotify-panel-body" data-productivity-root="${prefix}" data-music-source="spotify" data-inactive-tab="0">
       <div class="spotify-now-playing">
+        <div class="music-source-badge" id="${prefix}-music-source-badge" data-active-source="none" aria-live="polite">Not playing</div>
         <div class="spotify-art-placeholder" id="${prefix}-spotify-art-placeholder" aria-hidden="true"></div>
         <div class="spotify-track-meta">
           <div class="spotify-track-title" id="${prefix}-spotify-track-title">Nothing playing</div>
@@ -7123,6 +7440,10 @@ function renderProductivityPanel() {
         </div>
       </div>
       <div id="${prefix}-spotify-stack" class="music-pane-stack">
+        <div class="music-inactive-source-banner" id="${prefix}-spotify-inactive-banner" hidden>
+          <span class="music-inactive-source-banner-text" id="${prefix}-spotify-inactive-banner-text">Built-in Music is currently playing.</span>
+          <button type="button" class="music-inactive-source-banner-action" id="${prefix}-spotify-inactive-switch" data-music-action="switch-to-spotify">Switch to Spotify</button>
+        </div>
         <div id="${prefix}-spotify-view-root" data-spotify-view="search">
           <div class="spotify-connect-row" id="${prefix}-spotify-connect-row">
             <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link">Connect Spotify (Premium)</a>
@@ -7154,6 +7475,10 @@ function renderProductivityPanel() {
         <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
       </div>
       <div id="${prefix}-builtin-stack" class="music-pane-stack" hidden>
+        <div class="music-inactive-source-banner" id="${prefix}-builtin-inactive-banner" hidden>
+          <span class="music-inactive-source-banner-text" id="${prefix}-builtin-inactive-banner-text">Spotify is currently playing.</span>
+          <button type="button" class="music-inactive-source-banner-action" id="${prefix}-builtin-inactive-switch" data-music-action="switch-to-builtin">Switch to Built-in</button>
+        </div>
         <div class="free-music-pane-inner">
           <p class="free-music-hint" id="${prefix}-free-music-hint"></p>
           <div class="free-music-catalog" id="${prefix}-free-music-catalog"></div>

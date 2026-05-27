@@ -3194,6 +3194,96 @@ body.app-open:not(.bmo-open) #vera-app.fade-in .vera-mode-guide {
   border-radius: 14px;
   background: rgba(0, 0, 0, 0.28);
   border: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+}
+
+/* Source badge — always visible label that says where playback is coming
+   from ("Playing from Built-in" / "Playing from Spotify" / "Not playing").
+   Lives inside .spotify-now-playing in a stable top-row position. */
+.music-source-badge {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.62);
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  margin-bottom: 4px;
+}
+.music-source-badge[data-active-source="builtin"] {
+  color: #c0d4ff;
+}
+.music-source-badge[data-active-source="spotify"] {
+  color: #1ed760;
+}
+.music-source-badge[data-active-source="none"] {
+  color: rgba(255, 255, 255, 0.4);
+  text-transform: none;
+  font-weight: 500;
+  letter-spacing: normal;
+}
+.music-source-badge::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+.music-source-badge[data-active-source="none"]::before {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Inactive-source banner — shown above the content stack when the
+   selected tab does NOT own the currently-playing source. Clearly tells
+   the user which provider is actually playing and offers a switch CTA. */
+.music-inactive-source-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 0 0 10px 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.78);
+}
+.music-inactive-source-banner[hidden] {
+  display: none;
+}
+.music-inactive-source-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+.music-inactive-source-banner-action {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f5f7fb;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.music-inactive-source-banner-action:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* When the selected tab isn't the active source, dim the transport
+   controls so it's obvious they're "remote" rather than the canonical
+   controls for the selected provider. */
+.spotify-panel-body[data-inactive-tab="1"] .spotify-transport-btn:not(.spotify-play-btn) {
+  opacity: 0.55;
+}
+.spotify-panel-body[data-inactive-tab="1"] .spotify-art-placeholder {
+  filter: saturate(0.6) brightness(0.85);
 }
 
 .spotify-art-placeholder {
