@@ -1237,6 +1237,233 @@ let _veraNewsPanelRenderInFlight = false;
  *  checkpoint logs so chunk events can be tied back to news vs normal. */
 let _veraCurrentTtsDebugContext = null;
 
+/* ---------------------------------------------------------------------
+ * Delayed-interruption timing instrumentation (additive only).
+ *
+ * Enable from devtools:  window.VERA_DEBUG_INTERRUPT = true
+ *
+ * Tracks the timeline of a single interruption attempt:
+ *   t0  first speech-like VAD frame detected (audio energy)
+ *   t1  first non-empty interim transcript from the browser SR
+ *   t2  latest interim transcript update (continuously refreshed)
+ *   t3  first final transcript fragment from the browser SR
+ *   t4  interrupt intent detected (gate passed: VAD threshold or
+ *       browser-ASR word/sustain gate)
+ *   t5  interruptSpeech / fastStopTtsOnVadOnly / barge-in handler entered
+ *   t6  cancelMainTtsPlayback called
+ *   t7  stopAllMainTtsWebAudio called
+ *   t8  UI status set to "Listening… (interrupted)" (speaking → interrupted)
+ *   t9  voice state flipped to listening (waveState/listening flags)
+ *   t10 active Web Audio buffer source count reached zero
+ *   t11 audio element paused and reset (audibly silenced)
+ *
+ * No control-flow changes: these helpers are read-only side effects that
+ * push entries onto a per-turn object and emit a single
+ * [interrupt_delay_trace] log when the cancel pipeline finishes.
+ *
+ * Reset hook lives in resetVadFastStopState() so every TTS turn start
+ * (main reply, ndjson, action TTS, interrupt reply) clears any
+ * leftover trace from the previous turn.
+ * ------------------------------------------------------------------- */
+let _veraInterruptDelayTrace = null;
+let _veraInterruptAttemptSeq = 0;
+
+function _newInterruptAttemptId() {
+  _veraInterruptAttemptSeq++;
+  const ts = (Date.now() % 1_000_000).toString(36);
+  return `att_${ts}_${_veraInterruptAttemptSeq}`;
+}
+
+function _resetInterruptDelayTrace(reason = "") {
+  const had = _veraInterruptDelayTrace;
+  _veraInterruptDelayTrace = null;
+  if (!isVeraInterruptDebugEnabled()) return;
+  try {
+    if (had && !had.flushed) {
+      _flushInterruptDelayTrace("reset_before_flush:" + reason);
+    }
+  } catch (_) {}
+}
+
+function _ensureInterruptDelayTrace(startingField) {
+  if (!isVeraInterruptDebugEnabled()) return null;
+  if (!_veraInterruptDelayTrace || _veraInterruptDelayTrace.flushed) {
+    _veraInterruptDelayTrace = {
+      interruptAttemptId: _newInterruptAttemptId(),
+      flushed: false,
+      _startedByField: startingField || null,
+      _createdAt: Number(performance.now().toFixed(1)),
+    };
+  }
+  return _veraInterruptDelayTrace;
+}
+
+function _recordInterruptTimingPoint(field, opts = {}) {
+  if (!isVeraInterruptDebugEnabled()) return;
+  const allowAutoStart = opts.autoStart === true;
+  try {
+    let t = _veraInterruptDelayTrace;
+    if (!t || t.flushed) {
+      if (!allowAutoStart) return;
+      t = _ensureInterruptDelayTrace(field);
+    }
+    if (!t) return;
+    const now = Number(performance.now().toFixed(1));
+    if (field === "t2_interim_transcript_updated") {
+      t.t2_interim_transcript_updated = now;
+    } else if (t[field] == null) {
+      t[field] = now;
+    }
+    if (opts.extra && typeof opts.extra === "object") {
+      t._extra = t._extra || {};
+      Object.assign(t._extra, opts.extra);
+    }
+  } catch (_) {}
+}
+
+function _flushInterruptDelayTrace(reason = "") {
+  if (!isVeraInterruptDebugEnabled()) return;
+  const t = _veraInterruptDelayTrace;
+  if (!t || t.flushed) return;
+  try {
+    t.flushed = true;
+    const d = (a, b) =>
+      typeof t[a] === "number" && typeof t[b] === "number"
+        ? Number((t[b] - t[a]).toFixed(1))
+        : null;
+    const firstTranscript = (typeof t.t1_interim_transcript_started === "number"
+      ? t.t1_interim_transcript_started
+      : typeof t.t2_interim_transcript_updated === "number"
+        ? t.t2_interim_transcript_updated
+        : null);
+    const payload = {
+      tag: "interrupt_delay_trace",
+      interruptAttemptId: t.interruptAttemptId,
+      reason,
+      t0_user_speech_audio_detected: t.t0_user_speech_audio_detected ?? null,
+      t1_interim_transcript_started: t.t1_interim_transcript_started ?? null,
+      t2_interim_transcript_updated: t.t2_interim_transcript_updated ?? null,
+      t3_final_transcript_available: t.t3_final_transcript_available ?? null,
+      t4_interrupt_intent_detected: t.t4_interrupt_intent_detected ?? null,
+      t5_interruptSpeech_entered: t.t5_interruptSpeech_entered ?? null,
+      t6_cancelMainTtsPlayback_called: t.t6_cancelMainTtsPlayback_called ?? null,
+      t7_stopAllMainTtsWebAudio_called: t.t7_stopAllMainTtsWebAudio_called ?? null,
+      t8_ui_state_set_interrupted: t.t8_ui_state_set_interrupted ?? null,
+      t9_ui_state_set_listening: t.t9_ui_state_set_listening ?? null,
+      t10_audio_sources_zero: t.t10_audio_sources_zero ?? null,
+      t11_audio_audibly_stopped: t.t11_audio_audibly_stopped ?? null,
+      delta_transcript_to_cancel:
+        firstTranscript != null && typeof t.t6_cancelMainTtsPlayback_called === "number"
+          ? Number((t.t6_cancelMainTtsPlayback_called - firstTranscript).toFixed(1))
+          : null,
+      delta_cancel_to_ui_interrupted: d(
+        "t6_cancelMainTtsPlayback_called",
+        "t8_ui_state_set_interrupted"
+      ),
+      delta_cancel_to_audio_stop: d(
+        "t6_cancelMainTtsPlayback_called",
+        "t11_audio_audibly_stopped"
+      ),
+      delta_transcript_to_ui_interrupted:
+        firstTranscript != null && typeof t.t8_ui_state_set_interrupted === "number"
+          ? Number((t.t8_ui_state_set_interrupted - firstTranscript).toFixed(1))
+          : null,
+      delta_t0_to_cancel: d(
+        "t0_user_speech_audio_detected",
+        "t6_cancelMainTtsPlayback_called"
+      ),
+      delta_t0_to_ui_interrupted: d(
+        "t0_user_speech_audio_detected",
+        "t8_ui_state_set_interrupted"
+      ),
+      delta_t0_to_audio_stop: d(
+        "t0_user_speech_audio_detected",
+        "t11_audio_audibly_stopped"
+      ),
+      delta_t3_final_to_cancel: d(
+        "t3_final_transcript_available",
+        "t6_cancelMainTtsPlayback_called"
+      ),
+      startedByField: t._startedByField || null,
+      createdAt: t._createdAt || null,
+      extra: t._extra || null,
+    };
+    console.info(`[${payload.tag}]`, payload);
+  } catch (_) {}
+}
+
+function _logVoiceStateTransition(from, to, reason, functionName, extra = {}) {
+  if (!isVeraInterruptDebugEnabled()) return;
+  try {
+    const tr = _veraInterruptDelayTrace;
+    const att = tr ? tr.interruptAttemptId : null;
+    let stackHint = null;
+    try {
+      const stk = new Error().stack || "";
+      stackHint = stk
+        .split("\n")
+        .slice(2, 6)
+        .map((s) => s.trim())
+        .join(" | ");
+    } catch (_) {}
+    console.info("[voice_state_transition]", {
+      from,
+      to,
+      reason,
+      interruptAttemptId: att,
+      ttsPlaying: (function () {
+        try { return typeof isAssistantTtsPlaying === "function" ? isAssistantTtsPlaying() : null; } catch (_) { return null; }
+      })(),
+      transcriptActive: Boolean(
+        (typeof interruptDetectRecognition !== "undefined" && interruptDetectRecognition) ||
+        (typeof mainBrowserRecognition !== "undefined" && mainBrowserRecognition) ||
+        (typeof interruptRecording !== "undefined" && interruptRecording)
+      ),
+      functionName,
+      stackHint,
+      now: Number(performance.now().toFixed(1)),
+      ...extra,
+    });
+  } catch (_) {}
+}
+
+function _logTtsCancelSourceTrace(fnLabel, reason, extra = {}) {
+  if (!isVeraInterruptDebugEnabled()) return;
+  try {
+    const tr = _veraInterruptDelayTrace;
+    const att = tr ? tr.interruptAttemptId : null;
+    console.info("[tts_cancel_source_trace]", {
+      interruptAttemptId: att,
+      calledAt: Number(performance.now().toFixed(1)),
+      calledBy: fnLabel,
+      reason:
+        reason ||
+        (typeof _veraTtsCancelSource === "string" ? _veraTtsCancelSource : ""),
+      activeSourcesBefore:
+        typeof activeMainTtsBufferSources !== "undefined"
+          ? activeMainTtsBufferSources.length
+          : null,
+      mainTtsPlaybackActiveBefore:
+        typeof mainTtsPlaybackActive !== "undefined"
+          ? mainTtsPlaybackActive
+          : null,
+      activeNdjsonBodyReaderPresent: Boolean(
+        typeof activeNdjsonBodyReader !== "undefined" && activeNdjsonBodyReader
+      ),
+      queuedAssistantTtsPlaybackPending:
+        typeof queuedAssistantTtsPlayback !== "undefined",
+      currentVoiceState: typeof waveState !== "undefined" ? waveState : null,
+      interruptRecording:
+        typeof interruptRecording !== "undefined" ? interruptRecording : null,
+      duringNewsRender:
+        typeof _veraNewsPanelRenderInFlight !== "undefined"
+          ? _veraNewsPanelRenderInFlight
+          : null,
+      ...extra,
+    });
+  } catch (_) {}
+}
+
 function resetVadFastStopState(reason = "") {
   vadFastStopArmed = true;
   vadFastStopFiredAt = 0;
@@ -1246,7 +1473,260 @@ function resetVadFastStopState(reason = "") {
   if (reason) {
     logBargeInLatencyDebug("rearm", { reason });
   }
+  /* PART 1 — interruption timing diagnostics: a new TTS turn invalidates
+     any previous attempt trace. If the prior trace was never flushed (e.g.
+     interruption that did not fully complete because TTS ended naturally),
+     emit it now so we don't lose the timestamps. */
+  _resetInterruptDelayTrace(reason || "new_tts_turn");
 }
+
+/* ---------------------------------------------------------------------
+ * Tab-local voice-runtime diagnostics.
+ *
+ * Two devtools commands for triaging the "broken tab vs working tab"
+ * interruption symptom. Neither is called automatically — they exist
+ * purely so a human can dump and reset state between tabs.
+ *
+ *   window.dumpVeraVoiceState()
+ *     Snapshots all the runtime flags / handles that govern voice
+ *     interrupt + TTS behaviour in this tab. Returns an object and
+ *     also console.warn's it under [vera_voice_state_dump] so it
+ *     shows up in the saved DevTools log.
+ *
+ *   window.resetVeraVoiceRuntimeState()
+ *     Synchronous "soft" teardown of TTS + interrupt flags so a tab
+ *     that has drifted into a stale state can be re-tested without a
+ *     full page reload. Does NOT touch backend session, recorders,
+ *     localStorage, or the checklist/timer.
+ *
+ * Both are gated only by being attached to window — no DEBUG flag —
+ * because the user needs them available in any tab without setup.
+ * ------------------------------------------------------------------- */
+(function _attachVeraVoiceRuntimeDiagnostics() {
+  if (typeof window === "undefined") return;
+
+  const _safe = (fn) => {
+    try { return fn(); } catch (_) { return null; }
+  };
+
+  window.dumpVeraVoiceState = function dumpVeraVoiceState(opts = {}) {
+    const snapshot = {
+      tag: "vera_voice_state_dump",
+      at: new Date().toISOString(),
+      perfNow: Number(performance.now().toFixed(1)),
+
+      /* ---- session / mode (user-spec'd fields) ---- */
+      sessionId: _safe(() => (typeof getSessionId === "function" ? getSessionId() : null)),
+      asrMode: _safe(() => (typeof getVeraAsrMode === "function" ? getVeraAsrMode() : null)),
+      browserAsrPreferred: _safe(() =>
+        typeof browserAsrPreferred === "function" ? browserAsrPreferred() : null
+      ),
+      listeningMode: _safe(() => (typeof listeningMode !== "undefined" ? listeningMode : null)),
+      /* "micState" / "continuousListeningEnabled" don't exist verbatim —
+         expose the equivalent flags so cross-tab diffs are meaningful. */
+      micState: _safe(() => {
+        if (typeof inputMuted !== "undefined" && inputMuted) return "muted";
+        if (typeof pttRecording !== "undefined" && pttRecording) return "ptt_recording";
+        if (typeof listening !== "undefined" && listening) return "listening";
+        return "idle";
+      }),
+      continuousListeningEnabled: _safe(() =>
+        typeof listeningMode !== "undefined" && listeningMode === "continuous"
+      ),
+
+      /* ---- TTS playback runtime ---- */
+      mainTtsPlaybackActive: _safe(() =>
+        typeof mainTtsPlaybackActive !== "undefined" ? mainTtsPlaybackActive : null
+      ),
+      mainTtsPlaybackToken: _safe(() =>
+        typeof mainTtsPlaybackToken !== "undefined" ? mainTtsPlaybackToken : null
+      ),
+      activeMainTtsBufferSourcesCount: _safe(() =>
+        typeof activeMainTtsBufferSources !== "undefined"
+          ? activeMainTtsBufferSources.length
+          : null
+      ),
+      activeNdjsonBodyReaderPresent: _safe(() =>
+        typeof activeNdjsonBodyReader !== "undefined" && Boolean(activeNdjsonBodyReader)
+      ),
+
+      /* ---- interrupt capture ---- */
+      interruptRecording: _safe(() =>
+        typeof interruptRecording !== "undefined" ? interruptRecording : null
+      ),
+      interruptPrearmRecorderState: _safe(() =>
+        typeof interruptPrearmRecorder !== "undefined" && interruptPrearmRecorder
+          ? interruptPrearmRecorder.state
+          : null
+      ),
+      vadFastStopArmed: _safe(() =>
+        typeof vadFastStopArmed !== "undefined" ? vadFastStopArmed : null
+      ),
+
+      /* ---- ids (best-effort: app uses interruptPrearmTtsId/TurnId) ---- */
+      currentTtsId: _safe(() => window.currentTtsId || (typeof interruptPrearmTtsId !== "undefined" ? interruptPrearmTtsId : null) || null),
+      currentTurnId: _safe(() => window.currentTurnId || (typeof interruptPrearmTurnId !== "undefined" ? interruptPrearmTurnId : null) || null),
+      currentRequestId: _safe(() => window.currentRequestId || null),
+
+      /* ---- workmode mute / effective mute ---- */
+      workModeOn: _safe(() =>
+        typeof isVeraWorkModeOn === "function" ? isVeraWorkModeOn() : null
+      ),
+      workModeMuteEnabled: _safe(() =>
+        typeof isWorkModeMuteEnabled === "function" ? isWorkModeMuteEnabled() : null
+      ),
+      inputMuted: _safe(() => (typeof inputMuted !== "undefined" ? inputMuted : null)),
+
+      /* ---- extras useful for diffing a stuck vs healthy tab ---- */
+      extras: {
+        listening: _safe(() => (typeof listening !== "undefined" ? listening : null)),
+        processing: _safe(() => (typeof processing !== "undefined" ? processing : null)),
+        requestInFlight: _safe(() =>
+          typeof requestInFlight !== "undefined" ? requestInFlight : null
+        ),
+        pttRecording: _safe(() =>
+          typeof pttRecording !== "undefined" ? pttRecording : null
+        ),
+        hasSpoken: _safe(() => (typeof hasSpoken !== "undefined" ? hasSpoken : null)),
+        waveState: _safe(() => (typeof waveState !== "undefined" ? waveState : null)),
+        interruptBargeInLatched: _safe(() =>
+          typeof interruptBargeInLatched !== "undefined" ? interruptBargeInLatched : null
+        ),
+        interruptSpeechFrames: _safe(() =>
+          typeof interruptSpeechFrames !== "undefined" ? interruptSpeechFrames : null
+        ),
+        interruptSpeechAccumMs: _safe(() =>
+          typeof interruptSpeechAccumMs !== "undefined"
+            ? Number(Number(interruptSpeechAccumMs).toFixed(1))
+            : null
+        ),
+        interruptPartialAccumMs: _safe(() =>
+          typeof interruptPartialAccumMs !== "undefined"
+            ? Number(Number(interruptPartialAccumMs).toFixed(1))
+            : null
+        ),
+        interruptPartialLastText: _safe(() =>
+          typeof interruptPartialLastText !== "undefined"
+            ? String(interruptPartialLastText || "").slice(0, 80)
+            : null
+        ),
+        interruptDetectRecognitionPresent: _safe(() =>
+          typeof interruptDetectRecognition !== "undefined" && Boolean(interruptDetectRecognition)
+        ),
+        mainBrowserRecognitionPresent: _safe(() =>
+          typeof mainBrowserRecognition !== "undefined" && Boolean(mainBrowserRecognition)
+        ),
+        browserAsrPermanentlyDisabled: _safe(() =>
+          typeof browserAsrPermanentlyDisabled !== "undefined"
+            ? browserAsrPermanentlyDisabled
+            : null
+        ),
+        audioCtxState: _safe(() =>
+          typeof audioCtx !== "undefined" && audioCtx ? audioCtx.state : null
+        ),
+        micStreamActive: _safe(() =>
+          typeof micStream !== "undefined" && micStream ? Boolean(micStream.active) : null
+        ),
+        appModePrefix: _safe(() =>
+          typeof appModePrefix === "function" ? appModePrefix() : null
+        ),
+        appHidden: typeof document !== "undefined" ? document.hidden : null,
+        appVisibilityState: typeof document !== "undefined" ? document.visibilityState : null,
+        location: typeof location !== "undefined" ? location.href : null,
+        veraDebugInterrupt: _safe(() =>
+          typeof window !== "undefined" ? Boolean(window.VERA_DEBUG_INTERRUPT) : null
+        ),
+        duringNewsRender: _safe(() =>
+          typeof _veraNewsPanelRenderInFlight !== "undefined"
+            ? _veraNewsPanelRenderInFlight
+            : null
+        ),
+        currentInterruptAttemptId: _safe(() =>
+          _veraInterruptDelayTrace ? _veraInterruptDelayTrace.interruptAttemptId : null
+        ),
+      },
+    };
+    try {
+      if (!opts.silent) console.warn(`[${snapshot.tag}]`, snapshot);
+    } catch (_) {}
+    return snapshot;
+  };
+
+  /**
+   * Soft reset of TTS + interrupt flags so a stale tab can be re-tested.
+   *
+   * Does NOT:
+   *   - abort the active /infer fetch
+   *   - stop MediaRecorders or browser SpeechRecognition sessions
+   *   - touch localStorage, the checklist, the work-mode timer,
+   *     or session state
+   *
+   * Does:
+   *   - call cancelMainTtsPlayback (bumps token, stops Web Audio
+   *     buffer sources, cancels the NDJSON body reader)
+   *   - pause the <audio> element
+   *   - clear our local interrupt accumulators / one-shot flags
+   *   - leave vadFastStopArmed=false per spec; the next TTS turn will
+   *     re-arm it via resetVadFastStopState("main_tts_start")
+   *
+   * Returns the post-reset dumpVeraVoiceState() snapshot for
+   * before/after comparison.
+   */
+  window.resetVeraVoiceRuntimeState = function resetVeraVoiceRuntimeState(opts = {}) {
+    const beforeSnap = window.dumpVeraVoiceState
+      ? window.dumpVeraVoiceState({ silent: true })
+      : null;
+    try {
+      _veraTtsCancelSource = "manual_reset_voice_runtime_state";
+    } catch (_) {}
+    try { if (typeof cancelMainTtsPlayback === "function") cancelMainTtsPlayback(); } catch (_) {}
+    /* Belt + suspenders — cancelMainTtsPlayback already calls
+       stopAllMainTtsWebAudio internally, but call again in case the
+       function fails partway through. */
+    try { if (typeof stopAllMainTtsWebAudio === "function") stopAllMainTtsWebAudio(); } catch (_) {}
+    try {
+      if (typeof activeMainTtsBufferSources !== "undefined") {
+        activeMainTtsBufferSources.length = 0;
+      }
+    } catch (_) {}
+    try { activeNdjsonBodyReader = null; } catch (_) {}
+    try { mainTtsPlaybackActive = false; } catch (_) {}
+    try {
+      if (typeof getAudioEl === "function") {
+        const a = getAudioEl();
+        if (a) {
+          try { a.pause(); } catch (_) {}
+          try { a.currentTime = 0; } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    try { interruptRecording = false; } catch (_) {}
+    /* Per spec: leave fast-stop disarmed. The next TTS turn naturally
+       re-arms it through resetVadFastStopState("main_tts_start"). */
+    try { vadFastStopArmed = false; } catch (_) {}
+    try { interruptBargeInLatched = false; } catch (_) {}
+    try { interruptSpeechFrames = 0; } catch (_) {}
+    try { interruptSpeechStart = 0; } catch (_) {}
+    try { interruptSpeechAccumMs = 0; } catch (_) {}
+    try { interruptPartialAccumMs = 0; } catch (_) {}
+    try { interruptPartialLastChangeAt = 0; } catch (_) {}
+    try { interruptPartialLastText = ""; } catch (_) {}
+    try { _resetInterruptDelayTrace("manual_reset_voice_runtime_state"); } catch (_) {}
+
+    const afterSnap = window.dumpVeraVoiceState
+      ? window.dumpVeraVoiceState({ silent: true })
+      : null;
+    try {
+      console.warn("[vera_voice_runtime_reset]", {
+        at: new Date().toISOString(),
+        opts,
+        before: beforeSnap,
+        after: afterSnap,
+      });
+    } catch (_) {}
+    return { before: beforeSnap, after: afterSnap };
+  };
+})();
 
 /**
  * Stop TTS playback IMMEDIATELY on a fast VAD trigger, without
@@ -1284,6 +1764,12 @@ function fastStopTtsOnVadOnly({ rms = null, zcr = null, crest = null, vadAccumMs
   vadFastStopArmed = false;
   vadFastStopFiredAt = performance.now();
   vadFastStopTtsId = interruptPrearmTtsId || vadFastStopTtsId;
+
+  /* PART 1 — record interrupt intent + entry into the fast-stop path. */
+  _recordInterruptTimingPoint("t4_interrupt_intent_detected", { autoStart: true });
+  _recordInterruptTimingPoint("t5_interruptSpeech_entered", {
+    extra: { gatePath: "fast_stop_vad_browser_asr_parallel" },
+  });
 
   logVeraInterruptDebug({
     tag: "interrupt_speech_entry",
@@ -1329,11 +1815,27 @@ function fastStopTtsOnVadOnly({ rms = null, zcr = null, crest = null, vadAccumMs
     try { a.pause(); } catch (_) {}
     try { a.currentTime = 0; } catch (_) {}
   }
+  /* PART 1 — t11: audio element paused, no scheduled buffer sources left. */
+  _recordInterruptTimingPoint("t11_audio_audibly_stopped", {
+    extra: { path: "fast_stop_vad_browser_asr_parallel" },
+  });
   // Re-flag UI so the user sees we are listening, without aborting the
   // SR or starting a fresh recognition session.
+  /* PART 1/3 — t8: UI flipped from speaking → interrupted. */
+  _recordInterruptTimingPoint("t8_ui_state_set_interrupted");
+  _logVoiceStateTransition("speaking", "interrupted", "fast_stop_vad_browser_asr_parallel", "fastStopTtsOnVadOnly");
   try { setStatus("Listening… (interrupted)", "recording"); } catch (_) {}
+  /* PART 1/3 — t9: voice state flipped to listening. */
+  _logVoiceStateTransition("interrupted", "listening", "fast_stop_vad_browser_asr_parallel", "fastStopTtsOnVadOnly");
   waveState = "listening";
   listening = true;
+  _recordInterruptTimingPoint("t9_ui_state_set_listening");
+
+  /* PART 1 — flush the consolidated trace on next tick so any pending
+     onended events (and t10) get a chance to land. */
+  try {
+    setTimeout(() => _flushInterruptDelayTrace("fast_stop_vad_complete"), 0);
+  } catch (_) {}
 
   vadFastStopTtsStoppedAt = performance.now();
   logBargeInLatencyDebug("tts_stop", {
@@ -5395,6 +5897,18 @@ function allocateWorkModeStableLaneId() {
   return `wm_lane_${String(workModeStableLaneSeq).padStart(3, "0")}`;
 }
 
+function replaceStableLaneIdForPanelIndex(idx) {
+  initWorkModeStableLaneIdSlots();
+  const i = Number(idx);
+  const next = allocateWorkModeStableLaneId();
+  if (!Number.isFinite(i) || i < 0) return next;
+  while (workModeStableLaneIdByIdx.length <= i) {
+    workModeStableLaneIdByIdx.push("");
+  }
+  workModeStableLaneIdByIdx[i] = next;
+  return next;
+}
+
 function ensureStableLaneIdForPanelIndex(idx) {
   initWorkModeStableLaneIdSlots();
   const i = Number(idx);
@@ -8465,6 +8979,42 @@ function setReasoningTabTopicFromFinal(turnEl, opts = {}) {
   }
 
   const laneId = String(panel.dataset.laneId || "").trim();
+  const panelIdx = Number(panel.dataset.tabIndex);
+  if (!panel.isConnected) {
+    reasoningTitleUpdateDebugLog(
+      laneId || null,
+      String(getReasoningTabTopicLabel(panel) || "").trim(),
+      "",
+      false,
+      "skip_heuristic_panel_removed_from_dom_before_title_apply"
+    );
+    return;
+  }
+  if (Number.isFinite(panelIdx)) {
+    const currentPanelForIndex = document.querySelector(
+      `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${panelIdx}"]`
+    );
+    const currentLaneId = String(currentPanelForIndex?.dataset?.laneId || "").trim();
+    if (currentPanelForIndex && currentLaneId && laneId && currentLaneId !== laneId) {
+      reasoningTitleUpdateDebugLog(
+        laneId || null,
+        String(getReasoningTabTopicLabel(panel) || "").trim(),
+        "",
+        false,
+        "skip_heuristic_panel_identity_changed_before_title_apply"
+      );
+      try {
+        console.info("[reasoning_title_stale_apply_blocked]", {
+          original_lane_id: laneId,
+          current_lane_id: currentLaneId,
+          tab_index: panelIdx,
+          candidate_title: "",
+          called_from: calledFrom,
+        });
+      } catch (_) {}
+      return;
+    }
+  }
   const display = String(getReasoningTabTopicLabel(panel) || "").trim();
   if (!isGenericAutoRenamableReasoningPanelTitle(display)) {
     reasoningTitleCandidateDebugLog(panel, {
@@ -8750,6 +9300,28 @@ function queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panel, opts = {}) {
         return;
       }
 
+      const curLaneId = String(cur.dataset.laneId || "").trim();
+      if (laneRef && curLaneId && curLaneId !== laneRef) {
+        reasoningTitleUpdateDebugLog(
+          laneRef || null,
+          effectiveAtEntry,
+          title,
+          false,
+          "queue_abort_panel_identity_changed_before_title_apply"
+        );
+        try {
+          console.info("[reasoning_title_stale_apply_blocked]", {
+            turn_id: tid,
+            original_lane_id: laneRef,
+            current_lane_id: curLaneId,
+            tab_index: idx,
+            candidate_title: title,
+            called_from: calledFrom,
+          });
+        } catch (_) {}
+        return;
+      }
+
       reasoningTitleCandidateDebugLog(cur, {
         turn_id: tid,
         candidate_title: title,
@@ -8811,7 +9383,12 @@ function queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panel, opts = {}) {
       const curFinish = document.querySelector(
         `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
       );
-      if (curFinish instanceof HTMLElement) curFinish.dataset.reasoningLlmTitleInFlight = "";
+      if (
+        curFinish instanceof HTMLElement &&
+        String(curFinish.dataset.laneId || "").trim() === laneRef
+      ) {
+        curFinish.dataset.reasoningLlmTitleInFlight = "";
+      }
     }
   })();
 }
@@ -8889,15 +9466,50 @@ function renderReasoningTabStrip() {
   } catch (_) {}
 }
 
-function activateReasoningTab(index) {
+function logReasoningPanelSelectDebug(payload) {
+  try {
+    console.info("[reasoning_panel_select_debug] " + JSON.stringify({
+      tag: "reasoning_panel_select_debug",
+      ...payload,
+    }));
+  } catch (_) {}
+}
+
+function activateReasoningTab(index, opts = {}) {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return;
+  const idx = Number(index);
+  const beforeOrder = getReasoningPanelOrder();
+  const beforePanel = beforeOrder.find((p) => p.tabIndex === idx) || null;
+  const selectedTitleBefore = beforePanel?.label || "";
   panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").forEach((p) => {
-    p.classList.toggle("is-active", Number(p.dataset.tabIndex) === index);
+    p.classList.toggle("is-active", Number(p.dataset.tabIndex) === idx);
   });
-  setFocusedWorkModeLaneFromIndex(index);
+  setFocusedWorkModeLaneFromIndex(idx);
   renderReasoningTabStrip();
   syncWorkModeReasoningCancelButton();
+  const afterOrder = getReasoningPanelOrder();
+  const afterPanel = afterOrder.find((p) => p.tabIndex === idx) || null;
+  const selectedTitleAfter = afterPanel?.label || "";
+  const requestedIndex =
+    Number.isFinite(Number(opts.requestedIndex))
+      ? Number(opts.requestedIndex)
+      : (afterPanel?.visualIndex ?? beforePanel?.visualIndex ?? null);
+  logReasoningPanelSelectDebug({
+    commandText: String(
+      opts.commandText ||
+        (typeof window !== "undefined" ? window.__veraLastInferUserTextForLaneGuard || "" : "")
+    ).slice(0, 200),
+    requestedIndex,
+    selectedPanelId: afterPanel?.laneId || beforePanel?.laneId || null,
+    selectedTitleBefore,
+    selectedTitleAfter,
+    visibleTitles: afterOrder.map((p) => p.label),
+    resolvedFrom: opts.resolvedFrom || "visible_order",
+    staleTitleRestored:
+      _isGenericBlankReasoningPanelLabel(selectedTitleBefore) &&
+      !_isGenericBlankReasoningPanelLabel(selectedTitleAfter),
+  });
 }
 
 function addReasoningTab() {
@@ -9184,6 +9796,7 @@ function _isGenericBlankReasoningPanelLabel(label) {
   if (!t) return true;
   if (/^panel\s+\d+$/i.test(t)) return true;
   if (/^new\s+panel(\s+\d+)?$/i.test(t)) return true;
+  if (/^fresh\s+panel(\s+\d+)?$/i.test(t)) return true;
   if (t.toLowerCase() === String(REASONING_UNTITLED_TAB_NAME || "untitled").toLowerCase()) return true;
   return false;
 }
@@ -9195,6 +9808,80 @@ function _isBlankReasoningPanelElement(panelEl) {
     panelEl.querySelector(".vera-reasoning-scroll");
   const html = String(scroll?.innerHTML || "").trim();
   return !html;
+}
+
+function snapshotReasoningLaneRegistryForDebug(laneIds = []) {
+  const ids = Array.isArray(laneIds)
+    ? laneIds.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+  const out = {};
+  for (const id of ids) {
+    const row = workModeCompletedReasoningByLaneId[id];
+    out[id] = row
+      ? {
+          title: String(row.title || row.lane_title || "").trim(),
+          lane_title: String(row.lane_title || "").trim(),
+          main_context_type: String(row.main_context_type || "").trim(),
+          latest_turn_type: String(row.latest_turn_type || "").trim(),
+          updated_at: Number(row.updated_at) || null,
+        }
+      : null;
+  }
+  return out;
+}
+
+function invalidateClosedReasoningLaneIdentity(panelInfo) {
+  const laneId = String(panelInfo?.laneId || "").trim();
+  const tabIndex = Number(panelInfo?.tabIndex);
+  if (laneId) {
+    try { delete workModeCompletedReasoningByLaneId[laneId]; } catch (_) {}
+    try { workModeReasoningFinalStatusByLaneId.delete(laneId); } catch (_) {}
+    try {
+      if (
+        activeWorkModeReasoningContext &&
+        String(activeWorkModeReasoningContext.lane_id || activeWorkModeReasoningContext.active_lane_id || "").trim() === laneId
+      ) {
+        activeWorkModeReasoningContext = null;
+      }
+    } catch (_) {}
+    try {
+      if (String(focusedWorkModeLaneId || "").trim() === laneId) {
+        focusedWorkModeLaneId = "";
+        focusedWorkModeLaneAt = 0;
+      }
+    } catch (_) {}
+  }
+  if (Number.isFinite(tabIndex)) {
+    try { workModeReasoningAbortControllers.delete(tabIndex); } catch (_) {}
+    try { workModeReasoningLaneBusy.delete(tabIndex); } catch (_) {}
+    try { laneReasoningChainTail.delete(tabIndex); } catch (_) {}
+    try { workModeReasoningPanelFollowUpQueue.delete(tabIndex); } catch (_) {}
+    try {
+      if (workModeLastSubstantiveLaneIdx === tabIndex) {
+        workModeLastSubstantiveLaneIdx = null;
+        workModeLastSubstantiveUserText = "";
+      }
+    } catch (_) {}
+    return replaceStableLaneIdForPanelIndex(tabIndex);
+  }
+  return allocateWorkModeStableLaneId();
+}
+
+function readPersistedReasoningPanelTitlesForDebug() {
+  try {
+    const raw = localStorage.getItem(getReasoningTabsStateStorageKey()) || "";
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs : [];
+    return tabs.map((t) => ({
+      idx: Number(t?.idx),
+      laneId: String(t?.laneId || "").trim(),
+      topic: String(t?.topic || "").trim(),
+      laneLabel: String(t?.laneLabel || "").trim(),
+    }));
+  } catch (_) {
+    return [];
+  }
 }
 
 /* Walk panels in visual order; for every panel that is BOTH blank in
@@ -9437,10 +10124,12 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
   const closedTabIndexSet = new Set(targets.map((t) => t.tabIndex));
   const activeBefore = prevOrder.find((p) => p.isActive) || null;
   const activeWasClosed = activeBefore ? closedTabIndexSet.has(activeBefore.tabIndex) : false;
+  const registryBeforeClose = snapshotReasoningLaneRegistryForDebug(targets.map((t) => t.laneId));
 
   const closedTitles = [];
   const closedLaneIds = [];
   const closedSnapshots = [];
+  const replacementLaneIdByTabIndex = new Map();
   let streamsCancelled = 0;
   let anyStreamCancelled = false;
 
@@ -9477,6 +10166,13 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
       closedSnapshots.push(snap);
     }
 
+    /* PART 2: closing a panel invalidates its old identity. Replacements
+       reuse the visible slot/tabIndex for UI continuity, but they get a NEW
+       stable lane id and all old lane registry/context/title metadata is
+       deleted before a fresh blank panel can be created. */
+    const replacementLaneId = invalidateClosedReasoningLaneIdentity(t);
+    replacementLaneIdByTabIndex.set(t.tabIndex, replacementLaneId);
+
     /* DOM removal. */
     try { t.element.remove(); } catch (_) {}
   }
@@ -9510,8 +10206,48 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
   const panelCountAfterCloseBeforeRefill = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length;
 
   let createdBlankCount = 0;
+  const createdPanelIds = [];
+  const createdPanelTitles = [];
   if (refillToMinimum) {
-    createdBlankCount = refillReasoningPanelsToMinimum();
+    const remainingCount = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length;
+    const blankNeeded = Math.max(0, Math.min(REASONING_TABS_MAX, MIN_REASONING_PANELS) - remainingCount);
+    const prevVisualByTabIndex = new Map(prevOrder.map((p) => [p.tabIndex, p.visualIndex]));
+    const replacementTargets = targets
+      .slice()
+      .sort((a, b) => a.visualIndex - b.visualIndex)
+      .slice(0, blankNeeded);
+    for (const target of replacementTargets) {
+      const label = `Panel ${target.visualIndex}`;
+      const laneId = replacementLaneIdByTabIndex.get(target.tabIndex) || replaceStableLaneIdForPanelIndex(target.tabIndex);
+      const freshPanel = createReasoningLanePanel(target.tabIndex, "", false, {
+        laneId,
+        laneLabel: label,
+        topic: REASONING_UNTITLED_TAB_NAME,
+        topicSet: "0",
+      });
+      freshPanel.dataset.reasoningFreshReplacement = "1";
+      freshPanel.dataset.closedLaneId = String(target.laneId || "");
+      const beforeEl = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")].find((p) => {
+        const idx = Number(p.dataset.tabIndex);
+        const prevVisual = prevVisualByTabIndex.get(idx);
+        return Number.isFinite(prevVisual) && prevVisual > target.visualIndex;
+      });
+      panelsRoot.insertBefore(freshPanel, beforeEl || null);
+      createdBlankCount += 1;
+      createdPanelIds.push(laneId);
+      createdPanelTitles.push(label);
+    }
+    if (panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length < MIN_REASONING_PANELS) {
+      const beforeFallback = getReasoningPanelOrder().map((p) => p.laneId);
+      createdBlankCount += refillReasoningPanelsToMinimum();
+      const afterFallback = getReasoningPanelOrder();
+      for (const p of afterFallback) {
+        if (!beforeFallback.includes(p.laneId) && !createdPanelIds.includes(p.laneId)) {
+          createdPanelIds.push(p.laneId);
+          createdPanelTitles.push(p.label);
+        }
+      }
+    }
   }
 
   /* PART 3: rename auto-refilled blank panels back to clean "Panel 1/2/3"
@@ -9539,9 +10275,34 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
   }
 
   renderReasoningTabStrip();
+  try {
+    persistReasoningTabsState();
+  } catch (_) {}
 
   const afterOrder = getReasoningPanelOrder();
   const activeAfter = afterOrder.find((p) => p.isActive) || null;
+  const registryAfterClose = snapshotReasoningLaneRegistryForDebug([
+    ...closedLaneIds,
+    ...createdPanelIds,
+  ]);
+  const persistedTitlesAfter = readPersistedReasoningPanelTitlesForDebug();
+
+  try {
+    console.info("[reasoning_panel_close_debug] " + JSON.stringify({
+      tag: "reasoning_panel_close_debug",
+      action: "close_refill",
+      closedPanelIds: closedLaneIds,
+      closedPanelTitles: closedTitles,
+      createdPanelIds,
+      createdPanelTitles,
+      panelTitlesBefore: prevOrder.map((p) => p.label),
+      panelTitlesAfter: afterOrder.map((p) => p.label),
+      laneRegistryBefore: registryBeforeClose,
+      laneRegistryAfter: registryAfterClose,
+      persistedTitlesAfter,
+      activePanelAfter: activeAfter?.laneId || null,
+    }));
+  } catch (_) {}
 
   logReasoningCloseDebug({
     latest_user_text: userText.slice(0, 200),
@@ -9563,6 +10324,8 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
     refill_enabled: refillToMinimum,
     min_panel_count: MIN_REASONING_PANELS,
     blank_panels_created_count: createdBlankCount,
+    created_panel_ids: createdPanelIds,
+    created_panel_titles: createdPanelTitles,
     recently_closed_stack_size: recentlyClosedReasoningPanels.length,
     panel_order_after: afterOrder.map((p) => ({ tabIndex: p.tabIndex, laneId: p.laneId, label: p.label, visualIndex: p.visualIndex })),
     active_panel_id_after: activeAfter?.laneId || null,
@@ -12892,11 +13655,11 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
   if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return null;
   const lowered = s.toLowerCase();
   let m = s.match(
-    /\b(?:can you|could you|please)\s+(?:go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
+    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
   );
   if (!m) {
     m = s.match(
-      /\b(?:go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
+      /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
     );
   }
   if (!m) return null;
@@ -12924,7 +13687,7 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
     return null;
   }
   const hadTabWord = /\b(?:reasoning|panel|tab|workspace|page)\b/i.test(lowered);
-  if (!hadTabWord && !/\b(?:go\s+to|jump\s+to|switch\s+to|change\s+to)\b/i.test(lowered)) {
+  if (!hadTabWord && !/\b(?:go\s+back\s+to|go\s+to|jump\s+to|switch\s+to|change\s+to)\b/i.test(lowered)) {
     return null;
   }
   if (!hadTabWord && q.length < 10) return null;
@@ -12941,33 +13704,33 @@ function isExplicitWorkModePanelNavigationIntent(text) {
   if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return false;
   const low = s.toLowerCase();
   if (
-    /\b(?:go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(
+    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(
       low
     )
   ) {
     return true;
   }
   if (
-    /\b(?:go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(
+    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(
       low
     )
   ) {
     return true;
   }
   if (
-    /\b(?:go to|jump to|switch to|change to|show|select|use|open)\b/i.test(low) &&
+    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\b/i.test(low) &&
     /\b(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(low)
   ) {
     return true;
   }
   if (
-    /\b(?:can you|could you|please)\s+(?:go to|jump to|switch to|change to|show|select|use|open)\b/i.test(s) &&
+    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\b/i.test(s) &&
     /(?:reasoning\s+)?(?:panel|space|tab|page)\s*[?.!]*\s*$/i.test(s.trim())
   ) {
     return true;
   }
   if (
-    /^(?:go to|jump to|switch to|change to|show|select|use|open)\b/i.test(s.trim()) &&
+    /^(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\b/i.test(s.trim()) &&
     /(?:reasoning\s+)?(?:panel|space|tab|page)\s*[?.!]*\s*$/i.test(s.trim())
   ) {
     return true;
@@ -21442,7 +22205,7 @@ function shouldBlockOrdinalProblemLaneActivation(userText) {
   if (/\b(?:reasoning\s+)?(?:panel|tab|lane)\b/i.test(low)) return false;
   if (/\breasoning\s+space\b/i.test(low)) return false;
   if (
-    /\b(?:go\s+to|jump\s+to|switch\s+to|change\s+to|open|activate|show|select|use)\b[^.?!]{0,96}\b(?:reasoning\s+)?(?:panel|tab|lane|page)\b/i.test(
+    /\b(?:go\s+back\s+to|go\s+to|jump\s+to|switch\s+to|change\s+to|open|activate|show|select|use)\b[^.?!]{0,96}\b(?:reasoning\s+)?(?:panel|tab|lane|page)\b/i.test(
       low
     )
   ) {
@@ -21731,7 +22494,13 @@ function applyActionPayload(data) {
       const panelEl = document.querySelector(
         `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
       );
-      if (panelEl) activateReasoningTab(idx);
+      if (panelEl) {
+        activateReasoningTab(idx, {
+          commandText: guardText,
+          requestedIndex: idx + 1,
+          resolvedFrom: "visible_order",
+        });
+      }
       return;
     }
     return;
@@ -22048,6 +22817,18 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
 
 /** Stops TTS and resets interrupt UI counters (shared by heuristic + browser barge-in). */
 function cancelBrowserInterruptTtsOnly() {
+  /* PART 1 — record entry into the shared cancel path. */
+  _recordInterruptTimingPoint("t5_interruptSpeech_entered", {
+    extra: { gatePath: "cancelBrowserInterruptTtsOnly" },
+  });
+  /* PART 1/3 — t8: UI flipped from speaking → interrupted. */
+  _recordInterruptTimingPoint("t8_ui_state_set_interrupted");
+  _logVoiceStateTransition(
+    typeof waveState !== "undefined" ? waveState : null,
+    "interrupted",
+    "interrupt_browser_or_single_asr",
+    "cancelBrowserInterruptTtsOnly"
+  );
   setStatus("Listening… (interrupted)", "recording");
   resetAudioHandlers();
   cancelMainTtsPlayback();
@@ -22056,9 +22837,21 @@ function cancelBrowserInterruptTtsOnly() {
     a.pause();
     a.currentTime = 0;
   }
+  /* PART 1 — t11: audio element paused after cancel. */
+  _recordInterruptTimingPoint("t11_audio_audibly_stopped", {
+    extra: { path: "cancelBrowserInterruptTtsOnly" },
+  });
+  /* PART 1/3 — t9: voice state flipped to listening. */
+  _logVoiceStateTransition(
+    "interrupted",
+    "listening",
+    "cancelBrowserInterruptTtsOnly_complete",
+    "cancelBrowserInterruptTtsOnly"
+  );
   listening = true;
   processing = false;
   waveState = "listening";
+  _recordInterruptTimingPoint("t9_ui_state_set_listening");
   interruptSpeechFrames = 0;
   interruptSpeechStart = 0;
   interruptSpeechAccumMs = 0;
@@ -22066,6 +22859,13 @@ function cancelBrowserInterruptTtsOnly() {
   interruptLastSpeechLikeTime = 0;
   lastInterruptSpeechLikeSnapshot = null;
   interruptLastVoiceTime = performance.now();
+  /* PART 1 — flush trace on next tick to capture any tail t10/t11 events. */
+  try {
+    setTimeout(
+      () => _flushInterruptDelayTrace("cancelBrowserInterruptTtsOnly_complete"),
+      0
+    );
+  } catch (_) {}
 }
 
 function promoteInterruptPreviewToMainLiveBubble() {
@@ -22087,6 +22887,10 @@ function onBrowserInterruptBargeInFromDetect(event) {
   interruptBargeInLatched = true;
   const commitAt = performance.now();
   vadFastStopAsrFinalAt = commitAt;
+  /* PART 1 — t5: barge-in handler entered. */
+  _recordInterruptTimingPoint("t5_interruptSpeech_entered", {
+    extra: { gatePath: "onBrowserInterruptBargeInFromDetect" },
+  });
   // Latency telemetry: if the fast VAD stop already fired earlier in
   // this TTS turn, report the gap between the two events so we can see
   // exactly how much speak-over time was saved. If the heuristic never
@@ -22113,15 +22917,24 @@ function onBrowserInterruptBargeInFromDetect(event) {
 
   let interimBuf = "";
   let finalP = "";
+  let _sawFinal = false;
   for (let i = 0; i < event.results.length; i++) {
     const r = event.results[i];
     if (r.isFinal) {
       const piece = r[0].transcript;
       finalP += piece;
+      _sawFinal = true;
       logPartialAsrSegmentFinal(piece.trim(), { mode: "interrupt-barge" });
     } else {
       interimBuf += r[0].transcript;
     }
+  }
+  /* PART 1 — t3: first final fragment from the browser SR (if any).
+     Useful to verify TTS cancel did NOT wait for this point. */
+  if (_sawFinal) {
+    _recordInterruptTimingPoint("t3_final_transcript_available", {
+      extra: { finalLen: finalP.length },
+    });
   }
   mainBrowserFinalTranscript = finalP;
   mainBrowserLastInterim = interimBuf;
@@ -22195,6 +23008,12 @@ function interruptSpeech() {
     htmlPlaying: Boolean(htmlPlaying),
     webTtsPlaying: Boolean(webTtsPlaying),
   }));
+
+  /* PART 1 — t4/t5 markers for the single-ASR / heuristic VAD path. */
+  _recordInterruptTimingPoint("t4_interrupt_intent_detected", { autoStart: true });
+  _recordInterruptTimingPoint("t5_interruptSpeech_entered", {
+    extra: { gatePath: "interrupt_speech_single_asr" },
+  });
 
   _veraTtsCancelSource = "interrupt_speech_single_asr";
   cancelBrowserInterruptTtsOnly();
@@ -22339,6 +23158,19 @@ function detectInterrupt() {
         interruptSpeechAccumMs += dt;
         if (interruptSpeechFrames === 0) {
           interruptSpeechStart = now;
+          /* PART 1 — t0: first speech-like VAD frame. autoStart=true so
+             the trace begins here even if the browser SR never reports
+             interim transcripts (single-ASR / whisper mode). */
+          _recordInterruptTimingPoint("t0_user_speech_audio_detected", {
+            autoStart: true,
+            extra: {
+              rms: Number(rms.toFixed(5)),
+              zcr: Number(zcr.toFixed(4)),
+              crest: Number(crest.toFixed(2)),
+              browserAsrParallelMode,
+              timeSinceTtsStartMs: Number((now - (audioStartedAt || now)).toFixed(1)),
+            },
+          });
         }
         interruptSpeechFrames++;
         interruptLastSpeechLikeTime = now;
@@ -22428,6 +23260,11 @@ function detectInterrupt() {
           // (see onBrowserInterruptBargeInFromDetect for the bubble +
           // routing). Reset the heuristic counters so we don't fire the
           // fast-stop more than once per TTS turn.
+          /* PART 1 — t4: gate passed, intent confirmed (VAD parallel). */
+          _recordInterruptTimingPoint("t4_interrupt_intent_detected", {
+            autoStart: true,
+            extra: { gate: "heuristic_fast_stop" },
+          });
           fastStopTtsOnVadOnly({
             rms,
             zcr,
@@ -22435,6 +23272,11 @@ function detectInterrupt() {
             vadAccumMs: interruptSpeechAccumMs
           });
         } else {
+          /* PART 1 — t4: gate passed, intent confirmed (single-ASR heuristic). */
+          _recordInterruptTimingPoint("t4_interrupt_intent_detected", {
+            autoStart: true,
+            extra: { gate: "heuristic_single_asr" },
+          });
           interruptSpeech();
         }
         interruptSpeechFrames = 0;
@@ -23055,6 +23897,9 @@ async function handleInterruptUtterance(blob) {
 
   requestInFlight = true;
   processing = true;
+  /* PART 3 — log the "interrupted/listening" → "processing/thinking" hop
+     that happens once the interrupt recorder closes the utterance. */
+  _logVoiceStateTransition("listening", "processing", "interrupt_utterance_upload", "handleInterruptUtterance");
   waveState = "idle";
   setStatus("Thinking", "thinking");
 
@@ -23102,6 +23947,8 @@ async function playInterruptAnswer(data) {
           logVoiceFirstAudio("main-reply");
           logVoiceMainReplyAudio();
           applyAssistantReplyAndPanels(data);
+          /* PART 3 — interrupt-reply TTS starts: state hop into speaking. */
+          _logVoiceStateTransition("processing", "speaking", "interrupt_reply_play_start", "playInterruptAnswer.onPlayStart");
           waveState = "speaking";
           audioStartedAt = performance.now();
           resetVadFastStopState("main_tts_start");
@@ -23184,6 +24031,15 @@ function stopAllMainTtsWebAudio() {
   const _dbgSourceCount = activeMainTtsBufferSources.length;
   let _dbgStopped = 0;
   let _dbgErrors = 0;
+  /* PART 1 — t7: stopAllMainTtsWebAudio entered.
+     PART 4 — tts_cancel_source_trace. */
+  _recordInterruptTimingPoint("t7_stopAllMainTtsWebAudio_called", {
+    extra: { sourceCount: _dbgSourceCount },
+  });
+  _logTtsCancelSourceTrace(
+    "stopAllMainTtsWebAudio",
+    _veraTtsCancelSource || ""
+  );
   mainTtsPlaybackActive = false;
   const copy = activeMainTtsBufferSources.slice();
   activeMainTtsBufferSources = [];
@@ -23216,6 +24072,12 @@ function cancelMainTtsPlayback() {
   const _dbgActiveSourcesBefore = activeMainTtsBufferSources.length;
   const _dbgMainTtsActiveBefore = mainTtsPlaybackActive;
   const _dbgReaderBefore = Boolean(activeNdjsonBodyReader);
+  /* PART 1 — t6: cancelMainTtsPlayback entered.
+     PART 4 — tts_cancel_source_trace. */
+  _recordInterruptTimingPoint("t6_cancelMainTtsPlayback_called", {
+    extra: { source: _dbgSource },
+  });
+  _logTtsCancelSourceTrace("cancelMainTtsPlayback", _dbgSource);
   logVeraInterruptDebug({
     tag: "tts_cancel_called",
     now: Number(performance.now().toFixed(1)),
@@ -23239,6 +24101,17 @@ function cancelMainTtsPlayback() {
     } catch (_) {
       /* ignore */
     }
+  }
+
+  /* PART 1 — t10: active Web Audio buffer source count after cancel.
+     stopAllMainTtsWebAudio empties the array synchronously, so this
+     is normally 0 here. If a chunk's src.start() was called between
+     mainTtsPlaybackToken++ and registerMainTtsBufferSource (race), the
+     count could still be 0 here while an unregistered source plays. */
+  if (activeMainTtsBufferSources.length === 0) {
+    _recordInterruptTimingPoint("t10_audio_sources_zero", {
+      extra: { source: _dbgSource },
+    });
   }
 
   logVeraInterruptDebug({
@@ -23331,6 +24204,15 @@ function isFlowModeKeyboardInterruptAllowed() {
 
 /** Abort fetch + stop main TTS so the next `/text` send can proceed (keyboard barge-in). */
 function interruptAssistantPipelineForTypedMessage() {
+  /* PART 3/4 — typed keyboard barge-in is structurally similar to voice
+     barge-in: log the state transition so the trace shows where TTS got
+     cancelled when the user typed instead of spoke. */
+  _logVoiceStateTransition(
+    typeof waveState !== "undefined" ? waveState : null,
+    "interrupted",
+    "typed_pipeline_barge_in",
+    "interruptAssistantPipelineForTypedMessage"
+  );
   activePipelineAbort?.abort();
   activePipelineAbort = null;
   _veraTtsCancelSource = "typed_pipeline_barge_in";
@@ -23365,6 +24247,13 @@ function interruptAssistantPipelineForTypedMessage() {
 }
 
 function cancelVoicePipelineAndResetState() {
+  /* PART 3 — full pipeline reset (e.g. mode swap, error recovery). */
+  _logVoiceStateTransition(
+    typeof waveState !== "undefined" ? waveState : null,
+    "idle",
+    "voice_pipeline_reset",
+    "cancelVoicePipelineAndResetState"
+  );
   // Diagnostic: if a non-cancelable action was just committed (sync /
   // add / remove / update / toggle / timer), the audio cancellation
   // below is allowed but the underlying state mutation MUST NOT be
@@ -23432,6 +24321,13 @@ function cancelVoicePipelineAndResetState() {
 }
 
 function resumeAfterAssistantReplyPlayback() {
+  /* PART 3 — natural end of an assistant reply: speaking → listening/idle. */
+  _logVoiceStateTransition(
+    typeof waveState !== "undefined" ? waveState : null,
+    listeningMode === "ptt" ? "idle" : "listening",
+    "assistant_reply_playback_end",
+    "resumeAfterAssistantReplyPlayback"
+  );
   browserAsrMainNetworkRetries = 0;
   processing = false;
   requestInFlight = false;
@@ -23462,6 +24358,13 @@ function resumeAfterAssistantReplyPlayback() {
 }
 
 function resumeListeningAfterInterruptPlayback() {
+  /* PART 3 — natural end of an INTERRUPT reply playback. */
+  _logVoiceStateTransition(
+    typeof waveState !== "undefined" ? waveState : null,
+    listeningMode === "ptt" ? "idle" : "listening",
+    "interrupt_reply_playback_end",
+    "resumeListeningAfterInterruptPlayback"
+  );
   browserAsrMainNetworkRetries = 0;
   processing = false;
   requestInFlight = false;
@@ -23851,7 +24754,47 @@ async function playTtsUrlSequenceGapless(
           : "happy";
       setBmoTtsFaceTrack(face);
     }
+    /* RACE CLOSE (1/2): Re-check token immediately before src.start.
+       A cancelMainTtsPlayback() invocation in the await window above
+       could have bumped mainTtsPlaybackToken. Without this guard, the
+       buffer would still be started and (because we haven't yet called
+       registerMainTtsBufferSource) NOT tracked in activeMainTtsBufferSources,
+       so stopAllMainTtsWebAudio() could not reach it and the user would
+       keep hearing this chunk to its natural end. */
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      try { src.disconnect(); } catch (_) {}
+      mainTtsPlaybackActive = false;
+      logVeraInterruptDebug({
+        tag: "tts_race_close",
+        path: "playTtsUrlSequenceGapless",
+        stage: "before_src_start",
+        chunkIndex: i,
+        sessionToken,
+        currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+        note: "cancel happened in fetch/decode await; buffer never started",
+      });
+      return;
+    }
     src.start(startAt);
+    /* RACE CLOSE (2/2): Re-check token immediately after src.start and
+       before registration. If cancel arrived between src.start and
+       registerMainTtsBufferSource, stop and disconnect the source so
+       it does not keep producing audio while untracked. */
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      try { src.stop(0); } catch (_) {}
+      try { src.disconnect(); } catch (_) {}
+      mainTtsPlaybackActive = false;
+      logVeraInterruptDebug({
+        tag: "tts_race_close",
+        path: "playTtsUrlSequenceGapless",
+        stage: "after_src_start",
+        chunkIndex: i,
+        sessionToken,
+        currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+        note: "cancel raced src.start; source stopped before registration",
+      });
+      return;
+    }
     /* BMO mouth before onFirstStart: onPlayStart applies news side panel (heavy innerHTML); blocking first would let TTS chunks finish before RAF starts — generic headlines path is slower than “breaking news”. */
     if (document.body.classList.contains("bmo-open")) {
       void startBmoTtsMouthAnimation();
@@ -24151,8 +25094,53 @@ async function playTtsUrlSequenceIncremental(
         newsMeta: Boolean(_veraCurrentTtsDebugContext?.actionType === "news"),
       });
     }
+    /* RACE CLOSE (1/2): Re-check token immediately before src.start.
+       The await for fetch+decode above can yield long enough for
+       cancelMainTtsPlayback() to bump mainTtsPlaybackToken. Without
+       this guard, the buffer would start playing untracked (because
+       registerMainTtsBufferSource has not run yet), and the user
+       would keep hearing the rest of this chunk past the cancel. */
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      try { src.disconnect(); } catch (_) {}
+      _dbgCheckpoint("race_close_before_src_start", {
+        startAt: Number(Number(startAt).toFixed(3)),
+      });
+      logVeraInterruptDebug({
+        tag: "tts_race_close",
+        path: "playTtsUrlSequenceIncremental",
+        stage: "before_src_start",
+        chunkIndex: chunkPlayIndex,
+        sessionToken,
+        currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+        note: "cancel happened in fetch/decode await; buffer never started",
+      });
+      mainTtsPlaybackActive = false;
+      return;
+    }
     src.start(startAt);
     _dbgCheckpoint("after_src_start");
+    /* RACE CLOSE (2/2): Re-check token immediately after src.start and
+       before registration. If cancel arrived between src.start and
+       registerMainTtsBufferSource, stop and disconnect the source so
+       it does not keep producing audio while untracked. */
+    if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      try { src.stop(0); } catch (_) {}
+      try { src.disconnect(); } catch (_) {}
+      _dbgCheckpoint("race_close_after_src_start", {
+        startAt: Number(Number(startAt).toFixed(3)),
+      });
+      logVeraInterruptDebug({
+        tag: "tts_race_close",
+        path: "playTtsUrlSequenceIncremental",
+        stage: "after_src_start",
+        chunkIndex: chunkPlayIndex,
+        sessionToken,
+        currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+        note: "cancel raced src.start; source stopped before registration",
+      });
+      mainTtsPlaybackActive = false;
+      return;
+    }
     chunkPlayIndex++;
     /* Same order as gapless: mouth before onPlayStart so heavy news panel does not block first tick. */
     if (document.body.classList.contains("bmo-open")) {
@@ -25693,6 +26681,7 @@ function startInterruptBrowserPartialDetection() {
     }
 
     if (combined !== lastCombined) {
+      const _wasFirstInterim = !lastCombined;
       if (interruptPartialLastChangeAt > 0) {
         const d = Math.min(Math.max(now - interruptPartialLastChangeAt, 0), 250);
         interruptPartialAccumMs += d;
@@ -25703,6 +26692,20 @@ function startInterruptBrowserPartialDetection() {
       lastCombined = combined;
       interruptPartialLastText = combined;
       markBrowserAsrResult("interrupt-detect");
+
+      /* PART 1 — t1: first non-empty interim transcript starts the
+         transcription leg of the timeline. t2 is refreshed on every
+         subsequent interim so we can measure how long the user kept
+         talking before TTS finally stopped. */
+      if (_wasFirstInterim) {
+        _recordInterruptTimingPoint("t1_interim_transcript_started", {
+          autoStart: true,
+          extra: { firstInterim: combined.slice(0, 64) },
+        });
+      }
+      _recordInterruptTimingPoint("t2_interim_transcript_updated", {
+        extra: { latestLen: combined.length },
+      });
 
       updateInterruptDetectionBubble(combined);
 
@@ -25725,6 +26728,18 @@ function startInterruptBrowserPartialDetection() {
       const wordGate = wc >= interruptBrowserMinWords || shortInterruptGate;
       const sustainGate = wc >= 1 && interruptPartialAccumMs >= browserAsrInterruptSustainMs;
       if (wordGate || sustainGate) {
+        /* PART 1 — t4: gate passed via browser ASR partials. */
+        _recordInterruptTimingPoint("t4_interrupt_intent_detected", {
+          autoStart: true,
+          extra: {
+            gate: shortInterruptGate
+              ? "browser_asr_short_interrupt_word"
+              : wordGate
+                ? "browser_asr_word"
+                : "browser_asr_sustain",
+            word_count: wc,
+          },
+        });
         logInterruptTranscriptDebug("speech_detected", {
           tts_id: interruptPrearmTtsId || null,
           time_since_tts_start_ms: Number((now - (audioStartedAt || now)).toFixed(1)),
