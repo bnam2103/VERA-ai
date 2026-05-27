@@ -1129,6 +1129,61 @@ function logBargeInLatencyDebug(phase, payload = {}) {
   } catch (_) {}
 }
 
+/* ---------------------------------------------------------------------
+ * Single-ASR interruption debug instrumentation.
+ *
+ * Enable from devtools:  window.VERA_DEBUG_INTERRUPT = true
+ *
+ * No control-flow changes — only console.info via the helper below.
+ * Logs are gated and high-frequency calls (per VAD frame) support
+ * throttleKey/throttleMs so the console stays readable.
+ * ------------------------------------------------------------------- */
+const _veraInterruptDebugLastAt = new Map();
+
+function isVeraInterruptDebugEnabled() {
+  try {
+    return typeof window !== "undefined" && window.VERA_DEBUG_INTERRUPT === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function logVeraInterruptDebug(payload, opts = {}) {
+  if (!isVeraInterruptDebugEnabled()) return;
+  try {
+    const tag = payload?.tag || "interrupt_debug";
+    if (opts.throttleKey) {
+      const minMs = Number(opts.throttleMs) > 0 ? Number(opts.throttleMs) : 250;
+      const nowMs = performance.now();
+      const last = _veraInterruptDebugLastAt.get(opts.throttleKey) || 0;
+      if (nowMs - last < minMs) return;
+      _veraInterruptDebugLastAt.set(opts.throttleKey, nowMs);
+    }
+    console.info(`[${tag}]`, payload);
+  } catch (_) {}
+}
+
+/** Module-level "next cancellation source" label for cancelMainTtsPlayback.
+ *  Callers may set this synchronously immediately before calling cancel so
+ *  the cancel log can record who initiated it without changing function
+ *  signatures. Consumed on read. */
+let _veraTtsCancelSource = "";
+
+/** RAF gap tracker for detectInterrupt — flags main-thread stalls that
+ *  would prevent VAD from firing in time (news panel render is the usual
+ *  suspect on long news responses). */
+let _veraInterruptRafLastAt = 0;
+
+/** News-panel render timing — flag spans where the main thread is busy
+ *  rendering the news side panel right after onPlayStart. */
+let _veraNewsPanelRenderInFlight = false;
+
+/** Per-NDJSON correlation context for chunk-level debug. Populated by
+ *  runNdjsonTtsPlayback when the `meta` line is parsed; cleared on
+ *  `done` or cancellation. Read by playTtsUrlSequenceIncremental's
+ *  checkpoint logs so chunk events can be tied back to news vs normal. */
+let _veraCurrentTtsDebugContext = null;
+
 function resetVadFastStopState(reason = "") {
   vadFastStopArmed = true;
   vadFastStopFiredAt = 0;
@@ -1152,12 +1207,48 @@ function resetVadFastStopState(reason = "") {
  * will recover (continuous mode resumes listening on its own).
  */
 function fastStopTtsOnVadOnly({ rms = null, zcr = null, crest = null, vadAccumMs = 0 } = {}) {
-  if (!vadFastStopArmed) return false;
-  if (!isAssistantTtsPlaying()) return false;
+  if (!vadFastStopArmed) {
+    logVeraInterruptDebug({
+      tag: "interrupt_speech_entry",
+      gatePath: "browser_asr_parallel",
+      outcome: "early_return",
+      reasonIfReturn: "vad_fast_stop_not_armed",
+      now: Number(performance.now().toFixed(1)),
+    });
+    return false;
+  }
+  if (!isAssistantTtsPlaying()) {
+    logVeraInterruptDebug({
+      tag: "interrupt_speech_entry",
+      gatePath: "browser_asr_parallel",
+      outcome: "early_return",
+      reasonIfReturn: "no_tts_playing",
+      now: Number(performance.now().toFixed(1)),
+    });
+    return false;
+  }
 
   vadFastStopArmed = false;
   vadFastStopFiredAt = performance.now();
   vadFastStopTtsId = interruptPrearmTtsId || vadFastStopTtsId;
+
+  logVeraInterruptDebug({
+    tag: "interrupt_speech_entry",
+    gatePath: "browser_asr_parallel",
+    outcome: "proceed_cancel_tts",
+    now: Number(vadFastStopFiredAt.toFixed(1)),
+    mainTtsPlaybackActive,
+    activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+    activeNdjsonBodyReaderPresent: Boolean(activeNdjsonBodyReader),
+    interruptRecording,
+    rms: rms != null ? Number(Number(rms).toFixed(5)) : null,
+    zcr: zcr != null ? Number(Number(zcr).toFixed(4)) : null,
+    crest: crest != null ? Number(Number(crest).toFixed(2)) : null,
+    vadAccumMs: Number(Number(vadAccumMs || 0).toFixed(1)),
+    duringNewsRender: _veraNewsPanelRenderInFlight,
+  });
+
+  _veraTtsCancelSource = "fast_stop_vad_browser_asr_parallel";
 
   logBargeInLatencyDebug("vad_barge_in_detected", {
     tts_playing: true,
@@ -1179,7 +1270,7 @@ function fastStopTtsOnVadOnly({ rms = null, zcr = null, crest = null, vadAccumMs
   // so any non-cancelable action that was just committed (see
   // commitNonCancelableAction) is preserved.
   try { resetAudioHandlers(); } catch (_) {}
-  try { cancelMainTtsPlayback(); } catch (_) {}
+  try { _veraTtsCancelSource = "fast_stop_vad_browser_asr_parallel_inline"; cancelMainTtsPlayback(); } catch (_) {}
   const a = getAudioEl();
   if (a) {
     try { a.pause(); } catch (_) {}
@@ -2981,6 +3072,7 @@ function setContinuousInputMuted(nextMuted) {
 
     /* Same as interrupt: stop <audio>, Web Audio chunk queue, and NDJSON TTS stream. */
     resetAudioHandlers();
+    _veraTtsCancelSource = "input_mute_reset";
     cancelMainTtsPlayback();
     const a = getAudioEl();
     if (a) {
@@ -4400,6 +4492,21 @@ function renderMediaTabsPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
 
+  /* DEBUG: time the panel render so we can correlate main-thread stalls
+     with interrupt_raf_gap logs. Hot path on news responses. */
+  const _veraDbgRenderStart = isVeraInterruptDebugEnabled() ? performance.now() : 0;
+  if (isVeraInterruptDebugEnabled()) {
+    _veraNewsPanelRenderInFlight = true;
+    logVeraInterruptDebug({
+      tag: "news_panel_render_start",
+      now: Number(_veraDbgRenderStart.toFixed(1)),
+      panelType: payload?.panel_type || null,
+      hasNewsResults: Array.isArray(payload?.news_results) ? payload.news_results.length : 0,
+      hasImages: Array.isArray(payload?.images) ? payload.images.length : 0,
+      hasVideos: Array.isArray(payload?.videos) ? payload.videos.length : 0,
+    });
+  }
+
   const mount = () => {
     document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
 
@@ -4449,7 +4556,21 @@ function renderMediaTabsPanel(payload) {
     });
   };
 
-  runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
+  const _veraDbgWrappedMount = isVeraInterruptDebugEnabled()
+    ? () => {
+        try { mount(); } finally {
+          const endAt = performance.now();
+          _veraNewsPanelRenderInFlight = false;
+          logVeraInterruptDebug({
+            tag: "news_panel_render_end",
+            now: Number(endAt.toFixed(1)),
+            durationMs: Number((endAt - _veraDbgRenderStart).toFixed(1)),
+            panelType: payload?.panel_type || null,
+          });
+        }
+      }
+    : mount;
+  runFlowModeSidePaneContentCrossfade(sidePaneEl, _veraDbgWrappedMount);
 }
 
 function renderFinanceChartPanel(payload) {
@@ -21648,15 +21769,56 @@ function onBrowserInterruptBargeInFromDetect(event) {
 }
 
 function interruptSpeech() {
-  if (listeningMode !== "continuous") return;
+  /* DEBUG: log entry + every early-return reason so we can distinguish
+     between "detectInterrupt never fired" and "fired but was gated out". */
+  const _dbgEntry = (extra) => ({
+    tag: "interrupt_speech_entry",
+    now: Number(performance.now().toFixed(1)),
+    listeningMode,
+    useBrowserAsr: (function () { try { return browserAsrPreferred(); } catch (_) { return null; } })(),
+    interruptRecording,
+    mainTtsPlaybackActive,
+    activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+    activeNdjsonBodyReaderPresent: Boolean(activeNdjsonBodyReader),
+    vadFastStopArmed,
+    duringNewsRender: _veraNewsPanelRenderInFlight,
+    ...(extra || {})
+  });
+
+  if (listeningMode !== "continuous") {
+    logVeraInterruptDebug(_dbgEntry({ outcome: "early_return", reasonIfReturn: "not_continuous" }));
+    return;
+  }
   const useBrowserAsr = browserAsrPreferred();
-  if (!interruptRecording && !useBrowserAsr) return;
+  if (!interruptRecording && !useBrowserAsr) {
+    logVeraInterruptDebug(_dbgEntry({
+      outcome: "early_return",
+      reasonIfReturn: "interrupt_recording_false_single_asr",
+      useBrowserAsr,
+    }));
+    return;
+  }
   const a = getAudioEl();
   const htmlPlaying = a && !a.paused;
   const webTtsPlaying =
     activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
-  if (!htmlPlaying && !webTtsPlaying) return;
+  if (!htmlPlaying && !webTtsPlaying) {
+    logVeraInterruptDebug(_dbgEntry({
+      outcome: "early_return",
+      reasonIfReturn: "no_tts_playing",
+      htmlPlaying: Boolean(htmlPlaying),
+      webTtsPlaying: Boolean(webTtsPlaying),
+    }));
+    return;
+  }
 
+  logVeraInterruptDebug(_dbgEntry({
+    outcome: "proceed_cancel_tts",
+    htmlPlaying: Boolean(htmlPlaying),
+    webTtsPlaying: Boolean(webTtsPlaying),
+  }));
+
+  _veraTtsCancelSource = "interrupt_speech_single_asr";
   cancelBrowserInterruptTtsOnly();
 
   if (interruptRecording) {
@@ -21723,6 +21885,29 @@ function detectInterrupt() {
   const htmlAudioPlaying = outAudio && !outAudio.paused;
   const webAudioMainTtsPlaying =
     activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
+
+  /* DEBUG: RAF gap measurement. If the main thread stalls (e.g. news
+     panel render), detectInterrupt RAF frames are dropped and VAD
+     accumulates wall-clock without contributing to interrupt detection.
+     We log any gap > 100ms while TTS is playing. */
+  if (isVeraInterruptDebugEnabled()) {
+    try {
+      if (_veraInterruptRafLastAt > 0) {
+        const gapMs = now - _veraInterruptRafLastAt;
+        if (gapMs > 100 && (htmlAudioPlaying || webAudioMainTtsPlaying)) {
+          logVeraInterruptDebug({
+            tag: "interrupt_raf_gap",
+            now: Number(now.toFixed(1)),
+            gapMs: Number(gapMs.toFixed(1)),
+            duringNewsRender: _veraNewsPanelRenderInFlight,
+            ttsPlaying: Boolean(htmlAudioPlaying || webAudioMainTtsPlaying)
+          });
+        }
+      }
+      _veraInterruptRafLastAt = now;
+    } catch (_) {}
+  }
+
   if (
   listeningMode === "continuous" &&
   (htmlAudioPlaying || webAudioMainTtsPlaying)
@@ -21735,6 +21920,42 @@ function detectInterrupt() {
 
       const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
       const speechLike = heuristicChecks.passes;
+
+      /* DEBUG: throttled VAD frame log (max ~once per 250ms) so we can
+         see whether detectInterrupt is firing at all while news TTS
+         plays, and whether accumulated speech is approaching the sustain
+         threshold. */
+      logVeraInterruptDebug(
+        {
+          tag: "interrupt_vad_frame",
+          now: Number(now.toFixed(1)),
+          listeningMode,
+          asrMode: (function () { try { return getVeraAsrMode(); } catch (_) { return null; } })(),
+          browserAsrPreferred: (function () { try { return browserAsrPreferred(); } catch (_) { return null; } })(),
+          browserAsrParallelMode,
+          assistantTtsPlaying: (function () { try { return isAssistantTtsPlaying(); } catch (_) { return null; } })(),
+          mainTtsPlaybackActive,
+          activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+          htmlAudioPlaying: Boolean(htmlAudioPlaying),
+          rms: Number(rms.toFixed(5)),
+          zcr: Number(zcr.toFixed(4)),
+          crest: Number(crest.toFixed(2)),
+          speechLike,
+          vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+          sustainThresholdMs: getInterruptSustainMs(),
+          vadThresholdPassed:
+            speechLike &&
+            interruptSpeechFrames + 1 >= INTERRUPT_MIN_FRAMES &&
+            interruptSpeechAccumMs + dt >= getInterruptSustainMs(),
+          interruptRecording,
+          vadFastStopArmed,
+          activeNdjsonBodyReaderPresent: Boolean(activeNdjsonBodyReader),
+          audioStartedAt: Number(Number(audioStartedAt || 0).toFixed(1)),
+          timeSinceTtsStartMs: Number((now - (audioStartedAt || now)).toFixed(1)),
+          duringNewsRender: _veraNewsPanelRenderInFlight
+        },
+        { throttleKey: "interrupt_vad_frame", throttleMs: 250 }
+      );
 
       if (speechLike) {
         interruptSpeechAccumMs += dt;
@@ -21802,6 +22023,25 @@ function detectInterrupt() {
             ? Number(Math.min(MAX_INTERRUPTION_PREROLL_MS, now - interruptPrearmStartedAt).toFixed(1))
             : 0,
           gate: browserAsrParallelMode ? "heuristic_fast_stop" : "heuristic"
+        });
+
+        /* DEBUG: VAD threshold passed — log before dispatch so we know
+           which branch will fire and what the state looks like. */
+        logVeraInterruptDebug({
+          tag: "interrupt_vad_threshold_passed",
+          now: Number(now.toFixed(1)),
+          gate: browserAsrParallelMode ? "browser_asr_parallel" : "single_asr_interrupt_speech",
+          rms: Number(rms.toFixed(5)),
+          zcr: Number(zcr.toFixed(4)),
+          crest: Number(crest.toFixed(2)),
+          vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+          rafFrames: interruptSpeechFrames,
+          interruptRecording,
+          mainTtsPlaybackActive,
+          activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+          activeNdjsonBodyReaderPresent: Boolean(activeNdjsonBodyReader),
+          timeSinceTtsStartMs: Number((now - (audioStartedAt || now)).toFixed(1)),
+          duringNewsRender: _veraNewsPanelRenderInFlight
         });
 
         if (browserAsrParallelMode) {
@@ -22118,9 +22358,34 @@ function wireMobileInterruptDebugUi() {
 }
 
 function startInterruptCapture() {
+  /* DEBUG: log every call to startInterruptCapture and every early exit
+     so we can confirm interruptRecording is flipped true for single-ASR
+     news responses. The "stays false for whole response" hypothesis
+     hinges on this firing. */
+  const _dbgState = (event, extra) => logVeraInterruptDebug({
+    tag: "interrupt_capture_state",
+    event,
+    now: Number(performance.now().toFixed(1)),
+    listeningMode,
+    inputMuted,
+    useBrowserAsr: (function () { try { return browserAsrPreferred(); } catch (_) { return null; } })(),
+    isNarrowViewport: (function () { try { return isNarrowViewport(); } catch (_) { return null; } })(),
+    interruptRecording,
+    interruptRecorderState: interruptRecorder?.state ?? null,
+    interruptChunksCount: Array.isArray(interruptChunks) ? interruptChunks.length : null,
+    prearmActive: Boolean(interruptPrearmRecorder && interruptPrearmRecorder.state === "recording"),
+    ttsPlaying: (function () { try { return isAssistantTtsPlaying(); } catch (_) { return null; } })(),
+    currentTtsId: interruptPrearmTtsId || null,
+    actionType: _veraCurrentTtsDebugContext?.actionType ?? null,
+    ...(extra || {})
+  });
+
+  _dbgState("start_called");
+
   if (listeningMode !== "continuous") {
     interruptRecording = false;
     interruptChunks = [];
+    _dbgState("start_aborted", { reason: "not_continuous" });
     return;
   }
   if (inputMuted) {
@@ -22128,10 +22393,12 @@ function startInterruptCapture() {
     interruptChunks = [];
     stopAllBrowserSpeechRecognizers();
     showMutedStatusIfIdle();
+    _dbgState("start_aborted", { reason: "input_muted" });
     return;
   }
   if (browserAsrPreferred() && !isNarrowViewport()) {
     startInterruptBrowserPartialDetection();
+    _dbgState("start_aborted", { reason: "browser_asr_partial_detection_used" });
     return;
   }
 
@@ -22178,6 +22445,7 @@ function startInterruptCapture() {
       }
     };
     interruptRecorder.onstop = () => {
+      _dbgState("recorder_stopped", { path: "prearm_commit" });
       const blob = new Blob(interruptChunks, { type: "audio/webm" });
       interruptRecorder = null;
       interruptRecording = false;
@@ -22185,6 +22453,7 @@ function startInterruptCapture() {
       handleInterruptUtterance(blob);
     };
     interruptRecording = true;
+    _dbgState("recorder_started", { path: "prearm_commit" });
     logInterruptTranscriptDebug("capture_committed", {
       included_preroll_ms: Math.min(
         MAX_INTERRUPTION_PREROLL_MS,
@@ -22208,6 +22477,7 @@ function startInterruptCapture() {
       preroll_ms: INTERRUPTION_PREROLL_MS,
       reason: "no_active_mic_stream"
     });
+    _dbgState("start_aborted", { reason: "no_active_mic_stream" });
     return;
   }
   /* PART 12: use shared opus-preferred recorder helper so interrupt-path
@@ -22221,6 +22491,7 @@ function startInterruptCapture() {
   };
 
   interruptRecorder.onstop = () => {
+    _dbgState("recorder_stopped", { path: "fresh_recorder" });
     const blob = new Blob(interruptChunks, { type: "audio/webm" });
 
     interruptRecorder = null;
@@ -22230,13 +22501,47 @@ function startInterruptCapture() {
     handleInterruptUtterance(blob);
   };
 
-  interruptRecorder.start(100);   // 🚀 clean segment start
+  interruptRecorder.start(100);
   interruptRecording = true;
+  _dbgState("recorder_started", { path: "fresh_recorder" });
 }
 
 async function prearmInterruptCaptureForTts({ turnId = "", ttsId = "" } = {}) {
-  if (listeningMode !== "continuous" || inputMuted) return false;
-  if (!isAssistantTtsPlaying()) return false;
+  /* DEBUG: capture-state log on entry so we can see whether prearm even
+     ran for the news response. */
+  logVeraInterruptDebug({
+    tag: "interrupt_capture_state",
+    event: "prearm_called",
+    now: Number(performance.now().toFixed(1)),
+    listeningMode,
+    inputMuted,
+    ttsId: ttsId || null,
+    turnId: turnId || null,
+    interruptRecording,
+    prearmActive: Boolean(interruptPrearmRecorder && interruptPrearmRecorder.state === "recording"),
+    ttsPlaying: (function () { try { return isAssistantTtsPlaying(); } catch (_) { return null; } })(),
+    actionType: _veraCurrentTtsDebugContext?.actionType ?? null,
+  });
+  if (listeningMode !== "continuous" || inputMuted) {
+    logVeraInterruptDebug({
+      tag: "interrupt_capture_state",
+      event: "prearm_aborted",
+      reason: listeningMode !== "continuous" ? "not_continuous" : "input_muted",
+      now: Number(performance.now().toFixed(1)),
+    });
+    return false;
+  }
+  if (!isAssistantTtsPlaying()) {
+    logVeraInterruptDebug({
+      tag: "interrupt_capture_state",
+      event: "prearm_aborted",
+      reason: "tts_not_playing",
+      now: Number(performance.now().toFixed(1)),
+      mainTtsPlaybackActive,
+      activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+    });
+    return false;
+  }
   const micPermissionState = await getMicPermissionStateForInterrupt();
   const attempted =
     micPermissionState === "granted" ||
@@ -22352,6 +22657,19 @@ async function prearmInterruptCaptureForTts({ turnId = "", ttsId = "" } = {}) {
 }
 
 async function handleInterruptUtterance(blob) {
+  /* DEBUG: log upload entry so we can see whether the interrupt capture
+     made it all the way to the server upload step. If we never see this
+     during a failed news interruption, the recorder either never started
+     or never stopped. */
+  logVeraInterruptDebug({
+    tag: "interrupt_capture_state",
+    event: "upload_started",
+    now: Number(performance.now().toFixed(1)),
+    blobSize: blob?.size ?? null,
+    minAudioBytes: MIN_AUDIO_BYTES,
+    skippedAsTooSmall: (blob?.size ?? 0) < MIN_AUDIO_BYTES,
+    actionType: _veraCurrentTtsDebugContext?.actionType ?? null,
+  });
   if (blob.size < MIN_AUDIO_BYTES) {
     listening = true;
     return;
@@ -22485,6 +22803,9 @@ function registerMainTtsBufferSource(src, onEndedExtra) {
 }
 
 function stopAllMainTtsWebAudio() {
+  const _dbgSourceCount = activeMainTtsBufferSources.length;
+  let _dbgStopped = 0;
+  let _dbgErrors = 0;
   mainTtsPlaybackActive = false;
   const copy = activeMainTtsBufferSources.slice();
   activeMainTtsBufferSources = [];
@@ -22492,16 +22813,44 @@ function stopAllMainTtsWebAudio() {
     try {
       src.onended = null;
       src.stop(0);
+      _dbgStopped++;
     } catch (_) {
       /* already stopped */
+      _dbgErrors++;
     }
   }
   if (document.body.classList.contains("bmo-open")) {
     stopBmoTtsMouthAnimation();
   }
+  logVeraInterruptDebug({
+    tag: "tts_stop_all_sources",
+    now: Number(performance.now().toFixed(1)),
+    sourceCount: _dbgSourceCount,
+    stopped: _dbgStopped,
+    errors: _dbgErrors,
+  });
 }
 
 function cancelMainTtsPlayback() {
+  const _dbgSource = _veraTtsCancelSource || "unknown";
+  _veraTtsCancelSource = "";
+  const _dbgOldToken = mainTtsPlaybackToken;
+  const _dbgActiveSourcesBefore = activeMainTtsBufferSources.length;
+  const _dbgMainTtsActiveBefore = mainTtsPlaybackActive;
+  const _dbgReaderBefore = Boolean(activeNdjsonBodyReader);
+  logVeraInterruptDebug({
+    tag: "tts_cancel_called",
+    now: Number(performance.now().toFixed(1)),
+    source: _dbgSource,
+    oldMainTtsPlaybackToken: _dbgOldToken,
+    newMainTtsPlaybackToken: _dbgOldToken + 1,
+    activeSourcesBefore: _dbgActiveSourcesBefore,
+    mainTtsPlaybackActiveBefore: _dbgMainTtsActiveBefore,
+    activeReaderBefore: _dbgReaderBefore,
+    interruptRecording,
+    duringNewsRender: _veraNewsPanelRenderInFlight,
+  });
+
   mainTtsPlaybackToken++;
   stopAllMainTtsWebAudio();
   const r = activeNdjsonBodyReader;
@@ -22513,6 +22862,17 @@ function cancelMainTtsPlayback() {
       /* ignore */
     }
   }
+
+  logVeraInterruptDebug({
+    tag: "tts_cancel_after",
+    now: Number(performance.now().toFixed(1)),
+    source: _dbgSource,
+    mainTtsPlaybackToken,
+    mainTtsPlaybackActiveAfter: mainTtsPlaybackActive,
+    activeSourcesAfter: activeMainTtsBufferSources.length,
+    activeReaderAfter: Boolean(activeNdjsonBodyReader),
+    interruptRecording,
+  });
 }
 
 let activePipelineAbort = null;
@@ -22595,6 +22955,7 @@ function isFlowModeKeyboardInterruptAllowed() {
 function interruptAssistantPipelineForTypedMessage() {
   activePipelineAbort?.abort();
   activePipelineAbort = null;
+  _veraTtsCancelSource = "typed_pipeline_barge_in";
   cancelMainTtsPlayback();
   resetAudioHandlers();
   const a = getAudioEl();
@@ -22643,6 +23004,7 @@ function cancelVoicePipelineAndResetState() {
   }
   activePipelineAbort?.abort();
   activePipelineAbort = null;
+  _veraTtsCancelSource = "voice_pipeline_reset";
   cancelMainTtsPlayback();
   resetAudioHandlers();
   const a = getAudioEl();
@@ -23286,41 +23648,80 @@ async function playTtsUrlSequenceIncremental(
   await ensureMainAudioTtsGraph();
   let t = audioCtx.currentTime + 0.08;
   let firstDone = false;
+  /* DEBUG: declared early so the checkpoint helper below can reference
+     it without hitting the let TDZ (the helper is invoked before the
+     first URL fetch). */
+  let chunkPlayIndex = 0;
 
+  /* DEBUG helper local to this loop — emits a structured checkpoint
+     log without affecting control flow. Tied to the active NDJSON
+     debug context so chunks can be correlated with news vs normal. */
+  const _dbgCheckpoint = (checkpointName, extra) => {
+    if (!isVeraInterruptDebugEnabled()) return;
+    const mismatch = sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken;
+    logVeraInterruptDebug({
+      tag: "tts_playback_checkpoint",
+      checkpointName,
+      chunkIndex: chunkPlayIndex,
+      sessionToken,
+      currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+      tokenMismatch: mismatch,
+      mainTtsPlaybackActive,
+      activeSourcesCount: activeMainTtsBufferSources.length,
+      activeNdjsonBodyReaderPresent: Boolean(activeNdjsonBodyReader),
+      newsMeta: Boolean(_veraCurrentTtsDebugContext?.actionType === "news"),
+      actionType: _veraCurrentTtsDebugContext?.actionType ?? null,
+      duringNewsRender: _veraNewsPanelRenderInFlight,
+      ...(extra || {})
+    });
+  };
+
+  _dbgCheckpoint("before_await_first_url");
   let curRel = await nextRelFn();
+  _dbgCheckpoint("after_await_first_url", { curRel: curRel || null });
   if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+    _dbgCheckpoint("exit_token_mismatch", { stage: "first_url" });
     mainTtsPlaybackActive = false;
     return;
   }
   /* NDJSON can call queue.end() before any chunk URL (e.g. done-before-chunk or empty TTS). Without this,
      onPlayEnd / resumeAfterAssistantReplyPlayback never runs → processing stays true and listening never renews. */
   if (!curRel) {
+    _dbgCheckpoint("exit_no_first_url");
     const endFn = onLastEnd ? wrapLastChunkForBmoMouth(onLastEnd) : null;
     if (endFn) endFn();
     else mainTtsPlaybackActive = false;
     return;
   }
   mainTtsPlaybackActive = true;
+  _dbgCheckpoint("main_tts_active_flipped_true");
   getAudioEl()?.pause();
   let nextPromise = fetch(`${baseUrl}${curRel}`).then((r) => {
     if (!r.ok) throw new Error(`TTS HTTP ${r.status}`);
     return r.arrayBuffer();
   });
-  let chunkPlayIndex = 0;
 
   try {
   for (;;) {
+    _dbgCheckpoint("loop_top_token_check");
     if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      _dbgCheckpoint("exit_token_mismatch", { stage: "loop_top" });
       mainTtsPlaybackActive = false;
       return;
     }
+    _dbgCheckpoint("before_await_next_promise");
     const ab = await nextPromise;
+    _dbgCheckpoint("after_await_next_promise", { chunkBytes: ab?.byteLength ?? null });
     if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      _dbgCheckpoint("exit_token_mismatch", { stage: "after_fetch" });
       mainTtsPlaybackActive = false;
       return;
     }
+    _dbgCheckpoint("before_await_next_url");
     const nextRel = await nextRelFn();
+    _dbgCheckpoint("after_await_next_url", { nextRel: nextRel || null });
     if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      _dbgCheckpoint("exit_token_mismatch", { stage: "after_next_url" });
       mainTtsPlaybackActive = false;
       return;
     }
@@ -23331,8 +23732,11 @@ async function playTtsUrlSequenceIncremental(
         })
       : null;
 
+    _dbgCheckpoint("before_decode_audio_data");
     const audBuf = await audioCtx.decodeAudioData(ab.slice(0));
+    _dbgCheckpoint("after_decode_audio_data", { audBufDurationS: audBuf?.duration ?? null });
     if (sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken) {
+      _dbgCheckpoint("exit_token_mismatch", { stage: "after_decode" });
       mainTtsPlaybackActive = false;
       return;
     }
@@ -23351,7 +23755,26 @@ async function playTtsUrlSequenceIncremental(
           : "happy";
       setBmoTtsFaceTrack(face);
     }
+    _dbgCheckpoint("before_src_start", {
+      startAt: Number(Number(startAt).toFixed(3)),
+      audioCtxCurrentTime: Number(Number(audioCtx.currentTime).toFixed(3))
+    });
+    /* DEBUG: independent "right before src.start" log so we can spot
+       chunks that get started after cancellation. Not gated by the
+       checkpoint helper since the user spec calls this out explicitly. */
+    if (isVeraInterruptDebugEnabled()) {
+      const _mismatch = sessionToken !== undefined && mainTtsPlaybackToken !== sessionToken;
+      logVeraInterruptDebug({
+        tag: "tts_before_src_start",
+        chunkIndex: chunkPlayIndex,
+        sessionToken,
+        currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+        tokenMismatch: _mismatch,
+        newsMeta: Boolean(_veraCurrentTtsDebugContext?.actionType === "news"),
+      });
+    }
     src.start(startAt);
+    _dbgCheckpoint("after_src_start");
     chunkPlayIndex++;
     /* Same order as gapless: mouth before onPlayStart so heavy news panel does not block first tick. */
     if (document.body.classList.contains("bmo-open")) {
@@ -23366,10 +23789,12 @@ async function playTtsUrlSequenceIncremental(
       src,
       isLast && onLastEnd ? wrapLastChunkForBmoMouth(onLastEnd) : undefined
     );
+    _dbgCheckpoint("after_register_source", { isLast });
     t = startAt + audBuf.duration;
     if (!nextRel) break;
   }
   } catch (e) {
+    _dbgCheckpoint("loop_exception", { error: String(e?.message || e || "").slice(0, 200) });
     mainTtsPlaybackActive = false;
     throw e;
   }
@@ -23437,6 +23862,23 @@ async function runNdjsonTtsPlayback(
   const reader = res.body.getReader();
   activeNdjsonBodyReader = reader;
   const sessionToken = mainTtsPlaybackToken;
+  /* DEBUG: per-NDJSON correlation context. Populated on first meta line. */
+  _veraCurrentTtsDebugContext = {
+    sessionToken,
+    actionType: null,
+    sessionIdFromMeta: null,
+    transcriptPreview: null,
+    chunksEnqueued: 0,
+    metaSeen: false,
+    doneSeen: false,
+  };
+  logVeraInterruptDebug({
+    tag: "ndjson_playback_start",
+    now: Number(performance.now().toFixed(1)),
+    sessionToken,
+    mainTtsPlaybackToken,
+    skipAudio: Boolean(skipAudio),
+  });
   const decoder = new TextDecoder();
   let buf = "";
   const queue = createTtsUrlQueue();
@@ -23499,6 +23941,26 @@ async function runNdjsonTtsPlayback(
             wrapOnMeta({ transcript: String(obj.transcript) });
             logVoicePipe("NDJSON asr line (user transcript early)");
           } else if (obj.type === "meta") {
+            /* DEBUG: stamp the per-stream correlation context so chunk
+               checkpoints and cancel logs can identify news vs normal. */
+            if (_veraCurrentTtsDebugContext && _veraCurrentTtsDebugContext.sessionToken === sessionToken) {
+              _veraCurrentTtsDebugContext.metaSeen = true;
+              _veraCurrentTtsDebugContext.actionType = obj.action_type || null;
+              _veraCurrentTtsDebugContext.sessionIdFromMeta = obj.session_id || null;
+              _veraCurrentTtsDebugContext.transcriptPreview = obj.transcript
+                ? String(obj.transcript).slice(0, 80)
+                : null;
+              logVeraInterruptDebug({
+                tag: "ndjson_meta_seen",
+                now: Number(performance.now().toFixed(1)),
+                sessionToken,
+                actionType: _veraCurrentTtsDebugContext.actionType,
+                ttsSegmentCount: obj.tts_segment_count ?? null,
+                llmStreaming: Boolean(obj.llm_streaming),
+                hasActionPayload: Boolean(obj.action_payload),
+                actionPayloadPanelType: obj.action_payload?.panel_type || null,
+              });
+            }
             wrapOnMeta(obj);
             logVoicePipe("NDJSON meta line (UI can attach transcript)");
             if (document.body.classList.contains("bmo-open")) {
@@ -23566,6 +24028,25 @@ async function runNdjsonTtsPlayback(
               ndjsonBmoFaceModes.push(bmoMoodToFaceMode(mood));
             }
             queue.push(obj.url);
+            /* DEBUG: increment chunk-enqueued counter on the correlation
+               context — used later to confirm whether late chunks are
+               still arriving from the server after cancellation. */
+            if (_veraCurrentTtsDebugContext && _veraCurrentTtsDebugContext.sessionToken === sessionToken) {
+              _veraCurrentTtsDebugContext.chunksEnqueued += 1;
+              logVeraInterruptDebug(
+                {
+                  tag: "ndjson_chunk_enqueued",
+                  now: Number(performance.now().toFixed(1)),
+                  sessionToken,
+                  currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+                  tokenMismatch: sessionToken !== mainTtsPlaybackToken,
+                  chunkIndex: obj.index ?? null,
+                  chunksEnqueuedSoFar: _veraCurrentTtsDebugContext.chunksEnqueued,
+                  actionType: _veraCurrentTtsDebugContext.actionType,
+                },
+                { throttleKey: `ndjson_chunk_enqueued_${sessionToken}`, throttleMs: 0 }
+              );
+            }
             if (obj.reply_so_far != null && onReplyProgress && !suppressReplyProgress) {
               if (deferFirstReply) {
                 pendingFirstReplySoFar = String(obj.reply_so_far);
@@ -23576,6 +24057,18 @@ async function runNdjsonTtsPlayback(
               }
             }
           } else if (obj.type === "done") {
+            if (_veraCurrentTtsDebugContext && _veraCurrentTtsDebugContext.sessionToken === sessionToken) {
+              _veraCurrentTtsDebugContext.doneSeen = true;
+              logVeraInterruptDebug({
+                tag: "ndjson_done_seen",
+                now: Number(performance.now().toFixed(1)),
+                sessionToken,
+                currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+                tokenMismatch: sessionToken !== mainTtsPlaybackToken,
+                chunksEnqueued: _veraCurrentTtsDebugContext.chunksEnqueued,
+                actionType: _veraCurrentTtsDebugContext.actionType,
+              });
+            }
             if (onDone) onDone(obj);
             queue.end();
           }
@@ -23584,6 +24077,19 @@ async function runNdjsonTtsPlayback(
     } finally {
       queue.end();
       if (activeNdjsonBodyReader === reader) activeNdjsonBodyReader = null;
+      /* DEBUG: emit readTask exit signature so we can correlate with
+         tts_cancel logs and confirm whether the body reader was
+         cancelled, returned EOF naturally, or threw. */
+      logVeraInterruptDebug({
+        tag: "ndjson_read_task_exit",
+        now: Number(performance.now().toFixed(1)),
+        sessionToken,
+        currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+        tokenMismatch: sessionToken !== mainTtsPlaybackToken,
+        chunksEnqueued: _veraCurrentTtsDebugContext?.chunksEnqueued ?? null,
+        doneSeen: _veraCurrentTtsDebugContext?.doneSeen ?? null,
+        actionType: _veraCurrentTtsDebugContext?.actionType ?? null,
+      });
     }
   }
 
@@ -23620,6 +24126,23 @@ async function runNdjsonTtsPlayback(
     ]);
   } finally {
     if (activeNdjsonBodyReader === reader) activeNdjsonBodyReader = null;
+    /* DEBUG: clear the per-NDJSON correlation context so a new playback
+       cycle gets a fresh slate. Snapshot the final state first for
+       attribution. */
+    if (_veraCurrentTtsDebugContext && _veraCurrentTtsDebugContext.sessionToken === sessionToken) {
+      logVeraInterruptDebug({
+        tag: "ndjson_playback_end",
+        now: Number(performance.now().toFixed(1)),
+        sessionToken,
+        currentMainTtsPlaybackToken: mainTtsPlaybackToken,
+        tokenMismatch: sessionToken !== mainTtsPlaybackToken,
+        chunksEnqueued: _veraCurrentTtsDebugContext.chunksEnqueued,
+        metaSeen: _veraCurrentTtsDebugContext.metaSeen,
+        doneSeen: _veraCurrentTtsDebugContext.doneSeen,
+        actionType: _veraCurrentTtsDebugContext.actionType,
+      });
+      _veraCurrentTtsDebugContext = null;
+    }
   }
 }
 
@@ -24331,6 +24854,7 @@ async function runInferAfterWorkModeReasoningPrep(formData, prep, inferOpts = {}
         window.speechSynthesis.cancel();
       }
     } catch (_) {}
+    _veraTtsCancelSource = "pre_infer_playback_reset";
     cancelMainTtsPlayback();
     try {
       const a = getAudioEl();
