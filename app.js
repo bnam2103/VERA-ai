@@ -26873,6 +26873,24 @@ async function finalizeMainBrowserTranscript(text) {
     return;
   }
 
+  if (
+    await maybeRunWorkModeMultiActionPlanner(trimmed, {
+      path: "main-browser-asr",
+      isVoice: true
+    })
+  ) {
+    processing = false;
+    requestInFlight = false;
+    voiceUxTurn = null;
+    waveState = "idle";
+    setStatus("Ready", "idle");
+    updateMuteInputButton();
+    if (listeningMode === "continuous" && listening && !inputMuted) {
+      startListening();
+    }
+    return;
+  }
+
   /* PART 5+6+7 — hybrid finalization decision.
      For streaming mode this returns "browser_immediate"; for hybrid mode
      decideAsrFinalizationMode classifies the utterance and may upgrade us
@@ -28645,6 +28663,24 @@ async function handleUtterance() {
         return;
       }
 
+      if (
+        await maybeRunWorkModeMultiActionPlanner(trimmed, {
+          path: "server-asr-preflight",
+          isVoice: true
+        })
+      ) {
+        requestInFlight = false;
+        processing = false;
+        voiceUxTurn = null;
+        waveState = "idle";
+        setStatus("Ready", "idle");
+        updateMuteInputButton();
+        if (listeningMode === "continuous" && listening && !inputMuted) {
+          startListening();
+        }
+        return;
+      }
+
       ensureChatStartedLayout();
       beginVoiceUxTurn();
 
@@ -29137,6 +29173,67 @@ function logWorkModeMultiActionPlannerDecision(payload) {
       ...payload,
     });
   } catch (_) {}
+}
+
+async function maybeRunWorkModeMultiActionPlanner(text, opts = {}) {
+  const trimmed = String(text || "").trim();
+  if (!shouldUseWorkModeMultiActionPlanner(trimmed, opts)) return false;
+
+  const path = opts.path || opts.source || "work-mode";
+  let plan = null;
+  try {
+    plan = planWorkModeMultiAction(trimmed, { source: path, isVoice: Boolean(opts.isVoice) });
+  } catch (e) {
+    try {
+      console.warn("[wm_multi_action_planner]", {
+        tag: "planner_exception",
+        error: String(e?.message || e || "").slice(0, 200),
+        text_preview: String(trimmed || "").slice(0, 120),
+        path,
+        is_voice: Boolean(opts.isVoice),
+      });
+    } catch (_) {}
+    plan = null;
+  }
+
+  logWorkModeMultiActionPlannerDecision({
+    tag: "plan_decision",
+    latest_user_text: String(trimmed || "").slice(0, 200),
+    work_mode_active: true,
+    work_mode_multi_action_planner_allowed: true,
+    work_mode_scope_reason: "active_work_mode",
+    multi_action_candidate: Boolean(plan && plan.isMultiAction),
+    planner_used: Boolean(plan && Array.isArray(plan.actions) && plan.actions.length > 1),
+    planner_confidence: plan?.confidence ?? null,
+    actions_detected: Array.isArray(plan?.actions) ? plan.actions.map((a) => a.type) : [],
+    action_order: Array.isArray(plan?.actions) ? plan.actions.map((a) => a.type) : [],
+    dependency_edges: Array.isArray(plan?.actions)
+      ? plan.actions.flatMap((a) =>
+          Array.isArray(a.dependsOn) ? a.dependsOn.map((d) => [d, a.id]) : []
+        )
+      : [],
+    single_router_bypassed: Boolean(
+      plan && Array.isArray(plan.actions) && plan.actions.length > 1
+    ),
+    trigger_reason: plan?.triggerReason || null,
+    path,
+    is_voice: Boolean(opts.isVoice),
+  });
+
+  if (!plan || !Array.isArray(plan.actions) || plan.actions.length <= 1) return false;
+
+  try {
+    await executeWorkModeActionPlan(plan, { source: path, isVoice: Boolean(opts.isVoice) });
+    return true;
+  } catch (e) {
+    console.warn("[wm_multi_action_planner]", {
+      tag: "execution_exception",
+      error: String(e?.message || e || "").slice(0, 200),
+      path,
+      is_voice: Boolean(opts.isVoice),
+    });
+    return true;
+  }
 }
 
 /**
