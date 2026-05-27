@@ -743,10 +743,63 @@ function looksLikeNewsSearchRequest(text) {
   if (/\bdo\s+you\s+know\s+(?:what|who|where|when|why|how)\s+(?:to|i|we|you|he|she|they|it|that|this|tennis|cooking|pasta|programming|coding|chess|history|math|science|people)\b/.test(raw)) return false;
   if (/\bdo\s+you\s+know\s+(?:what|who|where|when|why|how)\s+\w+\s+(?:is|are|was|were|do|does|did|can|should|means|works|tastes|feels|looks|sounds)\b/.test(raw)) return false;
 
-  // Strong single-word/phrase triggers (user-specified vocabulary). These
-  // imply the user is actually asking about news / external info and fire
-  // immediately without further checks.
-  if (/\bnews\b/.test(raw)) return true;
+  // Personal / emotional uses of the word "news" must NEVER trigger the
+  // "Searching news…" placeholder. Catches phrases like:
+  //   - "i got bad news"
+  //   - "i have terrible news"
+  //   - "sad news from my family"
+  //   - "i just saw the news my friend passed away"
+  //   - "news from my mom"
+  // Mirrors the backend personal/emotional guard so the UI and router agree.
+  if (
+    /\b(?:bad|sad|terrible|awful|tragic|heavy|hard|difficult|devastating|heartbreaking|grim|rough|tough|big|personal|family)\s+news\b/.test(
+      raw
+    )
+  ) return false;
+  if (
+    /\bnews\s+(?:from|about)\s+(?:my|our|the|a)\s+(?:friend|friends|family|mom|mother|dad|father|brother|sister|wife|husband|girlfriend|boyfriend|partner|parent|parents|son|daughter|kid|kids|baby|cousin|aunt|uncle|grandma|grandpa|grandmother|grandfather|coworker|colleague|boss|neighbor|doctor|relative|relatives)\b/.test(
+      raw
+    )
+  ) return false;
+  if (
+    /\b(?:got|have|received|hearing|heard|just\s+(?:got|received|heard|saw|read))\s+(?:some\s+|the\s+|this\s+)?(?:bad|sad|terrible|awful|tragic|heavy|hard|difficult|devastating|heartbreaking|grim|rough|tough|big|personal|crazy)\s+news\b/.test(
+      raw
+    )
+  ) return false;
+  if (
+    /\b(?:saw|heard|read|got)\s+(?:the|some|that|this|on\s+the)\s+news\s+(?:that\s+)?(?:my|our|a)\s*(?:friend|family|mom|mother|dad|father|brother|sister|wife|husband|girlfriend|boyfriend|partner|parent|son|daughter|relative|coworker|colleague|neighbor|grandma|grandpa|grandmother|grandfather|kid|baby)\b/.test(
+      raw
+    )
+  ) return false;
+  // Loss / grief co-occurrence with "news" — never a news search.
+  if (
+    /\bnews\b[\s\S]{0,80}\b(?:passed\s+away|died|funeral|in\s+the\s+hospital|got\s+(?:hurt|hit|injured)|in\s+a\s+(?:coma|wreck|crash)|diagnosed|cancer|miscarriage|stroke|heart\s+attack)\b/.test(
+      raw
+    )
+  ) return false;
+  if (
+    /\b(?:passed\s+away|died|funeral|diagnosed|miscarriage)\b[\s\S]{0,80}\bnews\b/.test(
+      raw
+    )
+  ) return false;
+
+  // Explicit news asks. The bare word "news" is intentionally NOT a trigger
+  // on its own (too many false positives like "bad news", "I saw the news
+  // my friend passed away"). It only fires here when paired with a clear
+  // request verb, a topic phrase, or a recency adjective.
+  if (
+    /\b(?:tell|give|show|read|bring|fetch|find|search\s+for|look\s+up|look\s+at|open|grab|pull\s+up|get|update\s+me\s+on)\s+(?:me\s+|us\s+)?(?:the\s+|some\s+|today'?s\s+|latest\s+|breaking\s+|recent\s+)?(?:news|headlines?)\b/.test(
+      raw
+    )
+  ) return true;
+  if (/\bnews\s+(?:about|on|regarding|covering|of)\s+\S/.test(raw)) return true;
+  if (
+    /\b(?:breaking|latest|recent|today'?s|tonight'?s|this\s+(?:morning|afternoon|evening|week)'?s?)\s+news\b/.test(
+      raw
+    )
+  ) return true;
+  if (/\bany\s+news\s+(?:about|on|regarding)\s+\S/.test(raw)) return true;
+  if (/\b(?:headline|news)\s+(?:search|searches|panel|page|tab)\b/.test(raw)) return true;
   if (/\bheadlines?\b/.test(raw)) return true;
   if (/\blatest\b/.test(raw)) return true;
   if (/\bbreaking\b/.test(raw)) return true;
@@ -1908,7 +1961,7 @@ function setVeraAsrSilenceMs(v) {
  *   "single"  → mapped to "whisper"
  *   "browser" → mapped to "streaming"
  */
-const VERA_ASR_MODE_DEFAULT = "streaming";
+const VERA_ASR_MODE_DEFAULT = "whisper";
 const VERA_ASR_MODE_VALID = new Set(["streaming", "whisper", "hybrid"]);
 
 function _normalizeVeraAsrMode(raw) {
