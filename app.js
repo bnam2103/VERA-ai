@@ -1202,6 +1202,15 @@ function isVeraInterruptDebugEnabled() {
 }
 
 function logVeraInterruptDebug(payload, opts = {}) {
+  /* Feed the barge-in debug overlay timeline BEFORE any gating so the
+   * overlay works without requiring VERA_DEBUG_INTERRUPT to also be on.
+   * Hot-path cost when overlay is off: a single boolean check. */
+  try {
+    if (_veraBargeInDebug?.enabled) {
+      const tag = payload?.tag || "interrupt_debug";
+      _bargeInDebugCaptureEvent(tag, payload);
+    }
+  } catch (_) {}
   if (!isVeraInterruptDebugEnabled()) return;
   try {
     const tag = payload?.tag || "interrupt_debug";
@@ -1728,6 +1737,559 @@ function resetVadFastStopState(reason = "") {
   };
 })();
 
+/* =========================================================================
+ *  BARGE-IN DEBUG OVERLAY (dev-only diagnostic UI)
+ *
+ *  Goal: make voice-interruption gating visible in real time so we can see
+ *  whether the bug is "VAD didn't fire", "barge-in gate blocked", "TTS
+ *  cancel never fired", or "cancel fired but queued audio kept playing".
+ *
+ *  Enable:
+ *    window.VERA_DEBUG_BARGE_IN_UI = true        // session-only
+ *    localStorage.setItem("vera_debug_barge_in_ui", "1")  // persisted
+ *    window.toggleBargeInDebugUi(true|false)     // imperative
+ *
+ *  Snapshot:
+ *    window.copyBargeInDebugSnapshot()           // copies JSON to clipboard
+ *
+ *  The overlay is hidden when both the window flag and the localStorage flag
+ *  are off, so normal users never see it. It piggybacks on existing
+ *  logVeraInterruptDebug + logInterruptTranscriptDebug calls — no extra
+ *  instrumentation is added to barge-in hot paths.
+ * ========================================================================= */
+const _veraBargeInDebug = {
+  /* Cached enabled flag — flipped by the polling tick / toggle so hot-path
+   * event capture is a single boolean check. */
+  enabled: false,
+
+  /* Ring buffer of the last few interruption-related events. */
+  events: [],
+  maxEvents: 14,
+
+  /* Latched timestamps for the cancel-delay summary line. */
+  ttsStartedAt: 0,
+  lastSpeechDetectedAt: 0,
+  lastTtsCancelCalledAt: 0,
+  lastInterruptEntryAt: 0,
+  lastEarlyReturnReason: null,
+  lastCancelSource: null,
+
+  /* Last render-blocking timings (filled when news_panel_render_end /
+   * interrupt_raf_gap fire). */
+  lastNewsRenderDurationMs: 0,
+  lastRafGapMs: 0,
+
+  /* DOM + render loop. */
+  containerEl: null,
+  bodyEl: null,
+  renderIntervalId: null,
+  pollIntervalId: null,
+};
+
+function _bargeInDebugUiEnabled() {
+  try {
+    if (typeof window !== "undefined" && window.VERA_DEBUG_BARGE_IN_UI === true) return true;
+  } catch (_) {}
+  try {
+    if (typeof localStorage !== "undefined" && localStorage.getItem("vera_debug_barge_in_ui") === "1") return true;
+  } catch (_) {}
+  return false;
+}
+
+/** Hot-path event capture. Called from logVeraInterruptDebug and
+ *  logInterruptTranscriptDebug *before* any gating, so timeline events are
+ *  recorded whenever the debug overlay is on (independent of
+ *  VERA_DEBUG_INTERRUPT). */
+function _bargeInDebugCaptureEvent(eventName, payload) {
+  if (!_veraBargeInDebug.enabled) return;
+  try {
+    const nowMs = performance.now();
+    const name = String(eventName || "event");
+    const p = payload && typeof payload === "object" ? payload : { value: payload };
+
+    if (name === "tts_start") _veraBargeInDebug.ttsStartedAt = nowMs;
+    if (name === "speech_detected") _veraBargeInDebug.lastSpeechDetectedAt = nowMs;
+    if (name === "tts_cancel_called") {
+      _veraBargeInDebug.lastTtsCancelCalledAt = nowMs;
+      if (p?.source) _veraBargeInDebug.lastCancelSource = p.source;
+    }
+    if (name === "interrupt_speech_entry") {
+      if (p?.outcome === "early_return") {
+        _veraBargeInDebug.lastEarlyReturnReason = p?.reasonIfReturn || "early_return";
+      } else if (p?.outcome === "proceed_cancel_tts") {
+        _veraBargeInDebug.lastInterruptEntryAt = nowMs;
+        _veraBargeInDebug.lastEarlyReturnReason = null;
+      }
+    }
+    if (name === "news_panel_render_end" && Number.isFinite(p?.durationMs)) {
+      _veraBargeInDebug.lastNewsRenderDurationMs = Number(p.durationMs);
+    }
+    if (name === "interrupt_raf_gap" && Number.isFinite(p?.gapMs)) {
+      _veraBargeInDebug.lastRafGapMs = Number(p.gapMs);
+    }
+
+    const sinceTtsStartMs =
+      _veraBargeInDebug.ttsStartedAt > 0
+        ? Number((nowMs - _veraBargeInDebug.ttsStartedAt).toFixed(1))
+        : null;
+
+    _veraBargeInDebug.events.push({
+      event: name,
+      perfNow: Number(nowMs.toFixed(1)),
+      sinceTtsStartMs,
+      payload: p,
+    });
+    if (_veraBargeInDebug.events.length > _veraBargeInDebug.maxEvents) {
+      _veraBargeInDebug.events.shift();
+    }
+  } catch (_) {}
+}
+
+function _bargeInDebugBuildState() {
+  const base =
+    typeof window !== "undefined" && typeof window.dumpVeraVoiceState === "function"
+      ? window.dumpVeraVoiceState({ silent: true })
+      : {};
+  const extras = base?.extras || {};
+
+  const ttsPlaying = Boolean(
+    base.mainTtsPlaybackActive ||
+      (base.activeMainTtsBufferSourcesCount || 0) > 0 ||
+      (typeof isAssistantTtsPlaying === "function" && isAssistantTtsPlaying())
+  );
+  const useBrowserAsr = base.browserAsrPreferred === true;
+  const recorderReady =
+    Boolean(base.interruptRecording) ||
+    extras.interruptDetectRecognitionPresent === true;
+  const continuous = base.continuousListeningEnabled === true;
+  const micActive = extras.micStreamActive === true;
+  const vadArmed = base.vadFastStopArmed === true;
+  const latched = extras.interruptBargeInLatched === true;
+  const audioCtxState = extras.audioCtxState || null;
+
+  /* Reflect the *actual* gate logic. Order matters — first failing gate wins
+   * so the displayed reason matches what the runtime would reject on. */
+  let allowed = true;
+  let reason = "allowed";
+  if (!continuous) {
+    allowed = false;
+    reason = "not_continuous";
+  } else if (!ttsPlaying) {
+    allowed = false;
+    reason = "no_tts_playing";
+  } else if (extras.appHidden === true) {
+    allowed = false;
+    reason = "app_hidden_or_throttled";
+  } else if (!micActive) {
+    allowed = false;
+    reason = "mic_stream_inactive";
+  } else if (audioCtxState && audioCtxState !== "running") {
+    allowed = false;
+    reason = `audio_ctx_${audioCtxState}`;
+  } else if (latched) {
+    allowed = false;
+    reason = "already_latched";
+  } else if (!vadArmed) {
+    allowed = false;
+    reason = "vad_not_armed";
+  } else if (!useBrowserAsr && !recorderReady) {
+    /* The suspected single-ASR bug gate — gets surfaced verbatim. */
+    allowed = false;
+    reason = "interrupt_recording_false_single_asr";
+  } else if (useBrowserAsr && extras.interruptDetectRecognitionPresent !== true) {
+    allowed = false;
+    reason = "interrupt_detect_recognition_missing";
+  }
+
+  const speechAt = _veraBargeInDebug.lastSpeechDetectedAt;
+  const cancelAt = _veraBargeInDebug.lastTtsCancelCalledAt;
+  const cancelDelayMs =
+    speechAt > 0 && cancelAt >= speechAt
+      ? Number((cancelAt - speechAt).toFixed(1))
+      : null;
+
+  return {
+    timestamp: new Date().toISOString(),
+    bargeIn: {
+      allowed,
+      reason,
+      vadArmed,
+      latched,
+      useBrowserAsr,
+      continuous,
+      micActive,
+      ttsPlaying,
+      recorderReady,
+    },
+    voice: {
+      asrMode: base.asrMode,
+      listeningMode: base.listeningMode,
+      micState: base.micState,
+      inputMuted: base.inputMuted,
+      workModeOn: base.workModeOn,
+      workModeMuteEnabled: base.workModeMuteEnabled,
+    },
+    tts: {
+      playing: ttsPlaying,
+      mainTtsPlaybackActive: base.mainTtsPlaybackActive,
+      bufferSources: base.activeMainTtsBufferSourcesCount,
+      ndjsonReaderPresent: base.activeNdjsonBodyReaderPresent,
+      ttsId: base.currentTtsId,
+      token: base.mainTtsPlaybackToken,
+    },
+    vad: {
+      armed: vadArmed,
+      speechFrames: extras.interruptSpeechFrames,
+      speechAccumMs: extras.interruptSpeechAccumMs,
+      partialAccumMs: extras.interruptPartialAccumMs,
+      partialLastText: extras.interruptPartialLastText,
+      sinceTtsStartMs:
+        _veraBargeInDebug.ttsStartedAt > 0
+          ? Number((performance.now() - _veraBargeInDebug.ttsStartedAt).toFixed(0))
+          : null,
+    },
+    capture: {
+      interruptRecording: base.interruptRecording,
+      prearmRecorderState: base.interruptPrearmRecorderState,
+      detectRecognitionPresent: extras.interruptDetectRecognitionPresent,
+      mainBrowserRecognitionPresent: extras.mainBrowserRecognitionPresent,
+      browserAsrPermanentlyDisabled: extras.browserAsrPermanentlyDisabled,
+    },
+    cancel: {
+      lastSpeechDetectedPerfNow: speechAt > 0 ? Number(speechAt.toFixed(1)) : null,
+      lastTtsCancelCalledPerfNow: cancelAt > 0 ? Number(cancelAt.toFixed(1)) : null,
+      cancelDelayMs,
+      lastInterruptEntryPerfNow:
+        _veraBargeInDebug.lastInterruptEntryAt > 0
+          ? Number(_veraBargeInDebug.lastInterruptEntryAt.toFixed(1))
+          : null,
+      lastEarlyReturnReason: _veraBargeInDebug.lastEarlyReturnReason,
+      lastCancelSource:
+        _veraBargeInDebug.lastCancelSource ||
+        (typeof _veraTtsCancelSource !== "undefined" ? _veraTtsCancelSource : null) ||
+        null,
+    },
+    newsRender: {
+      duringNewsRender: extras.duringNewsRender,
+      lastNewsRenderDurationMs: _veraBargeInDebug.lastNewsRenderDurationMs,
+      lastRafGapMs: _veraBargeInDebug.lastRafGapMs,
+      appHidden: extras.appHidden,
+      appVisibilityState: extras.appVisibilityState,
+      audioCtxState,
+    },
+    events: _veraBargeInDebug.events.slice().reverse(),
+    underlyingDump: base,
+  };
+}
+
+function _bargeInDebugPositionOverlay() {
+  if (!_veraBargeInDebug.containerEl) return;
+  /* Anchor to the left of the active record/mic button when one is
+   * mounted (VERA + BMO modes). Fallback to fixed bottom-right corner. */
+  let anchor = null;
+  try {
+    const candidates = ["vera-record", "bmo-record"];
+    for (const id of candidates) {
+      const btn = document.getElementById(id);
+      if (!btn) continue;
+      const rect = btn.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        anchor = { el: btn, rect };
+        break;
+      }
+    }
+  } catch (_) {}
+
+  const el = _veraBargeInDebug.containerEl;
+  el.style.position = "fixed";
+  el.style.left = "auto";
+  if (anchor) {
+    const overlayW = el.offsetWidth || 320;
+    const leftPx = Math.max(8, anchor.rect.left - overlayW - 12);
+    const topPx = Math.max(8, anchor.rect.top - el.offsetHeight + anchor.rect.height);
+    el.style.left = `${leftPx}px`;
+    el.style.top = `${topPx}px`;
+    el.style.right = "auto";
+    el.style.bottom = "auto";
+  } else {
+    el.style.right = "16px";
+    el.style.bottom = "16px";
+    el.style.top = "auto";
+  }
+}
+
+function _bargeInDebugMount() {
+  if (typeof document === "undefined") return;
+  if (!_bargeInDebugUiEnabled()) return;
+  if (_veraBargeInDebug.containerEl && _veraBargeInDebug.containerEl.isConnected) return;
+
+  const el = document.createElement("div");
+  el.id = "vera-barge-in-debug-overlay";
+  el.setAttribute("data-vera-dev-overlay", "barge-in");
+  el.style.cssText = [
+    "position:fixed",
+    "right:16px",
+    "bottom:16px",
+    "width:320px",
+    "max-height:70vh",
+    "overflow:auto",
+    "background:rgba(8,12,18,0.96)",
+    "color:#d8e1ea",
+    "font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace",
+    "border:1px solid rgba(120,135,160,0.4)",
+    "border-radius:8px",
+    "padding:8px 10px 10px 10px",
+    "z-index:2147483646",
+    "box-shadow:0 4px 14px rgba(0,0,0,0.4)",
+    "pointer-events:auto",
+    "user-select:text",
+  ].join(";");
+  el.innerHTML =
+    '<div data-bd-header style="display:flex;align-items:center;justify-content:space-between;margin:-2px -2px 6px;gap:6px;">' +
+    '  <strong style="font-size:11px;letter-spacing:.04em;color:#79c8ff;">BARGE-IN DEBUG <span style="color:#666;font-weight:400;">(dev)</span></strong>' +
+    '  <span style="display:flex;gap:4px;">' +
+    '    <button data-bd-copy  type="button" title="Copy snapshot to clipboard" style="background:#1a2433;color:#cfe;border:1px solid #325;padding:2px 6px;border-radius:4px;font:11px/1 inherit;cursor:pointer;">Copy</button>' +
+    '    <button data-bd-reset type="button" title="Dev reset of voice runtime state" style="background:#3a1a1a;color:#fcc;border:1px solid #532;padding:2px 6px;border-radius:4px;font:11px/1 inherit;cursor:pointer;">Reset</button>' +
+    '    <button data-bd-close type="button" title="Hide overlay" style="background:transparent;color:#9aa;border:1px solid #555;padding:2px 6px;border-radius:4px;font:11px/1 inherit;cursor:pointer;">×</button>' +
+    '  </span>' +
+    '</div>' +
+    '<div data-bd-body></div>';
+  document.body.appendChild(el);
+  _veraBargeInDebug.containerEl = el;
+  _veraBargeInDebug.bodyEl = el.querySelector("[data-bd-body]");
+
+  el.querySelector("[data-bd-copy]").addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try { window.copyBargeInDebugSnapshot(); } catch (_) {}
+  });
+  el.querySelector("[data-bd-reset]").addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof window.resetVeraVoiceRuntimeState === "function") {
+      try {
+        window.resetVeraVoiceRuntimeState({ source: "barge_in_debug_overlay" });
+      } catch (_) {}
+    } else {
+      try { console.warn("[barge_in_debug] resetVeraVoiceRuntimeState not available"); } catch (_) {}
+    }
+  });
+  el.querySelector("[data-bd-close]").addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    /* Closing the overlay disables the flag so it doesn't re-mount on the
+     * next polling tick. The user can re-enable with toggleBargeInDebugUi(true). */
+    try { window.VERA_DEBUG_BARGE_IN_UI = false; } catch (_) {}
+    try { localStorage.removeItem("vera_debug_barge_in_ui"); } catch (_) {}
+    _bargeInDebugUnmount();
+  });
+
+  if (_veraBargeInDebug.renderIntervalId == null) {
+    _veraBargeInDebug.renderIntervalId = setInterval(() => {
+      if (!_bargeInDebugUiEnabled()) {
+        _bargeInDebugUnmount();
+        return;
+      }
+      _bargeInDebugRender();
+    }, 200);
+  }
+  _bargeInDebugRender();
+}
+
+function _bargeInDebugUnmount() {
+  if (_veraBargeInDebug.renderIntervalId != null) {
+    try { clearInterval(_veraBargeInDebug.renderIntervalId); } catch (_) {}
+    _veraBargeInDebug.renderIntervalId = null;
+  }
+  if (_veraBargeInDebug.containerEl && _veraBargeInDebug.containerEl.parentNode) {
+    try { _veraBargeInDebug.containerEl.parentNode.removeChild(_veraBargeInDebug.containerEl); } catch (_) {}
+  }
+  _veraBargeInDebug.containerEl = null;
+  _veraBargeInDebug.bodyEl = null;
+}
+
+function _bargeInDebugEscapeHtml(s) {
+  if (s == null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function _bargeInDebugRender() {
+  if (!_veraBargeInDebug.bodyEl) return;
+  let s;
+  try { s = _bargeInDebugBuildState(); } catch (_) { return; }
+
+  const colAllowed = s.bargeIn.allowed ? "#7fe39a" : "#ff6b6b";
+  const colTts = s.tts.playing ? "#7fe39a" : "#9aa";
+  const sentinelRed = s.tts.mainTtsPlaybackActive && (s.tts.bufferSources || 0) === 0;
+  const colSentinel = sentinelRed ? "#ff6b6b" : "#9aa";
+
+  /* Cancel-delay color: green if cancel fired within 80 ms of speech detect,
+   * yellow up to 250 ms, red beyond that or if no cancel after a recent
+   * speech_detected. */
+  let colCancel = "#9aa";
+  let cancelText = "—";
+  if (s.cancel.cancelDelayMs != null) {
+    cancelText = `${s.cancel.cancelDelayMs}ms`;
+    if (s.cancel.cancelDelayMs <= 80) colCancel = "#7fe39a";
+    else if (s.cancel.cancelDelayMs <= 250) colCancel = "#f3d36b";
+    else colCancel = "#ff6b6b";
+  } else if (
+    s.cancel.lastSpeechDetectedPerfNow != null &&
+    s.tts.playing &&
+    performance.now() - s.cancel.lastSpeechDetectedPerfNow > 200
+  ) {
+    colCancel = "#ff6b6b";
+    cancelText = "none (TTS still playing)";
+  }
+
+  /* VAD color: green if armed + speech accum > 0, yellow if accumulating but
+   * threshold not yet passed (rough proxy: speechAccumMs > 0 but no
+   * speech_detected this turn). */
+  let colVad = "#9aa";
+  if (s.vad.armed) {
+    if ((s.vad.speechAccumMs || 0) > 0) colVad = "#f3d36b";
+    else colVad = "#7fe39a";
+  } else {
+    /* If TTS is playing but VAD is not armed, that's actually a red flag —
+     * caller would be blocked. */
+    colVad = s.tts.playing ? "#ff6b6b" : "#9aa";
+  }
+
+  const esc = _bargeInDebugEscapeHtml;
+  const eventsHtml = s.events.slice(0, 10).map((ev) => {
+    const sinceTts =
+      ev.sinceTtsStartMs != null ? `+${Math.round(ev.sinceTtsStartMs)}ms` : "—";
+    const extras = [];
+    if (ev.payload?.outcome) extras.push(`outcome=${ev.payload.outcome}`);
+    if (ev.payload?.reasonIfReturn) extras.push(`reason=${ev.payload.reasonIfReturn}`);
+    if (ev.payload?.event) extras.push(`event=${ev.payload.event}`);
+    if (ev.payload?.source) extras.push(`src=${ev.payload.source}`);
+    if (Number.isFinite(ev.payload?.durationMs)) extras.push(`dur=${Math.round(ev.payload.durationMs)}ms`);
+    if (Number.isFinite(ev.payload?.gapMs)) extras.push(`gap=${Math.round(ev.payload.gapMs)}ms`);
+    if (ev.payload?.gatePath) extras.push(`gate=${ev.payload.gatePath}`);
+    const extraStr = extras.length
+      ? ` <span style="color:#9aa;">${esc(extras.join(" "))}</span>`
+      : "";
+    return (
+      `<div style="display:flex;gap:6px;line-height:1.35;">` +
+      `<span style="color:#79c8ff;min-width:64px;font-variant-numeric:tabular-nums;">${esc(sinceTts)}</span>` +
+      `<span style="color:#d8e1ea;">${esc(ev.event)}${extraStr}</span>` +
+      `</div>`
+    );
+  }).join("");
+
+  const ttsIdShort = s.tts.ttsId ? String(s.tts.ttsId).slice(0, 22) : "—";
+  const tokShort = s.tts.token == null ? "—" : String(s.tts.token);
+
+  _veraBargeInDebug.bodyEl.innerHTML =
+    '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px;">' +
+      `<div style="color:#9aa;">ASR</div><div>${esc(s.voice.asrMode || "?")} <span style="color:#9aa;">(${esc(s.voice.listeningMode || "?")})</span></div>` +
+      `<div style="color:#9aa;">Mic</div><div>${esc(s.voice.micState || "?")}${s.voice.inputMuted ? ' <span style="color:#f3d36b;">(muted)</span>' : ""}</div>` +
+      `<div style="color:#9aa;">TTS</div><div style="color:${colTts};">${s.tts.playing ? "playing" : "idle"} <span style="color:#9aa;">srcs=${esc(s.tts.bufferSources ?? "?")} rdr=${s.tts.ndjsonReaderPresent ? "y" : "n"}</span></div>` +
+      `<div style="color:#9aa;">Ids</div><div style="color:#9aa;font-size:10px;">tts=${esc(ttsIdShort)} tok=${esc(tokShort)}</div>` +
+      `<div style="color:#9aa;">Sentinel</div><div style="color:${colSentinel};">${s.tts.mainTtsPlaybackActive ? "active" : "inactive"}${sentinelRed ? ' <span style="color:#ff6b6b;">(no tracked srcs!)</span>' : ""}</div>` +
+      `<div style="color:#9aa;">Barge-in</div><div style="color:${colAllowed};font-weight:600;">${s.bargeIn.allowed ? "ALLOWED" : "BLOCKED"} <span style="color:#9aa;font-weight:400;">(${esc(s.bargeIn.reason)})</span></div>` +
+      `<div style="color:#9aa;">VAD</div><div style="color:${colVad};">armed=${s.vad.armed ? "y" : "n"} speech=${esc(s.vad.speechAccumMs ?? 0)}ms partial=${esc(s.vad.partialAccumMs ?? 0)}ms</div>` +
+      `<div style="color:#9aa;">Frames</div><div>frames=${esc(s.vad.speechFrames ?? 0)} sinceTts=${esc(s.vad.sinceTtsStartMs ?? "—")}ms</div>` +
+      `<div style="color:#9aa;">Capture</div><div>recIntr=${s.capture.interruptRecording ? "y" : "n"} prearm=${esc(s.capture.prearmRecorderState ?? "—")} detect=${s.capture.detectRecognitionPresent ? "y" : "n"}</div>` +
+      `<div style="color:#9aa;">Cancel</div><div style="color:${colCancel};">delay=${esc(cancelText)} <span style="color:#9aa;">early=${esc(s.cancel.lastEarlyReturnReason ?? "—")} src=${esc(s.cancel.lastCancelSource ?? "—")}</span></div>` +
+      `<div style="color:#9aa;">Render</div><div>news=${s.newsRender.duringNewsRender ? "y" : "n"} hidden=${s.newsRender.appHidden ? "y" : "n"} actx=${esc(s.newsRender.audioCtxState ?? "—")} nrDur=${esc(Math.round(s.newsRender.lastNewsRenderDurationMs || 0))}ms rafGap=${esc(Math.round(s.newsRender.lastRafGapMs || 0))}ms</div>` +
+    '</div>' +
+    '<div style="margin-top:6px;border-top:1px solid rgba(120,135,160,0.25);padding-top:5px;">' +
+      '<div style="color:#9aa;margin-bottom:2px;">Events (most recent first):</div>' +
+      (eventsHtml || '<div style="color:#666;">(no events yet — start a TTS turn and speak over it)</div>') +
+    '</div>';
+
+  /* Re-anchor after layout changes (mic button position can shift between
+   * VERA and BMO modes or when the side panel opens). */
+  try { _bargeInDebugPositionOverlay(); } catch (_) {}
+}
+
+function _bargeInDebugBuildSnapshot() {
+  let snap = null;
+  try { snap = _bargeInDebugBuildState(); } catch (_) {}
+  return snap;
+}
+
+if (typeof window !== "undefined") {
+  /* Imperative toggle — flips both the in-memory flag and the localStorage
+   * persistence, then mounts/unmounts immediately. */
+  window.toggleBargeInDebugUi = function toggleBargeInDebugUi(force) {
+    const next = typeof force === "boolean" ? force : !_bargeInDebugUiEnabled();
+    try { window.VERA_DEBUG_BARGE_IN_UI = next; } catch (_) {}
+    try {
+      if (next) localStorage.setItem("vera_debug_barge_in_ui", "1");
+      else localStorage.removeItem("vera_debug_barge_in_ui");
+    } catch (_) {}
+    _veraBargeInDebug.enabled = next;
+    if (next) {
+      if (typeof document !== "undefined" && document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", _bargeInDebugMount, { once: true });
+      } else {
+        _bargeInDebugMount();
+      }
+    } else {
+      _bargeInDebugUnmount();
+    }
+    try {
+      console.warn("[barge_in_debug_ui_toggled]", { enabled: next });
+    } catch (_) {}
+    return next;
+  };
+
+  /* Clipboard snapshot — usable from devtools without the overlay open. */
+  window.copyBargeInDebugSnapshot = function copyBargeInDebugSnapshot() {
+    const snap = _bargeInDebugBuildSnapshot();
+    const text = JSON.stringify(snap, null, 2);
+    try {
+      if (navigator?.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      } else if (typeof document !== "undefined") {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try { document.execCommand("copy"); } catch (_) {}
+        document.body.removeChild(ta);
+      }
+    } catch (_) {}
+    try { console.info("[barge_in_debug_snapshot_copied]", snap); } catch (_) {}
+    return snap;
+  };
+
+  /* Low-frequency polling so the user can flip
+   *   window.VERA_DEBUG_BARGE_IN_UI = true
+   * (or set the localStorage key from another tab) and have the overlay
+   * appear without an explicit toggle call. Stops itself once mounted. */
+  if (_veraBargeInDebug.pollIntervalId == null) {
+    _veraBargeInDebug.pollIntervalId = setInterval(() => {
+      const wantOn = _bargeInDebugUiEnabled();
+      const isOn = !!_veraBargeInDebug.containerEl;
+      if (wantOn !== _veraBargeInDebug.enabled) _veraBargeInDebug.enabled = wantOn;
+      if (wantOn && !isOn) _bargeInDebugMount();
+      if (!wantOn && isOn) _bargeInDebugUnmount();
+    }, 1000);
+  }
+
+  /* Auto-mount if a previous session left the flag set. */
+  setTimeout(() => {
+    if (_bargeInDebugUiEnabled()) {
+      _veraBargeInDebug.enabled = true;
+      if (typeof document !== "undefined" && document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", _bargeInDebugMount, { once: true });
+      } else {
+        _bargeInDebugMount();
+      }
+    }
+  }, 0);
+}
+
 /**
  * Stop TTS playback IMMEDIATELY on a fast VAD trigger, without
  * aborting the in-flight Web Speech API session and without touching
@@ -2052,6 +2614,11 @@ function logFinalTranscriptSentToLlm(path, text) {
 }
 
 function logInterruptTranscriptDebug(phase, payload = {}) {
+  try {
+    if (_veraBargeInDebug?.enabled) {
+      _bargeInDebugCaptureEvent(phase, payload);
+    }
+  } catch (_) {}
   try {
     console.warn(`[INTERRUPT_TRANSCRIPT_DEBUG][${phase}]`, {
       timestamp: new Date().toISOString(),
@@ -28180,6 +28747,576 @@ async function handleUtterance() {
 }
 
 /* =========================
+   WORK MODE MULTI-ACTION PLANNER
+   ----------------------------------------------------------------------
+   Spec: compound commands like "go to panel 2 and explain the Vietnam
+   War" used to lose the second action because the panel-navigation
+   route in the backend action router would match first and return,
+   dropping the reasoning generation. The planner runs BEFORE the
+   existing Work Mode single-action shortcuts and the backend /infer
+   router so it can split a compound request into ordered actions and
+   dispatch each one through the existing handlers.
+
+   Scope is intentionally narrow:
+     - Only fires inside Work Mode (sendVeraWorkModeTypedInferTurn).
+     - Only fires when planUserCommand returns isMultiAction:true.
+     - Recursive calls from the executor pass __skipMultiActionPlanner
+       so a segment never re-enters the planner.
+
+   Design choices:
+     - Pure regex / heuristic split (no LLM): preserves latency budget
+       and avoids a new network hop for what is fundamentally a
+       client-side dispatch problem.
+     - The executor reuses existing single-action handlers
+       (activateReasoningTab, addReasoningTab, sendVeraWorkModeTypedInferTurn
+       with planner bypass). It does NOT re-implement checklist /
+       music / news / reasoning routes — each segment goes through the
+       existing pipeline so behaviour stays consistent.
+     - Per PART 4 ordering rules, target/navigation actions
+       (panel.select/open/close, news.open_panel) run before content
+       actions (reasoning.generate, news.search), and dependsOn is
+       added from the content action to the latest target action.
+========================= */
+
+const WORK_MODE_PLANNER_ORDINAL_TO_NUM = {
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+};
+
+const WORK_MODE_PLANNER_ORDINAL_KEYS = Object.keys(WORK_MODE_PLANNER_ORDINAL_TO_NUM).join("|");
+
+/* Connector regex used to split a compound command into ordered segments.
+   Conservative on purpose — bare commas are NOT treated as connectors
+   unless a second-segment verb is present (see _wmpSplitOnConnectors). */
+const WORK_MODE_PLANNER_CONNECTOR_RE = new RegExp(
+  "\\s*\\b(?:and(?:\\s+then)?|then|after(?:\\s+that)?|also|while\\s+you'?re\\s+at\\s+it|plus|next)\\b\\s*",
+  "i"
+);
+
+const WORK_MODE_PLANNER_CONNECTOR_GLOBAL_RE = new RegExp(
+  WORK_MODE_PLANNER_CONNECTOR_RE.source,
+  "gi"
+);
+
+/* "in panel 2" / "in the reasoning panel 2" / "in the second panel" — the
+   implicit target preposition that turns a single segment like
+   "explain the Vietnam War in panel 2" into a multi-action plan. */
+const WORK_MODE_PLANNER_IN_PANEL_RE = new RegExp(
+  "\\bin\\s+(?:the\\s+)?(?:reasoning\\s+)?(?:panel|space|tab|page)\\s*#?\\s*(\\d+|" +
+    WORK_MODE_PLANNER_ORDINAL_KEYS +
+    ")\\b",
+  "i"
+);
+
+const WORK_MODE_PLANNER_IN_ORDINAL_PANEL_RE = new RegExp(
+  "\\bin\\s+(?:the\\s+)?(" +
+    WORK_MODE_PLANNER_ORDINAL_KEYS +
+    ")\\s+(?:reasoning\\s+)?(?:panel|space|tab|page)\\b",
+  "i"
+);
+
+const WORK_MODE_PLANNER_PANEL_NUMBER_RE = new RegExp(
+  "\\b(?:reasoning\\s+)?(?:panel|space|tab|page)\\s*#?\\s*(\\d+|" +
+    WORK_MODE_PLANNER_ORDINAL_KEYS +
+    ")\\b",
+  "i"
+);
+
+const WORK_MODE_PLANNER_ORDINAL_PANEL_RE = new RegExp(
+  "\\b(" +
+    WORK_MODE_PLANNER_ORDINAL_KEYS +
+    ")\\s+(?:reasoning\\s+)?(?:panel|space|tab|page)\\b",
+  "i"
+);
+
+function _wmpResolveOrdinalOrNum(token) {
+  const s = String(token || "").toLowerCase().trim();
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return Number(s);
+  return WORK_MODE_PLANNER_ORDINAL_TO_NUM[s] || null;
+}
+
+/** Returns 1-based panel index parsed from "panel 2" / "second panel" / "panel #3". */
+function _wmpExtractPanelTarget(text) {
+  const s = String(text || "");
+  let m = s.match(WORK_MODE_PLANNER_PANEL_NUMBER_RE);
+  if (m) {
+    const n = _wmpResolveOrdinalOrNum(m[1]);
+    if (n) return n;
+  }
+  m = s.match(WORK_MODE_PLANNER_ORDINAL_PANEL_RE);
+  if (m) {
+    const n = _wmpResolveOrdinalOrNum(m[1]);
+    if (n) return n;
+  }
+  return null;
+}
+
+/** Remove the trailing "in panel 2" / "in the second panel" phrase so the residual
+ *  text becomes a clean content prompt for reasoning.generate. */
+function _wmpStripImplicitTargetPhrase(text) {
+  return String(text || "")
+    .replace(WORK_MODE_PLANNER_IN_PANEL_RE, "")
+    .replace(WORK_MODE_PLANNER_IN_ORDINAL_PANEL_RE, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([?.!,;:])/g, "$1")
+    .replace(/^[\s'".,;:!?]+|[\s'".,;:!?]+$/g, "")
+    .trim();
+}
+
+/** Strip leading politeness ("can you", "could you", "would you", "please")
+ *  so the verb classifier can see the actual command word. Mirrors the
+ *  same pattern app.py uses for its router shortcuts. */
+function _wmpStripLeadingPoliteness(text) {
+  let s = String(text || "").trim();
+  if (!s) return "";
+  /* Run twice — handles "please can you" or "would you please". */
+  for (let i = 0; i < 2; i++) {
+    s = s
+      .replace(/^\s*(?:please|kindly)\b[\s,]+/i, "")
+      .replace(/^\s*(?:can|could|would|will)\s+you\b[\s,]+/i, "")
+      .replace(/^\s*(?:hey\s+vera|hey|ok|okay|alright)\b[\s,]+/i, "");
+  }
+  return s.trim();
+}
+
+/** Classify a single segment into a PlannedAction.type using verb prefixes.
+ *  Returns "unknown" / "general.reply" for non-actionable segments so the
+ *  caller can decide whether to abort multi-action planning. */
+function _wmpDetectActionType(segment) {
+  const raw = String(segment || "").trim();
+  if (!raw) return "unknown";
+  const s = _wmpStripLeadingPoliteness(raw);
+  if (!s) return "unknown";
+  const t = s.toLowerCase();
+
+  if (
+    /^(?:go\s+(?:back\s+)?to|jump\s+to|switch\s+to|change\s+to|show|select|use)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(s) ||
+    /^(?:go\s+(?:back\s+)?to|jump\s+to|switch\s+to|change\s+to|show|select|use)\s+(?:the\s+|a\s+|my\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(s)
+  ) {
+    return "panel.select";
+  }
+  if (/^(?:open|create|make|add|new)\s+(?:a\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(s)) {
+    return "panel.open";
+  }
+  if (
+    /^(?:close|hide|dismiss|get\s+rid\s+of)\s+(?:the\s+|a\s+|my\s+|all\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|current|active|last|this)?\s*(?:reasoning\s+)?(?:panel|space|tab|page)s?\b/i.test(s)
+  ) {
+    return "panel.close";
+  }
+  if (/^(?:open|show|bring\s+up|pull\s+up)\s+(?:the\s+)?news\s+(?:panel|tab|page|results)\b/i.test(s)) {
+    return "news.open_panel";
+  }
+  if (/^(?:search|look\s+up|find|google)\s+(?:for\s+)?(?:news\s+(?:about|on|for)\s+)?/i.test(s)) {
+    return "news.search";
+  }
+  if (/^(?:pause|stop|mute)\s+(?:the\s+)?music\b/i.test(s)) {
+    return "music.pause";
+  }
+  if (/^(?:play|resume|start|unpause)\s+(?:the\s+|some\s+)?music\b/i.test(s)) {
+    return "music.play";
+  }
+  if (/^add\s+.+?\s+(?:to\s+(?:the\s+|my\s+)?)?(?:checklist|plan|todo|to-do|to\s+do|list)\b/i.test(s)) {
+    return "checklist.add";
+  }
+  if (/^(?:remove|delete|cross\s+off|check\s+off)\s+/i.test(s) && /\b(?:checklist|plan|todo|to-do|to\s+do|list|item|task|first|second|third|fourth|fifth)\b/i.test(t)) {
+    return "checklist.remove";
+  }
+  if (/^(?:sync|update|push|refresh)\s+(?:the\s+|my\s+)?(?:plan|checklist|reasoning\s+plan)\b/i.test(s)) {
+    return "checklist.sync";
+  }
+  if (/^(?:put|move|drop)\s+(?:that|this|it|the\s+(?:answer|last|latest|previous))\s+(?:in|into|to)\s+/i.test(s)) {
+    return "reasoning.move_latest_voice_answer";
+  }
+  if (
+    /^(?:explain|describe|tell\s+me\s+about|summari[sz]e|write|draft|compose|outline|analy[sz]e|compare|derive|prove|walk\s+me\s+through|break\s+down|teach\s+me)\b/i.test(s)
+  ) {
+    return "reasoning.generate";
+  }
+  return "general.reply";
+}
+
+/** Conservative connector split. Splits on " and "/" then "/etc., but only
+ *  when the resulting right-hand side starts with a recognized action verb
+ *  — avoids slicing "the cat and the dog" into two segments. */
+function _wmpSplitOnConnectors(text) {
+  const s = String(text || "").trim();
+  if (!s) return [];
+  const parts = [];
+  let cursor = 0;
+  WORK_MODE_PLANNER_CONNECTOR_GLOBAL_RE.lastIndex = 0;
+  let match;
+  while ((match = WORK_MODE_PLANNER_CONNECTOR_GLOBAL_RE.exec(s)) != null) {
+    const before = s.slice(cursor, match.index).trim();
+    const after = s.slice(match.index + match[0].length).trim();
+    if (!before || !after) continue;
+    /* Only treat this connector as a real split if the right-hand side
+       starts with a recognizable Work Mode action verb. Otherwise leave
+       it joined so phrasings like "the rise and fall of Rome" do not
+       fragment unrelated noun phrases. */
+    const rhsType = _wmpDetectActionType(after);
+    if (rhsType === "unknown") continue;
+    parts.push(before);
+    cursor = match.index + match[0].length;
+  }
+  const tail = s.slice(cursor).trim();
+  if (tail) parts.push(tail);
+  if (!parts.length) return [s];
+  return parts.map((p) => p.replace(/^[\s'".,;:!?]+|[\s'".,;:!?]+$/g, "").trim()).filter(Boolean);
+}
+
+/** Apply PART 4 ordering rules. Stable: target/navigation actions go first,
+ *  then content actions; within each bucket text order is preserved. */
+function _wmpOrderActionsByDependency(actions) {
+  const TARGET_FIRST = new Set([
+    "panel.close",
+    "panel.open",
+    "panel.select",
+    "news.open_panel",
+  ]);
+  const CONTENT = new Set([
+    "reasoning.generate",
+    "reasoning.move_latest_voice_answer",
+    "news.search",
+    "general.reply",
+  ]);
+
+  const targets = [];
+  const content = [];
+  const other = [];
+  for (const a of actions) {
+    if (TARGET_FIRST.has(a.type)) targets.push(a);
+    else if (CONTENT.has(a.type)) content.push(a);
+    else other.push(a);
+  }
+
+  /* Within target bucket: close before select before open. This handles
+     "close panel 1 and open a new one" cleanly. */
+  const targetOrder = (t) =>
+    t === "panel.close" ? 0 : t === "panel.select" ? 1 : t === "panel.open" ? 2 : 3;
+  targets.sort((a, b) => {
+    const da = targetOrder(a.type);
+    const db = targetOrder(b.type);
+    if (da !== db) return da - db;
+    return 0; // stable
+  });
+
+  const ordered = [...targets, ...content, ...other];
+
+  /* Add dependsOn from content actions to the LAST target action so the
+     executor can stop content if navigation fails. Independent app
+     actions (checklist+music) get no dependsOn — they execute in
+     text order without blocking each other. */
+  if (targets.length && content.length) {
+    const lastTargetId = targets[targets.length - 1].id;
+    for (const c of content) {
+      if (!Array.isArray(c.dependsOn)) c.dependsOn = [];
+      if (!c.dependsOn.includes(lastTargetId)) c.dependsOn.push(lastTargetId);
+    }
+  }
+
+  return ordered;
+}
+
+/** PART 10: risk classification for an action type. */
+function _wmpRiskLevelForType(actionType) {
+  if (actionType === "panel.close" || actionType === "checklist.remove") return "medium";
+  return "low";
+}
+
+/**
+ * planUserCommand({ text, context }) — see PART 2/3 of the spec.
+ *
+ * Returns null when the request is single-action (or empty) so the
+ * caller can fall through to the existing single-action router.
+ * Returns a plan object otherwise.
+ */
+function planWorkModeMultiAction(text, context = {}) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const segments = _wmpSplitOnConnectors(raw);
+
+  /* Build a flat action list from segments. Each segment can produce
+     one action, or two when it carries an implicit panel target
+     ("explain X in panel 2" -> panel.select + reasoning.generate). */
+  const built = [];
+  let counter = 1;
+  for (const seg of segments) {
+    if (!seg) continue;
+    const implicitTarget = _wmpExtractPanelTarget(seg);
+    const baseType = _wmpDetectActionType(seg);
+    if (
+      implicitTarget != null &&
+      baseType === "reasoning.generate" &&
+      /\bin\s+/i.test(seg)
+    ) {
+      built.push({
+        id: `a${counter++}`,
+        type: "panel.select",
+        target: { panelIndex: implicitTarget },
+        segmentText: `go to panel ${implicitTarget}`,
+        riskLevel: _wmpRiskLevelForType("panel.select"),
+      });
+      const promptText = _wmpStripImplicitTargetPhrase(seg) || seg;
+      built.push({
+        id: `a${counter++}`,
+        type: "reasoning.generate",
+        payload: { prompt: promptText },
+        segmentText: promptText,
+        riskLevel: _wmpRiskLevelForType("reasoning.generate"),
+      });
+    } else {
+      built.push({
+        id: `a${counter++}`,
+        type: baseType,
+        target: implicitTarget != null ? { panelIndex: implicitTarget } : undefined,
+        segmentText: seg,
+        riskLevel: _wmpRiskLevelForType(baseType),
+      });
+    }
+  }
+
+  /* If every segment we built is "general.reply" / "unknown", this is not
+     really a multi-action request — bail and let the normal router handle
+     the original text as a single intent. */
+  const actionable = built.filter(
+    (a) => a.type !== "general.reply" && a.type !== "unknown"
+  );
+  if (actionable.length < 2) return null;
+
+  const ordered = _wmpOrderActionsByDependency(built);
+
+  /* Drop trailing "general.reply" tails — they're typically noise from a
+     comma or trailing pleasantry. Keep them if they're the only content. */
+  const finalActions = ordered.filter(
+    (a) => a.type !== "general.reply" && a.type !== "unknown"
+  );
+  if (finalActions.length < 2) return null;
+
+  const triggerReason =
+    segments.length === 1 ? "implicit_target_panel" : "explicit_connector";
+
+  return {
+    isMultiAction: true,
+    confidence: triggerReason === "implicit_target_panel" ? 0.9 : 0.85,
+    triggerReason,
+    executionMode: "sequential",
+    actions: finalActions,
+    userFacingSummary: null, // executor builds the final confirmation
+  };
+}
+
+/** Gate per PART 1 — Work Mode only, recursive bypass aware. */
+function shouldUseWorkModeMultiActionPlanner(text, opts = {}) {
+  if (opts && opts.__skipMultiActionPlanner === true) return false;
+  if (typeof isVeraWorkModeOn !== "function" || !isVeraWorkModeOn()) return false;
+  if (typeof appModePrefix !== "function" || appModePrefix() !== "vera") return false;
+  /* Future extension: when called from normal-mode chat with explicit
+     Work Mode references (PART 11), we'd return true and surface a
+     prompt to enable Work Mode. Out of scope for this pass. */
+  return true;
+}
+
+/** Structured log helper. Stable schema for grep + future analyzers. */
+function logWorkModeMultiActionPlannerDecision(payload) {
+  try {
+    console.info("[wm_multi_action_planner]", {
+      tag: payload?.tag || "plan_decision",
+      ts: new Date().toISOString(),
+      ...payload,
+    });
+  } catch (_) {}
+}
+
+/**
+ * executeActionPlan(plan, context) — see PART 7.
+ *
+ * Runs actions sequentially. For panel.select / panel.open we call
+ * existing in-process handlers directly (no bubble). For every other
+ * action type we re-enter sendVeraWorkModeTypedInferTurn with
+ * __skipMultiActionPlanner so the existing shortcuts and /infer route
+ * handle the segment exactly the way they would for a single command.
+ */
+async function executeWorkModeActionPlan(plan, context = {}) {
+  if (!plan || !Array.isArray(plan.actions) || plan.actions.length < 1) {
+    return { ok: false, results: [], reason: "empty_plan" };
+  }
+
+  logWorkModeMultiActionPlannerDecision({
+    tag: "execution_started",
+    action_count: plan.actions.length,
+    actions: plan.actions.map((a) => a.type),
+    trigger_reason: plan.triggerReason || null,
+    confidence: plan.confidence ?? null,
+  });
+
+  const results = [];
+  const lookupResult = (id) => results.find((r) => r.id === id);
+
+  for (const action of plan.actions) {
+    /* Dependency check (PART 4 F + PART 7). */
+    if (Array.isArray(action.dependsOn) && action.dependsOn.length) {
+      const failedDep = action.dependsOn.find((depId) => {
+        const dep = lookupResult(depId);
+        return dep && dep.ok === false;
+      });
+      if (failedDep) {
+        const skipResult = {
+          id: action.id,
+          type: action.type,
+          ok: false,
+          skipped_due_to_dependency: true,
+          error: `dep_failed:${failedDep}`,
+        };
+        results.push(skipResult);
+        logWorkModeMultiActionPlannerDecision({
+          tag: "action_result",
+          action_id: action.id,
+          action_type: action.type,
+          ok: false,
+          skipped_due_to_dependency: true,
+          dep_failed: failedDep,
+        });
+        continue;
+      }
+    }
+
+    let ok = false;
+    let error = null;
+    const extra = {};
+
+    try {
+      switch (action.type) {
+        case "panel.select": {
+          const oneBased = Number(action?.target?.panelIndex);
+          if (!Number.isFinite(oneBased) || oneBased < 1) {
+            error = "invalid_panel_index";
+            break;
+          }
+          const idx = oneBased - 1;
+          const panelEl = document.querySelector(
+            `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
+          );
+          if (!panelEl) {
+            error = "panel_not_found_or_closed";
+            break;
+          }
+          if (typeof activateReasoningTab !== "function") {
+            error = "activateReasoningTab_unavailable";
+            break;
+          }
+          activateReasoningTab(idx, {
+            commandText: action.segmentText || "",
+            requestedIndex: oneBased,
+            resolvedFrom: "wm_multi_action_planner",
+          });
+          extra.target_panel_id =
+            panelEl.dataset.laneId || `panel_${oneBased}`;
+          extra.reasoning_generation_started = false;
+          ok = true;
+          break;
+        }
+
+        case "panel.open": {
+          if (typeof addReasoningTab !== "function") {
+            error = "addReasoningTab_unavailable";
+            break;
+          }
+          addReasoningTab();
+          ok = true;
+          break;
+        }
+
+        case "reasoning.generate": {
+          /* Reasoning generation MUST go through the normal Work Mode
+             infer pipeline so the active panel context (just selected
+             by an earlier action.select) is honored. */
+          const promptText =
+            String(action?.payload?.prompt || action.segmentText || "").trim();
+          if (!promptText) {
+            error = "empty_reasoning_prompt";
+            break;
+          }
+          try {
+            await sendVeraWorkModeTypedInferTurn(promptText, {
+              path: `wm-multi-action:reasoning.generate`,
+              __skipMultiActionPlanner: true,
+            });
+            extra.dispatched_via = "sendVeraWorkModeTypedInferTurn";
+            extra.reasoning_generation_started = true;
+            ok = true;
+          } catch (e) {
+            error = String(e?.message || e || "dispatch_error").slice(0, 200);
+          }
+          break;
+        }
+
+        case "panel.close":
+        case "checklist.add":
+        case "checklist.remove":
+        case "checklist.sync":
+        case "music.pause":
+        case "music.play":
+        case "news.open_panel":
+        case "news.search":
+        case "reasoning.move_latest_voice_answer":
+        default: {
+          /* All remaining action types are forwarded through the normal
+             Work Mode entry. Each will hit its corresponding existing
+             frontend shortcut (close panel, sync plan, move-latest)
+             or fall through to backend /infer (checklist mutations,
+             music control, news ops). The planner bypass flag prevents
+             re-entry. */
+          try {
+            await sendVeraWorkModeTypedInferTurn(action.segmentText || "", {
+              path: `wm-multi-action:${action.type}`,
+              __skipMultiActionPlanner: true,
+            });
+            extra.dispatched_via = "sendVeraWorkModeTypedInferTurn";
+            ok = true;
+          } catch (e) {
+            error = String(e?.message || e || "dispatch_error").slice(0, 200);
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      error = String(e?.message || e || "executor_exception").slice(0, 200);
+    }
+
+    const result = { id: action.id, type: action.type, ok, error, ...extra };
+    results.push(result);
+    logWorkModeMultiActionPlannerDecision({
+      tag: "action_result",
+      action_id: action.id,
+      action_type: action.type,
+      ok,
+      error,
+      ...extra,
+    });
+  }
+
+  logWorkModeMultiActionPlannerDecision({
+    tag: "execution_complete",
+    results_summary: results.map((r) => ({
+      id: r.id,
+      type: r.type,
+      ok: r.ok,
+      skipped: Boolean(r.skipped_due_to_dependency),
+    })),
+  });
+
+  return { ok: results.every((r) => r.ok), results };
+}
+
+/* =========================
    TEXT INPUT PIPELINE
 ========================= */
 
@@ -28233,6 +29370,79 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     processing = false;
     listening = false;
     setStatus("Ready", "idle");
+  }
+
+  /* =========================
+     WORK MODE MULTI-ACTION PLANNER GATE (Stage A — typed/voice entry)
+     ----------------------------------------------------------------------
+     Runs BEFORE the existing single-action shortcuts so compound requests
+     like "go to panel 2 and explain the Vietnam War" get both actions
+     dispatched. If the planner decides this is a single-action request
+     (or planner is skipped per __skipMultiActionPlanner), we fall through
+     to the normal pipeline below unchanged.
+  ========================= */
+  if (shouldUseWorkModeMultiActionPlanner(trimmed, opts)) {
+    let plan = null;
+    try {
+      plan = planWorkModeMultiAction(trimmed, { source: path });
+    } catch (e) {
+      try {
+        console.warn("[wm_multi_action_planner]", {
+          tag: "planner_exception",
+          error: String(e?.message || e || "").slice(0, 200),
+          text_preview: String(trimmed || "").slice(0, 120),
+        });
+      } catch (_) {}
+      plan = null;
+    }
+
+    logWorkModeMultiActionPlannerDecision({
+      tag: "plan_decision",
+      latest_user_text: String(trimmed || "").slice(0, 200),
+      work_mode_active: true,
+      work_mode_multi_action_planner_allowed: true,
+      work_mode_scope_reason: "active_work_mode",
+      multi_action_candidate: Boolean(plan && plan.isMultiAction),
+      planner_used: Boolean(plan && Array.isArray(plan.actions) && plan.actions.length > 1),
+      planner_confidence: plan?.confidence ?? null,
+      actions_detected: Array.isArray(plan?.actions) ? plan.actions.map((a) => a.type) : [],
+      action_order: Array.isArray(plan?.actions) ? plan.actions.map((a) => a.type) : [],
+      dependency_edges: Array.isArray(plan?.actions)
+        ? plan.actions.flatMap((a) =>
+            Array.isArray(a.dependsOn) ? a.dependsOn.map((d) => [d, a.id]) : []
+          )
+        : [],
+      single_router_bypassed: Boolean(
+        plan && Array.isArray(plan.actions) && plan.actions.length > 1
+      ),
+      trigger_reason: plan?.triggerReason || null,
+      path: path || null,
+    });
+
+    if (plan && Array.isArray(plan.actions) && plan.actions.length > 1) {
+      try {
+        await executeWorkModeActionPlan(plan, { source: path });
+      } catch (e) {
+        logWorkModeMultiActionPlannerDecision({
+          tag: "executor_exception",
+          error: String(e?.message || e || "").slice(0, 200),
+        });
+      }
+      return;
+    }
+  } else {
+    logWorkModeMultiActionPlannerDecision({
+      tag: "plan_decision",
+      latest_user_text: String(trimmed || "").slice(0, 200),
+      work_mode_active:
+        typeof isVeraWorkModeOn === "function" ? isVeraWorkModeOn() : null,
+      work_mode_multi_action_planner_allowed: false,
+      work_mode_scope_reason: opts && opts.__skipMultiActionPlanner
+        ? "planner_bypass_recursive"
+        : "not_allowed_normal_mode",
+      planner_used: false,
+      path: path || null,
+    });
   }
 
   if (
