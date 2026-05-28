@@ -2805,6 +2805,11 @@ try {
  * ========================================================================= */
 
 let _veraWorkModeMultiActionBubbleHold = null;
+let _veraWorkModeRenderedOriginalBubbleGuard = null;
+
+function _wmNowMs() {
+  try { return Date.now(); } catch (_) { return 0; }
+}
 
 function _wmHoldOriginalUserBubble(originalFullUserText) {
   _veraWorkModeMultiActionBubbleHold = {
@@ -2839,8 +2844,63 @@ function _wmNormalizeForSegmentMatch(s) {
     .trim();
 }
 
+function _wmCleanExpiredRenderedOriginalGuard() {
+  const guard = _veraWorkModeRenderedOriginalBubbleGuard;
+  if (!guard) return null;
+  const now = _wmNowMs();
+  if (guard.expiresAt && now && now > guard.expiresAt) {
+    _veraWorkModeRenderedOriginalBubbleGuard = null;
+    return null;
+  }
+  return guard;
+}
+
+function _wmMarkOriginalUserBubbleRendered(originalFullUserText, cleanedExecutionTexts = [], source = "") {
+  const originalText = String(originalFullUserText || "").trim();
+  if (!originalText) return null;
+  const cleanedTexts = Array.isArray(cleanedExecutionTexts)
+    ? cleanedExecutionTexts
+    : [cleanedExecutionTexts];
+  const cleanedPrompts = cleanedTexts
+    .map((raw) => String(raw || "").trim())
+    .filter(Boolean)
+    .map((raw) => ({
+      raw,
+      norm: _wmNormalizeForSegmentMatch(raw),
+      suppressedCount: 0,
+    }))
+    .filter((p) => p.norm);
+  const now = _wmNowMs();
+  _veraWorkModeRenderedOriginalBubbleGuard = {
+    originalText,
+    originalNorm: _wmNormalizeForSegmentMatch(originalText),
+    cleanedPrompts,
+    source,
+    startedAt: now,
+    expiresAt: now ? now + 45000 : 0,
+  };
+  return _veraWorkModeRenderedOriginalBubbleGuard;
+}
+
+function _wmCleanedExecutionTextsFromPlan(plan) {
+  return Array.isArray(plan?.actions)
+    ? plan.actions
+        .map((a) => String(a?.payload?.prompt || a?.segmentText || "").trim())
+        .filter(Boolean)
+    : [];
+}
+
+function _wmRenderedOriginalGuardText() {
+  const guard = _wmCleanExpiredRenderedOriginalGuard();
+  return guard ? guard.originalText : null;
+}
+
+function _wmSuppressionOriginalUserBubbleText() {
+  return _wmHeldOriginalUserBubbleText() || _wmRenderedOriginalGuardText();
+}
+
 function _wmIncomingLooksLikeOriginalSegment(incomingText) {
-  const original = _wmHeldOriginalUserBubbleText();
+  const original = _wmSuppressionOriginalUserBubbleText();
   if (!original) return false;
   const a = _wmNormalizeForSegmentMatch(original);
   const b = _wmNormalizeForSegmentMatch(incomingText);
@@ -2850,6 +2910,41 @@ function _wmIncomingLooksLikeOriginalSegment(incomingText) {
   /* Lenient reverse direction so trivial planner re-stitchings still match. */
   if (b.length >= 6 && a.includes(b.slice(0, Math.max(6, Math.floor(b.length * 0.6))))) return true;
   return false;
+}
+
+function _wmConsumeDuplicateCleanedPromptGuard(incomingText) {
+  const guard = _wmCleanExpiredRenderedOriginalGuard();
+  if (!guard) return null;
+  const incomingNorm = _wmNormalizeForSegmentMatch(incomingText);
+  if (!incomingNorm) return null;
+  for (const prompt of guard.cleanedPrompts || []) {
+    if (!prompt || !prompt.norm) continue;
+    if (prompt.suppressedCount >= 3) continue;
+    if (prompt.norm === incomingNorm) {
+      prompt.suppressedCount += 1;
+      return { originalText: guard.originalText, cleanedText: prompt.raw, source: guard.source };
+    }
+  }
+  return null;
+}
+
+function _wmShouldSuppressDuplicateUserBubble(incomingText) {
+  if (_wmIsOriginalUserBubbleHeld() && _wmIncomingLooksLikeOriginalSegment(incomingText)) {
+    return {
+      originalText: _wmSuppressionOriginalUserBubbleText(),
+      cleanedText: String(incomingText || "").trim(),
+      reason: "active_executor_hold",
+    };
+  }
+  const lateGuardMatch = _wmConsumeDuplicateCleanedPromptGuard(incomingText);
+  if (lateGuardMatch) {
+    return {
+      originalText: lateGuardMatch.originalText,
+      cleanedText: lateGuardMatch.cleanedText,
+      reason: "rendered_original_guard",
+    };
+  }
+  return null;
 }
 
 function _workModeCommandDisplayTextEnabled() {
@@ -2887,6 +2982,14 @@ function logWorkModeCommandDisplayText(fields = {}) {
       cleanedExecutionText,
       renderedUserBubbleText,
       rendered_eq_original: eq(renderedUserBubbleText, originalFullUserText),
+      duplicateUserBubbleSuppressed:
+        fields.duplicateUserBubbleSuppressed != null
+          ? Boolean(fields.duplicateUserBubbleSuppressed)
+          : null,
+      usedCleanedTextAsInternalPromptOnly:
+        fields.usedCleanedTextAsInternalPromptOnly != null
+          ? Boolean(fields.usedCleanedTextAsInternalPromptOnly)
+          : null,
       commandLooksMultiAction:
         fields.commandLooksMultiAction != null ? Boolean(fields.commandLooksMultiAction) : null,
       source: fields.source || null,
@@ -4705,19 +4808,21 @@ function commitServerUserTranscriptBubble(text, path) {
   const t = String(text ?? "").trim();
   if (!t) return;
   /* Stage 1.5 stabilization (2026-05-27): when a Work Mode multi-action plan
-   * is mid-flight, sub-actions echo CLEANED segment text via NDJSON. The
-   * planner's caller has already shown / preserved the FULL ORIGINAL command
-   * as the user bubble. Suppress the overwrite — but only when the incoming
-   * text actually looks like a sub-segment of the original, so an unrelated
-   * turn that races into the hold window is still rendered normally. */
-  if (_wmIsOriginalUserBubbleHeld() && _wmIncomingLooksLikeOriginalSegment(t)) {
+   * is active, or has just rendered its original command bubble, sub-actions
+   * may echo CLEANED segment text via stage-1/NDJSON. Suppress those normal
+   * user-bubble writes so the UI shows exactly one real user bubble: the full
+   * original command. The cleaned text remains an internal prompt only. */
+  const duplicateWorkModeUserBubble = _wmShouldSuppressDuplicateUserBubble(t);
+  if (duplicateWorkModeUserBubble) {
     try {
       logWorkModeCommandDisplayText({
-        originalFullUserText: _wmHeldOriginalUserBubbleText(),
-        cleanedExecutionText: t,
+        originalFullUserText: duplicateWorkModeUserBubble.originalText,
+        cleanedExecutionText: duplicateWorkModeUserBubble.cleanedText || t,
         renderedUserBubbleText: _readLatestUserBubbleText(),
+        duplicateUserBubbleSuppressed: true,
+        usedCleanedTextAsInternalPromptOnly: true,
         commandLooksMultiAction: true,
-        source: `commitServerUserTranscriptBubble:${path || "unknown"}:suppressed`,
+        source: `commitServerUserTranscriptBubble:${path || "unknown"}:${duplicateWorkModeUserBubble.reason}`,
       });
     } catch (_) {}
     /* Detach the live-partial ref so any later non-suppressed write does not
@@ -29615,6 +29720,7 @@ async function maybeRunWorkModeMultiActionPlanner(text, opts = {}) {
    * The hold flag prevents each sub-action's cleaned segment text from
    * overwriting the bubble via `commitServerUserTranscriptBubble`. */
   const originalFullUserText = trimmed;
+  const cleanedExecutionTexts = _wmCleanedExecutionTextsFromPlan(plan);
   let bubbleAlreadyMatched = false;
   try {
     const latestBubbleText = _readLatestUserBubbleText();
@@ -29653,17 +29759,19 @@ async function maybeRunWorkModeMultiActionPlanner(text, opts = {}) {
       }
     } catch (_) {}
   }
+  _wmMarkOriginalUserBubbleRendered(
+    originalFullUserText,
+    cleanedExecutionTexts,
+    `wm-multi-action-pre-execute:${opts.isVoice ? "voice" : "typed"}`
+  );
 
   try {
     logWorkModeCommandDisplayText({
       originalFullUserText,
-      cleanedExecutionText: Array.isArray(plan.actions)
-        ? plan.actions
-            .map((a) => String(a?.payload?.prompt || a?.segmentText || "").trim())
-            .filter(Boolean)
-            .join(" | ") || null
-        : null,
+      cleanedExecutionText: cleanedExecutionTexts.join(" | ") || null,
       renderedUserBubbleText: _readLatestUserBubbleText(),
+      duplicateUserBubbleSuppressed: false,
+      usedCleanedTextAsInternalPromptOnly: true,
       commandLooksMultiAction: true,
       source: `wm-multi-action-pre-execute:${opts.isVoice ? "voice" : "typed"}`,
     });
@@ -29977,6 +30085,7 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
        * the FULL ORIGINAL text. The hold flag prevents each sub-action's
        * cleaned segment text from overwriting it. */
       const originalFullUserText = trimmed;
+      const cleanedExecutionTexts = _wmCleanedExecutionTextsFromPlan(plan);
       let originalBubble = null;
       try {
         ensureChatStartedLayout();
@@ -29991,17 +30100,19 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
           try { originalBubble.dataset.originalFullUserText = originalFullUserText; } catch (_) {}
         }
       } catch (_) {}
+      _wmMarkOriginalUserBubbleRendered(
+        originalFullUserText,
+        cleanedExecutionTexts,
+        "wm-multi-action-pre-execute-typed"
+      );
 
       try {
         logWorkModeCommandDisplayText({
           originalFullUserText,
-          cleanedExecutionText: Array.isArray(plan.actions)
-            ? plan.actions
-                .map((a) => String(a?.payload?.prompt || a?.segmentText || "").trim())
-                .filter(Boolean)
-                .join(" | ") || null
-            : null,
+          cleanedExecutionText: cleanedExecutionTexts.join(" | ") || null,
           renderedUserBubbleText: originalBubble?.textContent ?? _readLatestUserBubbleText(),
+          duplicateUserBubbleSuppressed: false,
+          usedCleanedTextAsInternalPromptOnly: true,
           commandLooksMultiAction: true,
           source: "wm-multi-action-pre-execute-typed",
         });
