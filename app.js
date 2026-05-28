@@ -210,6 +210,40 @@ try {
   };
 } catch (_) {}
 
+/* =========================
+   UNIFIED DEV-MODE FLAG  (added during cleanup pass, 2026-05-27)
+
+   `isVeraDevMode()` is the single switch that gates ALL future
+   dev-only overlays, console timelines, dump commands and smoke
+   runners. Today it is purely additive — existing per-feature flags
+   like `VERA_DEBUG_INTERRUPT` and `VERA_DEBUG_BARGE_IN_UI` continue
+   to work unchanged. New diagnostics added after this date should
+   key off `isVeraDevMode()` instead of inventing a new per-feature
+   flag.
+
+   Enable for the session:
+     window.VERA_DEV_MODE = true
+   Persist across reloads:
+     localStorage.setItem("vera_dev_mode", "1")
+
+   The matching backend env var is VERA_DEV_MODE=1 — checked in
+   `app.py` if/when we move smoke runners or dev endpoints under it.
+========================= */
+function isVeraDevMode() {
+  try {
+    if (typeof window !== "undefined" && window.VERA_DEV_MODE === true) return true;
+  } catch (_) {}
+  try {
+    if (typeof localStorage !== "undefined" && localStorage.getItem("vera_dev_mode") === "1") return true;
+  } catch (_) {}
+  return false;
+}
+try {
+  if (typeof window !== "undefined") {
+    window.isVeraDevMode = isVeraDevMode;
+  }
+} catch (_) {}
+
 /**
  * Call when opening BMO: new backend session, empty log, voice input default, clear side panel.
  * Exposed for index.html `openBmoPage`.
@@ -1793,6 +1827,11 @@ function _bargeInDebugUiEnabled() {
   try {
     if (typeof localStorage !== "undefined" && localStorage.getItem("vera_debug_barge_in_ui") === "1") return true;
   } catch (_) {}
+  /* Cleanup-pass additive gate: anyone in unified dev mode also sees the
+   * overlay. Pre-existing per-feature flags above keep working unchanged. */
+  try {
+    if (typeof isVeraDevMode === "function" && isVeraDevMode()) return true;
+  } catch (_) {}
   return false;
 }
 
@@ -2616,6 +2655,132 @@ function logFinalTranscriptSentToLlm(path, text) {
   if (!voiceTranscriptDebugEnabled()) return;
   console.log("[VOICE][LLM-INPUT]", { path, text: text ?? "" });
 }
+
+/* =========================================================================
+ *  TURN TEXT INTEGRITY  (Stabilization Stage 1, 2026-05-27)
+ *
+ *  Diagnostic-only. Emits a single `[TURN_TEXT_INTEGRITY]` line per turn so
+ *  we can verify, for compound voice/typed commands, that:
+ *
+ *    raw_asr_text   →   normalized_text   →   displayed_user_bubble_text
+ *                                            ≡ router_input_text
+ *                                            ≡ backend_payload_text
+ *
+ *  Equality is allowed to fail on intentional normalization (case, leading
+ *  cancel-prefix strip, trim, smart-quote folding). Any other divergence is
+ *  a bug to investigate.
+ *
+ *  ZERO behavior change: this only logs.
+ *
+ *  Silence with:  localStorage.setItem("VERA_DEBUG_TURN_TEXT", "0")
+ *  Re-enable with: localStorage.removeItem("VERA_DEBUG_TURN_TEXT")
+ *  (Default ON because the log fires at most once per user turn — low volume.)
+ * ========================================================================= */
+function _turnTextIntegrityEnabled() {
+  try {
+    return localStorage.getItem("VERA_DEBUG_TURN_TEXT") !== "0";
+  } catch {
+    return true;
+  }
+}
+
+let _veraTurnSeq = 0;
+function _nextVeraTurnId() {
+  _veraTurnSeq += 1;
+  let r = "";
+  try {
+    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+      const buf = new Uint32Array(1);
+      crypto.getRandomValues(buf);
+      r = buf[0].toString(36);
+    }
+  } catch (_) {}
+  if (!r) r = Math.random().toString(36).slice(2, 10);
+  return `turn_${r}_${_veraTurnSeq}`;
+}
+
+/** Read the latest USER bubble's plain text from the DOM, ignoring the
+ *  translucent interrupt-detection preview. Returns `null` when no user
+ *  bubble is currently mounted (typical for work-mode typed turns where the
+ *  bubble only appears after the server NDJSON meta arrives). */
+function _readLatestUserBubbleText() {
+  if (typeof document === "undefined") return null;
+  let convo = null;
+  try {
+    convo = document.getElementById("conversation")
+      || document.getElementById("bmo-conversation");
+  } catch (_) {
+    return null;
+  }
+  if (!convo) return null;
+  let rows = null;
+  try { rows = convo.querySelectorAll(".message-row.user"); } catch (_) { return null; }
+  if (!rows || !rows.length) return null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (!(row instanceof HTMLElement)) continue;
+    const bubble = row.querySelector(".bubble");
+    if (!(bubble instanceof HTMLElement)) continue;
+    if (bubble.classList.contains("interrupt-preview")) continue;
+    const txt = (bubble.textContent || "").trim();
+    if (txt) return txt;
+  }
+  return null;
+}
+
+/** Emit the single `[TURN_TEXT_INTEGRITY]` diagnostic line. All fields are
+ *  optional — pass what you know at the call site; missing fields are
+ *  recorded as `null`. The caller decides WHEN (typically right before the
+ *  network fetch, OR right after a server NDJSON `meta.transcript` for
+ *  whisper turns).
+ *
+ *  Wrapped in try/catch so a malformed payload can never break a real turn.
+ */
+function logTurnTextIntegrity(fields = {}) {
+  if (!_turnTextIntegrityEnabled()) return null;
+  try {
+    const turn_id = fields.turn_id || _nextVeraTurnId();
+    const displayed =
+      fields.displayed_user_bubble_text !== undefined
+        ? fields.displayed_user_bubble_text
+        : _readLatestUserBubbleText();
+    const norm = (v) => (v == null ? null : String(v));
+    const payload = {
+      tag: "TURN_TEXT_INTEGRITY",
+      turn_id,
+      source: fields.source || null,
+      raw_asr_text: norm(fields.raw_asr_text ?? null),
+      normalized_text: norm(fields.normalized_text ?? null),
+      displayed_user_bubble_text: norm(displayed ?? null),
+      router_input_text: norm(fields.router_input_text ?? null),
+      backend_payload_text: norm(fields.backend_payload_text ?? null),
+      request_id: fields.request_id || null,
+      path: fields.path || null,
+      intercepted_by: fields.intercepted_by || null,
+      timestamp: new Date().toISOString(),
+    };
+    /* Divergence shorthand so the user can grep just the failing turns:
+     *   displayed === router === backend  (modulo case/punctuation) ?      */
+    const eq = (a, b) => {
+      if (a == null || b == null) return null;
+      return String(a).trim() === String(b).trim();
+    };
+    payload.bubble_eq_router = eq(payload.displayed_user_bubble_text, payload.router_input_text);
+    payload.router_eq_backend = eq(payload.router_input_text, payload.backend_payload_text);
+    payload.all_three_eq =
+      payload.bubble_eq_router === true && payload.router_eq_backend === true;
+    console.info("[TURN_TEXT_INTEGRITY]", payload);
+    return turn_id;
+  } catch (e) {
+    try { console.warn("[TURN_TEXT_INTEGRITY] log failed", e); } catch (_) {}
+    return null;
+  }
+}
+try {
+  if (typeof window !== "undefined") {
+    window.logTurnTextIntegrity = logTurnTextIntegrity;
+  }
+} catch (_) {}
 
 function logInterruptTranscriptDebug(phase, payload = {}) {
   try {
@@ -27001,6 +27166,18 @@ async function finalizeMainBrowserTranscript(text) {
 
   logVoiceTranscript("final", trimmed, { path: "main-browser-asr" });
   logFinalTranscriptSentToLlm("main-browser-asr", trimmed);
+  /* Stage 1 stabilization: browser-ASR continuous turn integrity log. The
+     `text` arg to finalizeMainBrowserTranscript is the raw SR transcript;
+     `trimmed` is the normalized + router input + backend payload. */
+  logTurnTextIntegrity({
+    source: "browser_asr",
+    raw_asr_text: text,
+    normalized_text: trimmed,
+    router_input_text: trimmed,
+    backend_payload_text: inferTranscriptFromFormData(formData),
+    request_id: null,
+    path: "main-browser-asr",
+  });
   attachPipelineAbortSignal();
   const pipelineSig = activePipelineAbort.signal;
   logComposerAttachmentsBeforeSubmit(voiceFiles, turnContext);
@@ -27741,6 +27918,18 @@ async function finalizeInterruptBrowserTranscript(text) {
 
   logVoiceTranscript("final", routedText, { path: "interrupt-browser-asr" });
   logFinalTranscriptSentToLlm("interrupt-browser-asr", routedText);
+  /* Stage 1 stabilization: interrupt browser-ASR. `trimmed` is the raw SR
+     transcript (may include a leading "stop," prefix); `routedText` is the
+     normalized router input that gets sent to the server. */
+  logTurnTextIntegrity({
+    source: "browser_asr",
+    raw_asr_text: trimmed,
+    normalized_text: routedText,
+    router_input_text: routedText,
+    backend_payload_text: inferTranscriptFromFormData(formData),
+    request_id: null,
+    path: "interrupt-browser-asr",
+  });
   logInterruptTranscriptDebug("asr_result", {
     transcript: routedText.slice(0, 120),
     transcript_char_count: routedText.length,
@@ -28076,6 +28265,24 @@ async function runInferMainPipeline(formData, opts = {}) {
                     // Cancelled by applyNdjsonStreamingReplySoFar /
                     // finalizeNdjsonStreamingReply when the real reply hits.
                     armPendingNewsStatusBubble(meta.transcript);
+                    /* Stage 1 stabilization: pure-whisper NDJSON path. Only
+                       fire if formData carried NO client-side transcript —
+                       browser-ASR / typed / work-mode-preflight cases were
+                       already logged at the fetch site. */
+                    try {
+                      const _clientTranscript = inferTranscriptFromFormData(formData);
+                      if (!_clientTranscript) {
+                        logTurnTextIntegrity({
+                          source: "whisper",
+                          raw_asr_text: null,
+                          normalized_text: meta.transcript,
+                          router_input_text: meta.transcript,
+                          backend_payload_text: "",
+                          request_id: _inferClientRequestId,
+                          path: "main-ndjson-whisper",
+                        });
+                      }
+                    } catch (_) {}
                   }
                 },
                 onReplyProgress: (replySoFar) => {
@@ -28372,6 +28579,23 @@ async function runInferInterruptPipeline(formData) {
                   transcript_char_count: tr.length,
                   possibly_cutoff: /^(explain|second|part|music)\b/i.test(tr)
                 });
+                /* Stage 1 stabilization: pure-whisper interrupt path. Skip
+                   when the client already sent a transcript (browser-ASR
+                   interrupt path logs at its own fetch site). */
+                try {
+                  const _clientTranscript = inferTranscriptFromFormData(formData);
+                  if (!_clientTranscript) {
+                    logTurnTextIntegrity({
+                      source: "whisper",
+                      raw_asr_text: null,
+                      normalized_text: meta.transcript,
+                      router_input_text: meta.transcript,
+                      backend_payload_text: "",
+                      request_id: null,
+                      path: "interrupt-ndjson-whisper",
+                    });
+                  }
+                } catch (_) {}
               }
             },
             onReplyProgress: (replySoFar) => {
@@ -28712,6 +28936,19 @@ async function handleUtterance() {
 
       logVoiceTranscript("final", trimmed, { path: "work-mode-server-asr" });
       logFinalTranscriptSentToLlm("work-mode-server-asr", trimmed);
+      /* Stage 1 stabilization: whisper-preflight work-mode. `trimmed` is
+         the server-returned transcript from the transcribe_only preflight;
+         raw_asr_text is null because Whisper does not expose a "pre-norm"
+         form to the client. */
+      logTurnTextIntegrity({
+        source: "whisper",
+        raw_asr_text: null,
+        normalized_text: trimmed,
+        router_input_text: trimmed,
+        backend_payload_text: inferTranscriptFromFormData(formData2),
+        request_id: null,
+        path: "work-mode-server-asr",
+      });
       logComposerAttachmentsBeforeSubmit(voiceAttach2Files, turnContext);
       const prepP = maybePrepareWorkModeReasoning(formData2, trimmed, pipelineSig, {
         attachments: voiceAttach2Files,
@@ -29723,6 +29960,20 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   appendWorkModeSubmissionLaneToFormData(formData, turnContext?.turn_lane_id);
 
   logFinalTranscriptSentToLlm(path, trimmed || transcriptLine);
+  /* Stage 1 stabilization: emit before /infer so we can verify the work-mode
+     typed payload matches what the user typed AND the bubble (the bubble is
+     created later by commitServerUserTranscriptBubble — DOM may be null
+     here, which the helper records). request_id will be filled by
+     runInferMainPipeline; correlate by turn_id + the next [REQ start]. */
+  logTurnTextIntegrity({
+    source: "typed",
+    raw_asr_text: null,
+    normalized_text: rawText,
+    router_input_text: trimmed,
+    backend_payload_text: transcriptLine,
+    request_id: null,
+    path: path || "work-typed",
+  });
   logComposerAttachmentsBeforeSubmit(pendingFiles, turnContext);
 
   try {
@@ -29963,6 +30214,15 @@ async function sendTextMessage() {
        pair frontend logs with backend [REQ start]/[REQ end] lines. Server
        still generates its own (returned in `request_id` on the response). */
     const _textClientRequestId = recordVeraRequestId("text", newVeraRequestId());
+    logTurnTextIntegrity({
+      source: "typed",
+      raw_asr_text: null,
+      normalized_text: text,
+      router_input_text: text,
+      backend_payload_text: text,
+      request_id: _textClientRequestId,
+      path: "typed-text",
+    });
     const res = await fetch(`${API_URL}/text`, {
       method: "POST",
       headers: {
@@ -30198,6 +30458,18 @@ async function onPttClick() {
     appendWorkModeSubmissionLaneToFormData(formData, turnContext?.turn_lane_id);
     logVoiceTranscript("final", text, { path: "ptt-browser-asr" });
     logFinalTranscriptSentToLlm("ptt-browser-asr", text);
+    /* Stage 1 stabilization: PTT browser-ASR turn integrity. `text` is the
+       SR final+interim concatenation; it is also the router input and
+       backend payload. */
+    logTurnTextIntegrity({
+      source: "browser_asr",
+      raw_asr_text: text,
+      normalized_text: text,
+      router_input_text: text,
+      backend_payload_text: inferTranscriptFromFormData(formData),
+      request_id: null,
+      path: "ptt-browser-asr",
+    });
     void (async () => {
       try {
         attachPipelineAbortSignal();
