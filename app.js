@@ -2782,6 +2782,127 @@ try {
   }
 } catch (_) {}
 
+/* =========================================================================
+ *  WORK MODE — ORIGINAL FULL-COMMAND BUBBLE PRESERVATION
+ *  (Stabilization Stage 1.5, 2026-05-27)
+ *  ---------------------------------------------------------------------
+ *  The Work Mode multi-action planner takes a compound command like
+ *  "go to panel 2 and explain the Vietnam War" and dispatches each sub
+ *  action through the existing /infer pipeline using the CLEANED segment
+ *  text ("explain the Vietnam War"). When that sub-action's server NDJSON
+ *  meta arrives, `commitServerUserTranscriptBubble` would normally
+ *  overwrite the live user bubble with the cleaned segment, dropping the
+ *  navigation half of the user's original phrasing.
+ *
+ *  This module-scoped "hold" lets the planner's caller pre-seed (or tag)
+ *  the bubble with the FULL ORIGINAL TEXT and tell
+ *  `commitServerUserTranscriptBubble` to skip any sub-action bubble
+ *  overwrite for the duration of the executor.
+ *
+ *  Strictly UI-side: nothing here changes routing, action execution,
+ *  reasoning, checklist, music, news, or close-panel behaviour. The
+ *  `[WORKMODE_COMMAND_DISPLAY_TEXT]` log helper is the matching trace.
+ * ========================================================================= */
+
+let _veraWorkModeMultiActionBubbleHold = null;
+
+function _wmHoldOriginalUserBubble(originalFullUserText) {
+  _veraWorkModeMultiActionBubbleHold = {
+    originalText: String(originalFullUserText || ""),
+    startedAt: Date.now(),
+  };
+}
+
+function _wmReleaseOriginalUserBubbleHold() {
+  _veraWorkModeMultiActionBubbleHold = null;
+}
+
+function _wmIsOriginalUserBubbleHeld() {
+  return _veraWorkModeMultiActionBubbleHold != null;
+}
+
+function _wmHeldOriginalUserBubbleText() {
+  return _veraWorkModeMultiActionBubbleHold
+    ? _veraWorkModeMultiActionBubbleHold.originalText
+    : null;
+}
+
+/** Normalize for substring-similarity comparison: lowercase, collapse non-word
+ *  chars to spaces, trim. Used to confirm that an incoming server transcript
+ *  really is a sub-segment of the original full command before suppressing
+ *  its bubble overwrite. Prevents an unrelated parallel turn from being
+ *  silently dropped on the floor if it ever slips into the hold window. */
+function _wmNormalizeForSegmentMatch(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^\w]+/g, " ")
+    .trim();
+}
+
+function _wmIncomingLooksLikeOriginalSegment(incomingText) {
+  const original = _wmHeldOriginalUserBubbleText();
+  if (!original) return false;
+  const a = _wmNormalizeForSegmentMatch(original);
+  const b = _wmNormalizeForSegmentMatch(incomingText);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.includes(b)) return true;
+  /* Lenient reverse direction so trivial planner re-stitchings still match. */
+  if (b.length >= 6 && a.includes(b.slice(0, Math.max(6, Math.floor(b.length * 0.6))))) return true;
+  return false;
+}
+
+function _workModeCommandDisplayTextEnabled() {
+  try {
+    if (typeof window !== "undefined" && window.VERA_DEBUG_WM_DISPLAY === false) return false;
+  } catch (_) {}
+  try {
+    return localStorage.getItem("VERA_DEBUG_WM_DISPLAY") !== "0";
+  } catch {
+    return true;
+  }
+}
+
+/** Emit a single `[WORKMODE_COMMAND_DISPLAY_TEXT]` line. Strictly diagnostic —
+ *  never mutates state. Wrapped in try/catch so a malformed payload can never
+ *  break a real turn. */
+function logWorkModeCommandDisplayText(fields = {}) {
+  if (!_workModeCommandDisplayTextEnabled()) return;
+  try {
+    const originalFullUserText =
+      fields.originalFullUserText != null ? String(fields.originalFullUserText) : null;
+    const renderedUserBubbleText =
+      fields.renderedUserBubbleText !== undefined
+        ? (fields.renderedUserBubbleText == null ? null : String(fields.renderedUserBubbleText))
+        : _readLatestUserBubbleText();
+    const cleanedExecutionText =
+      fields.cleanedExecutionText != null ? String(fields.cleanedExecutionText) : null;
+    const eq = (a, b) => {
+      if (a == null || b == null) return null;
+      return String(a).trim() === String(b).trim();
+    };
+    const payload = {
+      tag: "WORKMODE_COMMAND_DISPLAY_TEXT",
+      originalFullUserText,
+      cleanedExecutionText,
+      renderedUserBubbleText,
+      rendered_eq_original: eq(renderedUserBubbleText, originalFullUserText),
+      commandLooksMultiAction:
+        fields.commandLooksMultiAction != null ? Boolean(fields.commandLooksMultiAction) : null,
+      source: fields.source || null,
+      timestamp: new Date().toISOString(),
+    };
+    console.info("[WORKMODE_COMMAND_DISPLAY_TEXT]", payload);
+  } catch (e) {
+    try { console.warn("[WORKMODE_COMMAND_DISPLAY_TEXT] log failed", e); } catch (_) {}
+  }
+}
+try {
+  if (typeof window !== "undefined") {
+    window.logWorkModeCommandDisplayText = logWorkModeCommandDisplayText;
+  }
+} catch (_) {}
+
 function logInterruptTranscriptDebug(phase, payload = {}) {
   try {
     if (_veraBargeInDebug?.enabled) {
@@ -4583,6 +4704,34 @@ function addBubble(text, who, meta) {
 function commitServerUserTranscriptBubble(text, path) {
   const t = String(text ?? "").trim();
   if (!t) return;
+  /* Stage 1.5 stabilization (2026-05-27): when a Work Mode multi-action plan
+   * is mid-flight, sub-actions echo CLEANED segment text via NDJSON. The
+   * planner's caller has already shown / preserved the FULL ORIGINAL command
+   * as the user bubble. Suppress the overwrite — but only when the incoming
+   * text actually looks like a sub-segment of the original, so an unrelated
+   * turn that races into the hold window is still rendered normally. */
+  if (_wmIsOriginalUserBubbleHeld() && _wmIncomingLooksLikeOriginalSegment(t)) {
+    try {
+      logWorkModeCommandDisplayText({
+        originalFullUserText: _wmHeldOriginalUserBubbleText(),
+        cleanedExecutionText: t,
+        renderedUserBubbleText: _readLatestUserBubbleText(),
+        commandLooksMultiAction: true,
+        source: `commitServerUserTranscriptBubble:${path || "unknown"}:suppressed`,
+      });
+    } catch (_) {}
+    /* Detach the live-partial ref so any later non-suppressed write does not
+     * try to overwrite the preserved original bubble. */
+    try { mainBrowserLiveBubble = null; } catch (_) {}
+    /* Still update the lane-guard mirror so backend lane decisions match the
+     * sub-action's cleaned text (existing behavior — do not change). */
+    try {
+      if (typeof window !== "undefined") {
+        window.__veraLastInferUserTextForLaneGuard = t;
+      }
+    } catch (_) {}
+    return;
+  }
   const live = mainBrowserLiveBubble;
   if (live?.isConnected) {
     live.textContent = t;
@@ -29459,6 +29608,68 @@ async function maybeRunWorkModeMultiActionPlanner(text, opts = {}) {
 
   if (!plan || !Array.isArray(plan.actions) || plan.actions.length <= 1) return false;
 
+  /* Preserve the original full-command bubble BEFORE the executor runs.
+   * For voice turns, `finalizeMainBrowserTranscript` (and friends) have
+   * already mounted a live partial bubble showing the full original text.
+   * We tag that row if it still matches; otherwise create a fresh bubble.
+   * The hold flag prevents each sub-action's cleaned segment text from
+   * overwriting the bubble via `commitServerUserTranscriptBubble`. */
+  const originalFullUserText = trimmed;
+  let bubbleAlreadyMatched = false;
+  try {
+    const latestBubbleText = _readLatestUserBubbleText();
+    if (
+      latestBubbleText
+      && _wmNormalizeForSegmentMatch(latestBubbleText) === _wmNormalizeForSegmentMatch(originalFullUserText)
+    ) {
+      bubbleAlreadyMatched = true;
+      try {
+        const conv = document.getElementById("conversation")
+          || document.getElementById("bmo-conversation");
+        const rows = conv?.querySelectorAll(".message-row.user");
+        if (rows && rows.length) {
+          const row = rows[rows.length - 1];
+          if (row instanceof HTMLElement) {
+            row.dataset.veraWorkModePreservedOriginal = "1";
+            const b = row.querySelector(".bubble");
+            if (b instanceof HTMLElement) {
+              try { b.dataset.originalFullUserText = originalFullUserText; } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  if (!bubbleAlreadyMatched) {
+    try {
+      ensureChatStartedLayout();
+      const b = addBubble(originalFullUserText, "user", {
+        path: `wm-multi-action-original-${opts.isVoice ? "voice" : "typed"}`,
+      });
+      if (b) {
+        const row = b.closest(".message-row");
+        if (row instanceof HTMLElement) row.dataset.veraWorkModePreservedOriginal = "1";
+        try { b.dataset.originalFullUserText = originalFullUserText; } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  try {
+    logWorkModeCommandDisplayText({
+      originalFullUserText,
+      cleanedExecutionText: Array.isArray(plan.actions)
+        ? plan.actions
+            .map((a) => String(a?.payload?.prompt || a?.segmentText || "").trim())
+            .filter(Boolean)
+            .join(" | ") || null
+        : null,
+      renderedUserBubbleText: _readLatestUserBubbleText(),
+      commandLooksMultiAction: true,
+      source: `wm-multi-action-pre-execute:${opts.isVoice ? "voice" : "typed"}`,
+    });
+  } catch (_) {}
+
+  _wmHoldOriginalUserBubble(originalFullUserText);
   try {
     await executeWorkModeActionPlan(plan, { source: path, isVoice: Boolean(opts.isVoice) });
     return true;
@@ -29470,6 +29681,8 @@ async function maybeRunWorkModeMultiActionPlanner(text, opts = {}) {
       is_voice: Boolean(opts.isVoice),
     });
     return true;
+  } finally {
+    _wmReleaseOriginalUserBubbleHold();
   }
 }
 
@@ -29758,6 +29971,43 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     });
 
     if (plan && Array.isArray(plan.actions) && plan.actions.length > 1) {
+      /* Preserve the original full-command bubble BEFORE the executor runs.
+       * For typed Work Mode turns, the bubble normally appears only after
+       * the server NDJSON echoes a transcript — pre-create one here showing
+       * the FULL ORIGINAL text. The hold flag prevents each sub-action's
+       * cleaned segment text from overwriting it. */
+      const originalFullUserText = trimmed;
+      let originalBubble = null;
+      try {
+        ensureChatStartedLayout();
+        originalBubble = addBubble(originalFullUserText, "user", {
+          path: "wm-multi-action-original-typed",
+        });
+        if (originalBubble) {
+          const row = originalBubble.closest(".message-row");
+          if (row instanceof HTMLElement) {
+            row.dataset.veraWorkModePreservedOriginal = "1";
+          }
+          try { originalBubble.dataset.originalFullUserText = originalFullUserText; } catch (_) {}
+        }
+      } catch (_) {}
+
+      try {
+        logWorkModeCommandDisplayText({
+          originalFullUserText,
+          cleanedExecutionText: Array.isArray(plan.actions)
+            ? plan.actions
+                .map((a) => String(a?.payload?.prompt || a?.segmentText || "").trim())
+                .filter(Boolean)
+                .join(" | ") || null
+            : null,
+          renderedUserBubbleText: originalBubble?.textContent ?? _readLatestUserBubbleText(),
+          commandLooksMultiAction: true,
+          source: "wm-multi-action-pre-execute-typed",
+        });
+      } catch (_) {}
+
+      _wmHoldOriginalUserBubble(originalFullUserText);
       try {
         await executeWorkModeActionPlan(plan, { source: path });
       } catch (e) {
@@ -29765,6 +30015,8 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
           tag: "executor_exception",
           error: String(e?.message || e || "").slice(0, 200),
         });
+      } finally {
+        _wmReleaseOriginalUserBubbleHold();
       }
       return;
     }
