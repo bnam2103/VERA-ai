@@ -521,6 +521,11 @@ try {
 function addReasoningTab(opts) {
   const opts_ = opts && typeof opts === "object" ? opts : {};
   const source = String(opts_.source || "ui_plus_button");
+  try {
+    console.info("[open_panel_route_called] " + JSON.stringify({
+      source,
+    }));
+  } catch (_) {}
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return null;
   const panelsBefore = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
@@ -1162,18 +1167,49 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
   renderReasoningTabStrip();
   const renderTabsCalled = true;
   try {
+    console.info("[render_tabs_called] " + JSON.stringify({
+      source: reason,
+      active_panel_before: activeBefore?.laneId || null,
+      closed_panel_ids: closedLaneIds,
+      panel_count_after_refill: panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length,
+    }));
+  } catch (_) {}
+  try {
     persistReasoningTabsState();
   } catch (_) {}
 
-  const afterOrder = getReasoningPanelOrder();
-  const activeAfter = afterOrder.find((p) => p.isActive) || null;
+  let afterOrder = getReasoningPanelOrder();
+  let activeAfter = afterOrder.find((p) => p.isActive) || null;
   let renderActivePanelCalled = false;
   if (activeAfter && Number.isFinite(Number(activeAfter.tabIndex))) {
     try {
       setFocusedWorkModeLaneFromIndex(Number(activeAfter.tabIndex));
+      /* Mirror the working open/switch lifecycle: `activateReasoningTab`
+         is the central path that reconciles active DOM class, focused lane,
+         tab strip render, cancel-button state, and select diagnostics. Close
+         used to manually toggle/focus only, which could leave the visible tab
+         strip stale until the next click in some browsers. */
+      if (typeof activateReasoningTab === "function") {
+        activateReasoningTab(Number(activeAfter.tabIndex), {
+          resolvedFrom: "close_core_reconcile",
+          requestedIndex: activeAfter.visualIndex,
+          commandText: userText,
+        });
+        afterOrder = getReasoningPanelOrder();
+        activeAfter = afterOrder.find((p) => p.isActive) || activeAfter;
+      }
       renderActivePanelCalled = true;
     } catch (_) {}
   }
+  try {
+    console.info("[render_active_panel_called] " + JSON.stringify({
+      source: reason,
+      called: renderActivePanelCalled,
+      active_panel_before: activeBefore?.laneId || null,
+      active_panel_after: activeAfter?.laneId || null,
+      active_tab_index_after: activeAfter?.tabIndex ?? null,
+    }));
+  } catch (_) {}
   const registryAfterClose = snapshotReasoningLaneRegistryForDebug([
     ...closedLaneIds,
     ...createdPanelIds,

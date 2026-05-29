@@ -9189,6 +9189,8 @@ function executeCloseReasoningPanelsCommand(parsed, opts = {}) {
 /* Try to handle a voice/text command client-side. Returns true when handled. */
 function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   if (!text) return false;
+  const source = opts.reason || "client_shortcut";
+  const inputSource = opts && opts.isVoice ? "voice" : "typed";
   /* [typed_close_panel_route / voice_close_panel_route] PART 3+4+9: log
      entry to the shortcut for every typed/voice attempt, including the
      gate state so we can see WHY a close didn't fire (e.g. not in Work
@@ -9196,30 +9198,57 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
      is voice-vs-typed via opts.isVoice. */
   const _gateWorkMode = (() => { try { return Boolean(isVeraWorkModeOn()); } catch (_) { return null; } })();
   const _gateModePrefix = (() => { try { return appModePrefix(); } catch (_) { return null; } })();
-  if (!_gateWorkMode || _gateModePrefix !== "vera") {
+  const order = (() => { try { return getReasoningPanelOrder(); } catch (_) { return []; } })();
+  const parsed = parseCloseReasoningPanelsCommand(text, order.length);
+  const closePanelIntentDetected =
+    parsed?.intent === "close_reasoning_panels" ||
+    parsed?.intent === "reopen_last_reasoning_panel";
+  const finalRoute = closePanelIntentDetected ? "local_app_action" : "not_close_panel";
+  const gatePassed = Boolean(_gateWorkMode && _gateModePrefix === "vera");
+  const hasReasoningPanelDom = order.length > 0;
+  if (closePanelIntentDetected) {
+    try {
+      console.info("[close_panel_route_called] " + JSON.stringify({
+        raw_text: String(text || ""),
+        input_source: inputSource,
+        source,
+        finalRoute,
+      }));
+    } catch (_) {}
+  }
+  /* Mirror open-panel robustness: the close command is a local UI action if
+     reasoning panels are present. Do not let stale mode/app-prefix state make
+     a detected close fall through into Work Mode reasoning generation. */
+  if (!gatePassed && (!closePanelIntentDetected || !hasReasoningPanelDom)) {
     try {
       console.info(
         ((opts && opts.isVoice) ? "[voice_close_panel_route] " : "[typed_close_panel_route] ") +
         JSON.stringify({
           text_preview: String(text).slice(0, 80),
-          source: opts.reason || "client_shortcut",
+          source,
           gate_work_mode_on: _gateWorkMode,
           gate_mode_prefix: _gateModePrefix,
           gate_passed: false,
+          closePanelIntentDetected,
+          finalRoute,
+          panel_count_before: order.length,
           reason_skipped: "not_in_vera_work_mode",
         })
       );
     } catch (_) {}
+    if (closePanelIntentDetected) {
+      try {
+        console.info("[route_continued_after_close] " + JSON.stringify({
+          raw_text: String(text || ""),
+          input_source: inputSource,
+          source,
+          closePanelIntentDetected,
+          reason: "no_reasoning_panels_present",
+        }));
+      } catch (_) {}
+    }
     return false;
   }
-  const order = getReasoningPanelOrder();
-  const parsed = parseCloseReasoningPanelsCommand(text, order.length);
-  const source = opts.reason || "client_shortcut";
-  const closePanelIntentDetected =
-    parsed?.intent === "close_reasoning_panels" ||
-    parsed?.intent === "reopen_last_reasoning_panel";
-  const finalRoute = closePanelIntentDetected ? "local_app_action" : "not_close_panel";
-  const inputSource = opts && opts.isVoice ? "voice" : "typed";
   try {
     console.info(
       (opts && opts.isVoice ? "[voice_close_panel_route] " : "[typed_close_panel_route] ") +
@@ -9228,7 +9257,8 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
         text_preview: String(text).slice(0, 80),
         input_source: inputSource,
         source,
-        gate_passed: true,
+        gate_passed: gatePassed,
+        gate_overridden_for_local_close: !gatePassed && closePanelIntentDetected && hasReasoningPanelDom,
         closePanelIntentDetected,
         intent_detected: parsed?.intent || null,
         finalRoute,
@@ -9254,6 +9284,15 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
         prev_lock: _peekReasoningCloseLock(),
         latest_user_text: String(text || "").slice(0, 200),
       });
+      try {
+        console.info("[close_panel_handled_return_value] " + JSON.stringify({
+          raw_text: String(text || ""),
+          input_source: inputSource,
+          source,
+          handled: true,
+          reason: "dedup_lock_active_reopen",
+        }));
+      } catch (_) {}
       return true;
     }
     const lifecycle = finalizeReasoningCloseVoiceUserTurn(text, {
@@ -9275,6 +9314,15 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
         lifecycle,
         resumeListeningAfter: true,
       });
+      try {
+        console.info("[close_panel_handled_return_value] " + JSON.stringify({
+          raw_text: String(text || ""),
+          input_source: inputSource,
+          source,
+          handled: true,
+          reason: "reopen_success",
+        }));
+      } catch (_) {}
       return true;
     }
     if (r.failureReason === "stack_empty") {
@@ -9288,12 +9336,32 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
         lifecycle,
         resumeListeningAfter: true,
       });
+      try {
+        console.info("[close_panel_handled_return_value] " + JSON.stringify({
+          raw_text: String(text || ""),
+          input_source: inputSource,
+          source,
+          handled: true,
+          reason: "reopen_stack_empty",
+        }));
+      } catch (_) {}
       return true;
     }
+    try {
+      console.info("[route_continued_after_close] " + JSON.stringify({
+        raw_text: String(text || ""),
+        input_source: inputSource,
+        source,
+        closePanelIntentDetected: true,
+        reason: "reopen_failed_unhandled",
+      }));
+    } catch (_) {}
     return false;
   }
 
-  if (parsed.intent !== "close_reasoning_panels") return false;
+  if (parsed.intent !== "close_reasoning_panels") {
+    return false;
+  }
 
   /* PART 2: per-turn lock. If we already handled a close action in the
      same user turn (from an earlier ASR interrupt finalize, e.g.), do not
@@ -9320,6 +9388,15 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
       parsed_close_scope: parsed.closeScope,
       parsed_indices: parsed.indices || [],
     });
+    try {
+      console.info("[close_panel_handled_return_value] " + JSON.stringify({
+        raw_text: String(text || ""),
+        input_source: inputSource,
+        source,
+        handled: true,
+        reason: "dedup_lock_active_close",
+      }));
+    } catch (_) {}
     return true;
   }
 
@@ -9376,6 +9453,16 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
     lifecycle,
     resumeListeningAfter: true,
   });
+  try {
+    console.info("[close_panel_handled_return_value] " + JSON.stringify({
+      raw_text: String(text || ""),
+      input_source: inputSource,
+      source,
+      handled: true,
+      close_completed: Boolean(exec?.ok),
+      confirmation: String(reply || ""),
+    }));
+  } catch (_) {}
   return true;
 }
 
@@ -25004,6 +25091,16 @@ async function sendTextMessage() {
     if (typeof classifyVeraTurnRoute === "function" && typeof logNewsRouterRouteFrontend === "function") {
       const _veraTurnRouteClassification = classifyVeraTurnRoute(text);
       logNewsRouterRouteFrontend(text, _veraTurnRouteClassification);
+    }
+  } catch (_) {}
+  // 2026-05-28 PART 1 — emit the info-tool router classification too. The
+  // backend is the authoritative router; this is purely instrumentation so
+  // the browser console shows our intended dispatch side by side with the
+  // backend's matching [info_tool_route] line.
+  try {
+    if (typeof classifyInfoTool === "function" && typeof logInfoToolRouteFrontend === "function") {
+      const _infoToolClassification = classifyInfoTool(text);
+      logInfoToolRouteFrontend(text, _infoToolClassification);
     }
   } catch (_) {}
   // Show "Searching news…" immediately for likely Serper-backed requests.

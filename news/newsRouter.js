@@ -659,6 +659,183 @@ try {
   window.logNewsRouterRouteFrontend = logNewsRouterRouteFrontend;
 } catch (_) {}
 
+/* ============================================================================
+ * 2026-05-28 — beta info-tool router (frontend mirror).
+ *
+ * `classifyInfoTool` returns the same shape the backend's
+ * `app.classify_info_tool` returns, so the browser console gets an
+ * `[info_tool_route]` log line on every typed/voice turn that lines up
+ * with the backend log. The backend is the authoritative router; this
+ * function is purely instrumentation + a hook for future frontend pending
+ * bubbles ("searching the web…").
+ *
+ * Schema:
+ *   {
+ *     route, tool, query, entities[], metric, timeframe,
+ *     required_context[], confidence, reason
+ *   }
+ *
+ * Routes mirror the backend enum verbatim:
+ *   time_tool | weather_tool | finance_quote_tool | finance_search_tool |
+ *   news_search_tool | general_web_search_tool | llm_only |
+ *   followup_llm | followup_search | clarification_needed | uncertain
+ * ========================================================================== */
+
+const _INFO_TOOL_TIME_RE = /\b(?:what(?:'s|s|\s+is)?|whats|tell\s+me|current|do\s+you\s+know)\b[^?]*?\b(?:time|hour|clock)\b/i;
+const _INFO_TOOL_DATE_RE = /\b(?:what(?:'s|s|\s+is)?|whats|tell\s+me|today(?:'s|s)?)\b[^?]*?\b(?:day|date)\b(?!\s+(?:of\s+the\s+week\s+did|that))/i;
+const _INFO_TOOL_WEATHER_RE = /\b(?:weather|forecast|temperature|temp|raining|rain|snow(?:ing)?|sunny|cloudy|windy|humid(?:ity)?|how(?:'s|s|\s+is)?\s+the\s+weather)\b/i;
+const _INFO_TOOL_FINANCE_QUOTE_RE = /\b(?:stock\s+price|share\s+price|price\s+of|quote\s+for|trading\s+at|market\s+cap|how\s+much\s+is|how(?:'s|s|\s+is)\s+(?:[a-z]+\s+)?stock|how(?:'s|s|\s+is)\s+(?:[a-z]+\s+)?doing\s+today)\b/i;
+const _INFO_TOOL_FINANCE_ANALYTICS_RE = /\b(?:max(?:imum)?\s+drawdown|biggest\s+drawdown|worst\s+drawdown|drawdown|historical\s+return|annualized?\s+return|cagr|rolling\s+return|trailing\s+return|\d+[- ]?year\s+performance|\d+[- ]?year\s+return|volatility|sharpe|sortino|beta|alpha|year-over-year|52[-\s]?week)\b/i;
+const _INFO_TOOL_SPORTS_TEAM_RE = /\b(?:lakers|clippers|warriors|celtics|knicks|heat|bulls|spurs|nets|sixers|76ers|raptors|bucks|mavericks|nuggets|suns|kings|pelicans|jazz|wizards|hawks|hornets|magic|grizzlies|thunder|rockets|timberwolves|trail\s*blazers|pacers|pistons|cavaliers|cavs|yankees|red\s*sox|dodgers|giants|cubs|astros|mets|braves|phillies|orioles|nationals|cardinals|brewers|padres|angels|royals|tigers|chiefs|patriots|eagles|cowboys|49ers|niners|packers|bears|bills|steelers|ravens|broncos|raiders|chargers|jets|saints|falcons|panthers|buccaneers|seahawks|rams|vikings|lions|liverpool|arsenal|chelsea|manchester|man\s+city|man\s+utd|barcelona|real\s+madrid|psg|bayern|juventus|inter|milan)\b/i;
+const _INFO_TOOL_SPORTS_VERB_RE = /\b(?:win|won|lose|lost|beat|beating|score|scored|game|games|match|matches|play(?:ing|ed)?|tonight|last\s+night|yesterday)\b/i;
+const _INFO_TOOL_SHOPPING_RE = /\b(?:best|top|cheap(?:est)?|good|recommended)\s+[a-z0-9\- ]{2,40}\s+(?:under|below|less\s+than|for\s+under)\s*\$?\s*\d|\bbest\s+[a-z0-9\- ]{2,40}\s+(?:for|to|in)\s+[a-z0-9\- ]{2,40}|\b(?:reviews?\s+of|reviews?\s+for|review\s+of)\b|\bcompare\s+[a-z0-9\- ]{1,30}\s+(?:vs|versus|and|to)\s+[a-z0-9\- ]{1,30}|\b[a-z0-9\- ]{1,20}\s+(?:vs|versus)\s+[a-z0-9\- ]{1,20}\b/i;
+const _INFO_TOOL_NEAR_ME_RE = /\b(?:near\s+me|nearby|around\s+here|around\s+me|close\s+to\s+me|what(?:'s|s)\s+open\s+(?:near|nearby|around))\b/i;
+const _INFO_TOOL_VENUE_RE = /\b(?:coffee\s+shop|coffee\s+shops|cafe|cafes|caf[eé]s?|restaurant|restaurants|gym|gyms|bar|bars|pub|pubs|gas\s+station|gas\s+stations|grocery|supermarket|pharmacy|pharmacies|atm|atms|hotel|hotels|park|parks|hospital|hospitals|library|libraries|bookstore|bookstores)\b/i;
+const _INFO_TOOL_SHOW_RE = /\b(?:how\s+many\s+(?:episodes|seasons|chapters|volumes)|what\s+season|when\s+does\s+(?:season|episode)|release\s+date|release\s+dates?\s+of)\b/i;
+const _INFO_TOOL_EXPLICIT_NEWS_RE = /\b(?:tell\s+me\s+(?:the\s+)?news|what(?:'s|s)?\s+(?:the\s+)?(?:latest\s+)?news|breaking\s+news|today(?:'s|s)?\s+headlines|news\s+about|any\s+(?:news|updates?)\s+(?:on|about)|latest\s+(?:news\s+)?(?:on|about)|any\s+(?:news|updates?)\b|show\s+me\s+(?:the\s+)?news|headlines)\b/i;
+const _INFO_TOOL_PRONOUN_RE = /\b(?:he|she|they|him|her|them|his|hers|their|that|this|those|these|after\s+that|then|there|right\s+after)\b/i;
+const _INFO_TOOL_FRESH_FOLLOWUP_RE = /\b(?:any\s+updates?|what(?:'s|s)?\s+the\s+latest|latest\s+(?:on|with|about)|who\s+else|what(?:'s|s)?\s+(?:next|after\s+that)|when\s+exactly|can\s+you\s+verify|verify\s+that|what\s+does\s+(?:reuters|bloomberg|ap|the\s+(?:new\s+york\s+)?times|cnn|bbc|nbc|cnbc|wsj|the\s+wall\s+street\s+journal|wapo)\s+say|find\s+more\s+sources?|more\s+sources?)\b/i;
+
+function classifyInfoTool(text, opts = {}) {
+  const raw = String(text || "").trim();
+  const locationAvailable = Boolean(opts && opts.locationAvailable);
+  const recentNewsCtx = opts && opts.recentNewsContext;
+  const hasCtx = Boolean(recentNewsCtx && typeof recentNewsCtx === "object" && Object.keys(recentNewsCtx).length);
+  const out = {
+    route: "uncertain",
+    tool: "none",
+    query: raw,
+    entities: [],
+    metric: null,
+    timeframe: null,
+    required_context: null,
+    confidence: 0.0,
+    reason: "",
+  };
+  if (!raw) {
+    out.reason = "empty_text";
+    return out;
+  }
+  const low = raw.toLowerCase();
+
+  /* Personal/emotional — never search. */
+  if (_NEWS_ROUTER_PERSONAL_NEWS_RE.test(low) || _NEWS_ROUTER_PERSONAL_GRIEF_RE.test(low)) {
+    out.route = "llm_only";
+    out.confidence = 0.95;
+    out.reason = "personal_or_emotional_news_statement";
+    return out;
+  }
+  /* Time / date — utility beats news. */
+  if (_INFO_TOOL_TIME_RE.test(raw)) {
+    out.route = "time_tool"; out.tool = "time"; out.confidence = 0.95;
+    out.reason = "explicit_time_question"; return out;
+  }
+  if (_INFO_TOOL_DATE_RE.test(raw)) {
+    out.route = "time_tool"; out.tool = "time"; out.confidence = 0.9;
+    out.reason = "explicit_date_question"; return out;
+  }
+  /* Weather. */
+  if (_INFO_TOOL_WEATHER_RE.test(raw)) {
+    out.route = "weather_tool"; out.tool = "weather"; out.confidence = 0.95;
+    out.reason = "explicit_weather_question";
+    /* If no location is named or available, mark clarification context. */
+    const hasInCity = /\b(?:in|around|near)\s+(?:the\s+)?[A-Z][a-zA-Z]+/.test(raw);
+    if (!hasInCity && !locationAvailable) {
+      out.required_context = ["location"];
+    }
+    return out;
+  }
+  /* Historical/educational. */
+  if (
+    !_NEWS_ROUTER_HIST_EDU_NEWS_OVERRIDE_RE.test(low)
+    && _NEWS_ROUTER_HIST_EDU_TOPIC_RE.test(low)
+  ) {
+    out.route = "llm_only"; out.confidence = 0.9;
+    out.reason = "historical_or_educational_explanation"; return out;
+  }
+  /* Finance — quote vs analytics. */
+  if (_INFO_TOOL_FINANCE_QUOTE_RE.test(low) && !_INFO_TOOL_FINANCE_ANALYTICS_RE.test(low)) {
+    out.route = "finance_quote_tool"; out.tool = "finance_quote"; out.confidence = 0.9;
+    out.reason = "explicit_finance_quote_request"; return out;
+  }
+  if (_INFO_TOOL_FINANCE_ANALYTICS_RE.test(low)) {
+    out.route = "finance_search_tool"; out.tool = "web_search"; out.confidence = 0.85;
+    out.reason = "finance_historical_or_analytics_question"; return out;
+  }
+  /* Explicit news. */
+  if (_INFO_TOOL_EXPLICIT_NEWS_RE.test(low)) {
+    out.route = "news_search_tool"; out.tool = "news"; out.confidence = 0.9;
+    out.reason = "explicit_news_request"; return out;
+  }
+  /* Sports. */
+  if (_INFO_TOOL_SPORTS_TEAM_RE.test(low) && _INFO_TOOL_SPORTS_VERB_RE.test(low)) {
+    out.route = "general_web_search_tool"; out.tool = "web_search"; out.confidence = 0.85;
+    out.reason = "sports_team_question_web_search_fallback"; return out;
+  }
+  /* Shopping / recommendation. */
+  if (_INFO_TOOL_SHOPPING_RE.test(low)) {
+    out.route = "general_web_search_tool"; out.tool = "web_search"; out.confidence = 0.85;
+    out.reason = "shopping_or_recommendation_web_search"; return out;
+  }
+  /* Show / episode / factoid. */
+  if (_INFO_TOOL_SHOW_RE.test(low)) {
+    out.route = "general_web_search_tool"; out.tool = "web_search"; out.confidence = 0.8;
+    out.reason = "show_or_episode_question_web_search"; return out;
+  }
+  /* Local — venue + near-me without location → clarification. */
+  if (_INFO_TOOL_VENUE_RE.test(low)) {
+    const nearMe = _INFO_TOOL_NEAR_ME_RE.test(low);
+    const hasInCity = /\b(?:in|around|near)\s+(?:the\s+)?[A-Z][a-zA-Z]+/.test(raw);
+    if (nearMe && !hasInCity && !locationAvailable) {
+      out.route = "clarification_needed"; out.confidence = 0.9;
+      out.reason = "local_venue_query_missing_location";
+      out.required_context = ["location"];
+      return out;
+    }
+    out.route = "general_web_search_tool"; out.tool = "web_search"; out.confidence = 0.85;
+    out.reason = "local_venue_query_web_search"; return out;
+  }
+  /* Follow-ups when ctx exists. */
+  const pronounLead = _INFO_TOOL_PRONOUN_RE.test(low);
+  const freshMarker = _INFO_TOOL_FRESH_FOLLOWUP_RE.test(low);
+  if (hasCtx && pronounLead) {
+    if (freshMarker) {
+      out.route = "followup_search"; out.tool = "news"; out.confidence = 0.75;
+      out.reason = "fresh_source_followup_with_pronoun"; return out;
+    }
+    out.route = "followup_llm"; out.confidence = 0.8;
+    out.reason = "interpretive_pronoun_followup"; return out;
+  }
+  /* Default: let the legacy pipeline decide. */
+  out.reason = "no_confident_pick_falls_through";
+  return out;
+}
+
+function logInfoToolRouteFrontend(text, classification) {
+  try {
+    const c = classification || {};
+    console.info("[info_tool_route] " + JSON.stringify({
+      side: "frontend",
+      raw_user_text: String(text || "").slice(0, 200),
+      selected_route: String(c.route || ""),
+      selected_tool: String(c.tool || ""),
+      query: String(c.query || "").slice(0, 200),
+      entities: Array.isArray(c.entities) ? c.entities.slice(0, 8) : [],
+      metric: c.metric || null,
+      timeframe: c.timeframe || null,
+      required_context: Array.isArray(c.required_context) ? c.required_context : [],
+      clarification_needed: c.route === "clarification_needed",
+      confidence: Number(c.confidence || 0),
+      reason: String(c.reason || ""),
+    }));
+  } catch (_) {}
+}
+
+try {
+  window.classifyInfoTool = classifyInfoTool;
+  window.logInfoToolRouteFrontend = logInfoToolRouteFrontend;
+} catch (_) {}
+
 /* =========================
    STAGE 10 (additive): read-only debug accessor
 ========================= */
