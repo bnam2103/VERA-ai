@@ -2924,7 +2924,138 @@ document.addEventListener("click", () => {
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
-<script src="app.js?v=74"></script>
+<!-- utils/ids.js must load BEFORE app.js — defines session + request id helpers
+     that app.js relies on at top level (extracted 2026-05-27). -->
+<script src="utils/ids.js?v=1"></script>
+<!-- utils/storage.js must also load BEFORE app.js — defines safe localStorage
+     / sessionStorage / JSON wrappers used by app.js settings + debug gates
+     (extracted 2026-05-27, Stage 2). -->
+<script src="utils/storage.js?v=1"></script>
+<!-- utils/logging.js must also load BEFORE app.js — defines pure console /
+     debug-log helpers (logInputLimitDebug, logVeraCapabilityFailure,
+     logCapabilityFallbackDebug, logBargeInLatencyDebug,
+     logInterruptTranscriptDebug, logVoiceFirstAudio, logVoiceMainReplyAudio,
+     logVoicePipe, logVoiceTranscript, logFinalTranscriptSentToLlm,
+     logTurnTextIntegrity + helpers). Extracted 2026-05-27, Stage 3. -->
+<script src="utils/logging.js?v=1"></script>
+<!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
+     and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
+     voice/interruption.js calls browserAsrPreferred() from function bodies
+     (resolved at call time via the shared classic-script global lexical
+     env). Defines getVeraAsrMode / setVeraAsrMode / decideAsrFinalizationMode
+     / chooseBestTranscript / normalizeCommandTranscript and the new
+     getAsrDebugState accessor. Extracted 2026-05-27, Stage 7. -->
+<script src="voice/asr.js?v=1"></script>
+<!-- voice/ttsQueue.js must also load BEFORE app.js — declares the main TTS
+     runtime state (mainTtsPlaybackToken, mainTtsPlaybackActive,
+     activeMainTtsBufferSources, activeNdjsonBodyReader) plus
+     registerMainTtsBufferSource / cancelMainTtsPlayback /
+     stopAllMainTtsWebAudio / playTtsUrlSequenceGapless /
+     playTtsUrlSequenceIncremental / runNdjsonTtsPlayback /
+     createTtsUrlQueue + new accessors (isMainTtsPlaying, getTtsDebugState).
+     app.js helpers (isAssistantTtsPlaying, playTtsFromApi,
+     interruptAssistantPipelineForTypedMessage, …) read and assign to those
+     bindings via the shared classic-script global lexical environment.
+     Extracted 2026-05-27, Stage 5. -->
+<script src="voice/ttsQueue.js?v=1"></script>
+<!-- voice/interruption.js must load AFTER voice/ttsQueue.js (uses
+     cancelMainTtsPlayback at call time) and BEFORE app.js so the moved
+     `let` bindings (interruptBargeInLatched, vadFastStopArmed,
+     _veraTtsCancelSource, _veraInterruptDelayTrace, _veraInterruptAttemptSeq)
+     are initialized before any app.js function body call-site reads or
+     assigns them through the shared classic-script global lexical env.
+     Defines isVeraInterruptDebugEnabled / logVeraInterruptDebug /
+     _recordInterruptTimingPoint / _logVoiceStateTransition /
+     _logTtsCancelSourceTrace / resetVadFastStopState / fastStopTtsOnVadOnly
+     / interruptSpeech / interruptTranscriptNewTtsId / new accessor
+     getInterruptionDebugState. Extracted 2026-05-27, Stage 6. -->
+<script src="voice/interruption.js?v=1"></script>
+<!-- workmode/panels.js must load AFTER voice/interruption.js (its
+     renderReasoningCloseAssistantConfirmation reaches voice-state lets
+     like processing/requestInFlight/waveState/voiceUxTurn and the TTS
+     enqueue helpers via the shared classic-script global lexical env at
+     CALL time) and BEFORE app.js (so the moved function declarations
+     and shared bindings — MIN_REASONING_PANELS, recentlyClosedReasoningPanels,
+     _lastReasoningCloseLock, createReasoningLanePanel, renderReasoningTabStrip,
+     activateReasoningTab, addReasoningTab, closeReasoningPanelsByVisualIndices,
+     closeReasoningTab, getReasoningPanelOrder, buildCloseReasoningPanelsVoiceReply,
+     isReasoningCloseVoiceSource, renderReasoningCloseAssistantConfirmation,
+     etc. — are visible to app.js callers through the shared lexical env).
+     New accessor getReasoningPanelDebugState() mirrors getTtsDebugState /
+     getInterruptionDebugState / getAsrDebugState. Extracted 2026-05-27,
+     Stage 8. -->
+<script src="workmode/panels.js?v=1"></script>
+<!-- workmode/checklist.js must load AFTER workmode/panels.js (its
+     plan-sync helpers reach reasoning-panel helpers like
+     getReasoningTabTopicLabel and getWorkModeReasoningLaneId through
+     the shared classic-script global lexical env at CALL time) and
+     BEFORE app.js (so the moved constants — WORK_CHECKLIST_STORAGE_KEY,
+     WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY, NON_CANCELABLE_AFTER_COMMIT_ACTIONS,
+     CHECKLIST_ORDINAL_WORD_MAP, CHECKLIST_* regexes,
+     WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX, WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS,
+     WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS — and function declarations —
+     readChecklistItemsFromStorage, queueWorkChecklistSyncToServer,
+     syncWorkChecklistToServerNow, flushWorkChecklistSyncBeforeCommand,
+     hydrateWorkChecklistFromServer, parseChecklistOrdinals,
+     detectChecklistActionIntent, isLikelyWorkChecklistEditIntent,
+     _looksLikeChecklistCommand, createWorkChecklistDragHandle,
+     readChecklistItemsFromStorageSafe, writeChecklistItemsToStorageSafe,
+     ensureWorkChecklistListDnD, wireWorkChecklistCompletedCollapse,
+     loadWorkChecklistItems, persistWorkChecklistToggle,
+     persistWorkChecklistUpdateText, persistWorkChecklistRemove,
+     ensureWorkChecklistTrailingEmptyOngoing,
+     insertWorkChecklistEmptyOngoingAfter,
+     pruneInteriorEmptyOngoingItems,
+     normalizeWorkChecklistLeadingPlaceholderInStorage,
+     commitNonCancelableAction, wasNonCancelableActionRecentlyCommitted,
+     logPlanSyncDebug, logSyncVoiceTurnDebug, veraDebugSyncStateSnapshot,
+     describePlanSyncActiveContext, getActivePlanSyncBlockingState,
+     scheduleSyncPlanButtonRefresh, syncWorkChecklistSyncPlanButton,
+     getLatestWorkModeReasoningMarkdown, getWorkChecklistSyncSourceCandidate,
+     buildChecklistProposalFromMarkdown, formatChecklistProposalText,
+     parseChecklistProposalText, showWorkChecklistSyncPreview,
+     hideWorkChecklistSyncPreview, applyWorkChecklistSyncPreview,
+     eraseEntireWorkChecklist, runWorkChecklistSyncFromLatestPlan,
+     flashWorkChecklistPlanHint, buildWorkChecklistHelpPlanUserMessage,
+     isWorkChecklistPlanShortcutIntent, isWorkChecklistSyncCommandIntent,
+     queueWorkChecklistRowEnterAnimation, etc. — are visible to app.js
+     callers through the shared lexical env). New accessor
+     getChecklistDebugState() mirrors getReasoningPanelDebugState /
+     getTtsDebugState / getInterruptionDebugState / getAsrDebugState.
+     Extracted 2026-05-27, Stage 9. -->
+<script src="workmode/checklist.js?v=1"></script>
+<!-- news/newsRouter.js + news/newsPanel.js must load BEFORE app.js (so the
+     moved declarations — NEWS_EVENT_CLUE_RE, NEWS_NAMED_ENTITY_RE,
+     PENDING_NEWS_STATUS_TIMEOUT_MS, PENDING_NEWS_STATUS_TEXT,
+     pendingNewsStatusBubble / pendingNewsStatusTimerId / pendingNewsStatusToken,
+     _clearPendingNewsStatusTimer, looksLikeNewsSearchRequest,
+     armPendingNewsStatusBubble, cancelPendingNewsStatusBubble,
+     failPendingNewsStatusBubble, _veraNewsPanelRenderInFlight,
+     renderNewsResultListMarkup, renderImageResultsMarkup,
+     getVideoEmbedUrl, renderVideoResultsMarkup, setActiveSidePaneTab,
+     renderMediaTabsPanel — are visible to app.js callers through the
+     shared classic-script global lexical env). Order between the two
+     news files does NOT matter (neither calls into the other); both
+     end up as bare-identifier declarations in the same global lexical
+     env. The pending-bubble + classifier (router) read app.js helpers
+     `addBubble`, `persistVeraChatState`, `VERA_SAFETY_LIMITS`, and
+     `isLikelyRequestShape` at CALL time. The panel renderer reads
+     `uiEl`, `escapeHtml`, `runFlowModeSidePaneContentCrossfade`,
+     `isVeraInterruptDebugEnabled`, and `logVeraInterruptDebug` at CALL
+     time. New accessors `getNewsRouterDebugState()` /
+     `getNewsPanelDebugState()` mirror the other stage debug accessors.
+     Extracted 2026-05-27, Stage 10. -->
+<script src="news/newsRouter.js?v=1"></script>
+<script src="news/newsPanel.js?v=1"></script>
+<script src="app.js?v=84"></script>
+<!-- debug/voiceDebug.js loads AFTER app.js — only attaches the manual
+     DevTools helpers window.veraConcurrencyDebug, window.dumpVeraVoiceState,
+     window.resetVeraVoiceRuntimeState; their function bodies reach the
+     real app.js runtime bindings (workModeReasoningAbortControllers,
+     mainTtsPlaybackActive, interruptBargeInLatched, …) through the shared
+     classic-script global lexical environment at CALL time. Extracted
+     2026-05-27, Stage 4. -->
+<script src="debug/voiceDebug.js?v=1"></script>
 </body>
 </html>
 
