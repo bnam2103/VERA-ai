@@ -4371,6 +4371,16 @@ function spotifyEntityIdFromUri(uri, entity) {
   return s.slice(p.length).split(/[?#]/)[0] || "";
 }
 
+function spotifyPlaylistIdFromAny(value) {
+  const s = String(value || "").trim();
+  if (!s) return "";
+  const uri = s.match(/^spotify:playlist:([a-zA-Z0-9]+)$/);
+  if (uri) return uri[1];
+  const url = s.match(/\/playlist\/([a-zA-Z0-9]+)/);
+  if (url) return url[1];
+  return s;
+}
+
 function spotifyRememberSearchSnapshot(prefix) {
   const el = document.getElementById(`${prefix}-spotify-results`);
   if (!el) return;
@@ -4501,6 +4511,12 @@ async function spotifyOpenPlaylistSideDetail(prefix, meta) {
   const sub = String(meta?.sub || "");
   const thumbUrl = String(meta?.thumbUrl || "").trim();
   if (!playlistId || !playlistUri) return;
+  // Treat an opened playlist detail as the current playlist context for
+  // follow-up commands like "play peak in my playlist" even before the user
+  // presses play. This is the "selected playlist context" the backend sees
+  // in buildClientContextSnapshot().
+  window.__veraSpotifyActivePlaylistId = spotifyPlaylistIdFromAny(playlistId || playlistUri);
+  window.__veraSpotifyActivePlaylistName = title;
 
   root.innerHTML = `<p class="spotify-results-hint">Loading tracks…</p>`;
   const fn = window.VeraSpotify?.getPlaylistTracks;
@@ -19394,6 +19410,8 @@ function applyActionPayload(data) {
           music_play_op: "play_playlist_scoped",
           playlist_match_title: best ? (best.name || best.title || "") : "",
           playlist_match_confidence: bestScore,
+          playlist_match_found: Boolean(confident),
+          playlist_match_played: Boolean(confident),
           playlist_track_played: Boolean(confident),
           playlist_track_not_found: !confident,
           request_id: data?.request_id || null
@@ -19522,6 +19540,12 @@ function applyActionPayload(data) {
             return;
           }
           const disp = hit.name || rawName;
+          window.__veraSpotifyActivePlaylistId = spotifyPlaylistIdFromAny(hit.id || hit.uri || "");
+          window.__veraSpotifyActivePlaylistName = disp;
+          musicSourceMarkPlaying("spotify", {
+            playlist_id: window.__veraSpotifyActivePlaylistId,
+            playlist_name: disp
+          });
           await playCtx(hit.uri, {
             playlist_name: disp,
             context_subtitle: `"${disp}" in my playlist`
@@ -26855,6 +26879,7 @@ window.VeraSpotify = {
     const preview = meta?.preview_url;
     const openUrl = String(meta?.open_url || spotifyUriToOpenUrl(uri) || "").trim();
     window.__veraSpotifyLast = {
+      uri: String(uri || ""),
       preview_url: preview || "",
       open_url: openUrl,
       title: meta?.title || "",
@@ -26971,6 +26996,10 @@ window.VeraSpotify = {
     const base = localBackendBase();
     const contextUri = String(playlistUri || "").trim();
     if (!contextUri) return;
+    if (contextUri.startsWith("spotify:playlist:")) {
+      window.__veraSpotifyActivePlaylistId = spotifyPlaylistIdFromAny(contextUri);
+      window.__veraSpotifyActivePlaylistName = String(meta?.playlist_name || meta?.name || "Playlist").trim();
+    }
     spotifyClearPendingSdkTrack();
 
     const st = await fetch(`${base}/api/spotify/connection-status`, {
@@ -27034,6 +27063,10 @@ window.VeraSpotify = {
     const contextUri = String(playlistUri || "").trim();
     const offsetUri = String(trackUri || "").trim();
     if (!contextUri || !offsetUri) return;
+    if (contextUri.startsWith("spotify:playlist:")) {
+      window.__veraSpotifyActivePlaylistId = spotifyPlaylistIdFromAny(contextUri);
+      window.__veraSpotifyActivePlaylistName = String(meta?.playlist_name || meta?.context_name || "Playlist").trim();
+    }
 
     const st = await fetch(`${base}/api/spotify/connection-status`, {
       credentials: "include",
