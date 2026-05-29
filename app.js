@@ -25395,15 +25395,34 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   }
 
   /* =========================
-     WORK MODE MULTI-ACTION PLANNER GATE (Stage A — typed/voice entry)
+     WORK MODE MULTI-ACTION PLANNER GATE (legacy frontend planner)
      ----------------------------------------------------------------------
-     Runs BEFORE the existing single-action shortcuts so compound requests
-     like "go to panel 2 and explain the Vietnam War" get both actions
-     dispatched. If the planner decides this is a single-action request
-     (or planner is skipped per __skipMultiActionPlanner), we fall through
-     to the normal pipeline below unchanged.
+     2026-05-29 structural route fix:
+     typed Work Mode commands now defer compound app-action planning to
+     the backend /infer planner. The older frontend planner is intentionally
+     bypassed here because it can partially recognize app actions (for
+     example checklist.remove) while missing arbitrary music.play payloads,
+     which prevents the backend from returning one aggregated multi_action
+     response. Recursive segment dispatches still pass
+     __skipMultiActionPlanner and fall through to the normal single-action
+     pipeline below.
   ========================= */
-  if (shouldUseWorkModeMultiActionPlanner(trimmed, opts)) {
+  const deferTypedCompoundPlanningToBackend =
+    !(opts && opts.__skipMultiActionPlanner === true);
+  if (deferTypedCompoundPlanningToBackend) {
+    logWorkModeMultiActionPlannerDecision({
+      tag: "frontend_planner_deferred_to_backend",
+      latest_user_text: String(trimmed || "").slice(0, 200),
+      work_mode_active:
+        typeof isVeraWorkModeOn === "function" ? isVeraWorkModeOn() : null,
+      work_mode_multi_action_planner_allowed: false,
+      work_mode_scope_reason: "typed_backend_planner_source_of_truth",
+      planner_used: false,
+      backend_input_source: "keyboard",
+      backend_typed: true,
+      path: path || null,
+    });
+  } else if (shouldUseWorkModeMultiActionPlanner(trimmed, opts)) {
     let plan = null;
     try {
       plan = planWorkModeMultiAction(trimmed, { source: path });
