@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>VERA Side Search Test</title>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      display: flex;
+      height: 100vh;
+    }
+
+    #main {
+      flex: 1;
+      padding: 24px;
+      background: #0b0f18;
+      color: #eaeaea;
+    }
+
+    #side-pane {
+      width: 40%;
+      border-left: 1px solid #222;
+      background: #000;
+    }
+
+    button {
+      padding: 10px 14px;
+      margin-right: 8px;
+      background: #1e2bff;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="main">
+    <h1>VERA Search Test</h1>
+    <p>Main page content goes here.</p>
+
+    <button id="yt">Open YouTube (Side)</button>
+    <button id="google">Open Google (Side)</button>
+  </div>
+
+  <div id="side-pane" hidden></div>
+
+  <script type="module">
+    import { openSideSearch } from "./searching.js";
+
+    document.getElementById("yt").onclick = () => {
+    openSideSearch({
+        query: "iron man jarvis ai"
+    });
+    };
+
+    document.getElementById("google").onclick = () => {
+    openSideSearch({
+        query: "VERA AI assistant"
+    });
+    };
+  </script>
+</body>
+</html>
