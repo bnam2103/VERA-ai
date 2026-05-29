@@ -21918,6 +21918,9 @@ async function finalizeMainBrowserTranscript(text) {
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
   formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
+  // 2026-05-29 — multi-action planner: voice/mic path stays SHADOW only.
+  formData.append("input_source", "continuous");
+  formData.append("typed", "0");
   formData.append("asr_mode", asrMode);
   formData.append("asr_finalization_mode", finalization.mode);
   formData.append("asr_finalization_reason", String(finalization.reason || ""));
@@ -22656,6 +22659,9 @@ async function finalizeInterruptBrowserTranscript(text) {
   formData.append("client", appModePrefix());
   formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
   formData.append("mode", "interrupt");
+  // 2026-05-29 — multi-action planner: interruptions stay SHADOW only.
+  formData.append("input_source", "interruption");
+  formData.append("typed", "0");
   /* PART 14 — hybrid barge-in: when the user opted into Hybrid and the
      pre-armed recorder captured this utterance, send the audio + browser
      transcript + request_whisper_verify=1 so the server picks the best
@@ -23713,6 +23719,9 @@ async function handleUtterance() {
       formData2.append("client", appModePrefix());
       formData2.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
       formData2.append("stream_tts", shouldStreamTts() ? "1" : "0");
+      // 2026-05-29 — multi-action planner: voice followup stays SHADOW only.
+      formData2.append("input_source", listeningMode === "ptt" ? "ptt" : "voice");
+      formData2.append("typed", "0");
       if (listeningMode === "ptt") {
         formData2.append("mode", "ptt");
       }
@@ -24873,6 +24882,18 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     source: workModeInferTurnSourceFromPath(path, hasUpload),
     hasFiles: hasUpload
   });
+  // 2026-05-29 — multi-action planner gate (typed-only).
+  // The Voice UI input box submits via /infer, so the backend's planner
+  // execution gate needs an explicit signal that this turn was typed.
+  // workModeInferTurnSourceFromPath() already classifies path strings
+  // containing "browser-asr" / "voice" / "ptt" / "asr" as "voice", so
+  // keyboard submits naturally fall through as "keyboard". When the
+  // user actually uploads a file, source="upload" — we still report
+  // input_source=keyboard so the planner can run on the typed prompt
+  // accompanying the upload.
+  const _veraInputSource = (turnContext && turnContext.source) === "voice" ? "voice" : "keyboard";
+  formData.append("input_source", _veraInputSource);
+  formData.append("typed", _veraInputSource === "keyboard" ? "1" : "0");
   appendWorkModeSubmissionLaneToFormData(formData, turnContext?.turn_lane_id);
 
   logFinalTranscriptSentToLlm(path, trimmed || transcriptLine);
@@ -25390,6 +25411,9 @@ async function onPttClick() {
     formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
     formData.append("mode", "ptt");
     formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
+    // 2026-05-29 — multi-action planner: PTT stays SHADOW only.
+    formData.append("input_source", "ptt");
+    formData.append("typed", "0");
     const turnContext = createWorkModeFrozenTurnContext({ userText: text, source: "voice" });
     appendWorkModeSubmissionLaneToFormData(formData, turnContext?.turn_lane_id);
     logVoiceTranscript("final", text, { path: "ptt-browser-asr" });
