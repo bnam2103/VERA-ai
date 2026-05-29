@@ -18567,6 +18567,91 @@ function shouldApplyWorkModeReasoningInvocation(payload) {
   return true;
 }
 
+/**
+ * Stop whichever music source is currently audible before starting a new
+ * one. Built-in `<audio>` elements and Spotify Web Playback can each be
+ * playing independently — if a "play" payload arrives while another
+ * source is active, the new track must take over instead of layering.
+ *
+ * source describes the NEW playback we're about to start:
+ *   "builtin" → free-music audio element (lo-fi, rain, noise, etc.)
+ *   "spotify" → Spotify track / album / playlist via VeraSpotify
+ *   "unknown" → caller doesn't know yet; pause everything
+ *
+ * Always safe to call: never raises, never starts new playback, only
+ * pauses what's already running.
+ */
+function stopCurrentMusicPlaybackBeforeNewPlay(source) {
+  const newSource = String(source || "unknown").toLowerCase();
+  const prefix = (typeof appModePrefix === "function") ? appModePrefix() : "vera";
+  const free = document.getElementById(`${prefix}-free-music-audio`);
+  const builtinWasPlaying = Boolean(free && !free.paused && free.currentTime > 0);
+  let spotifyWasPlaying = false;
+  try {
+    const spotifyState = window.VeraSpotify && typeof window.VeraSpotify.getPlaybackState === "function"
+      ? window.VeraSpotify.getPlaybackState()
+      : null;
+    if (spotifyState && (spotifyState.isPlaying || spotifyState.playing || spotifyState.is_playing)) {
+      spotifyWasPlaying = true;
+    } else if (window.VeraSpotify && window.VeraSpotify.lastPlaybackState) {
+      const last = window.VeraSpotify.lastPlaybackState;
+      if (last && (last.isPlaying || last.is_playing)) {
+        spotifyWasPlaying = true;
+      }
+    }
+  } catch (_) { /* getter may not exist on older builds */ }
+  if (!spotifyWasPlaying) {
+    try {
+      const elems = document.querySelectorAll("audio");
+      for (const el of elems) {
+        if (!el || el === free) continue;
+        if (!el.paused && Number(el.currentTime) > 0) {
+          spotifyWasPlaying = true;
+          break;
+        }
+      }
+    } catch (_) {}
+  }
+
+  console.info("[music_dispatch]", {
+    stop_current_music_before_new_play_called: true,
+    new_source: newSource,
+    builtin_music_was_playing: builtinWasPlaying,
+    spotify_was_playing: spotifyWasPlaying
+  });
+
+  let builtinStopped = false;
+  let spotifyStopped = false;
+  try {
+    if (free && !free.paused) {
+      free.pause();
+      builtinStopped = true;
+      if (typeof freeMusicSyncNowFromAudio === "function") freeMusicSyncNowFromAudio(prefix);
+      if (typeof spotifySyncPlayButtonUi === "function") spotifySyncPlayButtonUi(prefix);
+    }
+  } catch (err) {
+    console.warn("[music_dispatch] builtin_pause_failed", err);
+  }
+  try {
+    const pause = window.VeraSpotify && window.VeraSpotify.pausePlayback;
+    if (typeof pause === "function" && (spotifyWasPlaying || newSource === "builtin")) {
+      // Pause Spotify whenever we're switching TO built-in. When switching
+      // between Spotify tracks (play_track / play_album) Spotify itself
+      // replaces the current track on the next play call, so an explicit
+      // pause is only required when crossing the source boundary.
+      void pause();
+      spotifyStopped = true;
+    }
+  } catch (err) {
+    console.warn("[music_dispatch] spotify_pause_failed", err);
+  }
+  console.info("[music_dispatch]", {
+    new_source: newSource,
+    builtin_music_stopped: builtinStopped,
+    spotify_playback_stopped: spotifyStopped
+  });
+}
+
 const VERA_NDJSON_PAYLOAD_DEDUPE_TTL_MS = 30000;
 
 function veraNdjsonPayloadDedupeStore() {
@@ -19010,36 +19095,74 @@ function applyActionPayload(data) {
       document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
     }
     if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
+      stopCurrentMusicPlaybackBeforeNewPlay("builtin");
       void (async () => {
         const pfx = appModePrefix();
         console.info("[music_control_payload]", {
+          music_play_op: "play_builtin",
           play_builtin_called: true,
+          playback_backend: "builtin_audio",
           playlist_id: payload.playlist_id || "",
           sound_id: payload.sound_id || "",
           request_id: data?.request_id || null
         });
-        await runBuiltinVoicePlayback(pfx, {
-          playlistId: payload.playlist_id,
-          soundId: payload.sound_id
-        });
-        console.info("[music_control_payload]", {
-          playback_started: true,
-          playlist_id: payload.playlist_id || "",
-          sound_id: payload.sound_id || "",
-          request_id: data?.request_id || null
-        });
+        try {
+          await runBuiltinVoicePlayback(pfx, {
+            playlistId: payload.playlist_id,
+            soundId: payload.sound_id
+          });
+          console.info("[music_control_payload]", {
+            music_play_op: "play_builtin",
+            playback_started: true,
+            playback_backend: "builtin_audio",
+            playlist_id: payload.playlist_id || "",
+            sound_id: payload.sound_id || "",
+            request_id: data?.request_id || null
+          });
+        } catch (err) {
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_builtin",
+            playback_error: String(err && err.message || err || "unknown"),
+            playback_backend: "builtin_audio",
+            request_id: data?.request_id || null
+          });
+        }
       })();
     } else if (op === "play_track" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
+      stopCurrentMusicPlaybackBeforeNewPlay("spotify");
       const play = window.VeraSpotify?.playTrack;
+      console.info("[music_control_payload]", {
+        music_play_op: "play_track",
+        playback_backend: "spotify",
+        spotify_playtrack_available: typeof play === "function",
+        title: payload.title || "",
+        artist: payload.artist || "",
+        request_id: data?.request_id || null
+      });
       if (typeof play === "function") {
-        void play(String(payload.uri), {
+        void Promise.resolve(play(String(payload.uri), {
           title: payload.title || "",
           artist: payload.artist || "",
           preview_url: payload.preview_url || "",
           open_url: payload.open_url || ""
+        })).then(() => {
+          console.info("[music_control_payload]", {
+            music_play_op: "play_track",
+            playback_started: true,
+            playback_backend: "spotify",
+            request_id: data?.request_id || null
+          });
+        }).catch((err) => {
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_track",
+            playback_error: String(err && err.message || err || "unknown"),
+            playback_backend: "spotify",
+            request_id: data?.request_id || null
+          });
         });
       }
     } else if (op === "play_album" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
+      stopCurrentMusicPlaybackBeforeNewPlay("spotify");
       const playCtx = window.VeraSpotify?.playPlaylist;
       if (typeof playCtx === "function") {
         void (async () => {
@@ -19077,9 +19200,17 @@ function applyActionPayload(data) {
           const prefix = appModePrefix();
           const built = matchBuiltinPlaylistOrSoundNameForClient(rawName);
           if (built) {
+            stopCurrentMusicPlaybackBeforeNewPlay("builtin");
+            console.info("[music_control_payload]", {
+              music_play_op: "play_playlist_by_name",
+              playback_backend: "builtin_audio",
+              playlist_name: rawName,
+              request_id: data?.request_id || null
+            });
             await runBuiltinVoicePlayback(prefix, built);
             return;
           }
+          stopCurrentMusicPlaybackBeforeNewPlay("spotify");
           const getLists = window.VeraSpotify?.getPlaylists;
           const playCtx = window.VeraSpotify?.playPlaylist;
           const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
