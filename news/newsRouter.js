@@ -143,6 +143,35 @@ function looksLikeNewsSearchRequest(text) {
   if (/\bdo\s+you\s+know\s+(?:what|who|where|when|why|how)\s+(?:to|i|we|you|he|she|they|it|that|this|tennis|cooking|pasta|programming|coding|chess|history|math|science|people)\b/.test(raw)) return false;
   if (/\bdo\s+you\s+know\s+(?:what|who|where|when|why|how)\s+\w+\s+(?:is|are|was|were|do|does|did|can|should|means|works|tastes|feels|looks|sounds)\b/.test(raw)) return false;
 
+  // PART 2 (2026-05-28) — historical / educational / explanatory queries are
+  // NEVER news searches. Mirrors backend `_is_historical_or_educational_question`.
+  // Catches:
+  //   - "Can you explain the Vietnam War?"
+  //   - "What caused the Cold War?"
+  //   - "Tell me about Napoleon."
+  //   - "Explain the French Revolution."
+  //   - "Who founded OpenAI?" (educational, stable bg fact)
+  // Override: if the message ALSO contains "news/headlines/today/latest/
+  // breaking/release date/announce/launch/debut", let downstream rules
+  // handle it — e.g. "Latest news about the Vietnam War documentary" is
+  // legitimate news, not history.
+  const histEduNewsOverride =
+    /\b(?:news|headlines?|breaking|today|yesterday|last\s+week|recently|currently|right\s+now|just\s+(?:released|announced|launched)|latest\s+(?:on|about|update|news)|new\s+(?:episode|season|series|documentary|movie|film|book|trailer|game)|upcoming|premiere|release\s+date|announce(?:s|d|ment)|launch(?:es|ed)?|debut(?:s|ed)?)\b/.test(
+      raw
+    );
+  if (!histEduNewsOverride) {
+    const histTopicNoun =
+      /\b(?:vietnam\s+war|world\s+war\s+(?:i|ii|one|two|1|2)|world\s+wars?|cold\s+war|korean\s+war|civil\s+war|gulf\s+war|iraq\s+war|afghanistan\s+war|napoleonic\s+wars?|crimean\s+war|french\s+revolution|american\s+revolution|russian\s+revolution|industrial\s+revolution|roman\s+empire|byzantine\s+empire|ottoman\s+empire|british\s+empire|holy\s+roman\s+empire|persian\s+empire|mongol\s+empire|ming\s+dynasty|qing\s+dynasty|han\s+dynasty|tang\s+dynasty|ancient\s+(?:rome|greece|egypt|china|persia|mesopotamia|india)|medieval\s+(?:europe|england|france|japan|china)|renaissance|enlightenment|reformation|middle\s+ages|dark\s+ages|stone\s+age|bronze\s+age|iron\s+age|victorian\s+era|edwardian\s+era|elizabethan\s+era|holocaust|cuban\s+missile\s+crisis|berlin\s+wall|soviet\s+union|ussr|bolshevik\s+revolution|manhattan\s+project|slavery|abolition|civil\s+rights\s+movement|napoleon|julius\s+caesar|alexander\s+the\s+great|genghis\s+khan|cleopatra|theorem|equation|formula|theory\s+of\s+(?:relativity|evolution|gravity)|big\s+bang|black\s+hole|photosynthesis|mitosis|dna|shakespeare|odyssey|iliad|physics|chemistry|biology|calculus|algebra|geometry)\b/.test(
+        raw
+      );
+    if (histTopicNoun) return false;
+    const histEduLead =
+      /^\s*(?:can\s+you\s+|could\s+you\s+|would\s+you\s+|please\s+)?(?:explain|describe|summari[sz]e|teach\s+me\s+about|tell\s+me\s+(?:about|the\s+history\s+of|more\s+about)|give\s+me\s+(?:a\s+)?(?:summary|overview|background|brief|primer|explanation|history)\s+of|walk\s+me\s+through)\b/.test(
+        raw
+      );
+    if (histEduLead) return false;
+  }
+
   // Personal / emotional uses of the word "news" must NEVER trigger the
   // "Searching news…" placeholder. Catches phrases like:
   //   - "i got bad news"
@@ -393,6 +422,242 @@ function failPendingNewsStatusBubble(reason = "failure") {
   try { persistVeraChatState(); } catch (_) {}
   return true;
 }
+
+/* =========================
+   PART 1+14 (2026-05-28): frontend 8-category route classifier + log
+========================= */
+
+/* Classify the current user turn into one of the 8 spec categories so the
+ * frontend can emit `[news_router_route]` for log parity with the backend.
+ * The frontend does NOT execute search; this is instrumentation + the
+ * gate for the pending bubble + Work-Mode reasoning veto. The backend
+ * (`classify_current_info_intent`) is the authoritative router.
+ *
+ * Returns one of:
+ *   "personal_or_emotional"
+ *   "utility_time_weather_finance_or_app_action"
+ *   "historical_or_educational_explanation"
+ *   "explicit_news_request"
+ *   "current_fact_search"
+ *   "interpretive_followup_llm"
+ *   "fresh_or_source_followup_search"
+ *   "general_llm"
+ */
+
+/* Personal/emotional uses of the word "news" (mirrors backend
+ * `_is_personal_news_statement` + `_is_emotional_distress_statement`). */
+const _NEWS_ROUTER_PERSONAL_NEWS_RE = /\b(?:bad|sad|terrible|awful|tragic|heavy|hard|difficult|devastating|heartbreaking|grim|rough|tough|big|personal|family)\s+news\b|\bnews\s+(?:from|about)\s+(?:my|our|the|a)\s+(?:friend|family|mom|mother|dad|father|brother|sister|wife|husband|girlfriend|boyfriend|partner|parent|son|daughter|kid|baby|cousin|aunt|uncle|grandma|grandpa|grandmother|grandfather|coworker|colleague|boss|neighbor|doctor|relative)/i;
+
+const _NEWS_ROUTER_PERSONAL_GRIEF_RE = /\bnews\b[\s\S]{0,80}\b(?:passed\s+away|died|funeral|in\s+the\s+hospital|got\s+(?:hurt|hit|injured)|in\s+a\s+(?:coma|wreck|crash)|diagnosed|cancer|miscarriage|stroke|heart\s+attack)\b|\b(?:passed\s+away|died|funeral|diagnosed|miscarriage)\b[\s\S]{0,80}\bnews\b/i;
+
+/* Utility detectors (time/weather/finance/app-action). Frontend only needs
+ * to RECOGNIZE these so the route log is right — backend already dispatches
+ * them via dedicated handlers ahead of news routing. */
+const _NEWS_ROUTER_TIME_QUERY_RE = /\bwhat(?:'?s| is)?\s+(?:the\s+)?(?:time|date|day)\b|\bwhat\s+time\s+is\s+it\b|\btell\s+me\s+the\s+time\b/i;
+const _NEWS_ROUTER_WEATHER_QUERY_RE = /\b(?:weather|forecast|temperature|rain(?:ing|y)?|snow(?:ing|y)?|sunny|cloudy|humid(?:ity)?|wind(?:y)?)\b/i;
+const _NEWS_ROUTER_FINANCE_QUERY_RE = /\b(?:price\s+of|trading\s+at|stock\s+price|share\s+price|market\s+cap|earnings|dividend|p\/e|drawdown|sharpe|volatility|return\s+of|ticker)\b|\$[A-Z]{1,5}\b/i;
+const _NEWS_ROUTER_APP_ACTION_RE = /\b(?:close|open|sync|remove|set\s+(?:a\s+)?timer|set\s+(?:a\s+)?reminder|play|pause|skip|mute|unmute|volume|switch\s+to|bring\s+up|show)\s+(?:the\s+|my\s+|a\s+)?(?:panel|tab|news\s+panel|reasoning|work\s+mode|checklist|timer|reminder|item|task|playlist|music|song|track|page|view)\b/i;
+
+/* Historical/educational topic noun (mirrors backend
+ * `_HIST_EDU_TOPIC_NOUN_RE`). */
+const _NEWS_ROUTER_HIST_EDU_TOPIC_RE = /\b(?:vietnam\s+war|world\s+war\s+(?:i|ii|one|two|1|2)|cold\s+war|korean\s+war|civil\s+war|napoleonic\s+wars?|french\s+revolution|american\s+revolution|russian\s+revolution|industrial\s+revolution|roman\s+empire|byzantine\s+empire|ottoman\s+empire|british\s+empire|holy\s+roman\s+empire|persian\s+empire|mongol\s+empire|ming\s+dynasty|qing\s+dynasty|han\s+dynasty|tang\s+dynasty|ancient\s+(?:rome|greece|egypt|china|persia|mesopotamia|india)|medieval\s+(?:europe|england|france|japan|china)|renaissance|enlightenment|reformation|middle\s+ages|dark\s+ages|stone\s+age|bronze\s+age|iron\s+age|victorian\s+era|edwardian\s+era|elizabethan\s+era|holocaust|cuban\s+missile\s+crisis|berlin\s+wall|soviet\s+union|ussr|bolshevik\s+revolution|manhattan\s+project|slavery|abolition|civil\s+rights\s+movement|napoleon|julius\s+caesar|alexander\s+the\s+great|genghis\s+khan|cleopatra|theorem|equation|formula|theory\s+of\s+(?:relativity|evolution|gravity)|big\s+bang|black\s+hole|photosynthesis|mitosis|dna|shakespeare|odyssey|iliad|physics|chemistry|biology|calculus|algebra|geometry)\b/i;
+const _NEWS_ROUTER_HIST_EDU_LEAD_RE = /^\s*(?:can\s+you\s+|could\s+you\s+|would\s+you\s+|please\s+)?(?:explain|describe|summari[sz]e|teach\s+me\s+about|tell\s+me\s+(?:about|the\s+history\s+of|more\s+about)|give\s+me\s+(?:a\s+)?(?:summary|overview|background|brief|primer|explanation|history)\s+of|walk\s+me\s+through)\b/i;
+const _NEWS_ROUTER_HIST_EDU_NEWS_OVERRIDE_RE = /\b(?:news|headlines?|breaking|today|yesterday|last\s+week|recently|currently|right\s+now|just\s+(?:released|announced|launched)|latest\s+(?:on|about|update|news)|new\s+(?:episode|season|series|documentary|movie|film|book|trailer|game)|upcoming|premiere|release\s+date|announce(?:s|d|ment)|launch(?:es|ed)?|debut(?:s|ed)?)\b/i;
+
+/* Pronoun/deictic markers for follow-up classification. */
+const _NEWS_ROUTER_PRONOUN_DEICTIC_RE = /\b(?:he|she|they|him|her|them|his|hers|theirs|it|that|this|there|then|after\s+that)\b/i;
+
+/* Interpretive follow-up phrasings (PART 9). */
+const _NEWS_ROUTER_INTERPRETIVE_FOLLOWUP_RE = /\b(?:why\s+(?:was|did|is|were)|why\s+(?:he|she|they)|what\s+does\s+(?:that|this|it)\s+mean|why\s+is\s+(?:that|this|it)\s+important|is\s+(?:that|this|it)\s+(?:bad|good|important|relevant|true)|can\s+you\s+explain|what\s+was\s+the\s+reason|what\s+caused\s+(?:that|this|it))\b/i;
+
+/* Fresh/source/new-fact follow-up phrasings (PART 10). */
+const _NEWS_ROUTER_FRESH_FOLLOWUP_RE = /\b(?:any\s+updates?|what'?s\s+the\s+latest|was\s+(?:that|this|it)\s+(?:confirmed|verified)|what\s+happened\s+(?:after|next)|who\s+else\s+was\s+there|when\s+exactly|where\s+exactly|what\s+does\s+(?:reuters|bloomberg|associated\s+press|ap|cnn|bbc|nyt|new\s+york\s+times|wsj|wall\s+street\s+journal)\s+say|find\s+more\s+(?:sources?|articles?)|verify\s+(?:that|this|it)|can\s+you\s+verify)\b/i;
+
+function _newsRouterDetectNamedEntity(raw) {
+  return NEWS_NAMED_ENTITY_RE.test(raw);
+}
+
+function _newsRouterDetectQuestionShape(raw) {
+  return /^\s*(?:did|do|does|is|are|was|were|has|have|will|can|could|would|should|who|what|when|where|why|how)\b/.test(raw);
+}
+
+function _newsRouterDetectRecentMarker(raw) {
+  return /\b(?:today|tonight|yesterday|right\s+now|now|currently|recently|just\s+now|earlier|last\s+(?:week|night|month|year|hour|day)|this\s+(?:week|morning|afternoon|evening|month|year)|past\s+(?:week|month|year|24|few\s+days|two\s+weeks|14\s+days|30\s+days)|latest|newest|most\s+recent|breaking)\b/i.test(raw);
+}
+
+/* Explicit "news/headlines/articles" keyword in a request shape. Distinct
+ * from current-fact "did X happen" — that uses score_current_fact_question. */
+const _NEWS_ROUTER_EXPLICIT_NEWS_KW_RE = /\b(?:news|headlines?|articles?|stor(?:y|ies)|coverage|breaking)\b/i;
+
+/* "did/was/is <NAMED-ENTITY-OR-NOT> ... predicate" — current-fact shape.
+ * Used when there is no explicit news keyword but the user asked a yes/no
+ * factual question that VERA should verify externally. */
+function _newsRouterIsCurrentFactShape(raw) {
+  return /^\s*(?:did|do|does|is|are|was|were|has|have)\b/i.test(raw)
+      || /\b(?:do\s+you\s+know\s+if|is\s+it\s+true\s+that|was\s+it\s+confirmed|what\s+happened\s+with)\b/i.test(raw);
+}
+
+/* Question that LEADS with a pronoun ("was he", "did she", "is it",
+ * "have they"). When ctx exists this is a follow-up regardless of any
+ * later-in-sentence named entity (PART 11). */
+function _newsRouterStartsWithPronounQuestion(raw) {
+  return /^\s*(?:did|do|does|is|are|was|were|has|have|will|can|could|would|should)\s+(?:he|she|they|him|her|them|it)\b/i.test(raw)
+      || /^\s*(?:why|where|when|how|what)\s+(?:was|were|did|do|does|is|are|has|have)\s+(?:he|she|they|him|her|them|it)\b/i.test(raw)
+      || /^\s*(?:why|where|when|how|what)\s+(?:he|she|they|him|her|them|it)\b/i.test(raw);
+}
+
+function classifyVeraTurnRoute(text, opts = {}) {
+  const raw = String(text || "").trim();
+  const recentNewsCtx = opts && opts.recentNewsContext;
+  const hasCtx = Boolean(recentNewsCtx && typeof recentNewsCtx === "object" && Object.keys(recentNewsCtx).length);
+  const signals = {
+    personal_emotional_detected: false,
+    utility_query_detected: false,
+    historical_or_educational_detected: false,
+    explicit_news_request_detected: false,
+    current_fact_search_detected: false,
+    question_shape_detected: false,
+    named_entity_in_current_message: false,
+    recent_or_change_marker_detected: false,
+    pronoun_or_deictic_detected: false,
+    followup_detected: false,
+    followup_type: "none",
+    previous_news_context_available: hasCtx,
+    blocked_news_reason: "",
+  };
+  if (!raw) {
+    return { route: "general_llm", shouldSearchNews: false, shouldOpenNewsPanel: false, signals, searchQuerySource: "none", searchQueryGenerated: "" };
+  }
+  const low = raw.toLowerCase();
+
+  // 1. Personal/emotional ALWAYS wins.
+  if (_NEWS_ROUTER_PERSONAL_NEWS_RE.test(low) || _NEWS_ROUTER_PERSONAL_GRIEF_RE.test(low)) {
+    signals.personal_emotional_detected = true;
+    signals.blocked_news_reason = "personal_emotional";
+    return { route: "personal_or_emotional", shouldSearchNews: false, shouldOpenNewsPanel: false, signals, searchQuerySource: "none", searchQueryGenerated: "" };
+  }
+  // 2. Utility (time/weather/finance/app-action) beats news.
+  if (
+    _NEWS_ROUTER_TIME_QUERY_RE.test(low) ||
+    _NEWS_ROUTER_WEATHER_QUERY_RE.test(low) ||
+    _NEWS_ROUTER_FINANCE_QUERY_RE.test(low) ||
+    _NEWS_ROUTER_APP_ACTION_RE.test(low)
+  ) {
+    signals.utility_query_detected = true;
+    signals.blocked_news_reason = "utility_query";
+    return { route: "utility_time_weather_finance_or_app_action", shouldSearchNews: false, shouldOpenNewsPanel: false, signals, searchQuerySource: "none", searchQueryGenerated: "" };
+  }
+  // 3. Historical/educational explanation (unless news override).
+  // Topic noun is REQUIRED — the lead verb alone ("can you explain?",
+  // "why did he do that?") is too generic and usually maps to a follow-up
+  // over stored news context, not a history lesson. Mirrors the backend
+  // tightening in `_is_historical_or_educational_question` (2026-05-28).
+  if (!_NEWS_ROUTER_HIST_EDU_NEWS_OVERRIDE_RE.test(low)) {
+    const histTopic = _NEWS_ROUTER_HIST_EDU_TOPIC_RE.test(low);
+    if (histTopic) {
+      signals.historical_or_educational_detected = true;
+      signals.blocked_news_reason = "historical_or_educational";
+      return { route: "historical_or_educational_explanation", shouldSearchNews: false, shouldOpenNewsPanel: false, signals, searchQuerySource: "none", searchQueryGenerated: "" };
+    }
+  }
+  // Compute shared signals once.
+  const pronounOrDeictic = _NEWS_ROUTER_PRONOUN_DEICTIC_RE.test(low);
+  const startsWithPronounQ = _newsRouterStartsWithPronounQuestion(raw);
+  const hasNamedEntity = _newsRouterDetectNamedEntity(low);
+  const hasQuestionShape = _newsRouterDetectQuestionShape(low);
+  const hasRecentMarker = _newsRouterDetectRecentMarker(low);
+  const hasExplicitNewsKw = _NEWS_ROUTER_EXPLICIT_NEWS_KW_RE.test(low);
+  signals.pronoun_or_deictic_detected = pronounOrDeictic;
+  signals.named_entity_in_current_message = hasNamedEntity;
+  signals.question_shape_detected = hasQuestionShape;
+  signals.recent_or_change_marker_detected = hasRecentMarker;
+
+  // PART 11: a question whose SUBJECT is a pronoun ("was he", "why did she",
+  // "what about them") is a follow-up even if a named entity appears later
+  // as a supporting noun ("was HE part of the OPENAI team?"). The CURRENT-
+  // SUBJECT named-entity test must also see the entity early in the
+  // sentence, otherwise treat as follow-up.
+  const isStandaloneFactual = hasNamedEntity && hasQuestionShape && !startsWithPronounQ;
+
+  // 4. Follow-up classification when stored context exists.
+  // 4a. Fresh-update / source-specific follow-up: explicit "any updates",
+  //     "what does Reuters say", etc. These can fire without a pronoun.
+  if (hasCtx && _NEWS_ROUTER_FRESH_FOLLOWUP_RE.test(low) && !isStandaloneFactual) {
+    signals.followup_detected = true;
+    signals.followup_type = "fresh_update";
+    return { route: "fresh_or_source_followup_search", shouldSearchNews: true, shouldOpenNewsPanel: false, signals, searchQuerySource: "resolved_followup", searchQueryGenerated: raw };
+  }
+  // 4b. Interpretive follow-up: pronoun/deictic question over stored ctx,
+  //     and the current message is NOT a standalone factual question with
+  //     its own named-entity subject.
+  if (hasCtx && (startsWithPronounQ || (pronounOrDeictic && !isStandaloneFactual))) {
+    signals.followup_detected = true;
+    if (_NEWS_ROUTER_INTERPRETIVE_FOLLOWUP_RE.test(low)) {
+      signals.followup_type = "interpretive";
+    } else {
+      signals.followup_type = "interpretive";
+    }
+    signals.blocked_news_reason = "interpretive_followup_answer_from_stored_ctx";
+    return { route: "interpretive_followup_llm", shouldSearchNews: false, shouldOpenNewsPanel: false, signals, searchQuerySource: "none", searchQueryGenerated: "" };
+  }
+  // 5. Explicit news request: requires the literal `news/headlines/articles`
+  //    keyword in a request/info shape (covered by looksLikeNewsSearchRequest
+  //    when paired with one of those nouns). Yes/no current-fact questions
+  //    like "Did Trump go to China last week?" fall through to category 6,
+  //    NOT here — even though looksLikeNewsSearchRequest also returns true
+  //    for them, they are CURRENT-FACT-SEARCH per PART 6, not EXPLICIT-NEWS.
+  if (hasExplicitNewsKw && looksLikeNewsSearchRequest(raw)) {
+    signals.explicit_news_request_detected = true;
+    return { route: "explicit_news_request", shouldSearchNews: true, shouldOpenNewsPanel: false, signals, searchQuerySource: "current_user_text", searchQueryGenerated: raw };
+  }
+  // 6. Current fact search: yes/no factual question shape + named-entity
+  //    subject (the standalone-factual gate from PART 11 already excludes
+  //    pronoun-led follow-ups). User chose current_fact_search default for
+  //    stable named-entity questions (PART 12) so we don't gate on
+  //    hasRecentMarker — any named-entity factual question triggers.
+  if (isStandaloneFactual && _newsRouterIsCurrentFactShape(raw)) {
+    signals.current_fact_search_detected = true;
+    return { route: "current_fact_search", shouldSearchNews: true, shouldOpenNewsPanel: false, signals, searchQuerySource: "current_user_text", searchQueryGenerated: raw };
+  }
+  // 7. Fall-through: general LLM.
+  signals.blocked_news_reason = "general_chat_no_news_signal";
+  return { route: "general_llm", shouldSearchNews: false, shouldOpenNewsPanel: false, signals, searchQuerySource: "none", searchQueryGenerated: "" };
+}
+
+/* PART 14 — emit the structured route log from the frontend so it shows
+ * up in the browser DevTools console alongside the backend's matching
+ * [news_router_route] line. The two lines should agree on `route`. */
+function logNewsRouterRouteFrontend(text, classification) {
+  try {
+    const c = classification || {};
+    const s = c.signals || {};
+    console.info("[news_router_route] " + JSON.stringify({
+      side: "frontend",
+      latest_user_text: String(text || "").slice(0, 200),
+      route: c.route || "general_llm",
+      shouldSearchNews: Boolean(c.shouldSearchNews),
+      shouldOpenNewsPanel: Boolean(c.shouldOpenNewsPanel),
+      explicit_news_request_detected: Boolean(s.explicit_news_request_detected),
+      current_fact_search_detected: Boolean(s.current_fact_search_detected),
+      historical_or_educational_detected: Boolean(s.historical_or_educational_detected),
+      utility_query_detected: Boolean(s.utility_query_detected),
+      personal_emotional_detected: Boolean(s.personal_emotional_detected),
+      followup_detected: Boolean(s.followup_detected),
+      followup_type: String(s.followup_type || "none"),
+      pronoun_or_deictic_detected: Boolean(s.pronoun_or_deictic_detected),
+      named_entity_in_current_message: Boolean(s.named_entity_in_current_message),
+      previous_news_context_available: Boolean(s.previous_news_context_available),
+      search_query_generated: String(c.searchQueryGenerated || "").slice(0, 200),
+      search_query_source: String(c.searchQuerySource || "none"),
+      blocked_news_reason: String(s.blocked_news_reason || ""),
+    }));
+  } catch (_) {}
+}
+
+try {
+  window.classifyVeraTurnRoute = classifyVeraTurnRoute;
+  window.logNewsRouterRouteFrontend = logNewsRouterRouteFrontend;
+} catch (_) {}
 
 /* =========================
    STAGE 10 (additive): read-only debug accessor

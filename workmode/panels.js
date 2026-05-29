@@ -417,20 +417,162 @@ function activateReasoningTab(index, opts = {}) {
   });
 }
 
-function addReasoningTab() {
+/* =====================================================================
+   PART 1+3+5+6 (2026-05-28): "recently opened reasoning panel" tracking.
+   --------------------------------------------------------------------
+   The previous addReasoningTab() set `.is-active` on the new panel but
+   did NOT update `focusedWorkModeLaneId` (in app.js). Because
+   getActiveDomReasoningLaneId() prefers `focusedWorkModeLaneId` over the
+   DOM `.is-active` panel, the next reasoning request resolved to the
+   STALE focused lane (the panel the user was on BEFORE clicking +). So
+   "open a new panel" appeared to work visually but the next reasoning
+   request streamed into the previous panel — exactly the bug the user
+   reported.
+
+   The fix is two layers:
+   1. addReasoningTab() now also calls setFocusedWorkModeLaneFromIndex()
+      so the frozen turn-lane context (createWorkModeFrozenTurnContext →
+      getActiveDomReasoningLaneId) picks up the new panel by default.
+   2. We track `recentlyOpenedReasoningPanel` so even non-frozen code
+      paths (auto-route, lane-bucket reuse, composer-only stream) can
+      bias the next reasoning request to the freshly opened panel.
+
+   The flag is one-shot: it's consumed by the first reasoning submission
+   into the workspace, and cleared by manual tab clicks, explicit panel
+   references in the user text, or the TTL (3 min middle of the spec's
+   2-5 min window).
+   ===================================================================== */
+const RECENTLY_OPENED_REASONING_PANEL_TTL_MS = 3 * 60 * 1000;
+let recentlyOpenedReasoningPanel = null;
+/* Shape: { laneId, tabIndex, openedAt, source, consumed: false } */
+
+function setRecentlyOpenedReasoningPanel(laneId, tabIndex, source) {
+  const lid = String(laneId || "").trim();
+  const idx = Number(tabIndex);
+  if (!lid || !Number.isFinite(idx)) return;
+  recentlyOpenedReasoningPanel = {
+    laneId: lid,
+    tabIndex: idx,
+    openedAt: Date.now(),
+    source: String(source || "unknown"),
+    consumed: false,
+  };
+}
+
+function getValidRecentlyOpenedReasoningPanel() {
+  const r = recentlyOpenedReasoningPanel;
+  if (!r) return null;
+  if (r.consumed) return null;
+  if (Date.now() - r.openedAt > RECENTLY_OPENED_REASONING_PANEL_TTL_MS) return null;
+  /* Panel must still exist in the DOM (could have been closed). */
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return;
-  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
-  if (panels.length >= REASONING_TABS_MAX) return;
-  const maxIdx = panels.reduce((m, p) => Math.max(m, Number(p.dataset.tabIndex) || 0), -1);
+  if (!panelsRoot) return null;
+  const stillExists = panelsRoot.querySelector(
+    `.vera-reasoning-tab-panel[data-tab-index="${r.tabIndex}"]`
+  );
+  if (!stillExists) return null;
+  /* Lane id must still resolve to the same panel. */
+  const sameLane = String(stillExists.dataset.laneId || "").trim() === r.laneId;
+  if (!sameLane) return null;
+  return { laneId: r.laneId, tabIndex: r.tabIndex, source: r.source, openedAt: r.openedAt };
+}
+
+function consumeRecentlyOpenedReasoningPanel(reason = "consumed") {
+  const snap = getValidRecentlyOpenedReasoningPanel();
+  if (snap && recentlyOpenedReasoningPanel) {
+    recentlyOpenedReasoningPanel.consumed = true;
+    try {
+      console.info("[recently_opened_reasoning_panel_consumed] " + JSON.stringify({
+        lane_id: snap.laneId,
+        tab_index: snap.tabIndex,
+        source: snap.source,
+        reason,
+        age_ms: Date.now() - snap.openedAt,
+      }));
+    } catch (_) {}
+  }
+  return snap;
+}
+
+function clearRecentlyOpenedReasoningPanel(reason = "cleared") {
+  if (recentlyOpenedReasoningPanel) {
+    try {
+      console.info("[recently_opened_reasoning_panel_cleared] " + JSON.stringify({
+        lane_id: recentlyOpenedReasoningPanel.laneId,
+        tab_index: recentlyOpenedReasoningPanel.tabIndex,
+        source: recentlyOpenedReasoningPanel.source,
+        reason,
+        age_ms: Date.now() - recentlyOpenedReasoningPanel.openedAt,
+      }));
+    } catch (_) {}
+  }
+  recentlyOpenedReasoningPanel = null;
+}
+
+try {
+  window.getValidRecentlyOpenedReasoningPanel = getValidRecentlyOpenedReasoningPanel;
+  window.consumeRecentlyOpenedReasoningPanel = consumeRecentlyOpenedReasoningPanel;
+  window.clearRecentlyOpenedReasoningPanel = clearRecentlyOpenedReasoningPanel;
+  window.setRecentlyOpenedReasoningPanel = setRecentlyOpenedReasoningPanel;
+} catch (_) {}
+
+function addReasoningTab(opts) {
+  const opts_ = opts && typeof opts === "object" ? opts : {};
+  const source = String(opts_.source || "ui_plus_button");
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return null;
+  const panelsBefore = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  if (panelsBefore.length >= REASONING_TABS_MAX) return null;
+  const activeBeforeEl = panelsBefore.find((p) => p.classList.contains("is-active")) || null;
+  const activeBeforeLaneId = activeBeforeEl
+    ? String(activeBeforeEl.dataset.laneId || "")
+    : "";
+  const maxIdx = panelsBefore.reduce(
+    (m, p) => Math.max(m, Number(p.dataset.tabIndex) || 0),
+    -1
+  );
   const idx = maxIdx + 1;
-  panels.forEach((p) => p.classList.remove("is-active"));
+  panelsBefore.forEach((p) => p.classList.remove("is-active"));
   const panel = createReasoningLanePanel(idx, "", true, {
     laneLabel: `Panel ${idx + 1}`
   });
   panelsRoot.appendChild(panel);
   syncReasoningLaneBusySlotsAfterDomChange();
   renderReasoningTabStrip();
+
+  /* PART 1+5+6 fix — update destination state so the NEW panel becomes
+     the actual routing target, not just the visually selected tab.
+     setFocusedWorkModeLaneFromIndex lives in app.js; it's looked up at
+     call time so the cross-module reference is safe even though
+     workmode/panels.js loads before app.js. */
+  const newLaneId = String(panel.dataset.laneId || "").trim();
+  try {
+    if (typeof setFocusedWorkModeLaneFromIndex === "function") {
+      setFocusedWorkModeLaneFromIndex(idx);
+    }
+  } catch (_) {}
+
+  setRecentlyOpenedReasoningPanel(newLaneId, idx, source);
+
+  /* PART 7: structured open-panel log with before/after state so the
+     console can audit which tab was active before the open and confirm
+     the destination state updated for the new panel. */
+  try {
+    console.info("[panel_open_requested] " + JSON.stringify({
+      source,
+      new_panel_id: newLaneId,
+      new_tab_index: idx,
+      new_panel_title: String(panel.dataset.laneLabel || `Panel ${idx + 1}`),
+      active_panel_before: activeBeforeLaneId,
+      active_panel_after: newLaneId,
+      selected_panel_after: newLaneId,
+      current_reasoning_target_after: newLaneId,
+      recently_opened_panel_flag_set: true,
+      panel_count_after: panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length,
+    }));
+  } catch (_) {}
+
+  return { laneId: newLaneId, tabIndex: idx };
 }
 
 /* =========================================================================
@@ -789,6 +931,22 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
   const closeScope = String(opts_.closeScope || "specific_indices");
   const userText = String(opts_.userText || "");
 
+  /* [close_core_called] PART 9: single instrumentation point for every close,
+     regardless of entry point (UI X / typed / voice / programmatic). Lets
+     us prove the core actually ran and see panel counts before vs after. */
+  const _orderAtEntry = (() => { try { return getReasoningPanelOrder(); } catch (_) { return []; } })();
+  try {
+    console.info("[close_core_called] " + JSON.stringify({
+      source: reason,
+      close_scope: closeScope,
+      requested_visual_indices: Array.isArray(visualIndices1Based) ? visualIndices1Based.slice() : [],
+      refill_to_minimum: refillToMinimum,
+      panel_count_before: _orderAtEntry.length,
+      active_panel_id_before: _orderAtEntry.find((p) => p.isActive)?.laneId || null,
+      user_text_preview: userText.slice(0, 80),
+    }));
+  } catch (_) {}
+
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) {
     logReasoningCloseDebug({
@@ -1083,6 +1241,20 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
     reason,
   });
 
+  /* [close_core_completed] PART 9: terminal log on the success path so the
+     console clearly shows entry → completion for every close. */
+  try {
+    console.info("[close_core_completed] " + JSON.stringify({
+      source: reason,
+      ok: true,
+      closed_count: targets.length,
+      closed_titles: closedTitles,
+      created_blank_count: createdBlankCount,
+      panel_count_final: afterOrder.length,
+      active_panel_id_after: activeAfter?.laneId || null,
+    }));
+  } catch (_) {}
+
   return {
     ok: true,
     closedTitles,
@@ -1101,18 +1273,73 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
 /* Backward-compat: the existing UI close button path still calls this name.
    It now delegates to the indices-based closer with refill enabled and an
    index lookup by tabIndex (not visual index) since that's what the click
-   handler hands us. */
+   handler hands us.
+
+   2026-05-28: clicking the X used to feel like a no-op because the
+   close → refill happens in one tick and the replacement blank panel
+   takes the same visual slot, so the strip looks identical to the user.
+   The VOICE/TEXT close path renders an assistant-bubble confirmation
+   ("Closed the Vietnam War 1955-1975 panel and opened a fresh one.")
+   via buildCloseReasoningPanelsVoiceReply +
+   renderReasoningCloseAssistantConfirmation, but the X-button path
+   skipped all of that. We now mirror the same confirmation here so the
+   user SEES the close happen, AND we set the close lock so a stale
+   trailing voice command in the same turn does not double-fire. */
 function closeReasoningTab(tabIndex) {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return;
   const order = getReasoningPanelOrder();
   const target = order.find((p) => p.tabIndex === Number(tabIndex));
   if (!target) return;
-  return closeReasoningPanelsByVisualIndices([target.visualIndex], {
+  const result = closeReasoningPanelsByVisualIndices([target.visualIndex], {
     reason: "ui_close_button",
     closeScope: "current_panel",
     refillToMinimum: true,
   });
+  try {
+    if (result && result.ok) {
+      /* Synthetic "parsed" shaped like the voice/text close-by-title path
+         so buildCloseReasoningPanelsVoiceReply uses the panel's actual
+         title when available ("Closed the Vietnam War 1955-1975 panel
+         and opened a fresh one.") and falls back to "Closed this panel
+         and opened a fresh one." for blank Panel-N slots. */
+      const titleForReply = String(target.label || "").trim();
+      const isMeaningfulTitle =
+        titleForReply && !_isGenericBlankReasoningPanelLabel(titleForReply);
+      const syntheticParsed = isMeaningfulTitle
+        ? {
+            intent: "close_reasoning_panels",
+            closeScope: "by_title",
+            titleQuery: titleForReply,
+            indices: [target.visualIndex],
+          }
+        : {
+            intent: "close_reasoning_panels",
+            closeScope: "current_panel",
+            indices: [target.visualIndex],
+          };
+      const reply = buildCloseReasoningPanelsVoiceReply(result, syntheticParsed);
+      _setReasoningCloseLock({
+        scope: syntheticParsed.closeScope,
+        indices: syntheticParsed.indices,
+        confirmation: reply,
+        source: "ui_close_button",
+      });
+      renderReasoningCloseAssistantConfirmation(reply, {
+        path: "close-reasoning-panel",
+        source: "ui_close_button",
+        isVoice: false,
+        stage: "ui_close_button_confirmation",
+        closeActionCompleted: true,
+        resumeListeningAfter: false,
+      });
+    }
+  } catch (e) {
+    try {
+      console.warn("[ui_close_button_confirmation_failed]", String(e && e.message || e));
+    } catch (_) {}
+  }
+  return result;
 }
 
 /* =========================

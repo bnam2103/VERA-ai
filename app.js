@@ -9182,10 +9182,50 @@ function executeCloseReasoningPanelsCommand(parsed, opts = {}) {
 /* Try to handle a voice/text command client-side. Returns true when handled. */
 function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   if (!text) return false;
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
+  /* [typed_close_panel_route / voice_close_panel_route] PART 3+4+9: log
+     entry to the shortcut for every typed/voice attempt, including the
+     gate state so we can see WHY a close didn't fire (e.g. not in Work
+     Mode, intent not detected, parse returned a different scope). Tag
+     is voice-vs-typed via opts.isVoice. */
+  const _gateWorkMode = (() => { try { return Boolean(isVeraWorkModeOn()); } catch (_) { return null; } })();
+  const _gateModePrefix = (() => { try { return appModePrefix(); } catch (_) { return null; } })();
+  if (!_gateWorkMode || _gateModePrefix !== "vera") {
+    try {
+      console.info(
+        ((opts && opts.isVoice) ? "[voice_close_panel_route] " : "[typed_close_panel_route] ") +
+        JSON.stringify({
+          text_preview: String(text).slice(0, 80),
+          source: opts.reason || "client_shortcut",
+          gate_work_mode_on: _gateWorkMode,
+          gate_mode_prefix: _gateModePrefix,
+          gate_passed: false,
+          reason_skipped: "not_in_vera_work_mode",
+        })
+      );
+    } catch (_) {}
+    return false;
+  }
   const order = getReasoningPanelOrder();
   const parsed = parseCloseReasoningPanelsCommand(text, order.length);
   const source = opts.reason || "client_shortcut";
+  try {
+    console.info(
+      (opts && opts.isVoice ? "[voice_close_panel_route] " : "[typed_close_panel_route] ") +
+      JSON.stringify({
+        text_preview: String(text).slice(0, 80),
+        source,
+        gate_passed: true,
+        intent_detected: parsed?.intent || null,
+        action_name: parsed?.intent === "close_reasoning_panels" ? "reasoning.close_panel"
+                    : parsed?.intent === "reopen_last_reasoning_panel" ? "reasoning.reopen_last_panel"
+                    : null,
+        parsed_close_scope: parsed?.closeScope || null,
+        parsed_indices: parsed?.indices || [],
+        panel_count_before: order.length,
+        action_handler_found: typeof executeCloseReasoningPanelsCommand === "function",
+      })
+    );
+  } catch (_) {}
 
   if (parsed.intent === "reopen_last_reasoning_panel") {
     if (_hasActiveReasoningCloseLock()) {
@@ -9359,12 +9399,49 @@ function wireReasoningTabStrip() {
     if (closeBtn && closeBtn.dataset.tabIndex != null) {
       e.preventDefault();
       e.stopPropagation();
-      closeReasoningTab(Number(closeBtn.dataset.tabIndex));
+      /* [reasoning_tab_close_clicked] PART 2/9: instrument the UI X path so
+         we can see the click landed AND whether the handler resolved AND
+         whether the close completed. Tag with panel id+title at click time
+         so we can correlate with close_core_called downstream. */
+      const _tabIdxClicked = Number(closeBtn.dataset.tabIndex);
+      const _orderAtClick = (() => { try { return getReasoningPanelOrder(); } catch (_) { return []; } })();
+      const _targetAtClick = _orderAtClick.find((p) => p.tabIndex === _tabIdxClicked) || null;
+      try {
+        console.info("[reasoning_tab_close_clicked] " + JSON.stringify({
+          tab_index: _tabIdxClicked,
+          panel_id: _targetAtClick?.laneId || null,
+          panel_title: _targetAtClick?.label || null,
+          visual_index: _targetAtClick?.visualIndex || null,
+          close_handler_found: typeof closeReasoningTab === "function",
+          panel_count_before: _orderAtClick.length,
+        }));
+      } catch (_) {}
+      if (typeof closeReasoningTab !== "function") {
+        try {
+          console.error("[reasoning_tab_close_clicked] closeReasoningTab is not a function — handler not loaded");
+        } catch (_) {}
+        return;
+      }
+      closeReasoningTab(_tabIdxClicked);
       return;
     }
     const tab = e.target.closest("button.vera-reasoning-tab");
     if (tab && tab.dataset.tabIndex != null) {
-      activateReasoningTab(Number(tab.dataset.tabIndex));
+      const _clickedTabIdx = Number(tab.dataset.tabIndex);
+      /* PART 3 (2026-05-28): manual tab switch clears the
+         "recently opened" bias so subsequent reasoning requests follow
+         the user's chosen panel, not the previously-opened blank one. */
+      try {
+        if (typeof clearRecentlyOpenedReasoningPanel === "function") {
+          const _recent = (typeof getValidRecentlyOpenedReasoningPanel === "function")
+            ? getValidRecentlyOpenedReasoningPanel()
+            : null;
+          if (_recent && _recent.tabIndex !== _clickedTabIdx) {
+            clearRecentlyOpenedReasoningPanel("manual_tab_switch");
+          }
+        }
+      } catch (_) {}
+      activateReasoningTab(_clickedTabIdx);
       scheduleSyncPlanButtonRefresh(0);
     }
   });
@@ -9373,6 +9450,17 @@ function wireReasoningTabStrip() {
     if (!(panel instanceof HTMLElement)) return;
     const idx = Number(panel.dataset.tabIndex);
     if (!Number.isFinite(idx)) return;
+    /* PART 3 (2026-05-28): same as above for body-of-panel pointerdown. */
+    try {
+      if (typeof clearRecentlyOpenedReasoningPanel === "function") {
+        const _recent = (typeof getValidRecentlyOpenedReasoningPanel === "function")
+          ? getValidRecentlyOpenedReasoningPanel()
+          : null;
+        if (_recent && _recent.tabIndex !== idx) {
+          clearRecentlyOpenedReasoningPanel("manual_panel_focus");
+        }
+      }
+    } catch (_) {}
     setFocusedWorkModeLaneFromIndex(idx);
     if (!panel.classList.contains("is-active")) activateReasoningTab(idx);
     scheduleSyncPlanButtonRefresh(0);
@@ -9387,7 +9475,7 @@ function wireReasoningTabStrip() {
     const idx = getActiveReasoningLaneIndex();
     if (idx != null) setFocusedWorkModeLaneFromIndex(idx);
   });
-  addBtn?.addEventListener("click", () => addReasoningTab());
+  addBtn?.addEventListener("click", () => addReasoningTab({ source: "ui_plus_button" }));
   renderReasoningTabStrip();
   const bootActive = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active");
   if (bootActive instanceof HTMLElement) {
@@ -14838,9 +14926,145 @@ function captureReasoningPanelRoutingSnapshot(trimmed, opts = {}) {
   };
 }
 
+/* PART 7 (2026-05-28): unified "where did this reasoning request land?"
+   structured log. Called from selectLaneForWorkModeReasoningTurn AND
+   from the frozen-lane paths (maybePrepareWorkModeReasoning,
+   streamWorkModeReasoningComposer) so EVERY reasoning request emits a
+   [reasoning_destination_resolved] entry with the fields from PART 7
+   of the spec. Also consumes the recently-opened bias flag when the
+   destination matches it. */
+function _logReasoningDestinationResolved(args) {
+  const a = args && typeof args === "object" ? args : {};
+  const laneIdx = Number(a.laneIdx);
+  if (!Number.isFinite(laneIdx)) return;
+  let recentSnap = null;
+  let recentStillActive = false;
+  let recentMatched = false;
+  try {
+    if (typeof getValidRecentlyOpenedReasoningPanel === "function") {
+      recentSnap = getValidRecentlyOpenedReasoningPanel();
+    }
+  } catch (_) { recentSnap = null; }
+  if (recentSnap && Number(recentSnap.tabIndex) === laneIdx) {
+    recentMatched = true;
+    recentStillActive = true;
+    try {
+      if (typeof consumeRecentlyOpenedReasoningPanel === "function") {
+        consumeRecentlyOpenedReasoningPanel(
+          "first_reasoning_submission_" + String(a.path || "unknown")
+        );
+      }
+    } catch (_) {}
+  } else if (recentSnap) {
+    /* Reasoning landed somewhere else — flag is no longer relevant. */
+    try {
+      if (typeof clearRecentlyOpenedReasoningPanel === "function") {
+        clearRecentlyOpenedReasoningPanel("reasoning_routed_to_different_panel");
+      }
+    } catch (_) {}
+  }
+  const targetLaneId = getWorkModeReasoningLaneId(laneIdx) || "";
+  let activePanelBlank = false;
+  try {
+    const panel = document.querySelector(
+      `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${laneIdx}"]`
+    );
+    if (panel && typeof _isBlankReasoningPanelElement === "function") {
+      activePanelBlank = _isBlankReasoningPanelElement(panel);
+    }
+  } catch (_) {}
+  let resolutionReason;
+  if (recentMatched) resolutionReason = "recently_opened_active_panel";
+  else if (a.frozenLaneTaken) resolutionReason = "current_active_panel";
+  else if (a.forceActiveLane) resolutionReason = "current_active_panel";
+  else resolutionReason = "topic_related_or_new_panel";
+  try {
+    console.info("[reasoning_destination_resolved] " + JSON.stringify({
+      latest_user_text: String(a.latestUserText || "").slice(0, 240),
+      explicit_panel_reference_detected: false,
+      explicit_target_panel_id: "",
+      recently_opened_panel_id: recentSnap ? recentSnap.laneId : "",
+      recently_opened_panel_still_active: recentStillActive,
+      recently_opened_panel_source: recentSnap ? recentSnap.source : "",
+      active_panel_id: getActiveDomReasoningLaneId(),
+      selected_panel_id: getActiveDomReasoningLaneId(),
+      previous_topic_panel_id: Number.isFinite(Number(workModeLastSubstantiveLaneIdx))
+        ? (getWorkModeReasoningLaneId(Number(workModeLastSubstantiveLaneIdx)) || "")
+        : "",
+      resolved_reasoning_target_panel_id: targetLaneId,
+      resolution_reason: resolutionReason,
+      active_panel_blank: activePanelBlank,
+      old_context_override_blocked: recentMatched,
+      frozen_lane_taken: Boolean(a.frozenLaneTaken),
+      force_active_lane: Boolean(a.forceActiveLane),
+      resolved_lane_idx: laneIdx,
+      resolver_path: String(a.path || ""),
+    }));
+  } catch (_) {}
+}
+
 async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
   const t = String(trimmed || "").trim();
   const autoRoute = isWorkModeReasoningAutoRouteEnabled();
+
+  /* PART 2+3+4 (2026-05-28): freshly-opened panel bias. If the user
+     just opened a new reasoning panel (via voice/typed "open a new
+     panel" or the + button), that panel should win the next reasoning
+     request over both topic-bucket reuse and stale focused-lane reuse
+     — but only when the panel is still active, still blank, and the
+     user did not explicitly reference another panel in this turn. */
+  if (t && typeof getValidRecentlyOpenedReasoningPanel === "function") {
+    try {
+      const recent = getValidRecentlyOpenedReasoningPanel();
+      if (recent) {
+        const recentIdx = Number(recent.tabIndex);
+        const explicitTargetIdx = Number(opts.explicitTargetLaneIdx);
+        const hasExplicitTarget =
+          Number.isFinite(explicitTargetIdx) && explicitTargetIdx >= 0;
+        const recentPanelEl = document.querySelector(
+          `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${recentIdx}"]`
+        );
+        const panelIsBlank = recentPanelEl
+          ? _isBlankReasoningPanelElement(recentPanelEl)
+          : false;
+        const panelIsActive = recentPanelEl
+          ? recentPanelEl.classList.contains("is-active")
+          : false;
+        const explicitReferenceBlocks =
+          hasExplicitTarget && explicitTargetIdx !== recentIdx;
+        if (
+          Number.isFinite(recentIdx) &&
+          recentPanelEl &&
+          panelIsBlank &&
+          panelIsActive &&
+          !explicitReferenceBlocks
+        ) {
+          /* Route to the freshly-opened panel; the flag is consumed
+             (and [reasoning_destination_resolved] is logged) downstream
+             by _logReasoningDestinationResolved when the caller has
+             finalized lane acquisition. Keeping consume+log in one
+             place avoids the previous duplicate-log bug. */
+          logReasoningPanelRouteDebug({
+            tag: "lane_select",
+            auto_route: autoRoute,
+            latest_user_text: t.slice(0, 240),
+            routing_decision: "reuse_active_panel",
+            selected_context_source: "recently_opened_reasoning_panel",
+            reason: "recently_opened_active_blank_panel",
+            target_lane_idx: recentIdx,
+            recently_opened_panel_source: recent.source,
+          });
+          return await acquireWorkModeReasoningLaneForIndex(recentIdx);
+        }
+        if (recent && (!panelIsActive || explicitReferenceBlocks)) {
+          /* Conditions changed — flag is no longer valid for this turn. */
+          clearRecentlyOpenedReasoningPanel(
+            explicitReferenceBlocks ? "explicit_other_panel_reference" : "panel_no_longer_active"
+          );
+        }
+      }
+    } catch (_) {}
+  }
 
   /* Same-thread generic example follow-ups still chain onto the prior
      substantive lane — that path is anchored to the prior turn, not the
@@ -16307,6 +16531,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         : await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
             continuePriorLane: continueLaneForThisTurn
           });
+  /* PART 3+7 (2026-05-28): consume the recently-opened bias flag once
+     a reasoning turn lands, and emit [reasoning_destination_resolved]
+     so the console shows resolution provenance for every reasoning
+     request (frozen-lane path was previously silent). */
+  _logReasoningDestinationResolved({
+    latestUserText: effectiveUserText,
+    laneIdx,
+    frozenLaneTaken: frozenIdx != null,
+    forceActiveLane: Boolean(forceActiveLaneReasoningContent),
+    path: "maybePrepareWorkModeReasoning",
+  });
   const reasoningLaneId = turnContext?.turn_lane_id || getWorkModeReasoningLaneId(laneIdx);
   if (turnContext && reasoningLaneId !== turnContext.turn_lane_id) {
     workModeTurnLaneGuard(turnContext, reasoningLaneId, "reasoning_route_lane_mismatch");
@@ -16610,6 +16845,28 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             continue;
           }
           if (o.type === "error") {
+            /* Suppress the "Reasoning is temporarily unavailable…" bubble
+               on client-initiated cancellation (UI close button on the
+               streaming panel, CANCEL button, programmatic ctl.abort()).
+               The reader can race the abort and read a final backend
+               error chunk before reader.read() rejects with AbortError —
+               showing the bubble then would contradict the cancellation
+               confirmation. This mirrors veraSurfaceLlmFetchFailure's
+               existing `error.name === "AbortError"` guard and the
+               safeReasoningLaneRelease cancelled-status mapping. Real
+               backend errors (signal NOT aborted) still surface the
+               bubble. (2026-05-28) */
+            if (laneAbortController.signal.aborted) {
+              try {
+                console.info("[reasoning_stream_error_chunk_suppressed_on_abort]", {
+                  turn_id: turnContext?.turn_id || null,
+                  lane_id: streamLaneId || null,
+                  lane_idx: laneIdx,
+                  raw_error_message: String(o.message || "").slice(0, 200)
+                });
+              } catch (_) {}
+              break;
+            }
             logVeraCapabilityFailure("llm", "reasoning_stream_error", {
               message: String(o.message || "").slice(0, 200)
             });
@@ -16856,6 +17113,15 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
       : isWorkModeReasoningAutoRouteEnabled()
         ? await acquireWorkModeReasoningLane(text)
         : await acquireWorkModeReasoningLaneForIndex(reasoningUserFocusLaneIdx ?? 0);
+  /* PART 3+7 (2026-05-28): same as the typed/infer path — consume the
+     recently-opened bias flag and emit [reasoning_destination_resolved]. */
+  _logReasoningDestinationResolved({
+    latestUserText: text,
+    laneIdx,
+    frozenLaneTaken: frozenIdx != null,
+    forceActiveLane: false,
+    path: "streamWorkModeReasoningComposer",
+  });
   const streamLaneId = turnContext?.turn_lane_id || getWorkModeReasoningLaneId(laneIdx);
   const streamLaneTitleAtStart =
     turnContext?.turn_lane_title ||
@@ -17822,6 +18088,36 @@ migrateLegacyVeraChatStorageKey();
 restoreVeraChatState();
 wireReasoningTabStrip();
 
+/* [reasoning_close_handler_registered] PART 8: post-boot diagnostic — prove
+   every link in the close-panel chain is loaded BEFORE the user tries any
+   entry point. If any of these reports `false`, that's the regression: the
+   corresponding script/module didn't load or the symbol is shadowed. Look
+   for this once on hard refresh. */
+try {
+  const _wmPanelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  const _wmTabsEl = document.getElementById("vera-reasoning-tabs");
+  console.info("[reasoning_close_handler_registered] " + JSON.stringify({
+    has_core_close: typeof closeReasoningPanelsByVisualIndices === "function",
+    has_ui_close: typeof closeReasoningTab === "function",
+    has_intent_parser: typeof parseCloseReasoningPanelsCommand === "function",
+    has_action_executor: typeof executeCloseReasoningPanelsCommand === "function",
+    has_voice_text_shortcut: typeof maybeHandleCloseReasoningPanelShortcut === "function",
+    has_reply_builder: typeof buildCloseReasoningPanelsVoiceReply === "function",
+    has_confirmation_renderer: typeof renderReasoningCloseAssistantConfirmation === "function",
+    has_close_lock_setter: typeof _setReasoningCloseLock === "function",
+    has_panel_order_getter: typeof getReasoningPanelOrder === "function",
+    has_work_mode_gate: typeof isVeraWorkModeOn === "function",
+    has_app_mode_prefix: typeof appModePrefix === "function",
+    window_close_reasoning_tab: typeof window.closeReasoningTab,
+    panels_root_present: Boolean(_wmPanelsRoot),
+    tabs_el_present: Boolean(_wmTabsEl),
+    tabs_el_wired: _wmTabsEl ? _wmTabsEl.dataset.wiredReasoningTabs === "1" : false,
+    panel_count_at_boot: _wmPanelsRoot ? _wmPanelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length : 0,
+  }));
+} catch (e) {
+  try { console.error("[reasoning_close_handler_registered] diagnostic_failed " + String(e && e.message || e)); } catch (_) {}
+}
+
 let veraHeaderDateTimeTimer = null;
 
 function stopVeraHeaderDateTime() {
@@ -18239,7 +18535,12 @@ function applyActionPayload(data) {
     const op = payload.op || "";
     if (op === "open_new") {
       const count = Math.max(1, Math.min(REASONING_TABS_MAX, Number(payload.count) || 1));
-      for (let i = 0; i < count; i += 1) addReasoningTab();
+      /* PART 5+6 (2026-05-28): tag each open with the backend-payload
+         source so the recently-opened flag is set with provenance the
+         dest-resolver log can show. */
+      for (let i = 0; i < count; i += 1) {
+        addReasoningTab({ source: "backend_open_panel_action" });
+      }
       return;
     }
     /* PART 3: backend can also drive panel close (e.g. the LLM router sent
@@ -21328,6 +21629,16 @@ async function finalizeMainBrowserTranscript(text) {
     }
     return;
   }
+  /* PART 14 (2026-05-28): emit the frontend route log for voice turns too
+     so the browser console shows our classification alongside backend
+     [news_router_route]. The same call site existed for typed turns just
+     before armPendingNewsStatusBubble; mirroring it here covers ASR. */
+  try {
+    if (typeof classifyVeraTurnRoute === "function" && typeof logNewsRouterRouteFrontend === "function") {
+      const _veraTurnRouteClassification = classifyVeraTurnRoute(trimmed);
+      logNewsRouterRouteFrontend(trimmed, _veraTurnRouteClassification);
+    }
+  } catch (_) {}
   if (
     await maybeHandleWorkChecklistSyncShortcut(trimmed, {
       source: "main-browser-asr",
@@ -23958,7 +24269,10 @@ async function executeWorkModeActionPlan(plan, context = {}) {
             error = "addReasoningTab_unavailable";
             break;
           }
-          addReasoningTab();
+          /* PART 5+6 (2026-05-28): pass the voice/typed source so the
+             new panel is tracked as "recently opened" and any next
+             reasoning request biases to it. */
+          addReasoningTab({ source: "multi_action_planner_open_command" });
           ok = true;
           break;
         }
@@ -24635,6 +24949,16 @@ async function sendTextMessage() {
 
   addBubble(text, "user", { path: "typed-text" });
   ensureChatStartedLayout();
+  // PART 14 (2026-05-28): emit the structured frontend route log on every
+  // typed turn so the browser console shows our route classification side
+  // by side with the backend's matching [news_router_route] line. Pure
+  // instrumentation; backend remains the authoritative router.
+  try {
+    if (typeof classifyVeraTurnRoute === "function" && typeof logNewsRouterRouteFrontend === "function") {
+      const _veraTurnRouteClassification = classifyVeraTurnRoute(text);
+      logNewsRouterRouteFrontend(text, _veraTurnRouteClassification);
+    }
+  } catch (_) {}
   // Show "Searching news…" immediately for likely Serper-backed requests.
   // Cancelled when a real reply arrives via applyAssistantReplyAndPanels /
   // applyNdjsonStreamingReplySoFar / finalizeNdjsonStreamingReply, and
