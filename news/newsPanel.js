@@ -354,6 +354,172 @@ function renderMediaTabsPanel(payload) {
 }
 
 /* =========================
+   2026-05-28 — product & location panel renderers (additive).
+   Same `side-pane-*` markup family as renderMediaTabsPanel so the existing
+   close button, Work Mode lock predicate, and crossfade work unchanged.
+========================= */
+
+function renderProductResultListMarkup(products) {
+  if (!Array.isArray(products) || !products.length) {
+    return `<div class="side-pane-empty">No product results came back from the search.</div>`;
+  }
+  return `
+    <div class="news-result-list product-result-list">
+      ${products.map((item, index) => {
+        const img = (item.image_url || "").trim();
+        const price = (item.price || "").trim();
+        const rating = (item.rating || "").trim();
+        const source = (item.source || "Unknown source").trim();
+        const summary = (item.summary || "").trim();
+        const url = (item.url || "").trim();
+        return `
+          <article class="news-result-card product-result-card">
+            ${img ? `
+              <div class="product-result-image">
+                <img
+                  src="${escapeHtml(img)}"
+                  alt="${escapeHtml(item.title || "Product image")}"
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                />
+              </div>
+            ` : ""}
+            <h4 class="news-result-title">${index + 1}. ${escapeHtml(item.title || "Product")}</h4>
+            ${price ? `<div class="product-result-price">${escapeHtml(price)}</div>` : ""}
+            ${rating ? `<div class="product-result-rating">★ ${escapeHtml(rating)}</div>` : ""}
+            ${summary ? `<p class="news-result-snippet">${escapeHtml(summary)}</p>` : ""}
+            <div class="news-result-meta">
+              <span>${escapeHtml(source)}</span>
+            </div>
+            ${url ? `<a class="news-result-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open product</a>` : ""}
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderProductResultsPanel(payload) {
+  const sidePaneEl = uiEl("side-pane");
+  if (!sidePaneEl) return;
+
+  const mount = () => {
+    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+
+    const products = Array.isArray(payload?.products) ? payload.products : [];
+
+    sidePaneEl.hidden = false;
+    delete sidePaneEl.dataset.sidePaneKind;
+    document.body.classList.add("news-panel-open");
+
+    sidePaneEl.innerHTML = `
+    <div class="side-pane-header">
+      <div class="side-pane-heading">
+        <h3 class="side-pane-title">${escapeHtml(payload?.title || "Shopping Results")}</h3>
+        <div class="side-pane-subtitle">${escapeHtml(payload?.query || "")}</div>
+      </div>
+      <div class="side-pane-controls">
+        <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
+      </div>
+    </div>
+    <div class="side-pane-tab-panel active" data-tab-panel="products">
+      ${renderProductResultListMarkup(products)}
+    </div>
+  `;
+
+    sidePaneEl.scrollTop = 0;
+
+    requestAnimationFrame(() => {
+      sidePaneEl.classList.add("visible");
+    });
+  };
+
+  runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
+}
+
+function renderLocationPlaceListMarkup(places) {
+  if (!Array.isArray(places) || !places.length) {
+    return `<div class="side-pane-empty">No places came back from the search.</div>`;
+  }
+  return `
+    <div class="news-result-list location-result-list">
+      ${places.map((item, index) => {
+        const name = (item.name || "").trim();
+        const address = (item.address || "").trim();
+        const rating = (item.rating || "").trim();
+        const openState = (item.open_state || "").trim();
+        const category = (item.category || "").trim();
+        const source = (item.source || "Unknown source").trim();
+        const url = (item.url || "").trim();
+        const directions = (item.directions_url || "").trim();
+        return `
+          <article class="news-result-card location-result-card">
+            <h4 class="news-result-title">${index + 1}. ${escapeHtml(name)}</h4>
+            ${category ? `<div class="location-result-category">${escapeHtml(category)}</div>` : ""}
+            ${address ? `<div class="location-result-address">${escapeHtml(address)}</div>` : ""}
+            ${rating ? `<div class="location-result-rating">★ ${escapeHtml(rating)}</div>` : ""}
+            ${openState ? `<div class="location-result-open">${escapeHtml(openState)}</div>` : ""}
+            <div class="news-result-meta">
+              <span>${escapeHtml(source)}</span>
+            </div>
+            <div class="location-result-links">
+              ${url ? `<a class="news-result-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open</a>` : ""}
+              ${directions ? `<a class="news-result-link" href="${escapeHtml(directions)}" target="_blank" rel="noopener noreferrer">Directions</a>` : ""}
+            </div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderLocationMapPanel(payload) {
+  const sidePaneEl = uiEl("side-pane");
+  if (!sidePaneEl) return;
+
+  const mount = () => {
+    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+
+    const places = Array.isArray(payload?.places) ? payload.places : [];
+    const subtitle = (payload?.location || payload?.query || "").trim();
+
+    sidePaneEl.hidden = false;
+    delete sidePaneEl.dataset.sidePaneKind;
+    document.body.classList.add("news-panel-open");
+
+    sidePaneEl.innerHTML = `
+    <div class="side-pane-header">
+      <div class="side-pane-heading">
+        <h3 class="side-pane-title">${escapeHtml(payload?.title || "Places")}</h3>
+        <div class="side-pane-subtitle">${escapeHtml(subtitle)}</div>
+      </div>
+      <div class="side-pane-controls">
+        <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
+      </div>
+    </div>
+    <div class="side-pane-tab-panel active" data-tab-panel="places">
+      ${renderLocationPlaceListMarkup(places)}
+    </div>
+  `;
+
+    sidePaneEl.scrollTop = 0;
+
+    requestAnimationFrame(() => {
+      sidePaneEl.classList.add("visible");
+    });
+  };
+
+  runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
+}
+
+try {
+  window.renderProductResultsPanel = renderProductResultsPanel;
+  window.renderLocationMapPanel = renderLocationMapPanel;
+  window.renderProductResultListMarkup = renderProductResultListMarkup;
+  window.renderLocationPlaceListMarkup = renderLocationPlaceListMarkup;
+} catch (_) {}
+
+/* =========================
    STAGE 10 (additive): read-only debug accessor
 ========================= */
 

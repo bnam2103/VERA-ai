@@ -18576,7 +18576,9 @@ function applyActionPayload(data) {
     lockToMusicPanel &&
     (payload?.panel_type === "media_tabs" ||
       payload?.panel_type === "news_results" ||
-      payload?.panel_type === "finance_chart")
+      payload?.panel_type === "finance_chart" ||
+      payload?.panel_type === "product_results_panel" ||
+      payload?.panel_type === "location_map_panel")
   ) {
     const sidePaneEl = uiEl("side-pane");
     if (sidePaneEl) {
@@ -18630,6 +18632,16 @@ function applyActionPayload(data) {
 
   if (payload?.panel_type === "finance_chart") {
     renderFinanceChartPanel(payload);
+    return;
+  }
+
+  if (payload?.panel_type === "product_results_panel") {
+    requestAnimationFrame(() => renderProductResultsPanel(payload));
+    return;
+  }
+
+  if (payload?.panel_type === "location_map_panel") {
+    requestAnimationFrame(() => renderLocationMapPanel(payload));
     return;
   }
 
