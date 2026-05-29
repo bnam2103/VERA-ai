@@ -3357,13 +3357,14 @@ function setProductivityMusicSource(prefix, source) {
     stale_playback_state_prevented: true,
   });
   console.info("[music_source_state]", {
-    music_tab_switched: true,
+    stage: "set_productivity_music_source",
+    music_tab_switched: selectedBefore !== (builtin ? "builtin" : "spotify"),
     ui_tab_only_no_playback_change: true,
     playback_source_changed: false,
-    selected_music_tab_before: selectedBefore,
-    selected_music_tab_after: builtin ? "builtin" : "spotify",
-    active_music_source_before: sourceStateBefore?.active || activeBefore || "none",
-    active_music_source_after: sourceStateBefore?.active || activeBefore || "none",
+    active_tab_before: selectedBefore,
+    active_tab_after: builtin ? "builtin" : "spotify",
+    active_playback_source_before: sourceStateBefore?.active || activeBefore || "none",
+    active_playback_source_after: sourceStateBefore?.active || activeBefore || "none",
     builtin_state_before: sourceStateBefore?.builtin?.state || "",
     builtin_state_after: sourceStateBefore?.builtin?.state || "",
     spotify_state_before: sourceStateBefore?.spotify?.state || "",
@@ -4040,6 +4041,20 @@ function freeMusicSyncNowFromAudio(prefix) {
         ? "Looping"
         : "Built-in music";
   syncFreeMusicTransportFlags();
+  // Persist built-in display state to its own snapshot so the built-in
+  // tab can re-render this lo-fi/sound even after the user switches to
+  // Spotify and back (spec test 1).
+  captureMusicPanelDisplay("builtin", {
+    title,
+    subtitle: sub,
+    cover_url: "",
+    paused: !!a.paused,
+    position_ms: pos,
+    duration_ms: dur,
+    playlistId: String(st.playlistId || st.playlist_id || ""),
+    soundId: String(st.soundId || st.sound_id || ""),
+    currentTime: Number(a.currentTime || 0)
+  });
   spotifyUpdateNowState({
     title,
     artist: sub,
@@ -5931,15 +5946,29 @@ function spotifySyncNowStateFromWebSdk(state) {
 
   spotifyClearPendingIfSdkMatches(sdkUri);
   const cover = curTrack.album?.images?.[0]?.url || "";
+  const sdkTitle = curTrack.name || "";
+  const sdkArtist = (curTrack.artists || []).map((a) => a.name).filter(Boolean).join(", ");
+  const sdkDuration = Number(curTrack.duration_ms) || 0;
   spotifyUpdateNowState({
-    title: curTrack.name || "",
-    artist: (curTrack.artists || []).map((a) => a.name).filter(Boolean).join(", "),
+    title: sdkTitle,
+    artist: sdkArtist,
     cover_url: cover,
     position_ms,
-    duration_ms: Number(curTrack.duration_ms) || 0,
+    duration_ms: sdkDuration,
     paused,
     active,
     ...qf
+  });
+  // Mirror to the Spotify-only display snapshot so the Spotify tab can
+  // re-render this track even if built-in is currently audible.
+  captureMusicPanelDisplay("spotify", {
+    title: sdkTitle,
+    artist: sdkArtist,
+    uri: sdkUri,
+    cover_url: cover,
+    paused,
+    position_ms,
+    duration_ms: sdkDuration
   });
   window.__veraSpotifyPlaybackActive = active;
 }
@@ -6003,7 +6032,7 @@ async function spotifyRefreshWebPlaybackStateToUi(prefix) {
 }
 
 function spotifyApplyNowStateToPanel(prefix) {
-  const s = spotifyEnsureNowState();
+  const liveNow = spotifyEnsureNowState();
   const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
   const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
   const ph = document.getElementById(`${prefix}-spotify-art-placeholder`);
@@ -6019,6 +6048,61 @@ function spotifyApplyNowStateToPanel(prefix) {
   // `data-inactive-tab="1"` so CSS can dim non-essential controls.
   const selectedTab = getProductivityMusicSource(prefix);
   const activeSource = getActivePlaybackSource(prefix);
+  const sourceState = veraMusicSourceState();
+  // Pick the snapshot the selected tab should render. When the selected
+  // tab matches the active source we keep using the shared live state so
+  // progress/elapsed updates stay smooth; when they differ we fall back
+  // to the per-source display snapshot so each tab preserves its own
+  // last-known item (spec test 1 & 2).
+  let s = liveNow;
+  let displaySource = "live";
+  if (selectedTab === "builtin" && activeSource !== "builtin" && veraMusicPanelDisplayHasData("builtin")) {
+    const bd = sourceState.builtin;
+    s = {
+      title: bd.title || "",
+      artist: bd.subtitle || "",
+      cover_url: bd.cover_url || "",
+      position_ms: Number(bd.position_ms) || 0,
+      duration_ms: Number(bd.duration_ms) || 0,
+      paused: bd.paused !== false,
+      active: false,
+      queue_next_available: false,
+      queue_previous_count: 0,
+      disallow_skip_prev: false
+    };
+    displaySource = "builtin_snapshot";
+  } else if (selectedTab === "spotify" && activeSource !== "spotify" && veraMusicPanelDisplayHasData("spotify")) {
+    const sd = sourceState.spotify;
+    s = {
+      title: sd.title || "",
+      artist: sd.artist || sd.playlist_name || "",
+      cover_url: sd.cover_url || "",
+      position_ms: Number(sd.position_ms) || 0,
+      duration_ms: Number(sd.duration_ms) || 0,
+      paused: sd.paused !== false,
+      active: false,
+      queue_next_available: false,
+      queue_previous_count: 0,
+      disallow_skip_prev: false
+    };
+    displaySource = "spotify_snapshot";
+  }
+  try {
+    console.info("[music_panel_render]", {
+      prefix,
+      selected_tab: selectedTab,
+      active_playback_source: activeSource,
+      display_source: displaySource,
+      builtin_display_restored: displaySource === "builtin_snapshot",
+      spotify_display_restored: displaySource === "spotify_snapshot",
+      builtin_state: sourceState.builtin.state,
+      spotify_state: sourceState.spotify.state,
+      builtin_title: sourceState.builtin.title || "",
+      spotify_title: sourceState.spotify.title || "",
+      spotify_artist: sourceState.spotify.artist || "",
+      spotify_uri: sourceState.spotify.uri || ""
+    });
+  } catch (_) {}
   const badgeEl = document.getElementById(`${prefix}-music-source-badge`);
   const panelRoot = document.querySelector(`[data-productivity-root="${prefix}"]`);
   const spotifyBanner = document.getElementById(`${prefix}-spotify-inactive-banner`);
@@ -6046,7 +6130,9 @@ function spotifyApplyNowStateToPanel(prefix) {
   if (spotifyBanner instanceof HTMLElement) {
     if (selectedTab === "spotify" && activeSource === "builtin") {
       if (spotifyBannerText) {
-        const tt = (s.title || "").trim();
+        // Banner describes the OTHER source's live activity, so read the
+        // built-in snapshot rather than the selected-tab snapshot `s`.
+        const tt = (sourceState.builtin.title || liveNow.title || "").trim();
         spotifyBannerText.textContent = tt
           ? `Built-in Music is currently playing — ${tt}`
           : "Built-in Music is currently playing.";
@@ -6059,7 +6145,7 @@ function spotifyApplyNowStateToPanel(prefix) {
   if (builtinBanner instanceof HTMLElement) {
     if (selectedTab === "builtin" && activeSource === "spotify") {
       if (builtinBannerText) {
-        const tt = (s.title || "").trim();
+        const tt = (sourceState.spotify.title || liveNow.title || "").trim();
         builtinBannerText.textContent = tt
           ? `Spotify is currently playing — ${tt}`
           : "Spotify is currently playing.";
@@ -6414,14 +6500,26 @@ function wireProductivityPanelEvents(prefix) {
   wireFreeMusicAudioElement(prefix);
 
   document.getElementById(`${prefix}-music-tab-spotify`)?.addEventListener("click", () => {
-    // PART 2 — selecting the Spotify tab changes the control surface only.
-    // We do NOT stop Built-in music here; if Built-in is currently the
-    // active source, the panel renders the inactive-source banner so the
-    // user can explicitly switch via the banner CTA or by starting a
-    // Spotify track from the search/playlist controls.
+    // Spec 2026-05-29 Rule 1: UI tab switch is visual only.
+    // We do NOT stop, resume, or seek Built-in/Spotify just because the
+    // user clicked a tab. The renderer picks up the Spotify display
+    // snapshot below so the panel re-renders the last known Spotify
+    // track even when Built-in is still the active audio source.
+    const prevTab = getProductivityMusicSource(prefix);
     setProductivityMusicSource(prefix, "spotify");
     spotifyApplyNowStateToPanel(prefix);
     spotifySyncPlayButtonUi(prefix);
+    console.info("[music_source_state]", {
+      music_tab_switched: true,
+      ui_tab_only_no_playback_change: true,
+      playback_source_changed: false,
+      active_tab_before: prevTab,
+      active_tab_after: "spotify",
+      spotify_display_restored: true,
+      blocked_auto_resume_reason: "ui_tab_switch_only"
+    });
+    // Pull the latest live Spotify state in the background so progress
+    // catches up if Spotify happens to be playing.
     void spotifyRefreshWebPlaybackStateToUi(prefix);
   });
 
@@ -6476,38 +6574,36 @@ function wireProductivityPanelEvents(prefix) {
     spotifySyncPlayButtonUi(prefix);
   });
   document.getElementById(`${prefix}-music-tab-builtin`)?.addEventListener("click", async () => {
-    // PART 2 — switching to the Built-in tab is a CONTROL-SURFACE change.
-    // It must not stop or reset Spotify playback just because the user
-    // clicked the tab; it also must not overwrite the shared now-state
-    // with a stale "Nothing playing" placeholder when Spotify is actually
-    // playing. The previous implementation paused Spotify on every tab
-    // click — that's now reserved for explicit "Switch playback to
-    // Built-in" intents (the inactive-source-banner button or the play
-    // controls inside the Built-in stack itself).
+    // Spec 2026-05-29 Rule 1: UI tab switch is visual only.
+    // Switching to the Built-in tab must not stop, resume, or reset
+    // Spotify; the renderer reads from the Built-in display snapshot so
+    // the tab still shows the user's last lo-fi/sound even when Spotify
+    // is currently the audible source. We also do not blank the shared
+    // now-state — that was eating the Built-in snapshot when Spotify
+    // hadn't been played yet (spec test 1).
+    const prevTab = getProductivityMusicSource(prefix);
     setProductivityMusicSource(prefix, "builtin");
     const fa = document.getElementById(`${prefix}-free-music-audio`);
     const builtinHasMedia = !!(fa?.src && !fa.ended);
-    const activeSource = getActivePlaybackSource(prefix);
     if (builtinHasMedia) {
+      // Refresh the snapshot from the live audio element so the tab
+      // matches the audio's current position when built-in is actually
+      // the audible source. Safe when suspended too — the audio element
+      // keeps its currentTime while paused.
       freeMusicSyncNowFromAudio(prefix);
-    } else if (activeSource === "none") {
-      // Only blank the shared now-state when nothing is playing globally.
-      spotifyUpdateNowState({
-        title: "Nothing playing",
-        artist: "Choose a playlist or sound below.",
-        cover_url: "",
-        position_ms: 0,
-        duration_ms: 0,
-        paused: true,
-        active: false,
-        queue_next_available: false,
-        queue_previous_count: 0,
-        disallow_skip_prev: false
-      });
     }
     await ensureFreeMusicCatalogUi(prefix);
     spotifyApplyNowStateToPanel(prefix);
     spotifySyncPlayButtonUi(prefix);
+    console.info("[music_source_state]", {
+      music_tab_switched: true,
+      ui_tab_only_no_playback_change: true,
+      playback_source_changed: false,
+      active_tab_before: prevTab,
+      active_tab_after: "builtin",
+      builtin_display_restored: true,
+      blocked_auto_resume_reason: "ui_tab_switch_only"
+    });
   });
 
   const applyPlaylistSelectedUi = () => {
@@ -18631,11 +18727,85 @@ function veraMusicSourceState() {
   if (!window.__veraMusicSourceState) {
     window.__veraMusicSourceState = {
       active: "none",
-      builtin: { state: "stopped", currentTime: 0, playlistId: "", soundId: "" },
-      spotify: { state: "stopped", uri: "", title: "", artist: "", playlist_id: "", playlist_name: "" }
+      builtin: {
+        state: "stopped",
+        currentTime: 0,
+        playlistId: "",
+        soundId: "",
+        // Display fields kept independent of the live audio element so the
+        // built-in tab can re-render its last known item even when Spotify
+        // is the currently audible source.
+        title: "",
+        subtitle: "",
+        cover_url: "",
+        paused: true,
+        position_ms: 0,
+        duration_ms: 0,
+        updatedAt: 0
+      },
+      spotify: {
+        state: "stopped",
+        uri: "",
+        title: "",
+        artist: "",
+        playlist_id: "",
+        playlist_name: "",
+        cover_url: "",
+        paused: true,
+        position_ms: 0,
+        duration_ms: 0,
+        updatedAt: 0
+      }
     };
   }
-  return window.__veraMusicSourceState;
+  const st = window.__veraMusicSourceState;
+  // Backfill new fields on existing state objects so older sessions don't
+  // miss the display sub-fields after a code update.
+  if (st.builtin && st.builtin.title === undefined) {
+    Object.assign(st.builtin, {
+      title: "", subtitle: "", cover_url: "", paused: true,
+      position_ms: 0, duration_ms: 0, updatedAt: 0
+    });
+  }
+  if (st.spotify && st.spotify.cover_url === undefined) {
+    Object.assign(st.spotify, {
+      cover_url: "", paused: true, position_ms: 0, duration_ms: 0, updatedAt: 0
+    });
+  }
+  return st;
+}
+
+/**
+ * Update one source's UI display snapshot without touching the other.
+ *
+ * The music panel needs to remember what each tab was last showing
+ * independently of which source is currently audible, so e.g. switching
+ * to the Spotify tab after lo-fi was playing still shows the previous
+ * Spotify track instead of "Nothing playing".
+ *
+ * Call this from whichever path actually changed the source's state —
+ * builtin sync from the audio element, Spotify state from the Web SDK
+ * or from a play call. Safe to call with partial updates.
+ */
+function captureMusicPanelDisplay(source, partial) {
+  if (!partial || typeof partial !== "object") return;
+  const st = veraMusicSourceState();
+  let target = null;
+  if (source === "builtin") target = st.builtin;
+  else if (source === "spotify") target = st.spotify;
+  if (!target) return;
+  for (const key of Object.keys(partial)) {
+    if (partial[key] === undefined) continue;
+    target[key] = partial[key];
+  }
+  target.updatedAt = Date.now();
+}
+
+function veraMusicPanelDisplayHasData(source) {
+  const st = veraMusicSourceState();
+  const snap = source === "builtin" ? st.builtin : (source === "spotify" ? st.spotify : null);
+  if (!snap) return false;
+  return Boolean((snap.title || "").trim()) || Number(snap.updatedAt || 0) > 0;
 }
 
 function _captureBuiltinSnapshot() {
@@ -18670,6 +18840,9 @@ function _captureSpotifySnapshot() {
 function musicSourceMarkPlaying(source, meta = {}) {
   const st = veraMusicSourceState();
   const newSource = String(source || "").toLowerCase();
+  const activeBefore = st.active;
+  const builtinStateBefore = st.builtin.state;
+  const spotifyStateBefore = st.spotify.state;
   if (newSource === "builtin") {
     const priorBuiltinState = st.builtin.state;
     const priorBuiltinCurrentTime = Number(st.builtin.currentTime || 0);
@@ -18682,6 +18855,8 @@ function musicSourceMarkPlaying(source, meta = {}) {
     st.builtin.state = "playing";
     if (meta.playlistId !== undefined) st.builtin.playlistId = String(meta.playlistId || "");
     if (meta.soundId !== undefined) st.builtin.soundId = String(meta.soundId || "");
+    if (meta.title !== undefined) st.builtin.title = String(meta.title || "");
+    if (meta.subtitle !== undefined) st.builtin.subtitle = String(meta.subtitle || "");
     if (meta.currentTime !== undefined) {
       st.builtin.currentTime = Number(meta.currentTime || 0);
     } else if (priorBuiltinState === "suspended_for_spotify") {
@@ -18689,6 +18864,8 @@ function musicSourceMarkPlaying(source, meta = {}) {
     } else {
       st.builtin.currentTime = 0;
     }
+    st.builtin.paused = false;
+    st.builtin.updatedAt = Date.now();
   } else if (newSource === "spotify") {
     if (st.active === "builtin" && st.builtin.state === "playing") {
       // Snapshot the current audio position before suspending so explicit
@@ -18696,6 +18873,7 @@ function musicSourceMarkPlaying(source, meta = {}) {
       const snap = _captureBuiltinSnapshot();
       st.builtin.state = "suspended_for_spotify";
       st.builtin.currentTime = snap.currentTime;
+      st.builtin.paused = true;
     }
     st.active = "spotify";
     st.spotify.state = "playing";
@@ -18706,12 +18884,26 @@ function musicSourceMarkPlaying(source, meta = {}) {
     if (meta.playlist_name !== undefined) st.spotify.playlist_name = String(meta.playlist_name || "");
     if (meta.playlist_id) window.__veraSpotifyActivePlaylistId = String(meta.playlist_id || "");
     if (meta.playlist_name) window.__veraSpotifyActivePlaylistName = String(meta.playlist_name || "");
+    st.spotify.paused = false;
+    st.spotify.updatedAt = Date.now();
   }
   console.info("[music_source_state]", {
     transition: `${newSource}_play`,
-    active_music_source_after: st.active,
+    playback_source_changed: activeBefore !== st.active,
+    playback_source_change_reason: meta.reason || "explicit_play",
+    active_playback_source_before: activeBefore,
+    active_playback_source_after: st.active,
+    builtin_state_before: builtinStateBefore,
     builtin_state_after: st.builtin.state,
-    spotify_state_after: st.spotify.state
+    builtin_title: st.builtin.title || "",
+    builtin_current_time_preserved: st.builtin.state === "suspended_for_spotify"
+      ? Number(st.builtin.currentTime || 0)
+      : null,
+    spotify_state_before: spotifyStateBefore,
+    spotify_state_after: st.spotify.state,
+    spotify_title: st.spotify.title || "",
+    spotify_artist: st.spotify.artist || "",
+    spotify_uri: st.spotify.uri || ""
   });
 }
 
@@ -18722,22 +18914,37 @@ function musicSourceMarkPausedByUser() {
   // accidentally resurrecting built-in lo-fi.
   const st = veraMusicSourceState();
   const prev = st.active;
+  const builtinStateBefore = st.builtin.state;
+  const spotifyStateBefore = st.spotify.state;
   if (prev === "builtin" && st.builtin.state === "playing") {
     st.builtin.state = "paused_by_user";
+    st.builtin.paused = true;
   }
   if (prev === "spotify" && st.spotify.state === "playing") {
     st.spotify.state = "paused_by_user";
+    st.spotify.paused = true;
   }
   st.active = "none";
   console.info("[music_source_state]", {
     transition: "pause_by_user",
-    previous_active: prev,
-    active_music_source_after: st.active,
+    playback_source_changed: prev !== "none",
+    playback_source_change_reason: "user_pause",
+    active_playback_source_before: prev,
+    active_playback_source_after: st.active,
+    builtin_state_before: builtinStateBefore,
     builtin_state_after: st.builtin.state,
+    builtin_title: st.builtin.title || "",
+    spotify_state_before: spotifyStateBefore,
     spotify_state_after: st.spotify.state,
+    spotify_title: st.spotify.title || "",
+    spotify_artist: st.spotify.artist || "",
     spotify_paused_without_builtin_resume: prev === "spotify",
-    builtin_auto_resume_blocked: prev === "spotify" && st.builtin.state === "suspended_for_spotify",
-    spotify_auto_resume_blocked: prev === "builtin" && st.spotify.state === "suspended_for_builtin"
+    blocked_auto_resume_reason:
+      prev === "spotify" && st.builtin.state === "suspended_for_spotify"
+        ? "spotify_paused_keep_builtin_suspended"
+        : prev === "builtin" && st.spotify.state === "suspended_for_builtin"
+          ? "builtin_paused_keep_spotify_suspended"
+          : null
   });
 }
 
@@ -26956,6 +27163,15 @@ window.VeraSpotify = {
       paused: false,
       active: true
     });
+    captureMusicPanelDisplay("spotify", {
+      uri: String(uri || ""),
+      title: String(meta?.title || ""),
+      artist: String(meta?.artist || ""),
+      cover_url: "",
+      paused: false,
+      position_ms: 0,
+      duration_ms: 0
+    });
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
 
@@ -27116,6 +27332,17 @@ window.VeraSpotify = {
       artist: meta?.context_subtitle || defaultSub,
       paused: false,
       active: true
+    });
+    captureMusicPanelDisplay("spotify", {
+      uri: contextUri,
+      title: String(meta?.playlist_name || "Playlist"),
+      artist: String(meta?.context_subtitle || defaultSub),
+      playlist_id: contextUri,
+      playlist_name: String(meta?.playlist_name || "Playlist"),
+      cover_url: "",
+      paused: false,
+      position_ms: 0,
+      duration_ms: 0
     });
     spotifyApplyNowStateToPanel(prefix);
     void spotifyRefreshWebPlaybackStateToUi(prefix);
