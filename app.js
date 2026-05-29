@@ -18567,6 +18567,67 @@ function shouldApplyWorkModeReasoningInvocation(payload) {
   return true;
 }
 
+const VERA_NDJSON_PAYLOAD_DEDUPE_TTL_MS = 30000;
+
+function veraNdjsonPayloadDedupeStore() {
+  if (!window.__veraNdjsonPayloadDedupe || !(window.__veraNdjsonPayloadDedupe instanceof Map)) {
+    window.__veraNdjsonPayloadDedupe = new Map();
+  }
+  return window.__veraNdjsonPayloadDedupe;
+}
+
+function makeNdjsonPayloadDedupeKey(event, payload, index) {
+  const req =
+    event?.request_id ||
+    event?.client_request_id ||
+    event?.requestId ||
+    event?.session_id ||
+    "no_request";
+  const type = payload?.panel_type || payload?.type || "unknown_payload";
+  const op = payload?.op || payload?.action || payload?.action_name || "no_op";
+  return `${req}:${Number(index) || 0}:${type}:${op}`;
+}
+
+function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown") {
+  const plural = Array.isArray(event?.action_payloads)
+    ? event.action_payloads.filter(Boolean)
+    : [];
+  const payloads = plural.length ? plural : (event?.action_payload ? [event.action_payload] : []);
+  const store = veraNdjsonPayloadDedupeStore();
+  const now = Date.now();
+  for (const [key, at] of store.entries()) {
+    if (now - Number(at || 0) > VERA_NDJSON_PAYLOAD_DEDUPE_TTL_MS) store.delete(key);
+  }
+
+  console.info("[ndjson_payload_apply]", {
+    ndjson_event_type: ndjsonEventType,
+    action_payloads_received_count: payloads.length,
+    used_plural_payloads: plural.length > 0,
+    action_type: event?.action_type || "",
+    request_id: event?.request_id || null
+  });
+
+  payloads.forEach((payload, idx) => {
+    if (!payload || typeof payload !== "object") return;
+    const key = makeNdjsonPayloadDedupeKey(event, payload, idx);
+    const panelType = payload.panel_type || payload.type || "";
+    const op = payload.op || "";
+    const duplicate = store.has(key);
+    console.info("[ndjson_payload_apply]", {
+      ndjson_event_type: ndjsonEventType,
+      applying_payload_index: idx,
+      applying_payload_type: panelType,
+      payload_op: op,
+      dedupe_payload_key: key,
+      skipped_duplicate_payload: duplicate,
+      music_control_received: panelType === "music_control"
+    });
+    if (duplicate) return;
+    store.set(key, now);
+    applyActionPayload({ ...event, action_payload: payload, action_payloads: null });
+  });
+}
+
 function applyActionPayload(data) {
   // 2026-05-29 — multi-action planner pass-through.
   // When the backend executed a typed compound command, every action's
@@ -18858,6 +18919,14 @@ function applyActionPayload(data) {
   if (payload?.panel_type === "music_control") {
     const prefix = appModePrefix();
     const op = payload.op || "open_panel";
+    console.info("[music_control_payload]", {
+      music_control_received: true,
+      op,
+      playlist_id: payload.playlist_id || "",
+      sound_id: payload.sound_id || "",
+      source_event_type: data?.type || "",
+      request_id: data?.request_id || null
+    });
     if (op === "close_panel") {
       hideSidePanel();
       return;
@@ -18943,9 +19012,21 @@ function applyActionPayload(data) {
     if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
       void (async () => {
         const pfx = appModePrefix();
+        console.info("[music_control_payload]", {
+          play_builtin_called: true,
+          playlist_id: payload.playlist_id || "",
+          sound_id: payload.sound_id || "",
+          request_id: data?.request_id || null
+        });
         await runBuiltinVoicePlayback(pfx, {
           playlistId: payload.playlist_id,
           soundId: payload.sound_id
+        });
+        console.info("[music_control_payload]", {
+          playback_started: true,
+          playlist_id: payload.playlist_id || "",
+          sound_id: payload.sound_id || "",
+          request_id: data?.request_id || null
         });
       })();
     } else if (op === "play_track" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
@@ -23154,6 +23235,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                     { ...done, reply: effectiveReply },
                     streamReplyState
                   );
+                  applyNdjsonActionPayloadEvent({ ...done, reply: effectiveReply }, "done");
                   if (isWmStage2Voice && effectiveReply) {
                     const bubble = ensureStage2VoiceBubble(
                       inferPrep,
@@ -23173,7 +23255,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                   interruptPrearmTtsId = interruptTtsId;
                   if (micStream?.active) startInterruptCapture();
                   void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
-                  applyActionPayload(ndjsonMeta);
+                  applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
                   setStatus(
                     listeningMode === "ptt" ? "Speaking" : "Speaking… (Interruptible)",
                     "speaking"
@@ -23402,11 +23484,12 @@ async function runInferInterruptPipeline(formData) {
             onDone: (done) => {
               logInferLatency(done, "interrupt", inferTtfbMs);
               finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+              applyNdjsonActionPayloadEvent(done, "done");
             },
             onPlayStart: () => {
               logVoiceFirstAudio("main-reply");
               logVoiceMainReplyAudio();
-              applyActionPayload(ndjsonMeta);
+              applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
               waveState = "speaking";
               audioStartedAt = performance.now();
               resetVadFastStopState("voice_tts_start_action");
@@ -25237,11 +25320,12 @@ async function sendTextMessage() {
             onDone: (done) => {
               logInferLatency(done, "text", textTtfbMs);
               finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+              applyNdjsonActionPayloadEvent(done, "done");
             },
             onPlayStart: () => {
               logTextFirstAudio("main-reply");
               logTextMainReplyAudio();
-              applyActionPayload(ndjsonMeta);
+              applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
               waveState = "speaking";
               audioStartedAt = performance.now();
               resetVadFastStopState("text_tts_start_action");
