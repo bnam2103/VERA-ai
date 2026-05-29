@@ -359,6 +359,67 @@ function renderMediaTabsPanel(payload) {
    close button, Work Mode lock predicate, and crossfade work unchanged.
 ========================= */
 
+/* 2026-05-28 — panel stale-payload guard.
+ * Backend stamps request_id + created_at_ms + query on every product/location
+ * panel payload. If an older payload arrives after a newer render (slow
+ * network / duplicate NDJSON finalize), we discard it so "best webcam" cards
+ * never linger when the user already asked for "best mic". */
+const _veraPanelRenderState = {
+  product: { lastRequestId: "", lastQuery: "", lastCreatedAtMs: 0 },
+  location: { lastRequestId: "", lastQuery: "", lastCreatedAtMs: 0 },
+};
+
+function veraPanelPayloadIsStale(payload, kind) {
+  if (!payload || !kind) return false;
+  const st = _veraPanelRenderState[kind];
+  if (!st) return false;
+  const rid = String(payload.request_id || "").trim();
+  const query = String(payload.query || "").trim();
+  const at = Number(payload.created_at_ms || 0);
+  if (at > 0 && st.lastCreatedAtMs > 0 && at < st.lastCreatedAtMs) {
+    console.info("[panel_stale]", {
+      kind,
+      stale_panel_payload_discarded: true,
+      reason: "older_created_at_ms",
+      panel_payload_request_id: rid,
+      panel_query: query,
+      user_query: query,
+    });
+    return true;
+  }
+  if (
+    rid &&
+    rid !== "req_unknown" &&
+    st.lastRequestId === rid &&
+    query === st.lastQuery &&
+    at > 0 &&
+    at <= st.lastCreatedAtMs
+  ) {
+    console.info("[panel_stale]", {
+      kind,
+      stale_panel_payload_discarded: true,
+      reason: "duplicate_request_id_and_query",
+      panel_payload_request_id: rid,
+      panel_query: query,
+    });
+    return true;
+  }
+  return false;
+}
+
+function veraMarkPanelPayloadRendered(payload, kind) {
+  const st = _veraPanelRenderState[kind];
+  if (!st || !payload) return;
+  const rid = String(payload.request_id || "").trim();
+  const query = String(payload.query || "").trim();
+  const at = Number(payload.created_at_ms || 0);
+  st.lastRequestId = rid;
+  st.lastQuery = query;
+  if (at > 0) {
+    st.lastCreatedAtMs = Math.max(st.lastCreatedAtMs, at);
+  }
+}
+
 /* 2026-05-28 — product card layout normalization.
  * - Hard-cap the visible rank to 3 (backend already trims, but defend
  *   against payload drift during streaming).
@@ -443,11 +504,16 @@ function renderProductResultListMarkup(products, payloadHints) {
 function renderProductResultsPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
+  if (veraPanelPayloadIsStale(payload, "product")) return;
 
   const mount = () => {
     document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
 
-    const products = Array.isArray(payload?.products) ? payload.products : [];
+    const products = Array.isArray(payload?.canonical_products)
+      ? payload.canonical_products
+      : Array.isArray(payload?.products)
+        ? payload.products
+        : [];
 
     sidePaneEl.hidden = false;
     delete sidePaneEl.dataset.sidePaneKind;
@@ -469,6 +535,7 @@ function renderProductResultsPanel(payload) {
   `;
 
     sidePaneEl.scrollTop = 0;
+    veraMarkPanelPayloadRendered(payload, "product");
 
     requestAnimationFrame(() => {
       sidePaneEl.classList.add("visible");
@@ -563,11 +630,16 @@ function renderLocationPlaceListMarkup(places) {
 function renderLocationMapPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
+  if (veraPanelPayloadIsStale(payload, "location")) return;
 
   const mount = () => {
     document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
 
-    const places = Array.isArray(payload?.places) ? payload.places : [];
+    const places = Array.isArray(payload?.canonical_places)
+      ? payload.canonical_places
+      : Array.isArray(payload?.places)
+        ? payload.places
+        : [];
     const subtitle = (payload?.location || payload?.query || "").trim();
 
     sidePaneEl.hidden = false;
@@ -591,6 +663,7 @@ function renderLocationMapPanel(payload) {
   `;
 
     sidePaneEl.scrollTop = 0;
+    veraMarkPanelPayloadRendered(payload, "location");
 
     requestAnimationFrame(() => {
       sidePaneEl.classList.add("visible");
@@ -606,6 +679,9 @@ try {
   window.renderProductResultListMarkup = renderProductResultListMarkup;
   window.renderLocationPlaceListMarkup = renderLocationPlaceListMarkup;
   window.renderLocationMapPlaceholderMarkup = renderLocationMapPlaceholderMarkup;
+  window.veraPanelPayloadIsStale = veraPanelPayloadIsStale;
+  window.veraMarkPanelPayloadRendered = veraMarkPanelPayloadRendered;
+  window.getVeraPanelRenderState = () => ({ ..._veraPanelRenderState });
 } catch (_) {}
 
 /* =========================
