@@ -3328,6 +3328,7 @@ function setProductivityMusicSource(prefix, source) {
   const root = document.querySelector(`[data-productivity-root="${prefix}"]`);
   const selectedBefore = String(root?.dataset.musicSource || "spotify").toLowerCase();
   const activeBefore = getActivePlaybackSource(prefix);
+  const sourceStateBefore = (typeof veraMusicSourceState === "function") ? veraMusicSourceState() : null;
   const builtin = source === "builtin";
   if (root instanceof HTMLElement) root.dataset.musicSource = builtin ? "builtin" : "spotify";
   document.getElementById(`${prefix}-music-tab-spotify`)?.classList.toggle("active", !builtin);
@@ -3354,6 +3355,20 @@ function setProductivityMusicSource(prefix, source) {
     activePlaybackSource_before: activeBefore,
     activePlaybackSource_after: getActivePlaybackSource(prefix),
     stale_playback_state_prevented: true,
+  });
+  console.info("[music_source_state]", {
+    music_tab_switched: true,
+    ui_tab_only_no_playback_change: true,
+    playback_source_changed: false,
+    selected_music_tab_before: selectedBefore,
+    selected_music_tab_after: builtin ? "builtin" : "spotify",
+    active_music_source_before: sourceStateBefore?.active || activeBefore || "none",
+    active_music_source_after: sourceStateBefore?.active || activeBefore || "none",
+    builtin_state_before: sourceStateBefore?.builtin?.state || "",
+    builtin_state_after: sourceStateBefore?.builtin?.state || "",
+    spotify_state_before: sourceStateBefore?.spotify?.state || "",
+    spotify_state_after: sourceStateBefore?.spotify?.state || "",
+    spotify_state_preserved: true
   });
 }
 
@@ -3410,13 +3425,35 @@ function _veraSpotifyAcquirePlayback(prefix, callerLabel) {
     const a = document.getElementById(`${p}-free-music-audio`);
     const builtinPlaying = !!(a && a.src && !a.paused && a.currentTime > 0);
     if (builtinPlaying) {
+      const st = (typeof veraMusicSourceState === "function") ? veraMusicSourceState() : null;
+      const preservedTime = Number(a.currentTime || 0);
       logMusicPlaybackDebug("provider_switch_stop_builtin", {
         prefix: p,
         reason: callerLabel || "spotify_play",
         ui_rendered_source: "spotify_active",
       });
       try {
-        stopBuiltinFreeMusic(p);
+        a.pause();
+        if (st) {
+          const snap = typeof _captureBuiltinSnapshot === "function" ? _captureBuiltinSnapshot() : {};
+          st.builtin.state = "suspended_for_spotify";
+          st.builtin.currentTime = preservedTime;
+          st.builtin.playlistId = String(snap.playlistId || st.builtin.playlistId || "");
+          st.builtin.soundId = String(snap.soundId || st.builtin.soundId || "");
+          st.active = "spotify";
+        }
+        if (typeof freeMusicSyncNowFromAudio === "function") freeMusicSyncNowFromAudio(p);
+        if (typeof spotifySyncPlayButtonUi === "function") spotifySyncPlayButtonUi(p);
+        console.info("[music_source_state]", {
+          playback_source_changed: true,
+          reason: callerLabel || "spotify_play",
+          active_music_source_before: "builtin",
+          active_music_source_after: "spotify",
+          builtin_state_after: st?.builtin?.state || "suspended_for_spotify",
+          spotify_state_after: st?.spotify?.state || "",
+          builtin_current_time_preserved: preservedTime,
+          builtin_suspended_for_spotify: true
+        });
       } catch (_) {
         /* ignore */
       }
@@ -4371,16 +4408,6 @@ function spotifyEntityIdFromUri(uri, entity) {
   return s.slice(p.length).split(/[?#]/)[0] || "";
 }
 
-function spotifyPlaylistIdFromAny(value) {
-  const s = String(value || "").trim();
-  if (!s) return "";
-  const uri = s.match(/^spotify:playlist:([a-zA-Z0-9]+)$/);
-  if (uri) return uri[1];
-  const url = s.match(/\/playlist\/([a-zA-Z0-9]+)/);
-  if (url) return url[1];
-  return s;
-}
-
 function spotifyRememberSearchSnapshot(prefix) {
   const el = document.getElementById(`${prefix}-spotify-results`);
   if (!el) return;
@@ -4511,12 +4538,6 @@ async function spotifyOpenPlaylistSideDetail(prefix, meta) {
   const sub = String(meta?.sub || "");
   const thumbUrl = String(meta?.thumbUrl || "").trim();
   if (!playlistId || !playlistUri) return;
-  // Treat an opened playlist detail as the current playlist context for
-  // follow-up commands like "play peak in my playlist" even before the user
-  // presses play. This is the "selected playlist context" the backend sees
-  // in buildClientContextSnapshot().
-  window.__veraSpotifyActivePlaylistId = spotifyPlaylistIdFromAny(playlistId || playlistUri);
-  window.__veraSpotifyActivePlaylistName = title;
 
   root.innerHTML = `<p class="spotify-results-hint">Loading tracks…</p>`;
   const fn = window.VeraSpotify?.getPlaylistTracks;
@@ -18650,6 +18671,8 @@ function musicSourceMarkPlaying(source, meta = {}) {
   const st = veraMusicSourceState();
   const newSource = String(source || "").toLowerCase();
   if (newSource === "builtin") {
+    const priorBuiltinState = st.builtin.state;
+    const priorBuiltinCurrentTime = Number(st.builtin.currentTime || 0);
     // Suspend Spotify if it was the active audible source — preserve its
     // metadata so an explicit "resume Spotify" can return to it.
     if (st.active === "spotify" && st.spotify.state === "playing") {
@@ -18659,7 +18682,13 @@ function musicSourceMarkPlaying(source, meta = {}) {
     st.builtin.state = "playing";
     if (meta.playlistId !== undefined) st.builtin.playlistId = String(meta.playlistId || "");
     if (meta.soundId !== undefined) st.builtin.soundId = String(meta.soundId || "");
-    st.builtin.currentTime = 0;
+    if (meta.currentTime !== undefined) {
+      st.builtin.currentTime = Number(meta.currentTime || 0);
+    } else if (priorBuiltinState === "suspended_for_spotify") {
+      st.builtin.currentTime = priorBuiltinCurrentTime;
+    } else {
+      st.builtin.currentTime = 0;
+    }
   } else if (newSource === "spotify") {
     if (st.active === "builtin" && st.builtin.state === "playing") {
       // Snapshot the current audio position before suspending so explicit
@@ -18706,6 +18735,7 @@ function musicSourceMarkPausedByUser() {
     active_music_source_after: st.active,
     builtin_state_after: st.builtin.state,
     spotify_state_after: st.spotify.state,
+    spotify_paused_without_builtin_resume: prev === "spotify",
     builtin_auto_resume_blocked: prev === "spotify" && st.builtin.state === "suspended_for_spotify",
     spotify_auto_resume_blocked: prev === "builtin" && st.spotify.state === "suspended_for_builtin"
   });
@@ -19256,10 +19286,16 @@ function applyActionPayload(data) {
       document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
     }
     if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
+      const sourceStateBeforeBuiltinPlay = veraMusicSourceState();
+      const preservedBuiltinTime =
+        sourceStateBeforeBuiltinPlay.builtin.state === "suspended_for_spotify"
+          ? Number(sourceStateBeforeBuiltinPlay.builtin.currentTime || 0)
+          : 0;
       stopCurrentMusicPlaybackBeforeNewPlay("builtin");
       musicSourceMarkPlaying("builtin", {
         playlistId: payload.playlist_id || "",
-        soundId: payload.sound_id || ""
+        soundId: payload.sound_id || "",
+        currentTime: preservedBuiltinTime
       });
       void (async () => {
         const pfx = appModePrefix();
@@ -19276,6 +19312,22 @@ function applyActionPayload(data) {
             playlistId: payload.playlist_id,
             soundId: payload.sound_id
           });
+          if (preservedBuiltinTime > 0) {
+            const free = document.getElementById(`${pfx}-free-music-audio`);
+            if (free && Number.isFinite(free.duration) && preservedBuiltinTime < free.duration) {
+              try {
+                free.currentTime = preservedBuiltinTime;
+                freeMusicSyncNowFromAudio(pfx);
+                console.info("[music_source_state]", {
+                  builtin_resume_from_preserved_time: true,
+                  builtin_current_time_preserved: preservedBuiltinTime,
+                  active_music_source_after: "builtin"
+                });
+              } catch (_) {
+                /* keep playback going even if seeking fails */
+              }
+            }
+          }
           console.info("[music_control_payload]", {
             music_play_op: "play_builtin",
             playback_started: true,
@@ -19410,8 +19462,6 @@ function applyActionPayload(data) {
           music_play_op: "play_playlist_scoped",
           playlist_match_title: best ? (best.name || best.title || "") : "",
           playlist_match_confidence: bestScore,
-          playlist_match_found: Boolean(confident),
-          playlist_match_played: Boolean(confident),
           playlist_track_played: Boolean(confident),
           playlist_track_not_found: !confident,
           request_id: data?.request_id || null
@@ -19518,8 +19568,6 @@ function applyActionPayload(data) {
             await runBuiltinVoicePlayback(prefix, built);
             return;
           }
-          stopCurrentMusicPlaybackBeforeNewPlay("spotify");
-          musicSourceMarkPlaying("spotify", { playlist_name: rawName });
           const getLists = window.VeraSpotify?.getPlaylists;
           const playCtx = window.VeraSpotify?.playPlaylist;
           const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
@@ -19537,14 +19585,31 @@ function applyActionPayload(data) {
           }
           if (!hit?.uri) {
             if (artistEl) artistEl.textContent = `No playlist in your library matched "${rawName}".`;
+            console.info("[music_control_payload]", {
+              music_play_op: "play_playlist_by_name",
+              playlist_match_title: "",
+              playlist_track_not_found: true,
+              generic_track_search_blocked: true,
+              request_id: data?.request_id || null
+            });
             return;
           }
           const disp = hit.name || rawName;
-          window.__veraSpotifyActivePlaylistId = spotifyPlaylistIdFromAny(hit.id || hit.uri || "");
-          window.__veraSpotifyActivePlaylistName = disp;
+          stopCurrentMusicPlaybackBeforeNewPlay("spotify");
           musicSourceMarkPlaying("spotify", {
-            playlist_id: window.__veraSpotifyActivePlaylistId,
+            uri: hit.uri,
+            playlist_id: String(hit.id || hit.uri || ""),
             playlist_name: disp
+          });
+          console.info("[music_control_payload]", {
+            music_play_op: "play_playlist_by_name",
+            playback_backend: "spotify",
+            requested_spotify_query: rawName,
+            requested_spotify_uri: hit.uri,
+            spotify_playlist_play_called_with_uri: true,
+            blocked_resume_for_new_play_request: true,
+            generic_track_search_blocked: true,
+            request_id: data?.request_id || null
           });
           await playCtx(hit.uri, {
             playlist_name: disp,
@@ -26879,7 +26944,7 @@ window.VeraSpotify = {
     const preview = meta?.preview_url;
     const openUrl = String(meta?.open_url || spotifyUriToOpenUrl(uri) || "").trim();
     window.__veraSpotifyLast = {
-      uri: String(uri || ""),
+      uri: uri || "",
       preview_url: preview || "",
       open_url: openUrl,
       title: meta?.title || "",
@@ -26996,10 +27061,8 @@ window.VeraSpotify = {
     const base = localBackendBase();
     const contextUri = String(playlistUri || "").trim();
     if (!contextUri) return;
-    if (contextUri.startsWith("spotify:playlist:")) {
-      window.__veraSpotifyActivePlaylistId = spotifyPlaylistIdFromAny(contextUri);
-      window.__veraSpotifyActivePlaylistName = String(meta?.playlist_name || meta?.name || "Playlist").trim();
-    }
+    window.__veraSpotifyActivePlaylistId = contextUri;
+    window.__veraSpotifyActivePlaylistName = String(meta?.playlist_name || "Playlist");
     spotifyClearPendingSdkTrack();
 
     const st = await fetch(`${base}/api/spotify/connection-status`, {
@@ -27063,10 +27126,6 @@ window.VeraSpotify = {
     const contextUri = String(playlistUri || "").trim();
     const offsetUri = String(trackUri || "").trim();
     if (!contextUri || !offsetUri) return;
-    if (contextUri.startsWith("spotify:playlist:")) {
-      window.__veraSpotifyActivePlaylistId = spotifyPlaylistIdFromAny(contextUri);
-      window.__veraSpotifyActivePlaylistName = String(meta?.playlist_name || meta?.context_name || "Playlist").trim();
-    }
 
     const st = await fetch(`${base}/api/spotify/connection-status`, {
       credentials: "include",
