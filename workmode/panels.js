@@ -602,7 +602,19 @@ function addReasoningTab(opts) {
         fields PART 16 of the spec asks for.
    ========================================================================= */
 
-const MIN_REASONING_PANELS = REASONING_TABS_DEFAULT;
+/* Inlined literal (mirrors REASONING_TABS_DEFAULT in app.js). Do NOT
+   reference REASONING_TABS_DEFAULT directly here: this script loads
+   BEFORE app.js, so a top-level `const X = REASONING_TABS_DEFAULT;`
+   throws a ReferenceError during panels.js load. That throw aborts
+   the rest of the top-level body, which silently leaves every
+   subsequent let/const (including recentlyClosedReasoningPanels just
+   below) permanently in TDZ — function declarations are still hoisted
+   and callable, so the UI looks fine until the first close/refill
+   attempt blows up with "Cannot access 'recentlyClosedReasoningPanels'
+   before initialization", which is what bug-reproducer screenshot for
+   the seamless-close issue showed. Keep this in sync with
+   REASONING_TABS_DEFAULT in app.js. */
+const MIN_REASONING_PANELS = 3;
 const REASONING_RECENTLY_CLOSED_STACK_MAX = 16;
 const recentlyClosedReasoningPanels = [];
 
