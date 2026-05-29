@@ -5733,13 +5733,22 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
 
   const transportEl = veraSpotifyTransportEligibility();
   const webReady = Boolean(window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId);
+  const sourceState = (typeof veraMusicSourceState === "function") ? veraMusicSourceState() : null;
   const music = {
     title: String(now.title || musicTitleDom || "").trim(),
     artist: String(now.artist || musicArtistDom || "").trim(),
     is_playing: Boolean(now.active) && !Boolean(now.paused),
     paused: Boolean(now.paused),
     position_ms: Number(now.position_ms) || 0,
-    duration_ms: Number(now.duration_ms) || 0
+    duration_ms: Number(now.duration_ms) || 0,
+    // Source-state fields (2026-05-29 spec). Backend uses these to route
+    // "play X in my playlist" to the user's actually-selected playlist
+    // instead of doing a global Spotify search.
+    active_music_source: sourceState ? sourceState.active : "none",
+    builtin_state: sourceState ? sourceState.builtin.state : "stopped",
+    spotify_state: sourceState ? sourceState.spotify.state : "stopped",
+    current_playlist_id: String(window.__veraSpotifyActivePlaylistId || (sourceState ? sourceState.spotify.playlist_id : "") || ""),
+    current_playlist_name: String(window.__veraSpotifyActivePlaylistName || (sourceState ? sourceState.spotify.playlist_name : "") || "")
   };
   /* Only send skip hints when Web Playback is active; otherwise false looks like "no next track" to the server. */
   if (webReady) {
@@ -18568,6 +18577,125 @@ function shouldApplyWorkModeReasoningInvocation(payload) {
 }
 
 /**
+ * Source-state tracker. Single source of truth for which music backend is
+ * currently audible vs. paused-on-purpose vs. suspended-because-the-other-
+ * source-took-over. The model matches the spec from 2026-05-29:
+ *
+ *   activeMusicSource   "builtin" | "spotify" | "none"
+ *   builtinState        "playing" | "paused_by_user" | "suspended_for_spotify" | "stopped"
+ *   spotifyState        "playing" | "paused_by_user" | "suspended_for_builtin" | "stopped"
+ *
+ * Crucial invariant: pause/stop for ONE source NEVER auto-resumes the
+ * other. Suspended state is preserved across switches so an explicit
+ * "play lo-fi" / "resume Spotify" can restore the prior position when
+ * the user asks for it.
+ */
+function veraMusicSourceState() {
+  if (!window.__veraMusicSourceState) {
+    window.__veraMusicSourceState = {
+      active: "none",
+      builtin: { state: "stopped", currentTime: 0, playlistId: "", soundId: "" },
+      spotify: { state: "stopped", uri: "", title: "", artist: "", playlist_id: "", playlist_name: "" }
+    };
+  }
+  return window.__veraMusicSourceState;
+}
+
+function _captureBuiltinSnapshot() {
+  const prefix = (typeof appModePrefix === "function") ? appModePrefix() : "vera";
+  const free = document.getElementById(`${prefix}-free-music-audio`);
+  const pb = window.__veraFreeMusicPlayback || {};
+  return {
+    currentTime: Number(free?.currentTime || 0),
+    playlistId: String(pb.playlistId || ""),
+    soundId: String(pb.soundId || ""),
+    isPlaying: Boolean(free && !free.paused && Number(free.currentTime) > 0)
+  };
+}
+
+function _captureSpotifySnapshot() {
+  const last = window.__veraSpotifyLast || {};
+  let isPlaying = false;
+  try {
+    const ns = (typeof spotifyEnsureNowState === "function") ? spotifyEnsureNowState() : null;
+    if (ns) isPlaying = Boolean(ns.active) && !Boolean(ns.paused);
+  } catch (_) {}
+  return {
+    uri: String(last.preview_url ? "" : (last.uri || "")) || "",
+    title: String(last.title || ""),
+    artist: String(last.artist || ""),
+    playlist_id: String(window.__veraSpotifyActivePlaylistId || ""),
+    playlist_name: String(window.__veraSpotifyActivePlaylistName || ""),
+    isPlaying
+  };
+}
+
+function musicSourceMarkPlaying(source, meta = {}) {
+  const st = veraMusicSourceState();
+  const newSource = String(source || "").toLowerCase();
+  if (newSource === "builtin") {
+    // Suspend Spotify if it was the active audible source — preserve its
+    // metadata so an explicit "resume Spotify" can return to it.
+    if (st.active === "spotify" && st.spotify.state === "playing") {
+      st.spotify.state = "suspended_for_builtin";
+    }
+    st.active = "builtin";
+    st.builtin.state = "playing";
+    if (meta.playlistId !== undefined) st.builtin.playlistId = String(meta.playlistId || "");
+    if (meta.soundId !== undefined) st.builtin.soundId = String(meta.soundId || "");
+    st.builtin.currentTime = 0;
+  } else if (newSource === "spotify") {
+    if (st.active === "builtin" && st.builtin.state === "playing") {
+      // Snapshot the current audio position before suspending so explicit
+      // "play lo-fi" later can resume from the same spot when possible.
+      const snap = _captureBuiltinSnapshot();
+      st.builtin.state = "suspended_for_spotify";
+      st.builtin.currentTime = snap.currentTime;
+    }
+    st.active = "spotify";
+    st.spotify.state = "playing";
+    if (meta.uri !== undefined) st.spotify.uri = String(meta.uri || "");
+    if (meta.title !== undefined) st.spotify.title = String(meta.title || "");
+    if (meta.artist !== undefined) st.spotify.artist = String(meta.artist || "");
+    if (meta.playlist_id !== undefined) st.spotify.playlist_id = String(meta.playlist_id || "");
+    if (meta.playlist_name !== undefined) st.spotify.playlist_name = String(meta.playlist_name || "");
+    if (meta.playlist_id) window.__veraSpotifyActivePlaylistId = String(meta.playlist_id || "");
+    if (meta.playlist_name) window.__veraSpotifyActivePlaylistName = String(meta.playlist_name || "");
+  }
+  console.info("[music_source_state]", {
+    transition: `${newSource}_play`,
+    active_music_source_after: st.active,
+    builtin_state_after: st.builtin.state,
+    spotify_state_after: st.spotify.state
+  });
+}
+
+function musicSourceMarkPausedByUser() {
+  // Generic "pause music" — pause whichever source is currently active and
+  // mark it paused_by_user. Do NOT touch the suspended-source state: that
+  // way "pause music" after a builtin→spotify switch stops audio without
+  // accidentally resurrecting built-in lo-fi.
+  const st = veraMusicSourceState();
+  const prev = st.active;
+  if (prev === "builtin" && st.builtin.state === "playing") {
+    st.builtin.state = "paused_by_user";
+  }
+  if (prev === "spotify" && st.spotify.state === "playing") {
+    st.spotify.state = "paused_by_user";
+  }
+  st.active = "none";
+  console.info("[music_source_state]", {
+    transition: "pause_by_user",
+    previous_active: prev,
+    active_music_source_after: st.active,
+    builtin_state_after: st.builtin.state,
+    spotify_state_after: st.spotify.state,
+    builtin_auto_resume_blocked: prev === "spotify" && st.builtin.state === "suspended_for_spotify",
+    spotify_auto_resume_blocked: prev === "builtin" && st.spotify.state === "suspended_for_builtin"
+  });
+}
+
+/**
  * Stop whichever music source is currently audible before starting a new
  * one. Built-in `<audio>` elements and Spotify Web Playback can each be
  * playing independently — if a "play" payload arrives while another
@@ -18585,39 +18713,33 @@ function stopCurrentMusicPlaybackBeforeNewPlay(source) {
   const newSource = String(source || "unknown").toLowerCase();
   const prefix = (typeof appModePrefix === "function") ? appModePrefix() : "vera";
   const free = document.getElementById(`${prefix}-free-music-audio`);
+  const st = veraMusicSourceState();
+  const activeBefore = st.active;
+  const builtinStateBefore = st.builtin.state;
+  const spotifyStateBefore = st.spotify.state;
   const builtinWasPlaying = Boolean(free && !free.paused && free.currentTime > 0);
   let spotifyWasPlaying = false;
   try {
-    const spotifyState = window.VeraSpotify && typeof window.VeraSpotify.getPlaybackState === "function"
-      ? window.VeraSpotify.getPlaybackState()
-      : null;
-    if (spotifyState && (spotifyState.isPlaying || spotifyState.playing || spotifyState.is_playing)) {
+    const ns = (typeof spotifyEnsureNowState === "function") ? spotifyEnsureNowState() : null;
+    if (ns && Boolean(ns.active) && !Boolean(ns.paused)) {
       spotifyWasPlaying = true;
-    } else if (window.VeraSpotify && window.VeraSpotify.lastPlaybackState) {
-      const last = window.VeraSpotify.lastPlaybackState;
-      if (last && (last.isPlaying || last.is_playing)) {
-        spotifyWasPlaying = true;
-      }
     }
   } catch (_) { /* getter may not exist on older builds */ }
-  if (!spotifyWasPlaying) {
-    try {
-      const elems = document.querySelectorAll("audio");
-      for (const el of elems) {
-        if (!el || el === free) continue;
-        if (!el.paused && Number(el.currentTime) > 0) {
-          spotifyWasPlaying = true;
-          break;
-        }
-      }
-    } catch (_) {}
-  }
+
+  // Snapshot currentTime of built-in audio BEFORE we pause it so the
+  // suspended-state preserves "where we were" for a later explicit
+  // resume ("play lo-fi" after switching to Spotify and back).
+  const builtinSnap = _captureBuiltinSnapshot();
 
   console.info("[music_dispatch]", {
     stop_current_music_before_new_play_called: true,
     new_source: newSource,
     builtin_music_was_playing: builtinWasPlaying,
-    spotify_was_playing: spotifyWasPlaying
+    spotify_was_playing: spotifyWasPlaying,
+    active_music_source_before: activeBefore,
+    builtin_state_before: builtinStateBefore,
+    spotify_state_before: spotifyStateBefore,
+    builtin_current_time_preserved: builtinSnap.currentTime
   });
 
   let builtinStopped = false;
@@ -18628,6 +18750,15 @@ function stopCurrentMusicPlaybackBeforeNewPlay(source) {
       builtinStopped = true;
       if (typeof freeMusicSyncNowFromAudio === "function") freeMusicSyncNowFromAudio(prefix);
       if (typeof spotifySyncPlayButtonUi === "function") spotifySyncPlayButtonUi(prefix);
+      // If we're switching to Spotify, mark built-in suspended (state may
+      // be restored by an explicit "play lo-fi"). Switching to built-in
+      // again with a fresh play is a no-op as the new play resets state.
+      if (newSource === "spotify") {
+        st.builtin.state = "suspended_for_spotify";
+        st.builtin.currentTime = builtinSnap.currentTime;
+        st.builtin.playlistId = builtinSnap.playlistId;
+        st.builtin.soundId = builtinSnap.soundId;
+      }
     }
   } catch (err) {
     console.warn("[music_dispatch] builtin_pause_failed", err);
@@ -18641,6 +18772,9 @@ function stopCurrentMusicPlaybackBeforeNewPlay(source) {
       // pause is only required when crossing the source boundary.
       void pause();
       spotifyStopped = true;
+      if (newSource === "builtin" && spotifyWasPlaying) {
+        st.spotify.state = "suspended_for_builtin";
+      }
     }
   } catch (err) {
     console.warn("[music_dispatch] spotify_pause_failed", err);
@@ -18648,7 +18782,14 @@ function stopCurrentMusicPlaybackBeforeNewPlay(source) {
   console.info("[music_dispatch]", {
     new_source: newSource,
     builtin_music_stopped: builtinStopped,
-    spotify_playback_stopped: spotifyStopped
+    spotify_playback_stopped: spotifyStopped,
+    active_music_source_after: st.active,
+    builtin_state_after: st.builtin.state,
+    spotify_state_after: st.spotify.state,
+    builtin_suspended_for_spotify: st.builtin.state === "suspended_for_spotify",
+    spotify_suspended_for_builtin: st.spotify.state === "suspended_for_builtin",
+    builtin_auto_resume_blocked: true,
+    spotify_auto_resume_blocked: true
   });
 }
 
@@ -19047,6 +19188,10 @@ function applyActionPayload(data) {
         freeMusicSyncNowFromAudio(prefix);
         spotifySyncPlayButtonUi(prefix);
       }
+      // Mark whichever source was active as paused_by_user and ensure
+      // we never auto-resume the OTHER source (spec rule 6: a pause for
+      // one source must not resurrect another).
+      musicSourceMarkPausedByUser();
       return;
     }
     if (op === "resume") {
@@ -19096,6 +19241,10 @@ function applyActionPayload(data) {
     }
     if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
       stopCurrentMusicPlaybackBeforeNewPlay("builtin");
+      musicSourceMarkPlaying("builtin", {
+        playlistId: payload.playlist_id || "",
+        soundId: payload.sound_id || ""
+      });
       void (async () => {
         const pfx = appModePrefix();
         console.info("[music_control_payload]", {
@@ -19130,6 +19279,11 @@ function applyActionPayload(data) {
       })();
     } else if (op === "play_track" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
       stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+      musicSourceMarkPlaying("spotify", {
+        uri: payload.uri,
+        title: payload.title || "",
+        artist: payload.artist || ""
+      });
       const play = window.VeraSpotify?.playTrack;
       console.info("[music_control_payload]", {
         music_play_op: "play_track",
@@ -19137,6 +19291,9 @@ function applyActionPayload(data) {
         spotify_playtrack_available: typeof play === "function",
         title: payload.title || "",
         artist: payload.artist || "",
+        requested_spotify_uri: String(payload.uri || ""),
+        spotify_play_called_with_uri: Boolean(payload.uri),
+        blocked_resume_for_new_track: true,
         request_id: data?.request_id || null
       });
       if (typeof play === "function") {
@@ -19161,8 +19318,137 @@ function applyActionPayload(data) {
           });
         });
       }
+    } else if (op === "play_playlist_scoped" && shouldPlayMusicThisInvocation(payload, op)) {
+      // New op for "play X in my playlist" — search WITHIN the user's
+      // active Spotify playlist (set by their last interaction with a
+      // playlist context) instead of doing a global Spotify search.
+      // If no playlist context is known we surface a clear "which
+      // playlist" message in the spotify-track-artist line.
+      const rawQuery = String(payload.query || "").trim();
+      const playlistId = String(payload.playlist_id || window.__veraSpotifyActivePlaylistId || "").trim();
+      const playlistName = String(payload.playlist_name || window.__veraSpotifyActivePlaylistName || "").trim();
+      console.info("[music_control_payload]", {
+        music_play_op: "play_playlist_scoped",
+        playback_backend: "spotify",
+        playlist_scope_query: rawQuery,
+        selected_playlist_id: playlistId,
+        selected_playlist_name: playlistName,
+        current_playlist_context_available: Boolean(playlistId),
+        generic_track_search_blocked: true,
+        request_id: data?.request_id || null
+      });
+      const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+      if (!playlistId) {
+        if (artistEl) artistEl.textContent = "Which playlist should I search?";
+        console.info("[music_control_payload]", {
+          music_play_op: "play_playlist_scoped",
+          clarification_asked: true,
+          request_id: data?.request_id || null
+        });
+        return;
+      }
+      stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+      void (async () => {
+        const getTracks = window.VeraSpotify?.getPlaylistTracks;
+        if (typeof getTracks !== "function") {
+          if (artistEl) artistEl.textContent = "Playlist search is not available right now.";
+          return;
+        }
+        let tracks = [];
+        try {
+          tracks = await getTracks(playlistId);
+        } catch (err) {
+          if (artistEl) artistEl.textContent = "Couldn't load that playlist's tracks.";
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_playlist_scoped",
+            playback_error: String(err && err.message || err || "unknown"),
+            request_id: data?.request_id || null
+          });
+          return;
+        }
+        const needle = rawQuery.toLowerCase();
+        // Light fuzzy match: exact title substring beats artist substring,
+        // and we require at least one needle token (length >= 3) to appear
+        // in the title to call it a confident match. Without this guard
+        // the planner would pick a random track for short queries.
+        const tokens = needle.split(/\s+/).filter((t) => t && t.length >= 3);
+        let best = null;
+        let bestScore = 0;
+        for (const t of (tracks || [])) {
+          const title = String(t.name || t.title || "").toLowerCase();
+          const artistLine = (Array.isArray(t.artists)
+            ? t.artists.map((a) => a?.name || "").join(", ")
+            : String(t.artist || "")).toLowerCase();
+          let score = 0;
+          if (title === needle) score = 1.0;
+          else if (title.includes(needle)) score = 0.9;
+          else if (tokens.length && tokens.every((tok) => title.includes(tok))) score = 0.75;
+          else if (artistLine.includes(needle)) score = 0.5;
+          if (score > bestScore) {
+            bestScore = score;
+            best = t;
+          }
+        }
+        const confident = best && bestScore >= 0.75;
+        console.info("[music_control_payload]", {
+          music_play_op: "play_playlist_scoped",
+          playlist_match_title: best ? (best.name || best.title || "") : "",
+          playlist_match_confidence: bestScore,
+          playlist_track_played: Boolean(confident),
+          playlist_track_not_found: !confident,
+          request_id: data?.request_id || null
+        });
+        if (!confident) {
+          if (artistEl) artistEl.textContent = `I couldn't find "${rawQuery}" in ${playlistName || "that playlist"}.`;
+          return;
+        }
+        const uri = String(best.uri || "");
+        if (!uri) {
+          if (artistEl) artistEl.textContent = `Found "${best.name || best.title}" but couldn't play it.`;
+          return;
+        }
+        const title = String(best.name || best.title || "");
+        const artistStr = Array.isArray(best.artists)
+          ? best.artists.map((a) => a?.name || "").filter(Boolean).join(", ")
+          : String(best.artist || "");
+        musicSourceMarkPlaying("spotify", {
+          uri,
+          title,
+          artist: artistStr,
+          playlist_id: playlistId,
+          playlist_name: playlistName
+        });
+        const playFn = window.VeraSpotify?.playTrack;
+        if (typeof playFn !== "function") {
+          if (artistEl) artistEl.textContent = "Spotify playback is not available.";
+          return;
+        }
+        try {
+          await playFn(uri, { title, artist: artistStr });
+          console.info("[music_control_payload]", {
+            music_play_op: "play_playlist_scoped",
+            playback_started: true,
+            playback_backend: "spotify",
+            spotify_play_called_with_uri: true,
+            requested_spotify_uri: uri,
+            new_spotify_track: `${title} — ${artistStr}`,
+            request_id: data?.request_id || null
+          });
+        } catch (err) {
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_playlist_scoped",
+            playback_error: String(err && err.message || err || "unknown"),
+            request_id: data?.request_id || null
+          });
+        }
+      })();
     } else if (op === "play_album" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
       stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+      musicSourceMarkPlaying("spotify", {
+        uri: payload.uri,
+        title: payload.title || "",
+        artist: payload.artist || ""
+      });
       const playCtx = window.VeraSpotify?.playPlaylist;
       if (typeof playCtx === "function") {
         void (async () => {
@@ -19201,6 +19487,10 @@ function applyActionPayload(data) {
           const built = matchBuiltinPlaylistOrSoundNameForClient(rawName);
           if (built) {
             stopCurrentMusicPlaybackBeforeNewPlay("builtin");
+            musicSourceMarkPlaying("builtin", {
+              playlistId: built.playlistId || "",
+              soundId: built.soundId || ""
+            });
             console.info("[music_control_payload]", {
               music_play_op: "play_playlist_by_name",
               playback_backend: "builtin_audio",
@@ -19211,6 +19501,7 @@ function applyActionPayload(data) {
             return;
           }
           stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+          musicSourceMarkPlaying("spotify", { playlist_name: rawName });
           const getLists = window.VeraSpotify?.getPlaylists;
           const playCtx = window.VeraSpotify?.playPlaylist;
           const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
