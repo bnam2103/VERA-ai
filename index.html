@@ -2984,7 +2984,7 @@ document.addEventListener("click", () => {
      New accessor getReasoningPanelDebugState() mirrors getTtsDebugState /
      getInterruptionDebugState / getAsrDebugState. Extracted 2026-05-27,
      Stage 8. -->
-<script src="workmode/panels.js?v=4"></script>
+<script src="workmode/panels.js?v=5"></script>
 <!-- workmode/checklist.js must load AFTER workmode/panels.js (its
      plan-sync helpers reach reasoning-panel helpers like
      getReasoningTabTopicLabel and getWorkModeReasoningLaneId through
@@ -3047,7 +3047,7 @@ document.addEventListener("click", () => {
      Extracted 2026-05-27, Stage 10. -->
 <script src="news/newsRouter.js?v=2"></script>
 <script src="news/newsPanel.js?v=1"></script>
-<script src="app.js?v=88"></script>
+<script src="app.js?v=89"></script>
 <!-- debug/voiceDebug.js loads AFTER app.js — only attaches the manual
      DevTools helpers window.veraConcurrencyDebug, window.dumpVeraVoiceState,
      window.resetVeraVoiceRuntimeState; their function bodies reach the

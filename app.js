@@ -8775,6 +8775,13 @@ function _extractAllCloseSpans(text, panelCount) {
   while ((m = curRe.exec(t)) !== null) {
     push("current_panel", null, null, m[0], curRe.lastIndex);
   }
+  /* current_panel: bare local close commands like "close panel" / "close tab".
+     Claim these before reasoning classification; otherwise local UI actions can
+     fall through to Work Mode reasoning and show the generic unavailable bubble. */
+  const barePanelRe = /\bclose\s+(?:the\s+)?(?:reasoning\s+)?(?:panel|tab|space|lane)\b/g;
+  while ((m = barePanelRe.exec(t)) !== null) {
+    push("current_panel", null, null, m[0], barePanelRe.lastIndex);
+  }
   /* specific_indices via ordinal words AND via "panel N" numerics */
   const ordWordRe = /\bclose\s+(?:the\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)(?:\s+(?:and|or|,)\s+(?:the\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)){0,7}\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
   while ((m = ordWordRe.exec(t)) !== null) {
@@ -9208,20 +9215,31 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   const order = getReasoningPanelOrder();
   const parsed = parseCloseReasoningPanelsCommand(text, order.length);
   const source = opts.reason || "client_shortcut";
+  const closePanelIntentDetected =
+    parsed?.intent === "close_reasoning_panels" ||
+    parsed?.intent === "reopen_last_reasoning_panel";
+  const finalRoute = closePanelIntentDetected ? "local_app_action" : "not_close_panel";
+  const inputSource = opts && opts.isVoice ? "voice" : "typed";
   try {
     console.info(
       (opts && opts.isVoice ? "[voice_close_panel_route] " : "[typed_close_panel_route] ") +
       JSON.stringify({
+        raw_text: String(text || ""),
         text_preview: String(text).slice(0, 80),
+        input_source: inputSource,
         source,
         gate_passed: true,
+        closePanelIntentDetected,
         intent_detected: parsed?.intent || null,
+        finalRoute,
+        reasoningRouteSkipped: closePanelIntentDetected,
         action_name: parsed?.intent === "close_reasoning_panels" ? "reasoning.close_panel"
                     : parsed?.intent === "reopen_last_reasoning_panel" ? "reasoning.reopen_last_panel"
                     : null,
         parsed_close_scope: parsed?.closeScope || null,
         parsed_indices: parsed?.indices || [],
         panel_count_before: order.length,
+        actionHandlerFound: typeof executeCloseReasoningPanelsCommand === "function",
         action_handler_found: typeof executeCloseReasoningPanelsCommand === "function",
       })
     );
@@ -9404,11 +9422,24 @@ function wireReasoningTabStrip() {
          whether the close completed. Tag with panel id+title at click time
          so we can correlate with close_core_called downstream. */
       const _tabIdxClicked = Number(closeBtn.dataset.tabIndex);
+      const _laneIdClicked = String(closeBtn.dataset.laneId || "").trim();
+      const _panelDomIdClicked = String(closeBtn.dataset.panelDomId || "").trim();
       const _orderAtClick = (() => { try { return getReasoningPanelOrder(); } catch (_) { return []; } })();
-      const _targetAtClick = _orderAtClick.find((p) => p.tabIndex === _tabIdxClicked) || null;
+      const _targetAtClick =
+        (_laneIdClicked ? _orderAtClick.find((p) => p.laneId === _laneIdClicked) : null) ||
+        _orderAtClick.find((p) => p.tabIndex === _tabIdxClicked) ||
+        null;
       try {
         console.info("[reasoning_tab_close_clicked] " + JSON.stringify({
+          raw_text: "",
+          input_source: "ui_click",
+          closePanelIntentDetected: true,
+          finalRoute: "local_app_action",
+          reasoningRouteSkipped: true,
+          actionHandlerFound: typeof closeReasoningTabByLaneId === "function" || typeof closeReasoningTab === "function",
           tab_index: _tabIdxClicked,
+          clicked_lane_id: _laneIdClicked,
+          clicked_panel_dom_id: _panelDomIdClicked,
           panel_id: _targetAtClick?.laneId || null,
           panel_title: _targetAtClick?.label || null,
           visual_index: _targetAtClick?.visualIndex || null,
@@ -9422,7 +9453,11 @@ function wireReasoningTabStrip() {
         } catch (_) {}
         return;
       }
-      closeReasoningTab(_tabIdxClicked);
+      if (_laneIdClicked && typeof closeReasoningTabByLaneId === "function") {
+        closeReasoningTabByLaneId(_laneIdClicked, { reason: "ui_close_button" });
+      } else {
+        closeReasoningTab(_tabIdxClicked);
+      }
       return;
     }
     const tab = e.target.closest("button.vera-reasoning-tab");
@@ -24413,6 +24448,18 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     processing = false;
     listening = false;
     setStatus("Ready", "idle");
+  }
+
+  /* Local UI actions must be claimed before the Work Mode multi-action
+     planner, reasoning classifier, or /infer fallback. A bare "close panel"
+     is not a reasoning request; if we let it fall through, the user can see
+     the generic "Reasoning is temporarily unavailable" bubble. */
+  if (!fromQueue && !fromPanelQueue &&
+      maybeHandleCloseReasoningPanelShortcut(trimmed, {
+        reason: path || "work-typed-preflight",
+        isVoice: Boolean(opts?.isVoice)
+      })) {
+    return;
   }
 
   /* =========================

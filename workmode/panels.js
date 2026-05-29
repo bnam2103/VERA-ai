@@ -333,6 +333,8 @@ function renderReasoningTabStrip() {
     closeBtn.type = "button";
     closeBtn.className = "vera-reasoning-tab-close";
     closeBtn.dataset.tabIndex = String(idx);
+    closeBtn.dataset.laneId = String(panel.dataset.laneId || "");
+    closeBtn.dataset.panelDomId = String(panel.id || "");
     closeBtn.setAttribute("aria-label", `Close ${tabLabel}`);
     closeBtn.title = "Close this reasoning space";
     closeBtn.textContent = "×";
@@ -1158,12 +1160,20 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
   }
 
   renderReasoningTabStrip();
+  const renderTabsCalled = true;
   try {
     persistReasoningTabsState();
   } catch (_) {}
 
   const afterOrder = getReasoningPanelOrder();
   const activeAfter = afterOrder.find((p) => p.isActive) || null;
+  let renderActivePanelCalled = false;
+  if (activeAfter && Number.isFinite(Number(activeAfter.tabIndex))) {
+    try {
+      setFocusedWorkModeLaneFromIndex(Number(activeAfter.tabIndex));
+      renderActivePanelCalled = true;
+    } catch (_) {}
+  }
   const registryAfterClose = snapshotReasoningLaneRegistryForDebug([
     ...closedLaneIds,
     ...createdPanelIds,
@@ -1249,6 +1259,12 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
       ok: true,
       closed_count: targets.length,
       closed_titles: closedTitles,
+      targetPanelIds: closedLaneIds,
+      activePanelBefore: activeBefore?.laneId || null,
+      activePanelAfter: activeAfter?.laneId || null,
+      renderTabsCalled,
+      renderActivePanelCalled,
+      closeCompleted: true,
       created_blank_count: createdBlankCount,
       panel_count_final: afterOrder.length,
       active_panel_id_after: activeAfter?.laneId || null,
@@ -1264,7 +1280,10 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
     totalBefore,
     invalidIndices: invalidIdx,
     activeAfter: activeAfter?.label || null,
+    activeAfterLaneId: activeAfter?.laneId || null,
     activeWasClosed,
+    renderTabsCalled,
+    renderActivePanelCalled,
     panelTitlesAfter: afterOrder.map((p) => p.label),
     blankRenamesApplied: renameInfo.renamedCount,
   };
@@ -1342,6 +1361,15 @@ function closeReasoningTab(tabIndex) {
   return result;
 }
 
+function closeReasoningTabByLaneId(laneId, opts = {}) {
+  const lid = String(laneId || "").trim();
+  if (!lid) return null;
+  const order = getReasoningPanelOrder();
+  const target = order.find((p) => String(p.laneId || "").trim() === lid);
+  if (!target) return null;
+  return closeReasoningTab(target.tabIndex);
+}
+
 /* =========================
    VOICE CONFIRMATION REPLY BUILDER
 ========================= */
@@ -1359,6 +1387,11 @@ function _countWordOrNumber(n) {
 }
 function buildCloseReasoningPanelsVoiceReply(execResult, parsed) {
   if (!execResult) return "I couldn't close that reasoning panel.";
+  if (!execResult.ok && execResult.failureReason === "all_indices_out_of_range") {
+    const n = Number(execResult.totalBefore);
+    const count = Number.isFinite(n) && n >= 0 ? n : 0;
+    return `I only see ${count} ${count === 1 ? "panel" : "panels"}.`;
+  }
   if (execResult.ok) {
     const created = execResult.createdBlankCount || 0;
     const titles = execResult.closedTitles || [];
@@ -1584,6 +1617,7 @@ try {
   if (typeof window !== "undefined") {
     window.closeReasoningPanelsByVisualIndices = closeReasoningPanelsByVisualIndices;
     window.closeReasoningTab = closeReasoningTab;
+    window.closeReasoningTabByLaneId = closeReasoningTabByLaneId;
     window.buildCloseReasoningPanelsVoiceReply = buildCloseReasoningPanelsVoiceReply;
     window.renderReasoningCloseAssistantConfirmation = renderReasoningCloseAssistantConfirmation;
     window.getReasoningPanelOrder = getReasoningPanelOrder;
