@@ -18568,6 +18568,29 @@ function shouldApplyWorkModeReasoningInvocation(payload) {
 }
 
 function applyActionPayload(data) {
+  // 2026-05-29 — multi-action planner pass-through.
+  // When the backend executed a typed compound command, every action's
+  // ui_payload arrives in data.action_payloads in execution order. We
+  // apply each one through this same function (recursive single-payload
+  // dispatch) so every existing per-panel branch below keeps working
+  // unchanged. We deliberately also apply data.action_payload at the end
+  // when it's the FIRST payload (it duplicates data.action_payloads[0]
+  // when both are present — skip in that case to avoid double-render).
+  const planned = Array.isArray(data?.action_payloads) ? data.action_payloads.filter(Boolean) : [];
+  if (planned.length > 1) {
+    const seen = new WeakSet();
+    planned.forEach((p, idx) => {
+      if (!p || typeof p !== "object") return;
+      if (seen.has(p)) return;
+      seen.add(p);
+      try {
+        applyActionPayload({ ...data, action_payload: p, action_payloads: null });
+      } catch (err) {
+        console.warn("[planner] action_payloads dispatch failed", { idx, err });
+      }
+    });
+    return;
+  }
   const payload = data?.action_payload;
   const lockToMusicPanel =
     isVeraWorkModeOn() && appModePrefix() === "vera";
