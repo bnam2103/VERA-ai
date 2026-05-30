@@ -17060,6 +17060,10 @@ function shouldUseWorkModeTurnTtsQueue(ttsTurn) {
   return isVeraWorkModeOn() && appModePrefix() === "vera" && Boolean(ttsTurn?.turn_id);
 }
 
+function isWorkModeReasoningStage2TtsItem(item) {
+  return Boolean(item?.stage === 2 && item?.prep?.voiceTwoStage?.reasoningRouted);
+}
+
 function enqueueWorkModeTurnTts(item) {
   const frozen = getWorkModeFrozenTurn(item.turn_id);
   const expectedLane = frozen?.turn_lane_id || item.lane_id;
@@ -17088,7 +17092,8 @@ function enqueueWorkModeTurnTts(item) {
 
 async function executeWorkModeTtsQueueItem(item) {
   let policy = null;
-  if (item.stage === 2) {
+  const stage2ReasoningAudio = isWorkModeReasoningStage2TtsItem(item);
+  if (stage2ReasoningAudio) {
     policy = evaluateWorkModeStage2Tts(item);
     if (policy.drop_reason && policy.drop_reason !== "text_only_due_to_code_or_math") {
       logTtsDropStale(item, policy.drop_reason);
@@ -17097,7 +17102,7 @@ async function executeWorkModeTtsQueueItem(item) {
     }
   }
 
-  if (item.stage === 2 && policy?.action === "text_only") {
+  if (stage2ReasoningAudio && policy?.action === "text_only") {
     try {
       if (typeof item.onDrop === "function") await item.onDrop();
     } catch (e) {
@@ -17106,7 +17111,7 @@ async function executeWorkModeTtsQueueItem(item) {
     return;
   }
 
-  if (item.stage === 2 && policy?.action === "text_only_with_supplement") {
+  if (stage2ReasoningAudio && policy?.action === "text_only_with_supplement") {
     try {
       if (typeof item.onDrop === "function") await item.onDrop();
     } catch (e) {
@@ -17124,7 +17129,7 @@ async function executeWorkModeTtsQueueItem(item) {
      /infer done) will retry playback after a short grace window. Stage 1 and
      immediate response audio are intentionally NOT gated. */
   if (
-    item.stage === 2 &&
+    stage2ReasoningAudio &&
     policy?.action === "play_full" &&
     !item.__stage2BypassUserBusyGate
   ) {
@@ -17151,12 +17156,15 @@ async function executeWorkModeTtsQueueItem(item) {
         ).trim();
       }
       deferStage2Audio(item, snapshot, { phrase });
+      _logStage2Coord("stage2_removed_from_active_queue", _stage2CoordIds(item));
+      _logStage2Coord("stage2_defer_resolved_queue_item", _stage2CoordIds(item));
+      _logStage2Coord("stage2_defer_did_not_set_speaking", _stage2CoordIds(item));
       return;
     }
     _logStage2Coord("stage2_play_allowed", _stage2CoordIds(item));
   }
 
-  if (item.stage === 2) _logStage2Coord("stage2_play_started", _stage2CoordIds(item));
+  if (stage2ReasoningAudio) _logStage2Coord("stage2_play_started", _stage2CoordIds(item));
   await item.play();
   await waitUntilAssistantTtsIdle();
 }
@@ -23006,6 +23014,29 @@ async function resolveBmoTtsSegmentFaceModesForPlayback(data, urlCount) {
 
 /** Single <audio> for one file; Web Audio queue when multiple sentence chunks. */
 async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {}) {
+  const cleanupAfterFailedTtsPlay = (reason, extra = {}) => {
+    try {
+      console.warn("[tts_play_failed_cleanup_done]", {
+        reason,
+        tts_segment_count: data?.tts_segment_count ?? null,
+        audio_url_present: Boolean(data?.audio_url),
+        audio_urls_count: Array.isArray(data?.audio_urls) ? data.audio_urls.length : 0,
+        audio_file_exists: null,
+        ...extra
+      });
+    } catch (_) {}
+    mainTtsPlaybackActive = false;
+    try { activeMainTtsBufferSources.length = 0; } catch (_) {}
+    try {
+      const a = getAudioEl();
+      if (a) {
+        a.pause();
+        a.removeAttribute("src");
+        a.load?.();
+      }
+    } catch (_) {}
+    if (typeof onPlayEnd === "function") onPlayEnd();
+  };
   if (appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled()) {
     logVeraSettings("tts_play_suppressed_workmode_mute", { mode: "playTtsFromApi" });
     mainTtsPlaybackActive = false;
@@ -23025,7 +23056,32 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
     return;
   }
   const urls = resolveAudioUrls(data);
-  if (!urls.length) return;
+  try {
+    console.info("[tts_state_before_play]", {
+      tts_segment_count: data?.tts_segment_count ?? null,
+      audio_url_present: Boolean(data?.audio_url),
+      audio_urls_count: urls.length,
+      mainTtsPlaybackActive,
+      activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+      waveState,
+      requestInFlight,
+      processing,
+      workModeTtsQueueLength: Array.isArray(workModeTtsQueue) ? workModeTtsQueue.length : null,
+      deferredStage2QueueLength: Array.isArray(deferredStage2Queue) ? deferredStage2Queue.length : null,
+      workModeTtsDrainActive: Boolean(workModeTtsDrainRunning),
+      currentWorkModeTtsItem: workModeTtsCurrentlyPlaying || null
+    });
+  } catch (_) {}
+  if (!urls.length) {
+    try {
+      if (typeof onPlayStart === "function") onPlayStart();
+    } catch (_) {}
+    cleanupAfterFailedTtsPlay("no_audio_urls", {
+      audio_play_error: "no_audio_urls",
+      audio_error_code: null
+    });
+    return;
+  }
 
   let segmentFaceModes = null;
   if (document.body.classList.contains("bmo-open")) {
@@ -23046,7 +23102,13 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
 
   if (urls.length === 1) {
     const el = getAudioEl();
-    if (!el) return;
+    if (!el) {
+      cleanupAfterFailedTtsPlay("missing_audio_element", {
+        audio_play_error: "missing_audio_element",
+        audio_error_code: null
+      });
+      return;
+    }
     el.src = `${API_URL}${urls[0]}`;
     await ensureMainAudioTtsGraph();
     el.addEventListener(
@@ -23069,12 +23131,42 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
       "ended",
       () => {
         mainTtsPlaybackActive = false;
+        try {
+          console.info("[tts_state_after_done]", {
+            mainTtsPlaybackActive,
+            activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+            waveState,
+            requestInFlight,
+            processing
+          });
+        } catch (_) {}
         if (onPlayEnd) onPlayEnd();
+        try {
+          console.info("[tts_state_after_finally]", {
+            mainTtsPlaybackActive,
+            activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+            waveState,
+            requestInFlight,
+            processing,
+            workModeTtsQueueLength: Array.isArray(workModeTtsQueue) ? workModeTtsQueue.length : null,
+            deferredStage2QueueLength: Array.isArray(deferredStage2Queue) ? deferredStage2Queue.length : null,
+            workModeTtsDrainActive: Boolean(workModeTtsDrainRunning),
+            currentWorkModeTtsItem: workModeTtsCurrentlyPlaying || null
+          });
+        } catch (_) {}
       },
       { once: true }
     );
     const onSingleAudioError = (ev) => {
       try { el.removeEventListener("error", onSingleAudioError); } catch (_) {}
+      try {
+        console.warn("[audio_play_error]", {
+          audio_fetch_status: null,
+          audio_play_error: String(ev?.message || ev || "audio_element_error"),
+          audio_error_code: el.error?.code ?? null,
+          src: el.src
+        });
+      } catch (_) {}
       logVeraCapabilityFailure("tts", "audio_element_error", {
         src: el.src,
         error_code: el.error?.code
@@ -23091,23 +23183,75 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
         "tts_failure",
         VERA_SAFETY_LIMITS.messages.ttsFailure
       );
-      if (onPlayEnd) onPlayEnd();
+      cleanupAfterFailedTtsPlay("audio_element_error", {
+        audio_play_error: String(ev?.message || ev || "audio_element_error"),
+        audio_error_code: el.error?.code ?? null,
+        src: el.src
+      });
     };
     el.addEventListener("error", onSingleAudioError, { once: true });
     try {
+      console.info("[audio_play_attempt]", { url: urls[0], mode: "html_audio" });
       await el.play();
+      console.info("[audio_play_success]", { url: urls[0], mode: "html_audio" });
     } catch (err) {
       onSingleAudioError(err);
     }
     return;
   }
 
-  await playTtsUrlSequenceGapless(API_URL, urls, {
-    onFirstStart: runPlayStart,
-    onLastEnd: onPlayEnd,
-    sessionToken,
-    segmentFaceModes
-  });
+  try {
+    console.info("[audio_play_attempt]", { urls, mode: "web_audio_gapless" });
+    await playTtsUrlSequenceGapless(API_URL, urls, {
+      onFirstStart: () => {
+        console.info("[audio_play_success]", { first_url: urls[0], mode: "web_audio_gapless" });
+        runPlayStart();
+      },
+      onLastEnd: () => {
+        try {
+          console.info("[tts_state_after_done]", {
+            mainTtsPlaybackActive,
+            activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+            waveState,
+            requestInFlight,
+            processing
+          });
+        } catch (_) {}
+        if (onPlayEnd) onPlayEnd();
+      },
+      sessionToken,
+      segmentFaceModes
+    });
+  } catch (e) {
+    try {
+      console.warn("[tts_state_after_play_error]", {
+        error: String(e?.message || e || ""),
+        mainTtsPlaybackActive,
+        activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+        waveState,
+        requestInFlight,
+        processing
+      });
+    } catch (_) {}
+    cleanupAfterFailedTtsPlay("web_audio_gapless_error", {
+      audio_play_error: String(e?.message || e || ""),
+      audio_error_code: null
+    });
+  } finally {
+    try {
+      console.info("[tts_state_after_finally]", {
+        mainTtsPlaybackActive,
+        activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+        waveState,
+        requestInFlight,
+        processing,
+        workModeTtsQueueLength: Array.isArray(workModeTtsQueue) ? workModeTtsQueue.length : null,
+        deferredStage2QueueLength: Array.isArray(deferredStage2Queue) ? deferredStage2Queue.length : null,
+        workModeTtsDrainActive: Boolean(workModeTtsDrainRunning),
+        currentWorkModeTtsItem: workModeTtsCurrentlyPlaying || null
+      });
+    } catch (_) {}
+  }
 }
 
 /* createTtsUrlQueue → moved to voice/ttsQueue.js (Stage 5, 2026-05-27). */
