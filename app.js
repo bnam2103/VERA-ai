@@ -12125,6 +12125,73 @@ function resolveReasoningPanelTopicFromContext() {
  * True when the user is only asking to switch reasoning tabs (mirrors `app.py` `_explicit_work_mode_panel_navigation`).
  * Used to skip `maybePrepareWorkModeReasoning` so navigation does not also spawn a reasoning stream.
  */
+/**
+ * 2026-05-29 spec PART 4 — compound-action-families detector.
+ *
+ * Returns ``{ isCompound, families, reason }`` so the voice preflight
+ * path and the reasoning gate can defer to the backend deterministic
+ * planner when a transcript references more than one action family.
+ *
+ * Heuristic (cheap, regex-only — mirrors the families the backend
+ * ``actions/multi_action_planner.py`` knows about):
+ *
+ *   panel        : "go to/open/close/navigate ... panel|tab|page"
+ *   reasoning    : "explain|describe|tell me about|summari[sz]e|analy[sz]e|
+ *                  solve|prove|derive|write|draft|outline|compare|teach me|
+ *                  walk me through|break down"
+ *   music        : "play|pause|resume|skip|next/previous track|turn up/down
+ *                  the music|the volume|lo-fi|spotify|playlist"
+ *   timer        : "timer for ..." / "set a timer" / "cancel the timer"
+ *   checklist    : "(add|remove|cross off|check off) ... checklist|plan|list"
+ *
+ * The detector requires AT LEAST 2 DISTINCT families to call something
+ * compound. A bare "explain X in panel 2" still counts as compound
+ * (panel + reasoning) — that's intentional, because the backend planner
+ * handles "in panel N" propagation cleanly and the local reasoning gate
+ * would otherwise open a panel without inheriting the explicit target.
+ *
+ * Conservative cases that do NOT count as compound on purpose:
+ *   - "what is the capital of france and the population of germany?"
+ *     (no action verbs; reasoning only — count = 1)
+ *   - "play feather by sabrina carpenter and frgile by laufey"
+ *     (single family; let existing music handler take it)
+ */
+const _WMC_PANEL_FAMILY_RE =
+  /\b(?:go(?:\s+back)?\s+to|jump\s+to|switch\s+to|change\s+to|open|close|hide|dismiss|create|make|add|new|navigate\s+to|use|show|select)\s+(?:a\s+|the\s+|my\s+|all\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i;
+const _WMC_REASONING_FAMILY_RE =
+  /\b(?:explain|describe|tell\s+me\s+about|summari[sz]e|analy[sz]e|solve|prove|derive|write|draft|compose|outline|compare|teach\s+me|walk\s+me\s+through|break\s+down|step[-\s]*by[-\s]*step|in\s+detail|deep\s*dive|thorough\s+(?:overview|explanation|analysis))\b/i;
+const _WMC_MUSIC_FAMILY_RE =
+  /\b(?:play|pause|stop|resume|mute|unmute|unpause|skip(?:\s+(?:to\s+the\s+)?(?:next|previous|forward|back))?|next\s+(?:song|track)|previous\s+(?:song|track))\b|\b(?:turn|raise|lower|crank)\s+(?:up\s+|down\s+)?(?:the\s+)?(?:music|volume)\b/i;
+const _WMC_TIMER_FAMILY_RE =
+  /\b(?:set|start|begin)\s+(?:a\s+|the\s+|another\s+)?timer\b|\btimer\s+for\b|\bcancel\s+(?:the\s+|that\s+|my\s+)?timer\b|\berase\s+(?:the\s+|that\s+|my\s+)?timer\b/i;
+const _WMC_CHECKLIST_FAMILY_RE =
+  /\b(?:add|put|remove|delete|cross\s+off|check\s+off|complete|mark)\b[^.?!]{0,40}\b(?:checklist|plan|todo|to[-\s]?do|list)\b|\b(?:checklist|plan|to[-\s]?do(?:\s+list)?)\b[^.?!]{0,40}\b(?:add|remove|delete|complete|mark)\b|\bcross\s+off\s+the\s+(?:first|second|third|fourth|fifth|last)\b/i;
+
+function detectCompoundActionFamilies(text) {
+  const s = String(text || "").trim();
+  if (!s) return { isCompound: false, families: [], reason: "empty" };
+  const families = [];
+  if (_WMC_PANEL_FAMILY_RE.test(s)) families.push("panel");
+  if (_WMC_REASONING_FAMILY_RE.test(s)) families.push("reasoning");
+  if (_WMC_MUSIC_FAMILY_RE.test(s)) families.push("music");
+  if (_WMC_TIMER_FAMILY_RE.test(s)) families.push("timer");
+  if (_WMC_CHECKLIST_FAMILY_RE.test(s)) families.push("checklist");
+  /* Also count implicit "in panel N" as a panel family — covers
+     "explain X in panel 2" which the backend planner rewrites into
+     panel.navigate + reasoning.request. */
+  if (!families.includes("panel") && /\bin\s+(?:the\s+)?panel\s+\d+\b/i.test(s)) {
+    families.push("panel");
+  }
+  const isCompound = families.length >= 2;
+  const reason = isCompound
+    ? `compound_${families.join("_")}`
+    : (families.length === 1 ? `single_family_${families[0]}` : "no_action_families");
+  return { isCompound, families, reason };
+}
+
+try { window.detectCompoundActionFamilies = detectCompoundActionFamilies; } catch (_) {}
+
+
 function isExplicitWorkModePanelNavigationIntent(text) {
   const s = String(text ?? "").trim();
   if (!s) return false;
@@ -16827,6 +16894,69 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
 
+  /* 2026-05-29 spec PART 5 — compound-command defer.
+   *
+   * If the transcript references multiple action families (panel +
+   * reasoning + music, panel + reasoning, music + reasoning, etc.), do
+   * NOT open `/work_mode/reasoning_stream` from this gate with the full
+   * unsegmented transcript. Instead, return no-route so the turn flows
+   * straight to /infer, where the backend deterministic planner segments
+   * the transcript and emits one `work_mode_reasoning open_and_stream`
+   * payload per planned `reasoning.request` action — each carrying ONLY
+   * the cleaned reasoning span.
+   *
+   * Without this defer the reasoning model would receive prompts like
+   * "Can you go to panel 2, explain the Vietnam War and play the lo-fi
+   * mix?" and waste compute trying to "explain" the panel/music tokens
+   * — exactly the failing case the spec calls out.
+   */
+  const _compound = detectCompoundActionFamilies(trimmed);
+  if (_compound.isCompound) {
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "voice_ui",
+      reasoning_gate_reason: "compound_defer_to_backend_planner",
+      explicit_panel_reference: false,
+      simple_definition_detected: false,
+      brief_explanation_detected: false,
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: null,
+      route_source: "frontend_compound_defer_to_backend",
+      final_panel_target: null,
+      final_route: "chat",
+      final_route_reasoning: false,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: false,
+      artifact_signals: [],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: _compound.reason,
+      compound_action_families_detected: _compound.families,
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    try {
+      console.info("[reasoning_gate_deferred_to_compound_planner]", {
+        raw_transcript: String(trimmed || "").slice(0, 240),
+        compound_action_families_detected: _compound.families,
+        clean_reasoning_span_if_available: null, // planner produces the span server-side
+      });
+    } catch (_) {}
+    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
+
   /* Snapshot before this turn mutates it — used so /classify thread anchor is the *prior* user line, not the current one. */
   const priorThreadAnchor = String(workModeLastSubstantiveUserText || "").trim();
   const forceActiveLaneReasoningContent =
@@ -19505,6 +19635,151 @@ function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown") {
   });
 }
 
+/**
+ * 2026-05-29 spec PART 3 — handle the backend planner's
+ * ``work_mode_reasoning open_and_stream`` payload.
+ *
+ * The backend ``reasoning.request`` direct dispatcher emits:
+ *   {
+ *     panel_type: "work_mode_reasoning",
+ *     op: "open_and_stream",
+ *     prompt: <clean reasoning span — no music/panel/timer/checklist tokens>,
+ *     target_panel_index_1based: <int|null>,
+ *     target_panel_index_0based: <int|null>,
+ *     target_panel_title: <string|null>,
+ *     title_hint: <string|null>,
+ *   }
+ *
+ * We:
+ *   1) Activate (or open) the target panel.
+ *   2) Submit the clean prompt as a typed Work Mode turn so the existing
+ *      reasoning-lane machinery (lane bucket, NDJSON stream, panel
+ *      rendering) takes over with NO change. The recursive turn passes
+ *      ``__skipMultiActionPlanner`` so the backend planner won't fire
+ *      again.
+ *   3) Log [reasoning_open_and_stream_payload_received] and, when the
+ *      clean prompt still contains music/panel/timer/checklist phrases,
+ *      log a [reasoning_prompt_contaminated_by_app_action] hard warning.
+ */
+function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
+  const promptClean = String(payload?.prompt || "").trim();
+  const tgt0 = Number(payload?.target_panel_index_0based);
+  let resolvedIdx0 = Number.isFinite(tgt0) ? tgt0 : null;
+  if (resolvedIdx0 == null) {
+    const tgt1 = Number(payload?.target_panel_index_1based);
+    if (Number.isFinite(tgt1) && tgt1 >= 1) resolvedIdx0 = tgt1 - 1;
+  }
+  const titleHint = String(payload?.title_hint || "").trim();
+  const target1based = Number.isFinite(Number(payload?.target_panel_index_1based))
+    ? Number(payload.target_panel_index_1based)
+    : (Number.isFinite(resolvedIdx0) ? resolvedIdx0 + 1 : null);
+
+  /* Hard warning: a contaminated prompt would let the reasoning model see
+     "play lo-fi" or "go to panel 2" — which would either produce a noisy
+     explanation or silently execute the wrong thing. */
+  const contamination = [];
+  if (promptClean) {
+    const lowP = promptClean.toLowerCase();
+    if (/\bplay\s+(?:the\s+)?lo[-\s]?fi/.test(lowP)) contamination.push("play_lofi");
+    if (/\bpause\s+(?:the\s+)?music/.test(lowP)) contamination.push("pause_music");
+    if (/\bset\s+(?:a\s+)?timer/.test(lowP)) contamination.push("set_timer");
+    if (/\bchecklist\b/.test(lowP)) contamination.push("checklist");
+    if (/\bgo\s+to\s+(?:the\s+)?(?:reasoning\s+)?panel\b/.test(lowP)) contamination.push("go_to_panel");
+  }
+  if (contamination.length) {
+    try {
+      console.warn("[reasoning_prompt_contaminated_by_app_action]", {
+        reasoning_stream_prompt: promptClean.slice(0, 240),
+        contamination_markers: contamination,
+        source: "frontend_open_and_stream_dispatcher",
+      });
+    } catch (_) {}
+  }
+
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  const beforeOrder = (typeof getReasoningPanelOrder === "function") ? getReasoningPanelOrder() : [];
+  const activeBefore = beforeOrder.find((p) => p?.tabIndex != null && document.querySelector(`#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${p.tabIndex}"]`)?.classList.contains("is-active")) || null;
+  let activatedPanelLaneId = "";
+
+  /* Activate or open the target panel. If the requested index doesn't
+     exist yet (e.g. user asked for Panel 4 but only Panel 1-2 are open),
+     create extra panels until the index is reachable. ``addReasoningTab``
+     enforces ``REASONING_TABS_MAX`` so we can't open more than the limit. */
+  if (panelsRoot && resolvedIdx0 != null) {
+    let panelEl = panelsRoot.querySelector(
+      `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
+    );
+    while (!panelEl && typeof addReasoningTab === "function") {
+      const opened = addReasoningTab({ source: "planner_reasoning_request_open_and_stream" });
+      if (!opened) break;
+      panelEl = panelsRoot.querySelector(
+        `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
+      );
+      if (!panelEl) {
+        const allPanels = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel");
+        if (allPanels.length >= 8) break;
+      }
+    }
+    if (panelEl && typeof activateReasoningTab === "function") {
+      activateReasoningTab(resolvedIdx0, {
+        commandText: promptClean,
+        requestedIndex: target1based || (resolvedIdx0 + 1),
+        resolvedFrom: "planner_reasoning_request_open_and_stream",
+      });
+      activatedPanelLaneId = String(panelEl.dataset.laneId || "");
+    }
+  }
+
+  try {
+    console.info("[reasoning_open_and_stream_payload_received]", {
+      prompt_preview: promptClean.slice(0, 160),
+      title_hint: titleHint,
+      target_panel_index_1based: target1based,
+      target_panel_index_0based: resolvedIdx0,
+      target_panel_title: payload?.target_panel_title || null,
+      active_panel_before: activeBefore?.laneId || null,
+      active_panel_after_activate: activatedPanelLaneId || (activeBefore?.laneId || null),
+      contamination_markers: contamination,
+    });
+  } catch (_) {}
+
+  if (!promptClean) return;
+
+  /* Submit the clean prompt as a typed Work Mode turn — fire-and-forget.
+     The recursive turn:
+       - sees a single-action utterance ("explain the Vietnam War"), so
+         the backend planner gate stays cold,
+       - triggers the existing reasoning gate (broad_complex_topic or
+         explicit_artifact) which calls /work_mode/reasoning_stream with
+         the cleaned span only,
+       - lands the streamed answer in the active reasoning panel (which
+         we just activated, when a target was supplied). */
+  if (typeof sendVeraWorkModeTypedInferTurn === "function") {
+    try {
+      void sendVeraWorkModeTypedInferTurn(promptClean, {
+        path: "wm-multi-action:reasoning.request.open_and_stream",
+        __skipMultiActionPlanner: true,
+      });
+      try {
+        console.info("[reasoning_stream_called]", {
+          reasoning_stream_called: true,
+          reasoning_stream_prompt: promptClean.slice(0, 240),
+          reasoning_target_panel: target1based,
+          active_panel_after: activatedPanelLaneId || (activeBefore?.laneId || null),
+          source: "open_and_stream_dispatcher",
+        });
+      } catch (_) {}
+    } catch (e) {
+      try {
+        console.warn("[reasoning_open_and_stream_dispatch_error]", {
+          error: String(e?.message || e || "").slice(0, 200),
+        });
+      } catch (_) {}
+    }
+  }
+}
+
+
 function applyActionPayload(data) {
   // 2026-05-29 — multi-action planner pass-through.
   // When the backend executed a typed compound command, every action's
@@ -19788,6 +20063,16 @@ function applyActionPayload(data) {
           resolvedFrom: "visible_order",
         });
       }
+      return;
+    }
+    if (op === "open_and_stream") {
+      /* 2026-05-29 spec PART 3 — open + stream a CLEAN reasoning prompt
+         into a target panel. Driven by the backend planner's
+         reasoning.request direct dispatcher; the prompt arrives
+         already-stripped of music/panel/timer/checklist phrases. We
+         reuse the existing Work Mode reasoning lane machinery rather
+         than open a brand-new surface. */
+      applyWorkModeReasoningOpenAndStreamPayload(payload, data);
       return;
     }
     return;
@@ -23027,7 +23312,24 @@ async function finalizeMainBrowserTranscript(text) {
     return;
   }
 
-  if (
+  /* 2026-05-29 spec PART 4 — voice preflight defer for compound commands.
+     The legacy frontend planWorkModeMultiAction misclassifies compound
+     transcripts like "go to panel 2, explain X and play lo-fi" (first
+     verb wins → panel.select swallows the explain text). Skip it for
+     anything that touches 2+ action families and let the backend
+     deterministic planner own the turn. */
+  const _wmCompoundMainAsr = detectCompoundActionFamilies(trimmed);
+  if (_wmCompoundMainAsr.isCompound) {
+    try {
+      console.info("[frontend_legacy_planner_skipped_for_compound]", {
+        path: "main-browser-asr",
+        is_voice: true,
+        raw_transcript: String(trimmed || "").slice(0, 240),
+        compound_action_families_detected: _wmCompoundMainAsr.families,
+        deferred_to_backend_planner: true,
+      });
+    } catch (_) {}
+  } else if (
     await maybeRunWorkModeMultiActionPlanner(trimmed, {
       path: "main-browser-asr",
       isVoice: true
@@ -24884,7 +25186,24 @@ async function handleUtterance() {
         return;
       }
 
-      if (
+      /* 2026-05-29 spec PART 4 — voice preflight defer for compound commands.
+         Same rationale as main-browser-asr above: the legacy frontend planner
+         can't cleanly segment "panel + reasoning + music" utterances. Skip
+         it and let the backend deterministic planner own the turn (the
+         second-stage /infer below will reach the planner via the
+         compound-voice extension in app.py's planner_gate). */
+      const _wmCompoundPreflight = detectCompoundActionFamilies(trimmed);
+      if (_wmCompoundPreflight.isCompound) {
+        try {
+          console.info("[frontend_legacy_planner_skipped_for_compound]", {
+            path: "server-asr-preflight",
+            is_voice: true,
+            raw_transcript: String(trimmed || "").slice(0, 240),
+            compound_action_families_detected: _wmCompoundPreflight.families,
+            deferred_to_backend_planner: true,
+          });
+        } catch (_) {}
+      } else if (
         await maybeRunWorkModeMultiActionPlanner(trimmed, {
           path: "server-asr-preflight",
           isVoice: true
