@@ -8565,7 +8565,6 @@ function finishReasoningCloseVoiceTurnAfterAssistant(opts = {}) {
   requestInFlight = false;
   processing = false;
   voiceUxTurn = null;
-  void flushDeferredStage2Queue("reasoning_close_voice_turn_done");
   if (shouldResume) {
     waveState = "listening";
     listening = true;
@@ -16021,373 +16020,6 @@ let workModeTtsDrainRunning = false;
 /** @type {{ turn_id: string, lane_id: string, stage: number } | null} */
 let workModeTtsCurrentlyPlaying = null;
 
-/* ──────────────────────────────────────────────────────────────────────────
- * Stage-2 user-input coordinator
- *
- * Stage 2 reasoning audio is "polite": it must not start while the user is
- * already speaking, recording, transcribing, holding PTT, or while a new
- * user request is being processed. If a Stage-2 item is ready but the user
- * is busy, it is moved into deferredStage2Queue and replayed once user
- * input completes. Existing barge-in (cancelMainTtsPlayback on user speech
- * over already-playing TTS) is intentionally NOT changed here.
- * ────────────────────────────────────────────────────────────────────────── */
-
-const STAGE2_USER_SPEECH_GRACE_MS = 1200;
-const STAGE2_DEFERRED_MAX_AGE_MS = 90_000;
-const STAGE2_DEFERRED_MAX_COUNT = 12;
-
-/** @type {Array<{
- *   item: object,
- *   turn_id: string,
- *   lane_id: string,
- *   reasoning_turn_id: string,
- *   stage2_turn_id: string,
- *   turn_seq: number,
- *   prep: object|null,
- *   abortSignal: AbortSignal|null,
- *   phrase: string,
- *   createdAt: number,
- *   deferredAt: number,
- *   deferCount: number,
- *   onDrop: Function|null
- * }>} */
-let deferredStage2Queue = [];
-let _deferredStage2GraceTimer = null;
-
-function _logStage2Coord(tag, fields) {
-  try { console.info(`[${tag}]`, fields || {}); } catch (_) {}
-}
-
-function _stage2CoordIds(item, extra = {}) {
-  const turnId = String(item?.turn_id || "");
-  const laneId = String(item?.lane_id || "");
-  const rec = getWorkModeTtsTurnRecord(turnId);
-  return {
-    turn_id: turnId || null,
-    lane_id: laneId || null,
-    stage2_turn_id: turnId || null,
-    reasoning_turn_id: turnId || null,
-    turn_seq: Number(item?.turn_seq) || 0,
-    latest_lane_turn_id: laneId ? (workModeLatestTurnIdByLane.get(laneId) || null) : null,
-    active_lane_id: (() => { try { return getFocusedWorkModeLaneId() || null; } catch (_) { return null; } })(),
-    user_turn_id_in_flight: requestInFlight ? "in_flight" : null,
-    reasoning_lane_id: String(rec?.reasoning_lane_id || laneId || "") || null,
-    ...extra
-  };
-}
-
-/**
- * User-input busy snapshot for Stage 2 deferral. ONLY used to gate Stage 2
- * reasoning summary playback. Do NOT use this to block other TTS — Stage 1
- * acks, immediate response TTS, and barge-in semantics are intentionally
- * unaffected.
- *
- * @returns {{
- *   busy: boolean,
- *   reasons: string[],
- *   isUserSpeaking: boolean,
- *   isRecording: boolean,
- *   interruptRecording: boolean,
- *   asrInFlight: boolean,
- *   inferInFlight: boolean,
- *   pttActive: boolean,
- *   continuousUtteranceOpen: boolean,
- *   recentUserSpeech: boolean,
- *   lastUserSpeechAgeMs: number
- * }}
- */
-function getStage2UserInputBusySnapshot() {
-  const reasons = [];
-  const now = Date.now();
-  const lastSpeechMs = Number(lastVoiceTime) || 0;
-  const lastUserSpeechAgeMs = lastSpeechMs > 0
-    ? Math.max(0, now - lastSpeechMs)
-    : Number.POSITIVE_INFINITY;
-  const recentUserSpeech =
-    lastSpeechMs > 0 && lastUserSpeechAgeMs < STAGE2_USER_SPEECH_GRACE_MS;
-
-  let mainRecState = null;
-  try { mainRecState = mediaRecorder?.state ?? null; } catch (_) {}
-  let interruptRecState = null;
-  try { interruptRecState = interruptRecorder?.state ?? null; } catch (_) {}
-
-  const isRecording = mainRecState === "recording";
-  const interruptRecActive = Boolean(interruptRecording) || interruptRecState === "recording";
-
-  const hasMainInterim = Boolean(String(mainBrowserLastInterim || "").trim());
-  const hasMainFinal = Boolean(String(mainBrowserFinalTranscript || "").trim());
-  const hasInterruptPartial = Boolean(String(interruptPartialLastText || "").trim());
-  const interruptPartialMs = Number(interruptPartialAccumMs) || 0;
-
-  const asrInFlight = Boolean(
-    mainBrowserRecognition ||
-      interruptDetectRecognition ||
-      postInterruptRecognition ||
-      interruptBrowserDetectActive ||
-      hasMainInterim ||
-      hasMainFinal ||
-      hasInterruptPartial ||
-      interruptPartialMs > 0
-  );
-
-  const isUserSpeaking = Boolean(
-    hasSpoken && recentUserSpeech
-  ) || hasMainInterim || hasInterruptPartial;
-
-  const inferInFlight = Boolean(requestInFlight || processing);
-  const pttActive = Boolean(pttRecording);
-  const continuousUtteranceOpen = Boolean(
-    listeningMode === "continuous" &&
-      (hasMainInterim || hasMainFinal || (hasSpoken && recentUserSpeech))
-  );
-
-  if (isUserSpeaking) reasons.push("user_speaking");
-  if (isRecording) reasons.push("media_recorder_recording");
-  if (interruptRecActive) reasons.push("interrupt_recording");
-  if (asrInFlight) reasons.push("asr_in_flight");
-  if (inferInFlight) reasons.push("infer_in_flight");
-  if (pttActive) reasons.push("ptt_active");
-  if (continuousUtteranceOpen) reasons.push("continuous_utterance_open");
-  if (recentUserSpeech && !isUserSpeaking) reasons.push("recent_user_speech");
-
-  return {
-    busy: reasons.length > 0,
-    reasons,
-    isUserSpeaking,
-    isRecording,
-    interruptRecording: interruptRecActive,
-    asrInFlight,
-    inferInFlight,
-    pttActive,
-    continuousUtteranceOpen,
-    recentUserSpeech,
-    lastUserSpeechAgeMs: Number.isFinite(lastUserSpeechAgeMs) ? lastUserSpeechAgeMs : -1
-  };
-}
-
-function scheduleStage2DeferredGraceFlush() {
-  if (_deferredStage2GraceTimer != null) return;
-  _deferredStage2GraceTimer = window.setTimeout(() => {
-    _deferredStage2GraceTimer = null;
-    void flushDeferredStage2Queue("grace_timeout");
-  }, STAGE2_USER_SPEECH_GRACE_MS + 50);
-}
-
-/**
- * Move a Stage-2 queue item into the deferred queue (off the main TTS path)
- * so newer Stage-1 / immediate-response items can still play. The caller is
- * responsible for consuming any backing NDJSON body BEFORE deferring so the
- * phrase is known for later replay.
- */
-function deferStage2Audio(item, snapshot, { phrase, onDrop } = {}) {
-  const now = Date.now();
-  const turn_id = String(item?.turn_id || "");
-  const lane_id = String(item?.lane_id || "");
-  const turn_seq = Number(item?.turn_seq) || 0;
-
-  let entry = deferredStage2Queue.find((d) => d.turn_id === turn_id);
-  if (entry) {
-    entry.deferCount += 1;
-    entry.deferredAt = now;
-    entry.phrase = String(phrase ?? entry.phrase ?? "").trim();
-    _logStage2Coord("stage2_deferred", {
-      ..._stage2CoordIds(item),
-      defer_reason: "redefer_existing",
-      defer_count: entry.deferCount,
-      deferred_age_ms: now - entry.createdAt,
-      stage2_defer_userInputBusy: Boolean(snapshot?.busy),
-      stage2_defer_isUserSpeaking: Boolean(snapshot?.isUserSpeaking),
-      stage2_defer_isRecording: Boolean(snapshot?.isRecording),
-      stage2_defer_interruptRecording: Boolean(snapshot?.interruptRecording),
-      stage2_defer_asrInFlight: Boolean(snapshot?.asrInFlight),
-      stage2_defer_inferInFlight: Boolean(snapshot?.inferInFlight),
-      stage2_defer_pttActive: Boolean(snapshot?.pttActive),
-      stage2_defer_continuousUtteranceOpen: Boolean(snapshot?.continuousUtteranceOpen),
-      stage2_defer_lastUserSpeechAgeMs:
-        snapshot?.lastUserSpeechAgeMs === -1 ? null : Number(snapshot?.lastUserSpeechAgeMs)
-    });
-    scheduleStage2DeferredGraceFlush();
-    return entry;
-  }
-
-  entry = {
-    item,
-    turn_id,
-    lane_id,
-    reasoning_turn_id: turn_id,
-    stage2_turn_id: turn_id,
-    turn_seq,
-    prep: item?.prep || null,
-    abortSignal: item?.abortSignal || null,
-    phrase: String(phrase || "").trim(),
-    onDrop: typeof onDrop === "function" ? onDrop : (typeof item?.onDrop === "function" ? item.onDrop : null),
-    createdAt: now,
-    deferredAt: now,
-    deferCount: 1
-  };
-  deferredStage2Queue.push(entry);
-
-  _logStage2Coord("stage2_deferred", {
-    ..._stage2CoordIds(item),
-    defer_reason: (snapshot?.reasons || []).join(",") || "user_input_busy",
-    defer_count: 1,
-    deferred_age_ms: 0,
-    stage2_defer_userInputBusy: Boolean(snapshot?.busy),
-    stage2_defer_isUserSpeaking: Boolean(snapshot?.isUserSpeaking),
-    stage2_defer_isRecording: Boolean(snapshot?.isRecording),
-    stage2_defer_interruptRecording: Boolean(snapshot?.interruptRecording),
-    stage2_defer_asrInFlight: Boolean(snapshot?.asrInFlight),
-    stage2_defer_inferInFlight: Boolean(snapshot?.inferInFlight),
-    stage2_defer_pttActive: Boolean(snapshot?.pttActive),
-    stage2_defer_continuousUtteranceOpen: Boolean(snapshot?.continuousUtteranceOpen),
-    stage2_defer_lastUserSpeechAgeMs:
-      snapshot?.lastUserSpeechAgeMs === -1 ? null : Number(snapshot?.lastUserSpeechAgeMs)
-  });
-
-  scheduleStage2DeferredGraceFlush();
-  return entry;
-}
-
-/**
- * Try to drain deferred Stage-2 items when the user is no longer busy.
- * Re-applies the staleness policy per item before playback. If still busy,
- * re-schedules a grace flush.
- */
-async function flushDeferredStage2Queue(reason) {
-  const flushReason = String(reason || "");
-  _logStage2Coord("stage2_flush_attempt", {
-    reason: flushReason,
-    queue_len: deferredStage2Queue.length
-  });
-  if (deferredStage2Queue.length === 0) return;
-
-  const snapshot = getStage2UserInputBusySnapshot();
-  if (snapshot.busy) {
-    scheduleStage2DeferredGraceFlush();
-    return;
-  }
-  _logStage2Coord("stage2_flush_allowed", {
-    reason: flushReason,
-    queue_len: deferredStage2Queue.length
-  });
-
-  const items = deferredStage2Queue
-    .slice()
-    .sort((a, b) => (a.turn_seq || 0) - (b.turn_seq || 0));
-  deferredStage2Queue.length = 0;
-
-  for (const entry of items) {
-    const ageMs = Date.now() - entry.createdAt;
-    if (
-      entry.deferCount >= STAGE2_DEFERRED_MAX_COUNT ||
-      ageMs >= STAGE2_DEFERRED_MAX_AGE_MS
-    ) {
-      _logStage2Coord("stage2_deferred_then_stale", {
-        ..._stage2CoordIds(entry.item, {
-          defer_count: entry.deferCount,
-          deferred_age_ms: ageMs
-        }),
-        reason: "max_defer_age_or_count_exceeded"
-      });
-      continue;
-    }
-
-    const policy = evaluateWorkModeStage2Tts(entry.item);
-    if (policy.action !== "play_full") {
-      _logStage2Coord("stage2_deferred_then_stale", {
-        ..._stage2CoordIds(entry.item, {
-          defer_count: entry.deferCount,
-          deferred_age_ms: ageMs
-        }),
-        reason: String(policy.drop_reason || policy.action || "stale_after_defer")
-      });
-      if (policy.action === "text_only_with_supplement") {
-        const phrase = String(
-          policy.supplementPhrase || WORK_MODE_TTS_PRIOR_READY_PHRASE
-        ).trim();
-        if (phrase) {
-          try {
-            await playWorkModeTtsOnlyPhrase(phrase, entry.abortSignal);
-          } catch (_) {}
-        }
-      }
-      continue;
-    }
-
-    const recheck = getStage2UserInputBusySnapshot();
-    if (recheck.busy) {
-      entry.deferCount += 1;
-      entry.deferredAt = Date.now();
-      deferredStage2Queue.push(entry);
-      _logStage2Coord("stage2_deferred", {
-        ..._stage2CoordIds(entry.item, {
-          defer_count: entry.deferCount,
-          deferred_age_ms: Date.now() - entry.createdAt
-        }),
-        defer_reason: "redefer_during_flush:" + (recheck.reasons.join(",") || "busy"),
-        stage2_defer_userInputBusy: true,
-        stage2_defer_isUserSpeaking: Boolean(recheck.isUserSpeaking),
-        stage2_defer_isRecording: Boolean(recheck.isRecording),
-        stage2_defer_interruptRecording: Boolean(recheck.interruptRecording),
-        stage2_defer_asrInFlight: Boolean(recheck.asrInFlight),
-        stage2_defer_inferInFlight: Boolean(recheck.inferInFlight),
-        stage2_defer_pttActive: Boolean(recheck.pttActive),
-        stage2_defer_continuousUtteranceOpen: Boolean(recheck.continuousUtteranceOpen),
-        stage2_defer_lastUserSpeechAgeMs:
-          recheck.lastUserSpeechAgeMs === -1 ? null : Number(recheck.lastUserSpeechAgeMs)
-      });
-      scheduleStage2DeferredGraceFlush();
-      continue;
-    }
-
-    /* Serialize behind any currently playing assistant TTS so deferred Stage-2
-       still respects the "no two voices at once" invariant. */
-    try { await waitUntilAssistantTtsIdle(); } catch (_) {}
-
-    const phrase = String(
-      entry.phrase ||
-        entry.prep?.effectiveStage2Reply?.effective_stage2_reply ||
-        ""
-    ).trim();
-    if (!phrase) {
-      _logStage2Coord("stage2_deferred_then_stale", {
-        ..._stage2CoordIds(entry.item, {
-          defer_count: entry.deferCount,
-          deferred_age_ms: Date.now() - entry.createdAt
-        }),
-        reason: "empty_phrase_after_defer"
-      });
-      continue;
-    }
-
-    _logStage2Coord("stage2_flushed_after_user_done", {
-      ..._stage2CoordIds(entry.item, {
-        defer_count: entry.deferCount,
-        deferred_age_ms: Date.now() - entry.createdAt
-      }),
-      reason: flushReason
-    });
-    _logStage2Coord("stage2_play_started", {
-      ..._stage2CoordIds(entry.item, {
-        defer_count: entry.deferCount,
-        deferred_age_ms: Date.now() - entry.createdAt
-      }),
-      source: "deferred_replay"
-    });
-    try {
-      await playWorkModeTtsOnlyPhrase(phrase, entry.abortSignal);
-    } catch (e) {
-      _logStage2Coord("stage2_play_cancelled_by_user_barge_in", {
-        ..._stage2CoordIds(entry.item, {
-          defer_count: entry.deferCount,
-          deferred_age_ms: Date.now() - entry.createdAt
-        }),
-        error: String(e?.message || e || "")
-      });
-    }
-  }
-}
-
 const WORK_MODE_TTS_PRIOR_READY_PHRASE = "The earlier result is ready too.";
 
 // Explicit replace phrases — matched against the *newer* turn's user text.
@@ -16431,17 +16063,6 @@ function resetWorkModeTurnTtsQueue() {
   workModeTtsQueue.length = 0;
   workModeTtsDrainRunning = false;
   workModeTtsCurrentlyPlaying = null;
-  if (deferredStage2Queue.length > 0) {
-    _logStage2Coord("stage2_deferred_then_stale", {
-      reason: "work_mode_session_reset",
-      queue_len: deferredStage2Queue.length
-    });
-  }
-  deferredStage2Queue.length = 0;
-  if (_deferredStage2GraceTimer != null) {
-    try { window.clearTimeout(_deferredStage2GraceTimer); } catch (_) {}
-    _deferredStage2GraceTimer = null;
-  }
 }
 
 function getWorkModeTtsTurnRecord(turnId) {
@@ -17122,49 +16743,6 @@ async function executeWorkModeTtsQueueItem(item) {
     return;
   }
 
-  /* Stage-2 user-input-busy gate. If user is actively speaking / recording /
-     transcribing or has a request in flight, defer this Stage-2 item into
-     deferredStage2Queue instead of playing over the user. The flush triggers
-     scheduled by user-input completion paths (resume hooks, recorder onstop,
-     /infer done) will retry playback after a short grace window. Stage 1 and
-     immediate response audio are intentionally NOT gated. */
-  if (
-    stage2ReasoningAudio &&
-    policy?.action === "play_full" &&
-    !item.__stage2BypassUserBusyGate
-  ) {
-    _logStage2Coord("stage2_ready", _stage2CoordIds(item));
-    _logStage2Coord("stage2_play_attempt", _stage2CoordIds(item));
-    const snapshot = getStage2UserInputBusySnapshot();
-    if (snapshot.busy) {
-      let phrase = String(
-        item?.prep?.effectiveStage2Reply?.effective_stage2_reply || ""
-      ).trim();
-      if (!phrase && typeof item.onDrop === "function") {
-        /* onDrop on the Stage-2 NDJSON path consumes the response body
-           text-only and populates prep.effectiveStage2Reply. We invoke it
-           here so the deferred replay has the actual phrase to speak
-           later. If something goes wrong we still defer; the flush will
-           drop the entry as stale via the empty-phrase guard. */
-        try {
-          await item.onDrop();
-        } catch (e) {
-          console.warn("[stage2_deferred] onDrop_for_defer", e);
-        }
-        phrase = String(
-          item?.prep?.effectiveStage2Reply?.effective_stage2_reply || ""
-        ).trim();
-      }
-      deferStage2Audio(item, snapshot, { phrase });
-      _logStage2Coord("stage2_removed_from_active_queue", _stage2CoordIds(item));
-      _logStage2Coord("stage2_defer_resolved_queue_item", _stage2CoordIds(item));
-      _logStage2Coord("stage2_defer_did_not_set_speaking", _stage2CoordIds(item));
-      return;
-    }
-    _logStage2Coord("stage2_play_allowed", _stage2CoordIds(item));
-  }
-
-  if (stage2ReasoningAudio) _logStage2Coord("stage2_play_started", _stage2CoordIds(item));
   await item.play();
   await waitUntilAssistantTtsIdle();
 }
@@ -17215,13 +16793,6 @@ async function kickWorkModeTtsDrain() {
   } finally {
     workModeTtsDrainRunning = false;
     if (workModeTtsQueue.length > 0) void kickWorkModeTtsDrain();
-    /* Queue drained naturally — give any deferred Stage-2 items a chance to
-       play now that there is no competing assistant TTS. The gate inside
-       flushDeferredStage2Queue still checks user-input busy state, so this
-       only fires when the user is actually idle. */
-    else if (deferredStage2Queue.length > 0) {
-      void flushDeferredStage2Queue("work_mode_tts_queue_drained");
-    }
   }
 }
 
@@ -22613,21 +22184,6 @@ function cancelVoicePipelineAndResetState() {
   waveState = "idle";
   cancelPendingNewsStatusBubble("voice_pipeline_reset");
   clearVoiceMaxDurationTimer();
-  /* Hard pipeline reset: any deferred Stage-2 items are tied to an
-     interrupted topic. Drop them so they don't pop up later out of
-     context. (Soft "user idle" flushes happen elsewhere via grace timer
-     and resume hooks.) */
-  if (deferredStage2Queue.length > 0) {
-    _logStage2Coord("stage2_deferred_then_stale", {
-      reason: "voice_pipeline_reset",
-      queue_len: deferredStage2Queue.length
-    });
-    deferredStage2Queue.length = 0;
-  }
-  if (_deferredStage2GraceTimer != null) {
-    try { window.clearTimeout(_deferredStage2GraceTimer); } catch (_) {}
-    _deferredStage2GraceTimer = null;
-  }
   setStatus("Ready", "idle");
   updateMuteInputButton();
 }
@@ -22646,9 +22202,6 @@ function resumeAfterAssistantReplyPlayback() {
   stopInterruptPrearmRecorder("");
   if (workModeTypedTurnQueue.length > 0) scheduleWorkModeTypedQueueDrain();
   clearInterruptDetectionBubble();
-  /* Stage-2 deferred drain: assistant reply just finished, the user is no
-     longer mid-request — try to play anything that was held back. */
-  void flushDeferredStage2Queue("assistant_reply_playback_end");
   if (listeningMode === "ptt") {
     listening = false;
     pttRecording = false;
@@ -22685,7 +22238,6 @@ function resumeListeningAfterInterruptPlayback() {
   requestInFlight = false;
   stopInterruptPrearmRecorder("");
   clearInterruptDetectionBubble();
-  void flushDeferredStage2Queue("interrupt_reply_playback_end");
   if (listeningMode === "ptt") {
     listening = false;
     pttRecording = false;
@@ -23067,7 +22619,6 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
       requestInFlight,
       processing,
       workModeTtsQueueLength: Array.isArray(workModeTtsQueue) ? workModeTtsQueue.length : null,
-      deferredStage2QueueLength: Array.isArray(deferredStage2Queue) ? deferredStage2Queue.length : null,
       workModeTtsDrainActive: Boolean(workModeTtsDrainRunning),
       currentWorkModeTtsItem: workModeTtsCurrentlyPlaying || null
     });
@@ -23149,7 +22700,6 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
             requestInFlight,
             processing,
             workModeTtsQueueLength: Array.isArray(workModeTtsQueue) ? workModeTtsQueue.length : null,
-            deferredStage2QueueLength: Array.isArray(deferredStage2Queue) ? deferredStage2Queue.length : null,
             workModeTtsDrainActive: Boolean(workModeTtsDrainRunning),
             currentWorkModeTtsItem: workModeTtsCurrentlyPlaying || null
           });
@@ -23246,7 +22796,6 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
         requestInFlight,
         processing,
         workModeTtsQueueLength: Array.isArray(workModeTtsQueue) ? workModeTtsQueue.length : null,
-        deferredStage2QueueLength: Array.isArray(deferredStage2Queue) ? deferredStage2Queue.length : null,
         workModeTtsDrainActive: Boolean(workModeTtsDrainRunning),
         currentWorkModeTtsItem: workModeTtsCurrentlyPlaying || null
       });
