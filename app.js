@@ -11960,6 +11960,167 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
   return q;
 }
 
+/* ============================================================================
+ * 2026-05-29 reasoning-gate helpers (Voice UI vs reasoning panel).
+ *
+ * The frontend gate in maybePrepareWorkModeReasoning historically said "yes"
+ * to the reasoning panel for any utterance containing "explain" or any
+ * domain noun, AND deferred to the backend LLM classifier when the heuristic
+ * was silent. That over-routed simple definitional questions like
+ *   "can you tell me what tennis is?"
+ *   "what is tennis?"
+ *   "explain tennis"
+ * into the panel.
+ *
+ * These helpers are the ordered deterministic short-circuits the gate runs
+ * BEFORE /work_mode/classify and BEFORE the local heuristic, mirroring the
+ * backend CHAT_REASONING.classify_route_reasoning rewrite:
+ *
+ *   1. isExplicitReasoningPanelReference  → force panel (wins over everything)
+ *   2. isBriefExplanationModifier         → force Voice UI
+ *   3. isSimpleDefinitionQuestion         → force Voice UI
+ *   4. (legacy heuristicReasoning, now tightened — see explainReasoningAsk)
+ *
+ * Each helper is a pure regex check. None of them call the network. The
+ * resolver used for "explain that in the panel" type pronouns is
+ * resolveReasoningPanelTopicFromContext, which falls back to
+ * workModeLastSubstantiveUserText (already maintained per-turn).
+ * ========================================================================== */
+
+const _REASONING_PANEL_BRIEF_MODIFIER_RE =
+  /\b(?:brief(?:ly)?|short(?:ly)?|quick(?:ly)?|in\s+short|in\s+a\s+sentence|in\s+one\s+sentence|one[-\s]*liner|one\s*sentence|tl;?dr|tldr|give\s+me\s+the\s+(?:short|brief|quick)\s+(?:version|answer)|summari[sz]e\s+(?:briefly|in\s+one\s+sentence)|in\s+a\s+(?:few|couple\s+of)\s+(?:words|sentences))\b/i;
+
+const _REASONING_PANEL_SIMPLE_DEF_RES = [
+  // what is X / what's X / whats X
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?(?:tell\s+me\s+)?what(?:'s|s|\s+is|\s+are|\s+was|\s+were)\s+(.+?)\s*[?.!]*\s*$/i,
+  // who is X / who was X
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?(?:tell\s+me\s+)?who(?:'s|s|\s+is|\s+are|\s+was|\s+were)\s+(.+?)\s*[?.!]*\s*$/i,
+  // what does X mean / what's the meaning of X
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?what\s+does\s+(.+?)\s+mean\s*[?.!]*\s*$/i,
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?what(?:'s|s|\s+is)\s+the\s+meaning\s+of\s+(.+?)\s*[?.!]*\s*$/i,
+  // tell me what X is / can you tell me what X is
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?tell\s+me\s+what\s+(.+?)\s+(?:is|are|was|were|means?)\s*[?.!]*\s*$/i,
+  // tell me who X is
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?tell\s+me\s+who\s+(.+?)\s+(?:is|are|was|were)\s*[?.!]*\s*$/i,
+  // define X / define the term X
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?define\s+(?:the\s+(?:term|word)\s+)?(.+?)\s*[?.!]*\s*$/i
+];
+
+const _REASONING_PANEL_PUT_RE =
+  /\b(?:put|place|write|answer|show|drop|paste)\s+(?:(this|that|it|them)|the\s+answer|the\s+explanation|an?\s+explanation\s+of\s+(.+?))\s+(?:in|into|onto|on)\s+(?:the\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?/i;
+
+const _REASONING_PANEL_IN_RE =
+  /\b(?:in|into|using|on|via|inside)\s+(?:the\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?\b/i;
+
+const _REASONING_PANEL_IMPERATIVE_RE =
+  /\b(?:use|open|launch|spin\s*up|fire\s*up)\s+(?:up\s+)?(?:(?:a|another|the|one\s+more|some)\s+)?(?:(?:new|extra|additional|empty|fresh|another)\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|work\s*mode|workmode)\b/i;
+
+const _REASONING_PANEL_PRONOUN_RE =
+  /\b(?:that|this|it)\b/i;
+
+const _REASONING_PANEL_ORD_MAP = {
+  first: 1, second: 2, third: 3, fourth: 4,
+  fifth: 5, sixth: 6, seventh: 7, eighth: 8
+};
+
+const _REASONING_PANEL_BROAD_TOPIC_RE_LIST = [
+  ["history", /\b(?:vietnam\s+war|world\s+war(?:\s+(?:i|ii|1|2|one|two))?|wwi+|cold\s+war|civil\s+war|french\s+revolution|american\s+revolution|industrial\s+revolution|russian\s+revolution|cuban\s+(?:missile\s+)?crisis|holocaust|crusades|reformation|renaissance|enlightenment|colonialism|imperialism|treaty\s+of\s+\w+|fall\s+of\s+\w+|rise\s+of\s+\w+|war\s+of\s+\w+)\b/i],
+  ["quant", /\b(?:black[-\s]*scholes|binomial(?:\s+(?:lattice|tree|model))?|monte[-\s]*carlo|calculus|linear\s+algebra|differential\s+equation|partial\s+differential\s+equation|ode|pde|fourier|laplace|bayes(?:ian|'?s)\s+(?:theorem|rule)?|central\s+limit\s+theorem|hypothesis\s+test|regression|probability\s+(?:problem|distribution|theory)|theorem|proof|derivation|algorithm(?:s|ic)?|complexity\s+class|dynamic\s+programming|graph\s+theory|capital\s+asset\s+pricing\s+model|capm|portfolio\s+optimization|efficient\s+frontier)\b/i],
+  ["science", /\b(?:climate\s+change|global\s+warming|greenhouse\s+effect|theory\s+of\s+relativity|general\s+relativity|special\s+relativity|quantum\s+(?:mechanics|computing|field\s+theory|entanglement)|string\s+theory|big\s+bang|evolution(?:ary\s+theory)?|natural\s+selection|dna\s+replication|protein\s+folding|krebs\s+cycle|cellular\s+respiration|photosynthesis|mitosis|meiosis|nervous\s+system|immune\s+system|cardiovascular\s+system|plate\s+tectonics|ecosystem)\b/i],
+  ["economics", /\b(?:economic\s+(?:recession|depression|crisis|cycle|policy)|great\s+depression|2008\s+financial\s+crisis|stagflation|inflation\s+(?:dynamics|mechanism|causes)|monetary\s+policy|fiscal\s+policy|supply[-\s]*side|keynesian\s+economics|comparative\s+advantage|game\s+theory|nash\s+equilibrium|market\s+failure|externalit(?:y|ies))\b/i]
+];
+
+function isBriefExplanationModifier(text) {
+  const s = String(text || "").trim().toLowerCase();
+  if (!s) return false;
+  return _REASONING_PANEL_BRIEF_MODIFIER_RE.test(s);
+}
+
+function isSimpleDefinitionQuestion(text) {
+  const s = String(text || "").trim();
+  if (!s || s.length > 160) return { matched: false, topic: null };
+  for (const pat of _REASONING_PANEL_SIMPLE_DEF_RES) {
+    const m = s.match(pat);
+    if (m) {
+      const topic = (m[1] || "").trim().replace(/\s*[?.!,;:]+$/g, "").trim();
+      return { matched: true, topic: topic || null };
+    }
+  }
+  return { matched: false, topic: null };
+}
+
+function detectBroadComplexTopicFrontend(text) {
+  const s = String(text || "").trim().toLowerCase();
+  if (!s) return null;
+  for (const [family, pat] of _REASONING_PANEL_BROAD_TOPIC_RE_LIST) {
+    if (pat.test(s)) return family;
+  }
+  return null;
+}
+
+/**
+ * Detect explicit "in the panel" / "use work mode" wording.
+ *
+ * Returns:
+ *   { matched: bool, topic: string|null, targetPanel: number|null,
+ *     wasPronoun: bool, pronoun: string|null }
+ *
+ *   wasPronoun=true when the put-form used "this/that/it" — caller must
+ *   resolve to workModeLastSubstantiveUserText (or ask for clarification).
+ */
+function isExplicitReasoningPanelReference(text) {
+  const empty = { matched: false, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
+  const s = String(text || "").trim();
+  if (!s) return empty;
+  const mPut = s.match(_REASONING_PANEL_PUT_RE);
+  if (mPut) {
+    const pronoun = (mPut[1] || "").trim().toLowerCase() || null;
+    const explicitTopic = (mPut[2] || "").trim() || null;
+    const num = mPut[3] ? parseInt(mPut[3], 10) : null;
+    const ord = (mPut[4] || "").toLowerCase();
+    const targetPanel = Number.isFinite(num)
+      ? num
+      : (_REASONING_PANEL_ORD_MAP[ord] != null ? _REASONING_PANEL_ORD_MAP[ord] : null);
+    return {
+      matched: true,
+      topic: explicitTopic,
+      targetPanel,
+      wasPronoun: Boolean(pronoun),
+      pronoun
+    };
+  }
+  const mIn = s.match(_REASONING_PANEL_IN_RE);
+  if (mIn) {
+    const num = mIn[1] ? parseInt(mIn[1], 10) : null;
+    const ord = (mIn[2] || "").toLowerCase();
+    const targetPanel = Number.isFinite(num)
+      ? num
+      : (_REASONING_PANEL_ORD_MAP[ord] != null ? _REASONING_PANEL_ORD_MAP[ord] : null);
+    const hasPronoun = _REASONING_PANEL_PRONOUN_RE.test(s);
+    return {
+      matched: true,
+      topic: null,
+      targetPanel,
+      wasPronoun: hasPronoun,
+      pronoun: hasPronoun ? (s.match(/\b(that|this|it)\b/i) || [])[1] || null : null
+    };
+  }
+  if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
+    return { matched: true, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
+  }
+  return empty;
+}
+
+/**
+ * Given an explicit-panel utterance whose topic is the pronoun "that|this|it",
+ * resolve to the previous substantive user request (per-spec fallback). Returns
+ * the resolved string or "" if nothing usable is on record.
+ */
+function resolveReasoningPanelTopicFromContext() {
+  const t = String(workModeLastSubstantiveUserText || "").trim();
+  return t;
+}
+
 /**
  * True when the user is only asking to switch reasoning tabs (mirrors `app.py` `_explicit_work_mode_panel_navigation`).
  * Used to skip `maybePrepareWorkModeReasoning` so navigation does not also spawn a reasoning stream.
@@ -16484,6 +16645,188 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
        guarantees we never spin up a panel for "1 + 1". */
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
+
+  /* ------------------------------------------------------------------------
+   * 2026-05-29 reasoning-gate deterministic short-circuits.
+   *
+   * Priority (matches CHAT_REASONING.classify_route_reasoning):
+   *   1. Explicit panel/reasoning wording          → reasoning_panel (force)
+   *   2. Brief/quick/short/tl;dr modifier          → voice_ui (force)
+   *   3. Simple definition / who-is / what-is      → voice_ui (force)
+   *
+   * Each short-circuit emits [REQUEST_SHAPE_ROUTE_DEBUG] with the new
+   * reasoning_gate_* fields so the route is auditable from the console.
+   * ---------------------------------------------------------------------- */
+  const _priorTopicForResolve = String(workModeLastSubstantiveUserText || "").trim();
+  const _explicitPanelRef = isExplicitReasoningPanelReference(trimmed);
+  const _briefModifier = isBriefExplanationModifier(trimmed);
+  const _simpleDefinition = isSimpleDefinitionQuestion(trimmed);
+  if (_explicitPanelRef.matched) {
+    /* Resolve "this/that/it" topic to the previous substantive user request
+       when the explicit-panel phrasing was pronoun-only. If no prior topic
+       is on record, fall back to Voice UI so we don't open an empty panel —
+       the backend ack/clarification text can ask "what should I explain?". */
+    let resolvedTopic = _explicitPanelRef.topic || null;
+    let prior_topic_used = false;
+    if (!resolvedTopic && _explicitPanelRef.wasPronoun) {
+      const fromContext = resolveReasoningPanelTopicFromContext();
+      if (fromContext) {
+        resolvedTopic = fromContext;
+        prior_topic_used = true;
+      } else {
+        /* No prior topic to attach — bail to Voice UI; backend chat path
+           will produce a clarifying reply. */
+        logReasoningRouteDebug({
+          raw_text: String(trimmed || "").slice(0, 240),
+          reasoning_gate_called: true,
+          reasoning_gate_result: "voice_ui",
+          reasoning_gate_reason: "explicit_panel_pronoun_without_prior_topic",
+          explicit_panel_reference: true,
+          simple_definition_detected: false,
+          brief_explanation_detected: false,
+          broad_complex_topic_detected: false,
+          complex_task_detected: false,
+          active_work_mode: true,
+          prior_topic_used: false,
+          resolved_topic: null,
+          route_source: "frontend_explicit_panel_pronoun_unresolved",
+          final_action_type: "voice_ui_clarification",
+          final_panel_target: null,
+          final_route: "chat",
+          final_route_reasoning: false,
+          backend_classify_route: null,
+          backend_category: null,
+          backend_confidence: null,
+          heuristic_reasoning: false,
+          personal_statement_veto: false,
+          venting_signals: [],
+          venting_score: 0,
+          explicit_artifact_intent: false,
+          artifact_signals: [],
+          force_active_lane: false,
+          task_follow_up_continuing: false,
+          planning_intent: false,
+          reason: "explicit_panel_pronoun_without_prior_topic",
+          math_router_enabled: MATH_ROUTER_ENABLED,
+          arithmetic_fast_path_match: false
+        });
+        return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+      }
+    }
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "reasoning_panel",
+      reasoning_gate_reason: "explicit_panel_reference",
+      explicit_panel_reference: true,
+      simple_definition_detected: Boolean(_simpleDefinition.matched),
+      brief_explanation_detected: Boolean(_briefModifier),
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used,
+      resolved_topic: resolvedTopic || null,
+      route_source: "frontend_explicit_panel_override",
+      final_panel_target: _explicitPanelRef.targetPanel ?? null,
+      final_route: "reasoning",
+      final_route_reasoning: true,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: true,
+      artifact_signals: ["explicit_panel_reference"],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: "explicit_panel_reference",
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    /* Fall through to the existing reasoning prep below — we set a sentinel
+       so the legacy classifier call + heuristic + veto block is skipped, but
+       the existing lane acquisition / NDJSON prep still runs unchanged. */
+    opts.__reasoningGateForceRoute = "reasoning_panel";
+    opts.__reasoningGateReason = "explicit_panel_reference";
+    opts.__reasoningGateResolvedTopic = resolvedTopic || null;
+    opts.__reasoningGateTargetPanel = _explicitPanelRef.targetPanel ?? null;
+  } else if (_briefModifier) {
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "voice_ui",
+      reasoning_gate_reason: "brief_explanation",
+      explicit_panel_reference: false,
+      simple_definition_detected: Boolean(_simpleDefinition.matched),
+      brief_explanation_detected: true,
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: null,
+      route_source: "frontend_brief_modifier_override",
+      final_panel_target: null,
+      final_route: "chat",
+      final_route_reasoning: false,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: false,
+      artifact_signals: [],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: "brief_explanation",
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  } else if (_simpleDefinition.matched) {
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "voice_ui",
+      reasoning_gate_reason: "simple_definition",
+      explicit_panel_reference: false,
+      simple_definition_detected: true,
+      brief_explanation_detected: false,
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: _simpleDefinition.topic || null,
+      route_source: "frontend_simple_definition_override",
+      final_panel_target: null,
+      final_route: "chat",
+      final_route_reasoning: false,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: false,
+      artifact_signals: [],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: "simple_definition",
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
+
   /* Snapshot before this turn mutates it — used so /classify thread anchor is the *prior* user line, not the current one. */
   const priorThreadAnchor = String(workModeLastSubstantiveUserText || "").trim();
   const forceActiveLaneReasoningContent =
@@ -16517,6 +16860,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   let continuePriorLane = false;
   let classifyCategory = null;
   let classifyConfidence = null;
+  let classifyBackendRoute = null;
+  let classifyBackendReason = null;
+  let classifyBackendResolvedTopic = null;
+  let classifyBackendTargetPanel = null;
+  let classifyBackendSource = null;
   try {
     const classifyBody = { session_id: getSessionId(), text: effectiveUserText };
     const classifyLaneGuess =
@@ -16545,6 +16893,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       classifyCategory = typeof cj.category === "string" ? cj.category : null;
       const confRaw = cj.confidence;
       if (typeof confRaw === "number" && Number.isFinite(confRaw)) classifyConfidence = confRaw;
+      /* 2026-05-29: capture the richer gate shape so downstream logs and
+         the heuristic veto can use it. Fields are best-effort — older
+         backends only return prompt_reasoning/category/confidence. */
+      if (typeof cj.route === "string") classifyBackendRoute = cj.route;
+      if (typeof cj.reason === "string") classifyBackendReason = cj.reason;
+      if (cj.resolved_topic && typeof cj.resolved_topic === "string") {
+        classifyBackendResolvedTopic = cj.resolved_topic;
+      }
+      if (cj.target_panel != null) {
+        const tp = parseInt(cj.target_panel, 10);
+        if (Number.isFinite(tp)) classifyBackendTargetPanel = tp;
+      }
+      if (typeof cj.source === "string") classifyBackendSource = cj.source;
     }
   } catch {
     /* ignore */
@@ -16583,10 +16944,25 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         /\b(function|class|import|const|let|var|def|return)\b/.test(t) ||
         /[{}();]{2,}/.test(t);
       const wordCount = (t.match(/\S+/g) || []).length;
-      const explainReasoningAsk =
-        /\bexplain\b/.test(t) &&
+      /* 2026-05-29: tighten `explainReasoningAsk`. Bare `explain X` is NO
+         LONGER enough on its own. We require at least one complexity signal:
+           - explicit panel wording (handled by isExplicitReasoningPanelReference)
+           - broad/complex topic noun
+           - detailed / step-by-step / deep-dive wording
+           - artifact verb (solve/write/analyze/code/file/table/plan)
+         Without any of these, "explain tennis" falls through to the LLM
+         classifier which is now prompted to default to Voice UI. */
+      const isExplainStem = /\b(?:explain(?:s|ed|ing)?|explanation(?:s)?|explanatory)\b/.test(t);
+      const explainSafetyAllowed =
         wordCount >= 3 &&
         !/^\s*explain\s+(?:yourself|vera|this\s+app)\b/i.test(String(trimmed || "").trim());
+      const explainComplexityBroad = Boolean(detectBroadComplexTopicFrontend(trimmed));
+      const explainComplexityDetailed = /\b(in\s+detail|detailed(?:ly)?|step[-\s]*by[-\s]*step|deep[-\s]*dive|deep\s+dive|thorough(?:ly)?|long[-\s]*form|long\s+form|full\s+breakdown|breakdown|exhaustive(?:ly)?|comprehensive(?:ly)?|from\s+scratch)\b/i.test(t);
+      const explainComplexityArtifact = /\b(solve|prove|derive|simulate|debug|refactor|compute|calculate|evaluate|analy[sz]e|outline|summari[sz]e|compare|review|draft|compose|polish|rewrite|write\s+(?:a|an|the|me|us|my|some|this|that))\b/i.test(t);
+      const explainReasoningAsk =
+        isExplainStem &&
+        explainSafetyAllowed &&
+        (explainComplexityBroad || explainComplexityDetailed || explainComplexityArtifact);
       return (
         (conceptWords.test(t) && domainWords.test(t)) ||
         domainWords.test(t) ||
@@ -16693,6 +17069,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       backend_classify_route: Boolean(classifyRoute),
       backend_category: classifyCategory,
       backend_confidence: classifyConfidence,
+      backend_route: classifyBackendRoute,
+      backend_reason: classifyBackendReason,
+      backend_resolved_topic: classifyBackendResolvedTopic,
+      backend_target_panel: classifyBackendTargetPanel,
+      backend_source: classifyBackendSource,
       heuristic_reasoning: _routeDebugHeuristicReasoning,
       personal_statement_veto: _routeDebugPersonalAdviceVeto,
       news_lookup_veto: _routeDebugNewsLookupVeto,
@@ -16707,6 +17088,23 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       final_route: finalRouteForLog,
       final_route_reasoning: Boolean(routeReasoning),
       reason: _routeDebugReason,
+      /* 2026-05-29 — unified reasoning_gate_* fields for parity with the
+         backend [reasoning_gate] log. The frontend short-circuits emit
+         these on their own; this branch fills them in for the
+         post-classifier path so every turn carries the same shape. */
+      reasoning_gate_called: true,
+      reasoning_gate_result: routeReasoning ? "reasoning_panel" : "voice_ui",
+      reasoning_gate_reason: classifyBackendReason || _routeDebugReason,
+      explicit_panel_reference: false,
+      simple_definition_detected: false,
+      brief_explanation_detected: false,
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: Boolean(_routeDebugArtifactIntent.hasIntent),
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: classifyBackendResolvedTopic || null,
+      route_source: classifyBackendSource || (routeReasoning ? "frontend_heuristic_or_backend_llm" : "frontend_no_route"),
+      final_panel_target: classifyBackendTargetPanel ?? null,
       math_router_enabled: MATH_ROUTER_ENABLED,
       arithmetic_fast_path_match: false
     });
