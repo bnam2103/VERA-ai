@@ -303,11 +303,27 @@ function renderMediaTabsPanel(payload) {
     delete sidePaneEl.dataset.sidePaneKind;
     document.body.classList.add("news-panel-open");
 
+    // 2026-05-30: panel title is now sport-aware. The backend stamps
+    // `result_kind` on sports/tournament payloads so we render "Sports Results"
+    // or "Tournament Results" instead of the legacy "News Results"/"Search Results".
+    const _resultKind = String(payload?.result_kind || "").toLowerCase();
+    let _panelTitle = payload?.title;
+    if (!_panelTitle) {
+      if (_resultKind === "tournament") _panelTitle = "Tournament Results";
+      else if (_resultKind === "sports") _panelTitle = "Sports Results";
+      else _panelTitle = "News Results";
+    }
+    let _panelSubtitle = payload?.query;
+    if (!_panelSubtitle) {
+      if (_resultKind === "tournament") _panelSubtitle = "Tournament status";
+      else if (_resultKind === "sports") _panelSubtitle = "Latest result";
+      else _panelSubtitle = "Top headlines";
+    }
     sidePaneEl.innerHTML = `
     <div class="side-pane-header">
       <div class="side-pane-heading">
-        <h3 class="side-pane-title">${escapeHtml(payload?.title || "News Results")}</h3>
-        <div class="side-pane-subtitle">${escapeHtml(payload?.query || "Top headlines")}</div>
+        <h3 class="side-pane-title">${escapeHtml(_panelTitle)}</h3>
+        <div class="side-pane-subtitle">${escapeHtml(_panelSubtitle)}</div>
       </div>
       <div class="side-pane-controls">
         <div class="side-pane-tabs" role="tablist" aria-label="Search result tabs">

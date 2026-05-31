@@ -688,6 +688,391 @@ const _INFO_TOOL_FINANCE_QUOTE_RE = /\b(?:stock\s+price|share\s+price|price\s+of
 const _INFO_TOOL_FINANCE_ANALYTICS_RE = /\b(?:max(?:imum)?\s+drawdown|biggest\s+drawdown|worst\s+drawdown|drawdown|historical\s+return|annualized?\s+return|cagr|rolling\s+return|trailing\s+return|\d+[- ]?year\s+performance|\d+[- ]?year\s+return|volatility|sharpe|sortino|beta|alpha|year-over-year|52[-\s]?week)\b/i;
 const _INFO_TOOL_SPORTS_TEAM_RE = /\b(?:lakers|clippers|warriors|celtics|knicks|heat|bulls|spurs|nets|sixers|76ers|raptors|bucks|mavericks|nuggets|suns|kings|pelicans|jazz|wizards|hawks|hornets|magic|grizzlies|thunder|rockets|timberwolves|trail\s*blazers|pacers|pistons|cavaliers|cavs|yankees|red\s*sox|dodgers|giants|cubs|astros|mets|braves|phillies|orioles|nationals|cardinals|brewers|padres|angels|royals|tigers|chiefs|patriots|eagles|cowboys|49ers|niners|packers|bears|bills|steelers|ravens|broncos|raiders|chargers|jets|saints|falcons|panthers|buccaneers|seahawks|rams|vikings|lions|liverpool|arsenal|chelsea|manchester|man\s+city|man\s+utd|barcelona|real\s+madrid|psg|bayern|juventus|inter|milan)\b/i;
 const _INFO_TOOL_SPORTS_VERB_RE = /\b(?:win|won|lose|lost|beat|beating|score|scored|game|games|match|matches|play(?:ing|ed)?|tonight|last\s+night|yesterday)\b/i;
+
+/* =========================================================================
+ *  Sport-aware classifier — JS port of actions/sports.classify_sports_intent.
+ *
+ *  The full structured router lives in Python (actions/sports.py). This port
+ *  exists so the frontend pre-router can:
+ *    (a) recognize tennis players, tournaments, and follow-ups BEFORE the
+ *        backend round-trip,
+ *    (b) keep panel labeling honest ("Sports Results" / "Tournament Results"
+ *        instead of "Search Results"),
+ *    (c) emit the same `[sports_intent]` shape so frontend logs match backend.
+ *
+ *  Entity catalogs are intentionally a compact alias index keyed by lowercase
+ *  surface form. Longest aliases first so multi-word names ("manchester united")
+ *  beat sub-substrings ("manchester"). Adding a new player/team only requires
+ *  pushing a row into the catalog — NO routing changes anywhere else.
+ * ========================================================================= */
+
+const VERA_SPORTS_ENTITIES = (function () {
+  const teams = [];
+  const players = [];
+  const tournaments = [];
+  function pushTeams(rows) {
+    for (const r of rows) {
+      const [canonical, sport, aliases] = r;
+      for (const a of aliases) {
+        teams.push({ alias: a.toLowerCase(), canonical, entity_type: "team", sport, tournament_or_league: "" });
+      }
+    }
+  }
+  function pushPlayers(rows) {
+    for (const r of rows) {
+      const [canonical, sport, aliases] = r;
+      for (const a of aliases) {
+        players.push({ alias: a.toLowerCase(), canonical, entity_type: "player", sport, tournament_or_league: "" });
+      }
+    }
+  }
+  function pushTournaments(rows) {
+    for (const r of rows) {
+      const [canonical, sport, tournament, aliases] = r;
+      for (const a of aliases) {
+        tournaments.push({ alias: a.toLowerCase(), canonical, entity_type: "tournament", sport, tournament_or_league: tournament });
+      }
+    }
+  }
+  pushTeams([
+    ["Lakers", "nba", ["los angeles lakers", "la lakers", "lakers"]],
+    ["Clippers", "nba", ["los angeles clippers", "la clippers", "clippers"]],
+    ["Warriors", "nba", ["golden state warriors", "warriors", "dubs"]],
+    ["Celtics", "nba", ["boston celtics", "celtics"]],
+    ["Knicks", "nba", ["new york knicks", "ny knicks", "knicks"]],
+    ["Heat", "nba", ["miami heat", "heat"]],
+    ["Bulls", "nba", ["chicago bulls", "bulls"]],
+    ["76ers", "nba", ["philadelphia 76ers", "sixers", "76ers"]],
+    ["Raptors", "nba", ["toronto raptors", "raptors"]],
+    ["Bucks", "nba", ["milwaukee bucks", "bucks"]],
+    ["Mavericks", "nba", ["dallas mavericks", "mavericks", "mavs"]],
+    ["Nuggets", "nba", ["denver nuggets", "nuggets"]],
+    ["Suns", "nba", ["phoenix suns", "suns"]],
+    ["Trail Blazers", "nba", ["portland trail blazers", "trail blazers", "blazers"]],
+    ["Timberwolves", "nba", ["minnesota timberwolves", "timberwolves", "wolves"]],
+    ["Cavaliers", "nba", ["cleveland cavaliers", "cavaliers", "cavs"]],
+    ["Thunder", "nba", ["oklahoma city thunder", "okc thunder", "thunder"]],
+    ["49ers", "nfl", ["san francisco 49ers", "49ers", "niners"]],
+    ["Patriots", "nfl", ["new england patriots", "patriots", "pats"]],
+    ["Eagles", "nfl", ["philadelphia eagles", "eagles"]],
+    ["Cowboys", "nfl", ["dallas cowboys", "cowboys"]],
+    ["Chiefs", "nfl", ["kansas city chiefs", "kc chiefs", "chiefs"]],
+    ["Packers", "nfl", ["green bay packers", "packers"]],
+    ["Bills", "nfl", ["buffalo bills", "bills"]],
+    ["Rams", "nfl", ["los angeles rams", "la rams", "rams"]],
+    ["Yankees", "mlb", ["new york yankees", "ny yankees", "yankees"]],
+    ["Red Sox", "mlb", ["boston red sox", "red sox"]],
+    ["Dodgers", "mlb", ["los angeles dodgers", "la dodgers", "dodgers"]],
+    ["Cubs", "mlb", ["chicago cubs", "cubs"]],
+    ["Mets", "mlb", ["new york mets", "ny mets", "mets"]],
+    ["Astros", "mlb", ["houston astros", "astros"]],
+    ["Braves", "mlb", ["atlanta braves", "braves"]],
+    ["Real Madrid", "soccer_laliga", ["real madrid"]],
+    ["Barcelona", "soccer_laliga", ["fc barcelona", "barcelona", "barca", "barça"]],
+    ["Liverpool", "soccer_epl", ["liverpool fc", "liverpool"]],
+    ["Arsenal", "soccer_epl", ["arsenal fc", "arsenal"]],
+    ["Chelsea", "soccer_epl", ["chelsea fc", "chelsea"]],
+    ["Manchester United", "soccer_epl", ["manchester united", "man united", "man utd"]],
+    ["Manchester City", "soccer_epl", ["manchester city", "man city"]],
+    ["Tottenham", "soccer_epl", ["tottenham hotspur", "tottenham"]],
+    ["Bayern Munich", "soccer_bundesliga", ["bayern munich", "bayern münchen", "bayern"]],
+    ["PSG", "soccer_ligue1", ["paris saint-germain", "paris saint germain", "psg"]],
+    ["Juventus", "soccer_seriea", ["juventus", "juve"]],
+    ["Inter Milan", "soccer_seriea", ["inter milan", "internazionale"]],
+    ["AC Milan", "soccer_seriea", ["ac milan", "milan"]],
+  ]);
+  pushPlayers([
+    ["Novak Djokovic", "tennis_atp", ["novak djokovic", "djokovic", "novak"]],
+    ["Carlos Alcaraz", "tennis_atp", ["carlos alcaraz", "alcaraz"]],
+    ["Jannik Sinner", "tennis_atp", ["jannik sinner", "sinner"]],
+    ["Daniil Medvedev", "tennis_atp", ["daniil medvedev", "medvedev"]],
+    ["Alexander Zverev", "tennis_atp", ["alexander zverev", "zverev"]],
+    ["Stefanos Tsitsipas", "tennis_atp", ["stefanos tsitsipas", "tsitsipas"]],
+    ["Holger Rune", "tennis_atp", ["holger rune", "rune"]],
+    ["Casper Ruud", "tennis_atp", ["casper ruud", "ruud"]],
+    ["Iga Swiatek", "tennis_wta", ["iga swiatek", "iga świątek", "swiatek"]],
+    ["Aryna Sabalenka", "tennis_wta", ["aryna sabalenka", "sabalenka"]],
+    ["Coco Gauff", "tennis_wta", ["coco gauff", "gauff"]],
+    ["Elena Rybakina", "tennis_wta", ["elena rybakina", "rybakina"]],
+    ["Naomi Osaka", "tennis_wta", ["naomi osaka", "osaka"]],
+    ["Lionel Messi", "soccer", ["lionel messi", "messi"]],
+    ["Cristiano Ronaldo", "soccer", ["cristiano ronaldo", "ronaldo"]],
+    ["Kylian Mbappe", "soccer", ["kylian mbappe", "kylian mbappé", "mbappe", "mbappé"]],
+    ["Erling Haaland", "soccer", ["erling haaland", "haaland"]],
+    ["Mohamed Salah", "soccer", ["mohamed salah", "salah"]],
+    ["Harry Kane", "soccer", ["harry kane", "kane"]],
+    ["Jude Bellingham", "soccer", ["jude bellingham", "bellingham"]],
+    ["Bukayo Saka", "soccer", ["bukayo saka", "saka"]],
+  ]);
+  pushTournaments([
+    ["Roland Garros", "tennis", "Roland Garros", ["roland garros", "french open"]],
+    ["Wimbledon", "tennis", "Wimbledon", ["wimbledon"]],
+    ["US Open (Tennis)", "tennis", "US Open", ["us open tennis", "us open"]],
+    ["Australian Open", "tennis", "Australian Open", ["australian open", "aussie open"]],
+    ["ATP Finals", "tennis_atp", "ATP Finals", ["atp finals"]],
+    ["WTA Finals", "tennis_wta", "WTA Finals", ["wta finals"]],
+    ["UEFA Champions League", "soccer", "UEFA Champions League", ["champions league", "uefa champions league", "ucl"]],
+    ["UEFA Europa League", "soccer", "UEFA Europa League", ["europa league"]],
+    ["FIFA World Cup", "soccer", "FIFA World Cup", ["fifa world cup", "world cup"]],
+    ["Premier League", "soccer_epl", "Premier League", ["english premier league", "premier league", "epl"]],
+    ["La Liga", "soccer_laliga", "La Liga", ["la liga", "laliga"]],
+    ["Serie A", "soccer_seriea", "Serie A", ["serie a"]],
+    ["Bundesliga", "soccer_bundesliga", "Bundesliga", ["bundesliga"]],
+    ["Ligue 1", "soccer_ligue1", "Ligue 1", ["ligue 1", "ligue un"]],
+    ["NBA Finals", "nba", "NBA Finals", ["nba finals"]],
+    ["NBA Playoffs", "nba", "NBA Playoffs", ["nba playoffs"]],
+    ["Super Bowl", "nfl", "Super Bowl", ["super bowl", "superbowl"]],
+    ["World Series", "mlb", "World Series", ["world series"]],
+    ["Stanley Cup", "nhl", "Stanley Cup", ["stanley cup"]],
+    ["Masters Tournament", "golf", "Masters Tournament", ["the masters", "masters tournament"]],
+    ["Formula 1", "f1", "Formula 1", ["formula 1", "formula one", "f1"]],
+  ]);
+  const all = teams.concat(players).concat(tournaments);
+  all.sort((a, b) => b.alias.length - a.alias.length);
+  return all;
+})();
+
+const VERA_SPORTS_SAFETY_REQUIRED = new Set(["sinner", "kane", "saka", "haaland"]);
+
+const VERA_SPORTS_LATEST_RESULT_RE = /\b(?:did\s+(?:the\s+)?\S[^?]{0,60}?\s+(?:win|won|lose|lost|beat|tie|tied|draw|drew)|how\s+did\s+\S[^?]{0,40}?\s+(?:do|play|score)|(?:final|game|match)\s+score|did\s+\S[^?]{0,40}?\s+game|(?:results?|final\s+score|box\s+score)\s+(?:of|for)|(?:won|lost|beat|score(?:d)?)\s+(?:the\s+)?(?:game|match|series|fixture)|recent\s+game)/i;
+const VERA_SPORTS_TOURNAMENT_STATUS_RE = /\b(?:(?:still|already|finally)\s+in|(?:still|already)\s+(?:in|playing|alive)\s+(?:the\s+)?(?:draw|tournament|playoffs|finals?|bracket)|in\s+the\s+(?:draw|tournament|playoffs|finals?|bracket)|(?:out\s+of|knocked\s+out|eliminated\s+from|exited\s+from|crashed\s+out\s+of)\s+(?:the\s+)?|(?:advanced?|advance|through)\s+to\s+the\s+(?:next\s+round|round\s+of|quarter|semis?|semifinals?|final|finals)|(?:lose|lost|beaten|defeated|knocked\s+out)\s+(?:in|at)\s+(?:the\s+)?(?:first\s+round|second\s+round|third\s+round|fourth\s+round|round\s+of\s+(?:16|32|64|128)|quarter|quarters|quarterfinals?|semis?|semifinals?|final|finals)|reach(?:ed)?\s+(?:the\s+)?(?:quarter|semi|final)|(?:tournament|draw|bracket)\s+status)/i;
+const VERA_SPORTS_SCHEDULE_RE = /\b(?:(?:who|when|where)\s+(?:does|do)\s+\S[^?]{0,40}?\s+play(?:\s+next)?|play(?:s|ing)?\s+next|next\s+(?:match|game|fixture|opponent|round)|when\s+is\s+(?:the\s+)?(?:next\s+)?(?:match|game|fixture)|(?:upcoming|schedule)\s+(?:match|game|fixture|games?|matches)|(?:fixture|schedule)\s+for\s+)/i;
+const VERA_SPORTS_STANDINGS_RE = /\b(?:standings?|league\s+table|league\s+position|league\s+standings?|table\s+position|where\s+(?:does|do)\s+\S[^?]{0,40}?\s+stand|how\s+(?:are|is)\s+\S[^?]{0,40}?\s+doing\s+in\s+the\s+(?:standings?|league|table))/i;
+const VERA_SPORTS_NEWS_RE = /\b(?:(?:any\s+)?news\s+(?:on|about)\s+\S|update[s]?\s+(?:on|about)\s+\S|what(?:'?s|s|\s+is)\s+(?:the\s+)?(?:latest|news)\s+(?:on|about)\s+\S)/i;
+const VERA_SPORTS_PLAYER_STATUS_RE = /\b(?:(?:is|are)\s+\S[^?]{0,40}?\s+(?:playing|injured|fit|back|out|active|starting|benched)|injury\s+status|injury\s+update|status\s+of\s+\S|out\s+for\s+(?:the\s+)?season)/i;
+const VERA_SPORTS_PRONOUN_RE = /^\s*(?:and\s+|but\s+|so\s+|what\s+about\s+|how\s+about\s+)?(?:he|she|they|them|him|her|his|hers|their|that|this|those|these|it)\b/i;
+const VERA_SPORTS_HOW_ABOUT_RE = /^\s*(?:and|but|so)?\s*(?:how|what)\s+about\s+(?<rest>[^?.,;:!]+)\??\s*$/i;
+const VERA_SPORTS_BARE_PRONOUN_FOLLOWUP_RE = /\b(?:did|does|do|is|was|were|has|have)\s+(?:they|he|she|it|them|him|her)\b/i;
+
+function _veraSportsAliasPassesSafetyCheck(alias, low) {
+  if (!VERA_SPORTS_SAFETY_REQUIRED.has(alias)) return true;
+  return (
+    VERA_SPORTS_LATEST_RESULT_RE.test(low) ||
+    VERA_SPORTS_TOURNAMENT_STATUS_RE.test(low) ||
+    VERA_SPORTS_SCHEDULE_RE.test(low) ||
+    VERA_SPORTS_STANDINGS_RE.test(low) ||
+    VERA_SPORTS_PLAYER_STATUS_RE.test(low) ||
+    VERA_SPORTS_ENTITIES.some(
+      (r) =>
+        r.entity_type === "tournament" &&
+        r.alias !== alias &&
+        new RegExp("\\b" + r.alias.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "\\b").test(low)
+    )
+  );
+}
+
+function _veraResolveSportsEntity(text, opts) {
+  if (!text) return null;
+  opts = opts || {};
+  const allowUnsafe = Boolean(opts.allowUnsafeShortAliases);
+  const low = String(text).toLowerCase();
+  /* Two passes: player/team first (longest within group), then tournaments.
+   * Matches actions.sports._resolve_entity_in_text so "Is Djokovic still in
+   * Roland Garros?" resolves to Djokovic, not Roland Garros. */
+  const playerTeamRows = VERA_SPORTS_ENTITIES.filter(
+    (r) => r.entity_type === "team" || r.entity_type === "player"
+  );
+  const tournamentRows = VERA_SPORTS_ENTITIES.filter((r) => r.entity_type === "tournament");
+  for (const row of playerTeamRows) {
+    const re = new RegExp("\\b" + row.alias.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "\\b");
+    if (!re.test(low)) continue;
+    if (!allowUnsafe && !_veraSportsAliasPassesSafetyCheck(row.alias, low)) continue;
+    return row;
+  }
+  for (const row of tournamentRows) {
+    const re = new RegExp("\\b" + row.alias.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "\\b");
+    if (!re.test(low)) continue;
+    return row;
+  }
+  return null;
+}
+
+function _veraSportsDetectQueryType(text, tournamentInText) {
+  if (!text) return "";
+  const low = String(text).toLowerCase();
+  if (VERA_SPORTS_NEWS_RE.test(low)) return "news";
+  if (VERA_SPORTS_TOURNAMENT_STATUS_RE.test(low)) return "tournament_status";
+  if (VERA_SPORTS_SCHEDULE_RE.test(low)) return "schedule";
+  if (VERA_SPORTS_STANDINGS_RE.test(low)) return "standings";
+  if (VERA_SPORTS_LATEST_RESULT_RE.test(low)) {
+    if (tournamentInText && /\bwon\s+(?:the\s+)?(?:title|trophy|championship|cup|final|finals)\b/.test(low)) {
+      return "tournament_status";
+    }
+    return "latest_result";
+  }
+  if (VERA_SPORTS_PLAYER_STATUS_RE.test(low)) return "player_status";
+  return "";
+}
+
+function veraClassifySportsIntent(text, opts) {
+  opts = opts || {};
+  const ctx = opts.recentSportsContext && typeof opts.recentSportsContext === "object" ? opts.recentSportsContext : null;
+  const out = {
+    is_sports: false,
+    sport: "",
+    entity: "",
+    entity_type: "",
+    tournament_or_league: "",
+    query_type: "",
+    confidence: 0.0,
+    reason: "no_signal",
+    followup_used: false,
+    needs_clarification: false,
+    clarification_reason: "",
+    context_before: ctx ? Object.assign({}, ctx) : null,
+  };
+  const raw = String(text || "").trim();
+  if (!raw) { out.reason = "empty_text"; return out; }
+  const low = raw.toLowerCase();
+  let hit = _veraResolveSportsEntity(raw);
+
+  const howAbout = VERA_SPORTS_HOW_ABOUT_RE.exec(raw);
+  const barePronounFollowup = VERA_SPORTS_BARE_PRONOUN_FOLLOWUP_RE.test(low);
+  const pronounLead = VERA_SPORTS_PRONOUN_RE.test(raw);
+  const isFollowupShape = Boolean(howAbout) || pronounLead || barePronounFollowup;
+
+  if (howAbout && !hit) {
+    const candidate = String((howAbout.groups && howAbout.groups.rest) || "").trim().replace(/[?.,!]+$/, "");
+    if (candidate) {
+      const allowUnsafe = Boolean(ctx) || _veraSportsAliasPassesSafetyCheck("sinner", low);
+      hit = _veraResolveSportsEntity(candidate, { allowUnsafeShortAliases: allowUnsafe });
+      if (hit) out.followup_used = true;
+    }
+  }
+
+  if (!hit && ctx && (pronounLead || barePronounFollowup)) {
+    const ctxEntity = String(ctx.entity || "").trim();
+    if (ctxEntity) {
+      hit = {
+        canonical: ctxEntity,
+        entity_type: ctx.entity_type || "team",
+        sport: ctx.sport || "",
+        tournament_or_league: ctx.tournament_or_league || "",
+        alias: ctxEntity.toLowerCase(),
+      };
+      out.followup_used = true;
+    }
+  }
+
+  if (!hit && ctx && howAbout) {
+    const candidate = String((howAbout.groups && howAbout.groups.rest) || "").trim().replace(/[?.,!]+$/, "");
+    if (candidate) {
+      hit = {
+        canonical: candidate.replace(/\b\w/g, (c) => c.toUpperCase()),
+        entity_type: "player",
+        sport: ctx.sport || "",
+        tournament_or_league: ctx.tournament_or_league || "",
+        alias: candidate.toLowerCase(),
+      };
+      out.followup_used = true;
+      out.reason = "how_about_followup_inherited_ctx";
+    }
+  }
+
+  if (!hit && howAbout) {
+    const candidate = String((howAbout.groups && howAbout.groups.rest) || "").trim().replace(/[?.,!]+$/, "").toLowerCase();
+    if (!ctx && new Set(["him", "her", "them", "they", "it"]).has(candidate)) {
+      out.is_sports = true;
+      out.needs_clarification = true;
+      out.clarification_reason = "pronoun_followup_without_context";
+      out.confidence = 0.6;
+      out.reason = "how_about_pronoun_no_context";
+      return out;
+    }
+  }
+
+  if (!hit && (pronounLead || barePronounFollowup) && !ctx) {
+    /* Only flag as sports clarification when the message is sports-shaped.
+       Without this guard, "what time is it?" / "is it raining?" would match
+       the bare-pronoun followup regex and get a sports clarification bubble. */
+    const looksSportsShaped =
+      VERA_SPORTS_LATEST_RESULT_RE.test(low) ||
+      VERA_SPORTS_TOURNAMENT_STATUS_RE.test(low) ||
+      VERA_SPORTS_SCHEDULE_RE.test(low) ||
+      VERA_SPORTS_STANDINGS_RE.test(low) ||
+      VERA_SPORTS_PLAYER_STATUS_RE.test(low) ||
+      /\b(?:win|won|lose|lost|beat|beating|score|scored|game|games|match|matches|play(?:ing|ed)?|tournament|draw|round|fixture|playoff|playoffs|final|finals|semifinal|quarterfinal)\b/i.test(low);
+    if (looksSportsShaped) {
+      out.is_sports = true;
+      out.needs_clarification = true;
+      out.clarification_reason = "pronoun_followup_without_context";
+      out.confidence = 0.6;
+      out.reason = "ambiguous_pronoun_followup_no_context";
+      return out;
+    }
+    return out;
+  }
+
+  if (!hit) return out;
+
+  if (isFollowupShape && !out.followup_used) {
+    out.followup_used = true;
+  }
+
+  if ((hit.entity_type === "player" || hit.entity_type === "team") && !hit.tournament_or_league) {
+    for (const row of VERA_SPORTS_ENTITIES) {
+      if (row.entity_type !== "tournament") continue;
+      const re = new RegExp("\\b" + row.alias.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "\\b");
+      if (re.test(low)) { hit.tournament_or_league = row.tournament_or_league || ""; break; }
+    }
+  }
+
+  let tournamentInText = Boolean(hit.tournament_or_league);
+  if (!tournamentInText) {
+    for (const row of VERA_SPORTS_ENTITIES) {
+      if (row.entity_type !== "tournament") continue;
+      const re = new RegExp("\\b" + row.alias.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "\\b");
+      if (re.test(low)) { tournamentInText = true; break; }
+    }
+  }
+
+  let queryType = _veraSportsDetectQueryType(raw, tournamentInText);
+  if (!queryType && out.followup_used && ctx) {
+    queryType = String(ctx.query_type || "");
+  }
+  if (!queryType) {
+    if (tournamentInText || (hit.entity_type === "player" && ctx && (ctx.tournament_or_league || ""))) {
+      queryType = "tournament_status";
+    } else {
+      queryType = "latest_result";
+    }
+  }
+
+  let confidence = 0.7;
+  let reason = "entity_only";
+  if (out.followup_used) {
+    confidence = 0.75;
+    reason = out.reason || "followup_with_ctx";
+  } else if (tournamentInText && (hit.entity_type === "player" || hit.entity_type === "team")) {
+    confidence = 0.92;
+    reason = "entity_plus_tournament";
+  } else if (queryType === "tournament_status" || queryType === "schedule" || queryType === "standings") {
+    confidence = 0.88;
+    reason = "entity_plus_query_phrasing";
+  } else if (queryType === "latest_result") {
+    confidence = 0.86;
+    reason = "entity_plus_result_shape";
+  }
+
+  if (hit.entity_type === "tournament" && (queryType === "" || queryType === "latest_result")) {
+    queryType = "tournament_status";
+  }
+
+  out.is_sports = true;
+  out.sport = hit.sport || "";
+  out.entity = hit.canonical || "";
+  out.entity_type = hit.entity_type || "";
+  out.tournament_or_league = hit.tournament_or_league ||
+    (ctx && out.followup_used ? (ctx.tournament_or_league || "") : "") || "";
+  out.query_type = queryType;
+  out.confidence = confidence;
+  out.reason = reason;
+  return out;
+}
+
+try {
+  window.veraClassifySportsIntent = veraClassifySportsIntent;
+} catch (_) {}
 const _INFO_TOOL_SHOPPING_RE = /\b(?:best|top|cheap(?:est)?|good|recommended)\s+[a-z0-9\- ]{2,40}\s+(?:under|below|less\s+than|for\s+under)\s*\$?\s*\d|\bbest\s+[a-z0-9\- ]{2,40}\s+(?:for|to|in)\s+[a-z0-9\- ]{2,40}|\b(?:reviews?\s+of|reviews?\s+for|review\s+of)\b|\bcompare\s+[a-z0-9\- ]{1,30}\s+(?:vs|versus|and|to)\s+[a-z0-9\- ]{1,30}|\b[a-z0-9\- ]{1,20}\s+(?:vs|versus)\s+[a-z0-9\- ]{1,20}\b/i;
 const _INFO_TOOL_NEAR_ME_RE = /\b(?:near\s+me|nearby|around\s+here|around\s+me|close\s+to\s+me|what(?:'s|s)\s+open\s+(?:near|nearby|around))\b/i;
 const _INFO_TOOL_VENUE_RE = /\b(?:coffee\s+shop|coffee\s+shops|cafe|cafes|caf[eé]s?|restaurant|restaurants|gym|gyms|bar|bars|pub|pubs|gas\s+station|gas\s+stations|grocery|supermarket|pharmacy|pharmacies|atm|atms|hotel|hotels|park|parks|hospital|hospitals|library|libraries|bookstore|bookstores)\b/i;
@@ -767,10 +1152,35 @@ function classifyInfoTool(text, opts = {}) {
     out.route = "news_search_tool"; out.tool = "news"; out.confidence = 0.9;
     out.reason = "explicit_news_request"; return out;
   }
-  /* Sports. */
+  /* Sports — sport-aware classifier first; legacy team regex stays as
+     a last-resort safety net. The classifier returns the structured intent
+     when it fires (so the panel can render Sports/Tournament Results); the
+     fallback below keeps the legacy generic web-search reason. */
+  try {
+    const sportsCtx = (opts && opts.recentSportsContext) || null;
+    const sportsIntent = veraClassifySportsIntent(raw, { recentSportsContext: sportsCtx });
+    if (sportsIntent && sportsIntent.is_sports) {
+      if (sportsIntent.needs_clarification) {
+        out.route = "sports_clarification_needed";
+        out.tool = "none";
+        out.confidence = Number(sportsIntent.confidence || 0.6);
+        out.reason = sportsIntent.reason || "sports_pronoun_no_context";
+        out.sports_intent = sportsIntent;
+        return out;
+      }
+      out.route = "sports_tool";
+      out.tool = "sports";
+      out.confidence = Number(sportsIntent.confidence || 0.85);
+      out.reason = sportsIntent.reason || "sports_intent_detected";
+      out.sports_intent = sportsIntent;
+      return out;
+    }
+  } catch (e) {
+    try { console.warn("[sports_router] classifier_exception", e); } catch (_) {}
+  }
   if (_INFO_TOOL_SPORTS_TEAM_RE.test(low) && _INFO_TOOL_SPORTS_VERB_RE.test(low)) {
     out.route = "general_web_search_tool"; out.tool = "web_search"; out.confidence = 0.85;
-    out.reason = "sports_team_question_web_search_fallback"; return out;
+    out.reason = "sports_team_question_web_search_fallback_legacy"; return out;
   }
   /* Shopping / recommendation. */
   if (_INFO_TOOL_SHOPPING_RE.test(low)) {
