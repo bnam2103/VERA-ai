@@ -1125,3 +1125,174 @@ function createVeraMediaRecorder(stream, opts = {}) {
   }
 }
 
+
+/* =============================================================================
+ * STAGE 22 EXTRACTION (2026-05-31): SPEECH DETECTION (MAIN VAD LOOP)
+ * -----------------------------------------------------------------------------
+ * Verbatim move from app.js:
+ *   - L18051..L18064 (14 LF-terminated source lines): the
+ *     listeningFrameIsSpeechLike RMS + ZCR voiced-band gate (its JSDoc
+ *     "RMS + ZCR voiced band" one-line JSDoc included verbatim).
+ *   - L19951..L20009 (59 LF-terminated source lines): the original
+ *     "SPEECH DETECTION" banner + function detectSpeech (main RAF
+ *     VAD loop) + function clearSpeechWaitTimerAndDetectRaf (RAF +
+ *     no-speech-timeout teardown that also drops the voice-duration
+ *     cap that Stage 15 already lives in this file).
+ * Re-terminated as CRLF here to match this file's native line endings.
+ *
+ * Symbols moved (function declarations hoist within this file; bare-
+ * identifier references resolve at CALL TIME through the shared global
+ * lexical environment, the same pattern Stages 7 / 15 / 16 / 17 already
+ * rely on for the rest of the ASR layer):
+ *   - function listeningFrameIsSpeechLike(buf, rms)
+ *       reads computeZCR (LEFT in app.js -- pure helper also used by
+ *       the interrupt VAD loop at app.js L17761), IS_MOBILE (const in
+ *       app.js), VOLUME_THRESHOLD, LISTEN_END_ZCR_MIN, LISTEN_END_ZCR_MAX
+ *       (const thresholds in app.js -- per hard rule, NOT moved).
+ *   - function detectSpeech() (main RAF VAD loop)
+ *       reads/mutates app.js-owned state: mediaRecorder, analyser,
+ *       inputMuted, suppressNextUtterance, hasSpoken, lastVoiceTime,
+ *       rafId; reads thresholds SILENCE_MS + TRAILING_MS (const in
+ *       app.js); calls bare identifiers showMutedStatusIfIdle,
+ *       getAudioEl, beginVoiceUxTurn (all LEFT in app.js per scope --
+ *       beginVoiceUxTurn is tightly coupled to the /infer pipeline);
+ *       calls armVoiceMaxDurationTimer (already in this file -- Stage
+ *       15) when the first speech-like frame arrives; chains itself
+ *       via requestAnimationFrame(detectSpeech). The trigger condition
+ *       (hasSpoken AND now - lastVoiceTime > SILENCE_MS + TRAILING_MS
+ *       AND (getAudioEl()?.paused ?? true)) and the side-effects
+ *       (beginVoiceUxTurn() THEN mediaRecorder.stop()) are preserved
+ *       byte-identically.
+ *   - function clearSpeechWaitTimerAndDetectRaf()
+ *       clears speechWaitTimeoutId (let in app.js, mutated cross-file
+ *       through shared global lex env) and rafId (let in app.js),
+ *       then calls clearVoiceMaxDurationTimer (already in this file --
+ *       Stage 15) to drop the voice-duration cap that is bound to an
+ *       active recording session.
+ *
+ * Intentionally LEFT in app.js per Patch A-11 scope:
+ *   - function computeZCR(buf)               pure helper; shared with
+ *                                            the interrupt VAD loop.
+ *   - function detectInterruptSpeechEnd()    barge-in detection loop
+ *                                            (explicitly excluded by
+ *                                            patch scope -- "Do not
+ *                                            move: barge-in debug
+ *                                            overlay" and the broader
+ *                                            interrupt detection).
+ *   - function beginVoiceUxTurn()            tightly coupled to the
+ *                                            /infer pipeline; patch
+ *                                            scope explicitly says
+ *                                            "leave it in app.js
+ *                                            unless moving it is
+ *                                            clearly safe".
+ *   - const VOLUME_THRESHOLD, SILENCE_MS, TRAILING_MS,
+ *     LISTEN_END_ZCR_MIN, LISTEN_END_ZCR_MAX (RMS/ZCR/silence
+ *     thresholds -- byte-identity required by hard rule).
+ *   - let mediaRecorder, analyser, hasSpoken, lastVoiceTime, rafId,
+ *     speechWaitTimeoutId, inputMuted, suppressNextUtterance (state
+ *     mutated by many app.js code paths beyond the VAD loop).
+ *
+ * External call sites (all in app.js; all resolve via shared classic-
+ * script global lexical environment at call time):
+ *   - detectSpeech():                                 app.js L21327
+ *                                                     (initial RAF kick
+ *                                                     after start-of-
+ *                                                     listening).
+ *   - listeningFrameIsSpeechLike():                   app.js L18024
+ *                                                     (inside the
+ *                                                     interrupt VAD
+ *                                                     loop, NOT moved).
+ *   - clearSpeechWaitTimerAndDetectRaf():             app.js L20016
+ *                                                     (stopActiveMicCa
+ *                                                     ptureSilently) +
+ *                                                     app.js L21296.
+ *
+ * Hard-rule preservation (Patch A-11):
+ *   - Function names + signatures unchanged.
+ *   - RMS / ZCR / silence thresholds NOT touched (kept in app.js).
+ *   - The when-mediaRecorder.stop()-fires condition is unchanged:
+ *     hasSpoken && (now - lastVoiceTime) > SILENCE_MS + TRAILING_MS
+ *     && (getAudioEl()?.paused ?? true), with beginVoiceUxTurn() called
+ *     immediately before mediaRecorder.stop().
+ *   - Wave / listening UI behavior unchanged (showMutedStatusIfIdle is
+ *     still called inside detectSpeech for the muted branch).
+ *   - VAD debug logs / armVoiceMaxDurationTimer("vad_speech_frame")
+ *     trace event preserved byte-identically.
+ *   - "restartSpeechDetection" was named in the patch scope but does
+ *     not exist in app.js (grep confirmed); no symbol invented.
+ * ============================================================================= */
+
+/** RMS + ZCR voiced band — used so background noise alone does not stall end-of-speech. */
+function listeningFrameIsSpeechLike(buf, rms) {
+  const zcr = computeZCR(buf);
+  if (IS_MOBILE) {
+    /* Phone mics (Bluetooth, handset, AGC off) are often quieter and ZCR sits outside desktop bands. */
+    const th = VOLUME_THRESHOLD * 0.55;
+    if (rms <= th) return false;
+    const zLo = LISTEN_END_ZCR_MIN * 0.55;
+    const zHi = Math.min(0.28, LISTEN_END_ZCR_MAX * 1.35);
+    return zcr >= zLo && zcr <= zHi;
+  }
+  if (rms <= VOLUME_THRESHOLD) return false;
+  return zcr >= LISTEN_END_ZCR_MIN && zcr <= LISTEN_END_ZCR_MAX;
+}
+
+/* =========================
+   SPEECH DETECTION
+========================= */
+
+function detectSpeech() {
+  if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+  if (inputMuted) {
+    suppressNextUtterance = true;
+    try {
+      mediaRecorder.stop();
+    } catch {}
+    showMutedStatusIfIdle();
+    return;
+  }
+
+  const buf = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buf);
+
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  const rms = Math.sqrt(sum / buf.length);
+
+  const now = performance.now();
+
+  if (listeningFrameIsSpeechLike(buf, rms)) {
+    if (!hasSpoken) {
+      armVoiceMaxDurationTimer("vad_speech_frame");
+    }
+    hasSpoken = true;
+    lastVoiceTime = now;
+  }
+
+  if (
+    hasSpoken &&
+    now - lastVoiceTime > SILENCE_MS + TRAILING_MS &&
+    (getAudioEl()?.paused ?? true) // 🔑 only stop when not speaking
+  ) {
+    beginVoiceUxTurn();
+    mediaRecorder.stop();
+    return;
+  }
+
+  rafId = requestAnimationFrame(detectSpeech);
+}
+
+function clearSpeechWaitTimerAndDetectRaf() {
+  if (speechWaitTimeoutId != null) {
+    clearTimeout(speechWaitTimeoutId);
+    speechWaitTimeoutId = null;
+  }
+  if (rafId != null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  /* Voice-duration cap is bound to an active recording session. When the
+     session is torn down (silence stop, abort, pipeline reset, PTT switch,
+     etc.) the timer must not survive into the next utterance. */
+  clearVoiceMaxDurationTimer();
+}

@@ -3056,6 +3056,16 @@ document.addEventListener("click", () => {
      classic-script global lexical environment at CALL time. Extracted
      2026-05-27, Stage 4. -->
 <script src="debug/voiceDebug.js?v=3"></script>
+<!-- debug/reasoningGate.js loads AFTER app.js — only attaches the manual
+     DevTools helper window.debugReasoningGate(text, opts). The function
+     body reaches the live-routing helpers that remain in app.js
+     (isExplicitReasoningPanelReference, isBriefExplanationModifier,
+     isSimpleDefinitionQuestion, detectBroadComplexTopicFrontend,
+     detectCompoundActionFamilies) plus globals (API_URL,
+     workModeLastSubstantiveUserText) through the shared classic-script
+     global lexical environment at CALL time. Extracted 2026-06-01,
+     Patch B-2 option b. -->
+<script src="debug/reasoningGate.js?v=1"></script>
 </body>
 </html>
 
