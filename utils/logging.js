@@ -145,8 +145,17 @@ function logBargeInLatencyDebug(phase, payload = {}) {
 }
 
 function logInterruptTranscriptDebug(phase, payload = {}) {
+  /* debug/voiceDebug.js loads AFTER app.js per index.html, so `_veraBargeInDebug`
+   * and `_bargeInDebugCaptureEvent` may be undeclared if a transcript event
+   * fires before that script has executed. `typeof X !== "undefined"` does not
+   * throw on an undeclared global, and the outer try/catch is a belt-and-
+   * suspenders fallback for any TDZ window that could appear mid-script. */
   try {
-    if (_veraBargeInDebug?.enabled) {
+    if (
+      typeof _veraBargeInDebug !== "undefined" &&
+      _veraBargeInDebug?.enabled &&
+      typeof _bargeInDebugCaptureEvent === "function"
+    ) {
       _bargeInDebugCaptureEvent(phase, payload);
     }
   } catch (_) {}

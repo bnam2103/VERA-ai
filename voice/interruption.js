@@ -147,9 +147,19 @@ function isVeraInterruptDebugEnabled() {
 function logVeraInterruptDebug(payload, opts = {}) {
   /* Feed the barge-in debug overlay timeline BEFORE any gating so the
    * overlay works without requiring VERA_DEBUG_INTERRUPT to also be on.
-   * Hot-path cost when overlay is off: a single boolean check. */
+   * Hot-path cost when overlay is off: a single boolean check.
+   *
+   * debug/voiceDebug.js loads AFTER app.js per index.html (Patch A-12,
+   * Stage 18), so the bare-identifier references below could resolve to
+   * undeclared globals during a brief window before that file has executed.
+   * `typeof X !== "undefined"` returns "undefined" without throwing on an
+   * undeclared global, and the outer try/catch handles any TDZ window. */
   try {
-    if (_veraBargeInDebug?.enabled) {
+    if (
+      typeof _veraBargeInDebug !== "undefined" &&
+      _veraBargeInDebug?.enabled &&
+      typeof _bargeInDebugCaptureEvent === "function"
+    ) {
       const tag = payload?.tag || "interrupt_debug";
       _bargeInDebugCaptureEvent(tag, payload);
     }
@@ -716,3 +726,116 @@ try {
     window.isVeraInterruptDebugEnabled = isVeraInterruptDebugEnabled;
   }
 } catch (_) {}
+
+/* =============================================================================
+ * STAGE 14 EXTRACTION (2026-05-31): INTERRUPTION TRANSCRIPT CLASSIFICATION
+ * -----------------------------------------------------------------------------
+ * Verbatim move from app.js L1737..L1813 (77 LF-terminated source lines,
+ * re-terminated as CRLF here to match this file's native line endings).
+ *
+ * This block runs AFTER barge-in already stopped TTS and AFTER ASR has
+ * finalized the user transcript. It decides whether the transcript is a
+ * pure cancel ("stop", "never mind"), a leading-cancel-prefix + tail
+ * ("stop, sync the plan"), or a normal user command. It is pure judgement
+ * with no side effects.
+ *
+ * Symbols moved (all kept at top-level so classic-script global
+ * bare-identifier visibility is preserved):
+ *   - INTERRUPT_CANCEL_ONLY_RE     (regex const)
+ *   - INTERRUPT_CANCEL_PREFIX_RE   (regex const)
+ *   - classifyInterruptionTranscript (pure classification function)
+ *
+ * Intentionally LEFT in app.js per Patch A-6 scope: barge-in debug overlay,
+ * ASR engine code, TTS queue code, infer pipeline, handleUtterance, Work
+ * Mode TTS queue. None of these were part of this block.
+ *
+ * External call sites (all in app.js, all resolve at call time):
+ *   - app.js: 1 site calling `classifyInterruptionTranscript(trimmed)` in
+ *     the post-ASR shortcut router (`const classification = ...`).
+ *
+ * Cross-file bare-identifier resolution at call time:
+ *   - The block calls no app.js helpers (purely self-contained).
+ *   - The [interrupt_transcript_debug] / logInterruptTranscriptDebug calls
+ *     that surround the call site in app.js continue to resolve into
+ *     utils/logging.js (Stage 3) and were never part of this block.
+ *
+ * Classification logic and regex behavior are byte-identical to pre-move.
+ * ============================================================================= */
+
+/* =========================
+   INTERRUPTION TRANSCRIPT CLASSIFICATION
+
+   Barge-in already stopped TTS instantly (see fastStopTtsOnVadOnly). The
+   remaining decision after the ASR transcript is finalized is:
+
+     - "stop", "never mind", "shut up" → cancel-only. TTS already stopped,
+       nothing else to do; just resume listening.
+     - "stop, sync the plan" → strip the leading cancel prefix and route
+       the remainder as a normal user command.
+     - "sync the plan", "remove the first item", "set a timer", "put that
+       in the panel" → route the full transcript as a normal user command.
+
+   The "normal user command" routing reuses the SAME shortcut handlers the
+   regular voice / typed pipelines use (maybeHandleWorkChecklistSync*,
+   maybeHandleWorkChecklistPlan*, maybeHandleMoveLatestVoiceTaskToReasoning)
+   so a sync request that arrives as an interruption produces the same
+   client-side mutation a normal voice request would.
+========================= */
+
+const INTERRUPT_CANCEL_ONLY_RE =
+  /^(?:stop|stop\s+it|stop\s+talking|shut\s*up|shush|hush(?:\s+up)?|be\s+quiet|quiet|cancel(?:\s+that)?|never\s*mind|nevermind|forget\s+it|forget\s+about\s+it|pause|mute(?:\s+yourself)?|enough|that's\s+enough|thats\s+enough|okay\s+stop|ok\s+stop)$/i;
+
+const INTERRUPT_CANCEL_PREFIX_RE =
+  /^(?:stop|stop\s+talking|stop\s+it|shut\s*up|shush|hush(?:\s+up)?|be\s+quiet|quiet|cancel(?:\s+that)?|never\s*mind|nevermind|forget\s+it|forget\s+about\s+it|pause|hold\s+on|hold\s+up|wait(?:\s+a\s+(?:second|sec|minute|moment))?|actually|um|uh|no|nope|okay|ok)\b[\s,;:.\-—–]+(.+)$/i;
+
+/**
+ * Classify a finalized interruption transcript. Returns the shape the spec
+ * calls out:
+ *   { isCancelOnly, hasActionIntent, normalizedCommandText,
+ *     leadingCancelStripped, reason }
+ *
+ * Pure judgement function — no side effects, safe to call from anywhere.
+ */
+function classifyInterruptionTranscript(text) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return {
+      isCancelOnly: false,
+      hasActionIntent: false,
+      normalizedCommandText: "",
+      leadingCancelStripped: false,
+      reason: "empty"
+    };
+  }
+  const lowered = raw.toLowerCase().replace(/[.?!,;:\s]+$/g, "").trim();
+  if (INTERRUPT_CANCEL_ONLY_RE.test(lowered)) {
+    return {
+      isCancelOnly: true,
+      hasActionIntent: false,
+      normalizedCommandText: "",
+      leadingCancelStripped: false,
+      reason: "pure_cancel_phrase"
+    };
+  }
+  const m = raw.match(INTERRUPT_CANCEL_PREFIX_RE);
+  if (m) {
+    const tail = String(m[1] || "").trim();
+    if (tail && tail.split(/\s+/).filter(Boolean).length >= 1) {
+      return {
+        isCancelOnly: false,
+        hasActionIntent: true,
+        normalizedCommandText: tail,
+        leadingCancelStripped: true,
+        reason: "stripped_leading_cancel_prefix"
+      };
+    }
+  }
+  return {
+    isCancelOnly: false,
+    hasActionIntent: true,
+    normalizedCommandText: raw,
+    leadingCancelStripped: false,
+    reason: "normal_command"
+  };
+}
+

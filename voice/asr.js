@@ -694,3 +694,434 @@ try {
     window.getAsrDebugState = getAsrDebugState;
   }
 } catch (_) {}
+
+/* =============================================================================
+ * STAGE 15 EXTRACTION (2026-05-31): VOICE DURATION CAP
+ * -----------------------------------------------------------------------------
+ * Verbatim move from app.js of two non-adjacent blocks (118 LF-terminated source
+ * lines total, re-terminated as CRLF here to match this file's native line
+ * endings):
+ *   - app.js L240..L245 (6 lines): cap-internal state declarations
+ *     (voiceSpeechStartedAt, voiceMaxDurationTimerId,
+ *      voiceMaxDurationLastFiredAt) and the "Speech-start guarded
+ *      voice-duration cap" doc comment that precedes them.
+ *   - app.js L515..L626 (112 lines): the "VOICE DURATION CAP (60s after
+ *     speech-start)" function block (clearVoiceMaxDurationTimer,
+ *     armVoiceMaxDurationTimer, handleVoiceMaxDurationLimit) and its
+ *     section banner.
+ *
+ * Symbols moved (all kept at the file's top-level so classic-script global
+ * bare-identifier visibility is preserved):
+ *   - let voiceSpeechStartedAt          (cap-internal state)
+ *   - let voiceMaxDurationTimerId       (cap-internal state)
+ *   - let voiceMaxDurationLastFiredAt   (cap-internal state)
+ *   - function clearVoiceMaxDurationTimer   (idempotent reset)
+ *   - function armVoiceMaxDurationTimer     (one-shot per utterance)
+ *   - function handleVoiceMaxDurationLimit  (timer fire handler)
+ *
+ * Intentionally LEFT in app.js per Patch A-8 scope: full speech detection
+ * loop, infer pipeline, handleUtterance, Work Mode TTS queue, TTS queue,
+ * barge-in debug overlay. None of these were part of the cap block.
+ *
+ * External call sites (all in app.js, all resolve at call time):
+ *   - 7 clearVoiceMaxDurationTimer() invocations (cleanup / stop / reset).
+ *   - 4 armVoiceMaxDurationTimer(<reason>) invocations:
+ *       "vad_speech_frame"
+ *       "browser_asr_first_partial_interrupt"
+ *       "browser_asr_first_partial_main"
+ *       "browser_asr_first_partial_post_interrupt"
+ *   - handleVoiceMaxDurationLimit has no external callers; it is only
+ *     invoked from inside armVoiceMaxDurationTimer's setTimeout (which
+ *     moves with it).
+ *
+ * Cross-file bare-identifier resolution at call time (into app.js):
+ *   - VERA_SAFETY_LIMITS                (config object, app.js)
+ *   - isVeraWorkModeOn                  (workmode/checklist.js, optional-chained)
+ *   - mainBrowserRecognition            (let in app.js)
+ *   - mediaRecorder                     (let in app.js)
+ *   - listening / processing / waveState (let in app.js)
+ *   - updateMuteInputButton, setStatus, veraShowCapabilityFailureBubble
+ *
+ * Hard-rule preservation (Patch A-8):
+ *   - Max-duration value (60s) UNCHANGED.
+ *   - User-facing safety message (VERA_SAFETY_LIMITS.messages.voiceDurationLimit)
+ *     read by the same bare-identifier reference; wording UNCHANGED.
+ *   - Recording-stop behavior (mainBrowserRecognition.stop/abort,
+ *     mediaRecorder.stop, listening/processing/waveState reset) UNCHANGED.
+ *   - Console log keys [voice_speech_started] and [voice_duration_limit]
+ *     preserved byte-identically.
+ * ============================================================================= */
+
+/* Speech-start guarded voice-duration cap. Pre-speech silence is governed
+   by the existing no-speech / idle timeouts; this fires only AFTER the user
+   actually starts speaking. See `armVoiceMaxDurationTimer`. */
+let voiceSpeechStartedAt = 0;
+let voiceMaxDurationTimerId = null;
+let voiceMaxDurationLastFiredAt = 0;
+
+/* =========================
+   VOICE DURATION CAP (60s after speech-start)
+========================= */
+
+/**
+ * Clear any pending voice-duration timer. Always safe to call; no-op if
+ * the timer was never armed.
+ */
+function clearVoiceMaxDurationTimer() {
+  if (voiceMaxDurationTimerId != null) {
+    try { clearTimeout(voiceMaxDurationTimerId); } catch (_) {}
+    voiceMaxDurationTimerId = null;
+  }
+  voiceSpeechStartedAt = 0;
+}
+
+/**
+ * Arm the 60s post-speech-start cap exactly once per utterance. Safe to
+ * call from every spot where `hasSpoken` flips to true (browser ASR
+ * partial / MediaRecorder VAD speech-frame); subsequent calls during the
+ * same utterance are no-ops.
+ *
+ * When the timer fires it gracefully stops whichever recorder is alive:
+ *   - For browser SpeechRecognition continuous: lets the current partial
+ *     turn finalize via the normal end-of-utterance scheduling so a
+ *     substantive transcript is not lost. If there is no transcript yet,
+ *     just stops the recognizer and shows the duration bubble.
+ *   - For MediaRecorder: calls `.stop()` which routes through the normal
+ *     `handleUtterance` upload path, then shows the bubble.
+ *
+ * The fallback bubble appears at most once per ~5s to avoid duplicates
+ * when both paths happen to be alive.
+ */
+function armVoiceMaxDurationTimer(reason) {
+  if (voiceMaxDurationTimerId != null) return; // already armed
+  voiceSpeechStartedAt = Date.now();
+  const ms = Math.max(
+    5000,
+    Number(VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec) * 1000
+  );
+  try {
+    console.info("[voice_speech_started]", {
+      reason: String(reason || "first_partial"),
+      max_duration_sec: VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec
+    });
+  } catch (_) {}
+  voiceMaxDurationTimerId = setTimeout(() => {
+    voiceMaxDurationTimerId = null;
+    handleVoiceMaxDurationLimit();
+  }, ms);
+}
+
+function handleVoiceMaxDurationLimit() {
+  const now = Date.now();
+  // Burst guard — only one fallback per 5s even if both pipes trip.
+  if (now - voiceMaxDurationLastFiredAt < 5000) return;
+  voiceMaxDurationLastFiredAt = now;
+  try {
+    console.warn("[voice_duration_limit]", {
+      reason: "voice_duration_limit",
+      mode: isVeraWorkModeOn?.() ? "work_mode" : "non_work",
+      feature: "voice",
+      max_duration_sec: VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec
+    });
+  } catch (_) {}
+
+  // 1) Try to stop the Web Speech recognizer cleanly, preserving any
+  //    accumulated transcript so the normal /infer flow can still run.
+  let webStopped = false;
+  try {
+    if (typeof mainBrowserRecognition !== "undefined" && mainBrowserRecognition) {
+      try { mainBrowserRecognition.stop(); } catch (_) {
+        try { mainBrowserRecognition.abort(); } catch (_) {}
+      }
+      webStopped = true;
+    }
+  } catch (_) {}
+
+  // 2) Stop active MediaRecorder so its `onstop` fires `handleUtterance`.
+  let mediaStopped = false;
+  try {
+    if (typeof mediaRecorder !== "undefined" && mediaRecorder &&
+        mediaRecorder.state === "recording") {
+      try { mediaRecorder.stop(); } catch (_) {}
+      mediaStopped = true;
+    }
+  } catch (_) {}
+
+  // 3) Reset wave / listening UI so the strip cannot appear stuck.
+  try {
+    listening = false;
+    processing = false;
+    waveState = "idle";
+    if (typeof updateMuteInputButton === "function") updateMuteInputButton();
+    setStatus("Ready", "idle");
+  } catch (_) {}
+
+  /* 4) Bubble — keep wording exactly to spec; voice + work-mode both show
+        this in the conversation strip (not inside the reasoning panel).
+        Skip if no recorder was actually stopped: the recording session
+        must have ended cleanly while the timer was still scheduled (e.g.
+        normal silence-stop landed milliseconds before the cap fired). */
+  if (webStopped || mediaStopped) {
+    veraShowCapabilityFailureBubble(
+      "voice_duration_limit",
+      VERA_SAFETY_LIMITS.messages.voiceDurationLimit,
+      { minIntervalMs: 5000 }
+    );
+  }
+  clearVoiceMaxDurationTimer();
+}
+
+
+/* =============================================================================
+ * STAGE 16 EXTRACTION (2026-05-31): HYBRID SIDECAR RECORDER
+ * -----------------------------------------------------------------------------
+ * Verbatim move from app.js L1937..L2039 (103 LF-terminated source lines,
+ * re-terminated as CRLF here to match this file's native line endings).
+ *
+ * Stage 7 (2026-05-27) deliberately left this block in app.js because its
+ * MediaRecorder lifecycle is coupled to the mic stream and the /infer
+ * multipart upload pipeline. Patch A-9 (this stage) reverses that decision:
+ * the block is now alongside the other ASR-mode helpers in voice/asr.js,
+ * and the two cross-file references it still makes into app.js
+ * (createVeraMediaRecorder, _pickRecorderMime) resolve at call time via
+ * the shared classic-script global lexical environment. Stage 7's "left
+ * in app.js" justification for createVeraMediaRecorder and _pickRecorderMime
+ * is preserved -- those helpers themselves were NOT moved.
+ *
+ * Symbols moved (all kept at file top-level so classic-script global
+ * bare-identifier visibility is preserved):
+ *   - let hybridSidecarRecorder            (state: active sidecar)
+ *   - let hybridSidecarChunks              (state: collected blobs)
+ *   - let hybridSidecarMimeType            (state: negotiated MIME)
+ *   - let hybridSidecarStartedAt           (state: start time, perf.now())
+ *   - function isHybridSidecarRunning     (cheap "is sidecar live?" gate)
+ *   - function _stopAndCollectHybridSidecar (async stop + collect blob)
+ *   - function _discardHybridSidecar      (fire-and-forget cleanup)
+ *   - function startHybridSidecarRecorderIfNeeded
+ *     (one-shot arm when ASR mode === "hybrid"; chunked recording with
+ *      250 ms timeslice; emits [asr_mode_debug] log entries)
+ *
+ * Intentionally LEFT in app.js per Patch A-9 scope: full speech detection
+ * loop, infer pipeline, handleUtterance, TTS code, Work Mode TTS queue,
+ * debug overlay code. Stage 7-era helpers also remain in app.js:
+ * createVeraMediaRecorder, _pickRecorderMime, VERA_RECORDER_BITS_PER_SECOND,
+ * VERA_RECORDER_MIME_PREFS, logVeraSettings.
+ *
+ * External call sites (all in app.js, all resolve at call time):
+ *   - isHybridSidecarRunning()           (1 gate in /infer finalize)
+ *   - _stopAndCollectHybridSidecar()     (1 site in /infer finalize)
+ *   - _discardHybridSidecar()            (2 sites in /infer finalize)
+ *   - startHybridSidecarRecorderIfNeeded (1 site in mic-arming path)
+ *
+ * Cross-file bare-identifier resolution at call time (into app.js):
+ *   - createVeraMediaRecorder            (recorder ctor wrapper)
+ *   - _pickRecorderMime                  (preferred MIME picker)
+ *
+ * Hard-rule preservation (Patch A-9):
+ *   - ASR mode selection logic UNCHANGED (still gated by isHybridAsrMode).
+ *   - Whisper / browser / hybrid behavior UNCHANGED.
+ *   - Recorder options (250 ms timeslice, MIME selection) UNCHANGED.
+ *   - [asr_mode_debug] log entries (hybrid_sidecar_started,
+ *     hybrid_sidecar_error, hybrid_sidecar_start_failed) preserved
+ *     byte-identically.
+ * ============================================================================= */
+
+/* =========================================================================
+   PART 5 + 7 — Hybrid sidecar recorder
+   --------------------------------------------------------------------------
+   When the ASR mode is "hybrid", we run the existing browser SpeechRecognition
+   path AND record the same microphone audio in parallel. On finalization,
+   decideAsrFinalizationMode() inspects the browser transcript. If a Whisper
+   verification is warranted, we send BOTH the browser transcript AND the
+   recorded audio blob to /infer with request_whisper_verify=1. Otherwise
+   the blob is discarded.
+   ========================================================================= */
+let hybridSidecarRecorder = null;
+let hybridSidecarChunks = [];
+let hybridSidecarMimeType = "";
+let hybridSidecarStartedAt = 0;
+
+function isHybridSidecarRunning() {
+  return !!hybridSidecarRecorder && hybridSidecarRecorder.state === "recording";
+}
+
+function _stopAndCollectHybridSidecar() {
+  return new Promise((resolve) => {
+    const rec = hybridSidecarRecorder;
+    if (!rec) {
+      resolve({ blob: null, mimeType: "", durationMs: 0, chunkCount: 0 });
+      return;
+    }
+    const startedAt = hybridSidecarStartedAt;
+    const mimeType = hybridSidecarMimeType || rec.mimeType || "audio/webm";
+    const finalize = () => {
+      try {
+        const blob = hybridSidecarChunks.length
+          ? new Blob(hybridSidecarChunks, { type: mimeType })
+          : null;
+        resolve({
+          blob,
+          mimeType,
+          durationMs: startedAt ? Math.max(0, performance.now() - startedAt) : 0,
+          chunkCount: hybridSidecarChunks.length,
+        });
+      } catch (_) {
+        resolve({ blob: null, mimeType, durationMs: 0, chunkCount: 0 });
+      } finally {
+        hybridSidecarChunks = [];
+        hybridSidecarRecorder = null;
+        hybridSidecarStartedAt = 0;
+        hybridSidecarMimeType = "";
+      }
+    };
+    if (rec.state === "inactive") { finalize(); return; }
+    const prev = rec.onstop;
+    rec.onstop = (e) => {
+      try { if (typeof prev === "function") prev(e); } catch (_) {}
+      finalize();
+    };
+    try { rec.stop(); } catch (_) { finalize(); }
+  });
+}
+
+function _discardHybridSidecar() {
+  const rec = hybridSidecarRecorder;
+  if (!rec) return;
+  try { if (rec.state !== "inactive") rec.stop(); } catch (_) {}
+  hybridSidecarChunks = [];
+  hybridSidecarRecorder = null;
+  hybridSidecarStartedAt = 0;
+  hybridSidecarMimeType = "";
+}
+
+function startHybridSidecarRecorderIfNeeded(micStream) {
+  if (!isHybridAsrMode()) return false;
+  if (!micStream || !micStream.active) return false;
+  if (typeof MediaRecorder === "undefined") return false;
+  if (isHybridSidecarRunning()) return true;
+  try {
+    const rec = createVeraMediaRecorder(micStream);
+    hybridSidecarChunks = [];
+    hybridSidecarMimeType = rec.mimeType || _pickRecorderMime() || "audio/webm";
+    rec.ondataavailable = (e) => {
+      if (e && e.data && e.data.size > 0) hybridSidecarChunks.push(e.data);
+    };
+    rec.onerror = (e) => {
+      try {
+        console.warn("[asr_mode_debug]", { stage: "hybrid_sidecar_error", error: String(e?.error || e) });
+      } catch (_) {}
+    };
+    /* Request periodic chunks so we don't lose anything if the recorder is
+       stopped before the browser ASR final settles. 250ms is plenty for
+       short commands and small enough that interrupt path is responsive. */
+    rec.start(250);
+    hybridSidecarRecorder = rec;
+    hybridSidecarStartedAt = performance.now();
+    try {
+      console.info("[asr_mode_debug]", { stage: "hybrid_sidecar_started", mimeType: hybridSidecarMimeType });
+    } catch (_) {}
+    return true;
+  } catch (e) {
+    try {
+      console.warn("[asr_mode_debug]", { stage: "hybrid_sidecar_start_failed", error: String(e?.message || e) });
+    } catch (_) {}
+    return false;
+  }
+}
+
+
+/* =============================================================================
+ * STAGE 17 EXTRACTION (2026-05-31): MEDIARECORDER CONSTRUCTION HELPER
+ * -----------------------------------------------------------------------------
+ * Verbatim move from app.js L1894..L1936 (43 LF-terminated source lines,
+ * re-terminated as CRLF here to match this file's native line endings).
+ *
+ * Stage 7 (2026-05-27) left these helpers in app.js with the rationale
+ * "Recorder construction - not an ASR-mode decision; coupled to the recorder
+ * lifecycle." Patch A-9 (Stage 16, 2026-05-31) moved the hybrid sidecar
+ * recorder into voice/asr.js but kept these helpers in app.js. Patch A-10
+ * (this stage) finishes the consolidation: the recorder ctor helpers now
+ * live alongside the sidecar recorder that is one of their primary clients,
+ * so the intra-file calls from startHybridSidecarRecorderIfNeeded (Stage 16)
+ * to createVeraMediaRecorder and _pickRecorderMime become local rather than
+ * cross-file.
+ *
+ * Symbols moved (all kept at file top-level so classic-script global
+ * bare-identifier visibility is preserved):
+ *   - const VERA_RECORDER_BITS_PER_SECOND   (64 kbps default for Opus)
+ *   - const VERA_RECORDER_MIME_PREFS        (preference order, length 4)
+ *   - function _pickRecorderMime           (probe MediaRecorder.isTypeSupported)
+ *   - function createVeraMediaRecorder     (ctor wrapper with bare-ctor fallback)
+ *
+ * Intentionally LEFT in app.js per Patch A-10 scope: full speech detection
+ * loop, infer pipeline, handleUtterance, TTS code. (The sidecar recorder
+ * is already in this file as of Stage 16 / Patch A-9.)
+ *
+ * External call sites (all in app.js, all resolve at call time):
+ *   - createVeraMediaRecorder(micStream) x 4 sites:
+ *       * interruptRecorder       = createVeraMediaRecorder(micStream)
+ *       * interruptPrearmRecorder = createVeraMediaRecorder(micStream)
+ *       * mediaRecorder           = createVeraMediaRecorder(micStream)  (main arm)
+ *       * mediaRecorder           = createVeraMediaRecorder(micStream)  (re-arm)
+ *   - _pickRecorderMime has no external callers (only used by the moved
+ *     createVeraMediaRecorder and by startHybridSidecarRecorderIfNeeded,
+ *     which already lives in this file).
+ *
+ * Cross-file bare-identifier resolution at call time:
+ *   - The moved block calls into NO app.js helpers (only browser-built-in
+ *     MediaRecorder + MediaRecorder.isTypeSupported). Pure self-contained
+ *     extraction.
+ *
+ * Hard-rule preservation (Patch A-10):
+ *   - MIME-type selection order UNCHANGED: ["audio/webm;codecs=opus",
+ *     "audio/ogg;codecs=opus", "audio/webm", ""].
+ *   - Empty-string sentinel still means "fall back to browser default".
+ *   - audioBitsPerSecond default (64_000) UNCHANGED.
+ *   - Bare-ctor fallback chain UNCHANGED (new MediaRecorder(stream, init)
+ *     -> new MediaRecorder(stream, { mimeType }) -> new MediaRecorder(stream)).
+ *   - opts overrides (opts.mimeType, opts.audioBitsPerSecond) UNCHANGED.
+ * ============================================================================= */
+
+/* =========================================================================
+   PART 12 — MediaRecorder construction helper
+   --------------------------------------------------------------------------
+   Centralizes mimeType + audioBitsPerSecond preference order so every
+   recording path (main, interrupt-prearm, hybrid sidecar) gets the best
+   format the browser supports. Opus is widely supported, decodes cleanly
+   on the server via pydub/ffmpeg, and survives small chunk drops better
+   than legacy webm. The 64 kbps default is plenty for Whisper accuracy on
+   a single voice mic.
+   ========================================================================= */
+const VERA_RECORDER_BITS_PER_SECOND = 64_000;
+const VERA_RECORDER_MIME_PREFS = [
+  "audio/webm;codecs=opus",
+  "audio/ogg;codecs=opus",
+  "audio/webm",
+  "", // browser default
+];
+function _pickRecorderMime() {
+  if (typeof MediaRecorder === "undefined") return "";
+  const isSupported = typeof MediaRecorder.isTypeSupported === "function";
+  if (!isSupported) return "";
+  for (const m of VERA_RECORDER_MIME_PREFS) {
+    if (!m) return "";
+    try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (_) {}
+  }
+  return "";
+}
+function createVeraMediaRecorder(stream, opts = {}) {
+  if (typeof MediaRecorder === "undefined") throw new Error("MediaRecorder unavailable");
+  const mimeType = opts.mimeType != null ? opts.mimeType : _pickRecorderMime();
+  const audioBitsPerSecond = opts.audioBitsPerSecond != null ? opts.audioBitsPerSecond : VERA_RECORDER_BITS_PER_SECOND;
+  const init = {};
+  if (mimeType) init.mimeType = mimeType;
+  if (audioBitsPerSecond) init.audioBitsPerSecond = audioBitsPerSecond;
+  try {
+    return new MediaRecorder(stream, init);
+  } catch (_) {
+    /* Some browsers throw on unknown init keys. Fall back to bare ctor. */
+    try { return new MediaRecorder(stream, mimeType ? { mimeType } : undefined); }
+    catch (_) { return new MediaRecorder(stream); }
+  }
+}
+

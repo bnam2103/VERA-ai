@@ -44,39 +44,14 @@ try {
    `mainTtsPlaybackActive`, etc. through the shared classic-script global
    lexical environment at CALL time. */
 
-/* =========================
-   UNIFIED DEV-MODE FLAG  (added during cleanup pass, 2026-05-27)
-
-   `isVeraDevMode()` is the single switch that gates ALL future
-   dev-only overlays, console timelines, dump commands and smoke
-   runners. Today it is purely additive — existing per-feature flags
-   like `VERA_DEBUG_INTERRUPT` and `VERA_DEBUG_BARGE_IN_UI` continue
-   to work unchanged. New diagnostics added after this date should
-   key off `isVeraDevMode()` instead of inventing a new per-feature
-   flag.
-
-   Enable for the session:
-     window.VERA_DEV_MODE = true
-   Persist across reloads:
-     localStorage.setItem("vera_dev_mode", "1")
-
-   The matching backend env var is VERA_DEV_MODE=1 — checked in
-   `app.py` if/when we move smoke runners or dev endpoints under it.
-========================= */
-function isVeraDevMode() {
-  try {
-    if (typeof window !== "undefined" && window.VERA_DEV_MODE === true) return true;
-  } catch (_) {}
-  try {
-    if (typeof localStorage !== "undefined" && localStorage.getItem("vera_dev_mode") === "1") return true;
-  } catch (_) {}
-  return false;
-}
-try {
-  if (typeof window !== "undefined") {
-    window.isVeraDevMode = isVeraDevMode;
-  }
-} catch (_) {}
+/* UNIFIED DEV-MODE FLAG (function isVeraDevMode + window.isVeraDevMode
+ * attachment + its localStorage "vera_dev_mode" + window.VERA_DEV_MODE
+ * sources) -> moved to debug/voiceDebug.js (Stage 19 / Patch A-13,
+ * 2026-05-31). The only caller in this codebase is _bargeInDebugUiEnabled
+ * (also in debug/voiceDebug.js), so the move turns that cross-file
+ * `typeof isVeraDevMode === "function" && isVeraDevMode()` lookup into a
+ * same-file lexical-scope lookup. The defensive typeof guard is kept for
+ * load-order resilience. */
 
 /**
  * Call when opening BMO: new backend session, empty log, voice input default, clear side panel.
@@ -237,12 +212,12 @@ let interruptPrearmSuccess = false;
 let audioChunks = [];
 let hasSpoken = false;
 let lastVoiceTime = 0;
-/* Speech-start guarded voice-duration cap. Pre-speech silence is governed
-   by the existing no-speech / idle timeouts; this fires only AFTER the user
-   actually starts speaking. See `armVoiceMaxDurationTimer`. */
-let voiceSpeechStartedAt = 0;
-let voiceMaxDurationTimerId = null;
-let voiceMaxDurationLastFiredAt = 0;
+/* voiceSpeechStartedAt, voiceMaxDurationTimerId, voiceMaxDurationLastFiredAt
+ * (+ their "Speech-start guarded voice-duration cap" doc comment)
+ * -> moved to voice/asr.js (Stage 15, 2026-05-31) together with the
+ * VOICE DURATION CAP function block. They are cap-internal state and are
+ * only read/written by clearVoiceMaxDurationTimer / armVoiceMaxDurationTimer /
+ * handleVoiceMaxDurationLimit, all of which now also live in voice/asr.js. */
 
 /* =========================
    SAFETY LIMITS (frontend)
@@ -512,118 +487,21 @@ function veraShowCapabilityFailureBubble(feature, message, opts = {}) {
  * cancelPendingNewsStatusBubble, failPendingNewsStatusBubble
  * moved to news/newsRouter.js (Stage 10, 2026-05-27). */
 
-/* =========================
-   VOICE DURATION CAP (60s after speech-start)
-========================= */
-
-/**
- * Clear any pending voice-duration timer. Always safe to call; no-op if
- * the timer was never armed.
- */
-function clearVoiceMaxDurationTimer() {
-  if (voiceMaxDurationTimerId != null) {
-    try { clearTimeout(voiceMaxDurationTimerId); } catch (_) {}
-    voiceMaxDurationTimerId = null;
-  }
-  voiceSpeechStartedAt = 0;
-}
-
-/**
- * Arm the 60s post-speech-start cap exactly once per utterance. Safe to
- * call from every spot where `hasSpoken` flips to true (browser ASR
- * partial / MediaRecorder VAD speech-frame); subsequent calls during the
- * same utterance are no-ops.
- *
- * When the timer fires it gracefully stops whichever recorder is alive:
- *   - For browser SpeechRecognition continuous: lets the current partial
- *     turn finalize via the normal end-of-utterance scheduling so a
- *     substantive transcript is not lost. If there is no transcript yet,
- *     just stops the recognizer and shows the duration bubble.
- *   - For MediaRecorder: calls `.stop()` which routes through the normal
- *     `handleUtterance` upload path, then shows the bubble.
- *
- * The fallback bubble appears at most once per ~5s to avoid duplicates
- * when both paths happen to be alive.
- */
-function armVoiceMaxDurationTimer(reason) {
-  if (voiceMaxDurationTimerId != null) return; // already armed
-  voiceSpeechStartedAt = Date.now();
-  const ms = Math.max(
-    5000,
-    Number(VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec) * 1000
-  );
-  try {
-    console.info("[voice_speech_started]", {
-      reason: String(reason || "first_partial"),
-      max_duration_sec: VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec
-    });
-  } catch (_) {}
-  voiceMaxDurationTimerId = setTimeout(() => {
-    voiceMaxDurationTimerId = null;
-    handleVoiceMaxDurationLimit();
-  }, ms);
-}
-
-function handleVoiceMaxDurationLimit() {
-  const now = Date.now();
-  // Burst guard — only one fallback per 5s even if both pipes trip.
-  if (now - voiceMaxDurationLastFiredAt < 5000) return;
-  voiceMaxDurationLastFiredAt = now;
-  try {
-    console.warn("[voice_duration_limit]", {
-      reason: "voice_duration_limit",
-      mode: isVeraWorkModeOn?.() ? "work_mode" : "non_work",
-      feature: "voice",
-      max_duration_sec: VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec
-    });
-  } catch (_) {}
-
-  // 1) Try to stop the Web Speech recognizer cleanly, preserving any
-  //    accumulated transcript so the normal /infer flow can still run.
-  let webStopped = false;
-  try {
-    if (typeof mainBrowserRecognition !== "undefined" && mainBrowserRecognition) {
-      try { mainBrowserRecognition.stop(); } catch (_) {
-        try { mainBrowserRecognition.abort(); } catch (_) {}
-      }
-      webStopped = true;
-    }
-  } catch (_) {}
-
-  // 2) Stop active MediaRecorder so its `onstop` fires `handleUtterance`.
-  let mediaStopped = false;
-  try {
-    if (typeof mediaRecorder !== "undefined" && mediaRecorder &&
-        mediaRecorder.state === "recording") {
-      try { mediaRecorder.stop(); } catch (_) {}
-      mediaStopped = true;
-    }
-  } catch (_) {}
-
-  // 3) Reset wave / listening UI so the strip cannot appear stuck.
-  try {
-    listening = false;
-    processing = false;
-    waveState = "idle";
-    if (typeof updateMuteInputButton === "function") updateMuteInputButton();
-    setStatus("Ready", "idle");
-  } catch (_) {}
-
-  /* 4) Bubble — keep wording exactly to spec; voice + work-mode both show
-        this in the conversation strip (not inside the reasoning panel).
-        Skip if no recorder was actually stopped: the recording session
-        must have ended cleanly while the timer was still scheduled (e.g.
-        normal silence-stop landed milliseconds before the cap fired). */
-  if (webStopped || mediaStopped) {
-    veraShowCapabilityFailureBubble(
-      "voice_duration_limit",
-      VERA_SAFETY_LIMITS.messages.voiceDurationLimit,
-      { minIntervalMs: 5000 }
-    );
-  }
-  clearVoiceMaxDurationTimer();
-}
-
+/* clearVoiceMaxDurationTimer, armVoiceMaxDurationTimer, handleVoiceMaxDurationLimit
+ * -> moved to voice/asr.js (Stage 15, 2026-05-31). The "VOICE DURATION CAP
+ * (60s after speech-start)" block now lives there together with its
+ * cap-internal state (voiceSpeechStartedAt, voiceMaxDurationTimerId,
+ * voiceMaxDurationLastFiredAt). External call sites in this file (the
+ * 7 clearVoiceMaxDurationTimer() invocations and the 4 armVoiceMaxDurationTimer
+ * call sites in startListening, the VAD speech-frame path, and the browser-
+ * ASR first-partial paths) continue to resolve those names as bare
+ * identifiers through the shared classic-script global lexical environment
+ * at call time. The moved handle function still calls back into app.js for
+ * VERA_SAFETY_LIMITS, isVeraWorkModeOn, mainBrowserRecognition, mediaRecorder,
+ * listening / processing / waveState, updateMuteInputButton, setStatus, and
+ * veraShowCapabilityFailureBubble, all resolved via the same shared global
+ * lexical environment at call time. Max-duration value, user-facing safety
+ * message, and recording-stop behavior are byte-identical to pre-move. */
 let listening = false;
 let processing = false;
 let rafId = null;
@@ -742,566 +620,28 @@ let _veraCurrentTtsDebugContext = null;
 /* dumpVeraVoiceState + resetVeraVoiceRuntimeState IIFE body → moved to
  * debug/voiceDebug.js (Stage 4, 2026-05-27). */
 
-/* =========================================================================
- *  BARGE-IN DEBUG OVERLAY (dev-only diagnostic UI)
+/* BARGE-IN DEBUG OVERLAY (the entire `_veraBargeInDebug` state object,
+ * _bargeInDebugUiEnabled, _bargeInDebugCaptureEvent, _bargeInDebugBuildState,
+ * _bargeInDebugPositionOverlay, _bargeInDebugMount, _bargeInDebugUnmount,
+ * _bargeInDebugRender, _bargeInDebugBuildSnapshot, the window.toggleBargeInDebugUi
+ * + window.copyBargeInDebugSnapshot + window.VERA_DEBUG_BARGE_IN_UI exports, the
+ * 1 Hz polling tick that watches localStorage / DevTools toggles, and the
+ * setTimeout(0) auto-mount handler) -> moved to debug/voiceDebug.js
+ * (Stage 18, 2026-05-31).
  *
- *  Goal: make voice-interruption gating visible in real time so we can see
- *  whether the bug is "VAD didn't fire", "barge-in gate blocked", "TTS
- *  cancel never fired", or "cancel fired but queued audio kept playing".
+ * Hot-path callers in this codebase that read _veraBargeInDebug?.enabled and
+ * call _bargeInDebugCaptureEvent (utils/logging.js logVeraInterruptDebug +
+ * logInterruptTranscriptDebug; voice/interruption.js logVeraInterruptDebug)
+ * continue to resolve those names as bare identifiers through the shared
+ * classic-script global lexical environment at call time, even though
+ * debug/voiceDebug.js loads AFTER app.js per index.html. Each call site is
+ * wrapped in try/catch with a `typeof` guard so that an in-flight ASR / TTS
+ * event arriving before voiceDebug.js has executed cannot throw a ReferenceError.
  *
- *  Enable:
- *    window.VERA_DEBUG_BARGE_IN_UI = true        // session-only
- *    localStorage.setItem("vera_debug_barge_in_ui", "1")  // persisted
- *    window.toggleBargeInDebugUi(true|false)     // imperative
- *
- *  Snapshot:
- *    window.copyBargeInDebugSnapshot()           // copies JSON to clipboard
- *
- *  The overlay is hidden when both the window flag and the localStorage flag
- *  are off, so normal users never see it. It piggybacks on existing
- *  logVeraInterruptDebug + logInterruptTranscriptDebug calls — no extra
- *  instrumentation is added to barge-in hot paths.
- * ========================================================================= */
-const _veraBargeInDebug = {
-  /* Cached enabled flag — flipped by the polling tick / toggle so hot-path
-   * event capture is a single boolean check. */
-  enabled: false,
-
-  /* Ring buffer of the last few interruption-related events. */
-  events: [],
-  maxEvents: 14,
-
-  /* Latched timestamps for the cancel-delay summary line. */
-  ttsStartedAt: 0,
-  lastSpeechDetectedAt: 0,
-  lastTtsCancelCalledAt: 0,
-  lastInterruptEntryAt: 0,
-  lastEarlyReturnReason: null,
-  lastCancelSource: null,
-
-  /* Last render-blocking timings (filled when news_panel_render_end /
-   * interrupt_raf_gap fire). */
-  lastNewsRenderDurationMs: 0,
-  lastRafGapMs: 0,
-
-  /* DOM + render loop. */
-  containerEl: null,
-  bodyEl: null,
-  renderIntervalId: null,
-  pollIntervalId: null,
-};
-
-function _bargeInDebugUiEnabled() {
-  try {
-    if (typeof window !== "undefined" && window.VERA_DEBUG_BARGE_IN_UI === true) return true;
-  } catch (_) {}
-  try {
-    if (typeof localStorage !== "undefined" && localStorage.getItem("vera_debug_barge_in_ui") === "1") return true;
-  } catch (_) {}
-  /* Cleanup-pass additive gate: anyone in unified dev mode also sees the
-   * overlay. Pre-existing per-feature flags above keep working unchanged. */
-  try {
-    if (typeof isVeraDevMode === "function" && isVeraDevMode()) return true;
-  } catch (_) {}
-  return false;
-}
-
-/** Hot-path event capture. Called from logVeraInterruptDebug and
- *  logInterruptTranscriptDebug *before* any gating, so timeline events are
- *  recorded whenever the debug overlay is on (independent of
- *  VERA_DEBUG_INTERRUPT). */
-function _bargeInDebugCaptureEvent(eventName, payload) {
-  if (!_veraBargeInDebug.enabled) return;
-  try {
-    const nowMs = performance.now();
-    const name = String(eventName || "event");
-    const p = payload && typeof payload === "object" ? payload : { value: payload };
-
-    if (name === "tts_start") _veraBargeInDebug.ttsStartedAt = nowMs;
-    if (name === "speech_detected") _veraBargeInDebug.lastSpeechDetectedAt = nowMs;
-    if (name === "tts_cancel_called") {
-      _veraBargeInDebug.lastTtsCancelCalledAt = nowMs;
-      if (p?.source) _veraBargeInDebug.lastCancelSource = p.source;
-    }
-    if (name === "interrupt_speech_entry") {
-      if (p?.outcome === "early_return") {
-        _veraBargeInDebug.lastEarlyReturnReason = p?.reasonIfReturn || "early_return";
-      } else if (p?.outcome === "proceed_cancel_tts") {
-        _veraBargeInDebug.lastInterruptEntryAt = nowMs;
-        _veraBargeInDebug.lastEarlyReturnReason = null;
-      }
-    }
-    if (name === "news_panel_render_end" && Number.isFinite(p?.durationMs)) {
-      _veraBargeInDebug.lastNewsRenderDurationMs = Number(p.durationMs);
-    }
-    if (name === "interrupt_raf_gap" && Number.isFinite(p?.gapMs)) {
-      _veraBargeInDebug.lastRafGapMs = Number(p.gapMs);
-    }
-
-    const sinceTtsStartMs =
-      _veraBargeInDebug.ttsStartedAt > 0
-        ? Number((nowMs - _veraBargeInDebug.ttsStartedAt).toFixed(1))
-        : null;
-
-    _veraBargeInDebug.events.push({
-      event: name,
-      perfNow: Number(nowMs.toFixed(1)),
-      sinceTtsStartMs,
-      payload: p,
-    });
-    if (_veraBargeInDebug.events.length > _veraBargeInDebug.maxEvents) {
-      _veraBargeInDebug.events.shift();
-    }
-  } catch (_) {}
-}
-
-function _bargeInDebugBuildState() {
-  const base =
-    typeof window !== "undefined" && typeof window.dumpVeraVoiceState === "function"
-      ? window.dumpVeraVoiceState({ silent: true })
-      : {};
-  const extras = base?.extras || {};
-
-  const ttsPlaying = Boolean(
-    base.mainTtsPlaybackActive ||
-      (base.activeMainTtsBufferSourcesCount || 0) > 0 ||
-      (typeof isAssistantTtsPlaying === "function" && isAssistantTtsPlaying())
-  );
-  const useBrowserAsr = base.browserAsrPreferred === true;
-  const recorderReady =
-    Boolean(base.interruptRecording) ||
-    extras.interruptDetectRecognitionPresent === true;
-  const continuous = base.continuousListeningEnabled === true;
-  const micActive = extras.micStreamActive === true;
-  const vadArmed = base.vadFastStopArmed === true;
-  const latched = extras.interruptBargeInLatched === true;
-  const audioCtxState = extras.audioCtxState || null;
-
-  /* Reflect the *actual* gate logic. Order matters — first failing gate wins
-   * so the displayed reason matches what the runtime would reject on. */
-  let allowed = true;
-  let reason = "allowed";
-  if (!continuous) {
-    allowed = false;
-    reason = "not_continuous";
-  } else if (!ttsPlaying) {
-    allowed = false;
-    reason = "no_tts_playing";
-  } else if (extras.appHidden === true) {
-    allowed = false;
-    reason = "app_hidden_or_throttled";
-  } else if (!micActive) {
-    allowed = false;
-    reason = "mic_stream_inactive";
-  } else if (audioCtxState && audioCtxState !== "running") {
-    allowed = false;
-    reason = `audio_ctx_${audioCtxState}`;
-  } else if (latched) {
-    allowed = false;
-    reason = "already_latched";
-  } else if (!vadArmed) {
-    allowed = false;
-    reason = "vad_not_armed";
-  } else if (!useBrowserAsr && !recorderReady) {
-    /* The suspected single-ASR bug gate — gets surfaced verbatim. */
-    allowed = false;
-    reason = "interrupt_recording_false_single_asr";
-  } else if (useBrowserAsr && extras.interruptDetectRecognitionPresent !== true) {
-    allowed = false;
-    reason = "interrupt_detect_recognition_missing";
-  }
-
-  const speechAt = _veraBargeInDebug.lastSpeechDetectedAt;
-  const cancelAt = _veraBargeInDebug.lastTtsCancelCalledAt;
-  const cancelDelayMs =
-    speechAt > 0 && cancelAt >= speechAt
-      ? Number((cancelAt - speechAt).toFixed(1))
-      : null;
-
-  return {
-    timestamp: new Date().toISOString(),
-    bargeIn: {
-      allowed,
-      reason,
-      vadArmed,
-      latched,
-      useBrowserAsr,
-      continuous,
-      micActive,
-      ttsPlaying,
-      recorderReady,
-    },
-    voice: {
-      asrMode: base.asrMode,
-      listeningMode: base.listeningMode,
-      micState: base.micState,
-      inputMuted: base.inputMuted,
-      workModeOn: base.workModeOn,
-      workModeMuteEnabled: base.workModeMuteEnabled,
-    },
-    tts: {
-      playing: ttsPlaying,
-      mainTtsPlaybackActive: base.mainTtsPlaybackActive,
-      bufferSources: base.activeMainTtsBufferSourcesCount,
-      ndjsonReaderPresent: base.activeNdjsonBodyReaderPresent,
-      ttsId: base.currentTtsId,
-      token: base.mainTtsPlaybackToken,
-    },
-    vad: {
-      armed: vadArmed,
-      speechFrames: extras.interruptSpeechFrames,
-      speechAccumMs: extras.interruptSpeechAccumMs,
-      partialAccumMs: extras.interruptPartialAccumMs,
-      partialLastText: extras.interruptPartialLastText,
-      sinceTtsStartMs:
-        _veraBargeInDebug.ttsStartedAt > 0
-          ? Number((performance.now() - _veraBargeInDebug.ttsStartedAt).toFixed(0))
-          : null,
-    },
-    capture: {
-      interruptRecording: base.interruptRecording,
-      prearmRecorderState: base.interruptPrearmRecorderState,
-      detectRecognitionPresent: extras.interruptDetectRecognitionPresent,
-      mainBrowserRecognitionPresent: extras.mainBrowserRecognitionPresent,
-      browserAsrPermanentlyDisabled: extras.browserAsrPermanentlyDisabled,
-    },
-    cancel: {
-      lastSpeechDetectedPerfNow: speechAt > 0 ? Number(speechAt.toFixed(1)) : null,
-      lastTtsCancelCalledPerfNow: cancelAt > 0 ? Number(cancelAt.toFixed(1)) : null,
-      cancelDelayMs,
-      lastInterruptEntryPerfNow:
-        _veraBargeInDebug.lastInterruptEntryAt > 0
-          ? Number(_veraBargeInDebug.lastInterruptEntryAt.toFixed(1))
-          : null,
-      lastEarlyReturnReason: _veraBargeInDebug.lastEarlyReturnReason,
-      lastCancelSource:
-        _veraBargeInDebug.lastCancelSource ||
-        (typeof _veraTtsCancelSource !== "undefined" ? _veraTtsCancelSource : null) ||
-        null,
-    },
-    newsRender: {
-      duringNewsRender: extras.duringNewsRender,
-      lastNewsRenderDurationMs: _veraBargeInDebug.lastNewsRenderDurationMs,
-      lastRafGapMs: _veraBargeInDebug.lastRafGapMs,
-      appHidden: extras.appHidden,
-      appVisibilityState: extras.appVisibilityState,
-      audioCtxState,
-    },
-    events: _veraBargeInDebug.events.slice().reverse(),
-    underlyingDump: base,
-  };
-}
-
-function _bargeInDebugPositionOverlay() {
-  if (!_veraBargeInDebug.containerEl) return;
-  /* Anchor to the left of the active record/mic button when one is
-   * mounted (VERA + BMO modes). Fallback to fixed bottom-right corner. */
-  let anchor = null;
-  try {
-    const candidates = ["vera-record", "bmo-record"];
-    for (const id of candidates) {
-      const btn = document.getElementById(id);
-      if (!btn) continue;
-      const rect = btn.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
-        anchor = { el: btn, rect };
-        break;
-      }
-    }
-  } catch (_) {}
-
-  const el = _veraBargeInDebug.containerEl;
-  el.style.position = "fixed";
-  el.style.left = "auto";
-  if (anchor) {
-    const overlayW = el.offsetWidth || 320;
-    const leftPx = Math.max(8, anchor.rect.left - overlayW - 12);
-    const topPx = Math.max(8, anchor.rect.top - el.offsetHeight + anchor.rect.height);
-    el.style.left = `${leftPx}px`;
-    el.style.top = `${topPx}px`;
-    el.style.right = "auto";
-    el.style.bottom = "auto";
-  } else {
-    el.style.right = "16px";
-    el.style.bottom = "16px";
-    el.style.top = "auto";
-  }
-}
-
-function _bargeInDebugMount() {
-  if (typeof document === "undefined") return;
-  if (!_bargeInDebugUiEnabled()) return;
-  if (_veraBargeInDebug.containerEl && _veraBargeInDebug.containerEl.isConnected) return;
-
-  const el = document.createElement("div");
-  el.id = "vera-barge-in-debug-overlay";
-  el.setAttribute("data-vera-dev-overlay", "barge-in");
-  el.style.cssText = [
-    "position:fixed",
-    "right:16px",
-    "bottom:16px",
-    "width:320px",
-    "max-height:70vh",
-    "overflow:auto",
-    "background:rgba(8,12,18,0.96)",
-    "color:#d8e1ea",
-    "font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace",
-    "border:1px solid rgba(120,135,160,0.4)",
-    "border-radius:8px",
-    "padding:8px 10px 10px 10px",
-    "z-index:2147483646",
-    "box-shadow:0 4px 14px rgba(0,0,0,0.4)",
-    "pointer-events:auto",
-    "user-select:text",
-  ].join(";");
-  el.innerHTML =
-    '<div data-bd-header style="display:flex;align-items:center;justify-content:space-between;margin:-2px -2px 6px;gap:6px;">' +
-    '  <strong style="font-size:11px;letter-spacing:.04em;color:#79c8ff;">BARGE-IN DEBUG <span style="color:#666;font-weight:400;">(dev)</span></strong>' +
-    '  <span style="display:flex;gap:4px;">' +
-    '    <button data-bd-copy  type="button" title="Copy snapshot to clipboard" style="background:#1a2433;color:#cfe;border:1px solid #325;padding:2px 6px;border-radius:4px;font:11px/1 inherit;cursor:pointer;">Copy</button>' +
-    '    <button data-bd-reset type="button" title="Dev reset of voice runtime state" style="background:#3a1a1a;color:#fcc;border:1px solid #532;padding:2px 6px;border-radius:4px;font:11px/1 inherit;cursor:pointer;">Reset</button>' +
-    '    <button data-bd-close type="button" title="Hide overlay" style="background:transparent;color:#9aa;border:1px solid #555;padding:2px 6px;border-radius:4px;font:11px/1 inherit;cursor:pointer;">×</button>' +
-    '  </span>' +
-    '</div>' +
-    '<div data-bd-body></div>';
-  document.body.appendChild(el);
-  _veraBargeInDebug.containerEl = el;
-  _veraBargeInDebug.bodyEl = el.querySelector("[data-bd-body]");
-
-  el.querySelector("[data-bd-copy]").addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    try { window.copyBargeInDebugSnapshot(); } catch (_) {}
-  });
-  el.querySelector("[data-bd-reset]").addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (typeof window.resetVeraVoiceRuntimeState === "function") {
-      try {
-        window.resetVeraVoiceRuntimeState({ source: "barge_in_debug_overlay" });
-      } catch (_) {}
-    } else {
-      try { console.warn("[barge_in_debug] resetVeraVoiceRuntimeState not available"); } catch (_) {}
-    }
-  });
-  el.querySelector("[data-bd-close]").addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    /* Closing the overlay disables the flag so it doesn't re-mount on the
-     * next polling tick. The user can re-enable with toggleBargeInDebugUi(true). */
-    try { window.VERA_DEBUG_BARGE_IN_UI = false; } catch (_) {}
-    safeRemoveLocalStorage("vera_debug_barge_in_ui");
-    _bargeInDebugUnmount();
-  });
-
-  if (_veraBargeInDebug.renderIntervalId == null) {
-    _veraBargeInDebug.renderIntervalId = setInterval(() => {
-      if (!_bargeInDebugUiEnabled()) {
-        _bargeInDebugUnmount();
-        return;
-      }
-      _bargeInDebugRender();
-    }, 200);
-  }
-  _bargeInDebugRender();
-}
-
-function _bargeInDebugUnmount() {
-  if (_veraBargeInDebug.renderIntervalId != null) {
-    try { clearInterval(_veraBargeInDebug.renderIntervalId); } catch (_) {}
-    _veraBargeInDebug.renderIntervalId = null;
-  }
-  if (_veraBargeInDebug.containerEl && _veraBargeInDebug.containerEl.parentNode) {
-    try { _veraBargeInDebug.containerEl.parentNode.removeChild(_veraBargeInDebug.containerEl); } catch (_) {}
-  }
-  _veraBargeInDebug.containerEl = null;
-  _veraBargeInDebug.bodyEl = null;
-}
-
-function _bargeInDebugEscapeHtml(s) {
-  if (s == null) return "";
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function _bargeInDebugRender() {
-  if (!_veraBargeInDebug.bodyEl) return;
-  let s;
-  try { s = _bargeInDebugBuildState(); } catch (_) { return; }
-
-  const colAllowed = s.bargeIn.allowed ? "#7fe39a" : "#ff6b6b";
-  const colTts = s.tts.playing ? "#7fe39a" : "#9aa";
-  const sentinelRed = s.tts.mainTtsPlaybackActive && (s.tts.bufferSources || 0) === 0;
-  const colSentinel = sentinelRed ? "#ff6b6b" : "#9aa";
-
-  /* Cancel-delay color: green if cancel fired within 80 ms of speech detect,
-   * yellow up to 250 ms, red beyond that or if no cancel after a recent
-   * speech_detected. */
-  let colCancel = "#9aa";
-  let cancelText = "—";
-  if (s.cancel.cancelDelayMs != null) {
-    cancelText = `${s.cancel.cancelDelayMs}ms`;
-    if (s.cancel.cancelDelayMs <= 80) colCancel = "#7fe39a";
-    else if (s.cancel.cancelDelayMs <= 250) colCancel = "#f3d36b";
-    else colCancel = "#ff6b6b";
-  } else if (
-    s.cancel.lastSpeechDetectedPerfNow != null &&
-    s.tts.playing &&
-    performance.now() - s.cancel.lastSpeechDetectedPerfNow > 200
-  ) {
-    colCancel = "#ff6b6b";
-    cancelText = "none (TTS still playing)";
-  }
-
-  /* VAD color: green if armed + speech accum > 0, yellow if accumulating but
-   * threshold not yet passed (rough proxy: speechAccumMs > 0 but no
-   * speech_detected this turn). */
-  let colVad = "#9aa";
-  if (s.vad.armed) {
-    if ((s.vad.speechAccumMs || 0) > 0) colVad = "#f3d36b";
-    else colVad = "#7fe39a";
-  } else {
-    /* If TTS is playing but VAD is not armed, that's actually a red flag —
-     * caller would be blocked. */
-    colVad = s.tts.playing ? "#ff6b6b" : "#9aa";
-  }
-
-  const esc = _bargeInDebugEscapeHtml;
-  const eventsHtml = s.events.slice(0, 10).map((ev) => {
-    const sinceTts =
-      ev.sinceTtsStartMs != null ? `+${Math.round(ev.sinceTtsStartMs)}ms` : "—";
-    const extras = [];
-    if (ev.payload?.outcome) extras.push(`outcome=${ev.payload.outcome}`);
-    if (ev.payload?.reasonIfReturn) extras.push(`reason=${ev.payload.reasonIfReturn}`);
-    if (ev.payload?.event) extras.push(`event=${ev.payload.event}`);
-    if (ev.payload?.source) extras.push(`src=${ev.payload.source}`);
-    if (Number.isFinite(ev.payload?.durationMs)) extras.push(`dur=${Math.round(ev.payload.durationMs)}ms`);
-    if (Number.isFinite(ev.payload?.gapMs)) extras.push(`gap=${Math.round(ev.payload.gapMs)}ms`);
-    if (ev.payload?.gatePath) extras.push(`gate=${ev.payload.gatePath}`);
-    const extraStr = extras.length
-      ? ` <span style="color:#9aa;">${esc(extras.join(" "))}</span>`
-      : "";
-    return (
-      `<div style="display:flex;gap:6px;line-height:1.35;">` +
-      `<span style="color:#79c8ff;min-width:64px;font-variant-numeric:tabular-nums;">${esc(sinceTts)}</span>` +
-      `<span style="color:#d8e1ea;">${esc(ev.event)}${extraStr}</span>` +
-      `</div>`
-    );
-  }).join("");
-
-  const ttsIdShort = s.tts.ttsId ? String(s.tts.ttsId).slice(0, 22) : "—";
-  const tokShort = s.tts.token == null ? "—" : String(s.tts.token);
-
-  _veraBargeInDebug.bodyEl.innerHTML =
-    '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px;">' +
-      `<div style="color:#9aa;">ASR</div><div>${esc(s.voice.asrMode || "?")} <span style="color:#9aa;">(${esc(s.voice.listeningMode || "?")})</span></div>` +
-      `<div style="color:#9aa;">Mic</div><div>${esc(s.voice.micState || "?")}${s.voice.inputMuted ? ' <span style="color:#f3d36b;">(muted)</span>' : ""}</div>` +
-      `<div style="color:#9aa;">TTS</div><div style="color:${colTts};">${s.tts.playing ? "playing" : "idle"} <span style="color:#9aa;">srcs=${esc(s.tts.bufferSources ?? "?")} rdr=${s.tts.ndjsonReaderPresent ? "y" : "n"}</span></div>` +
-      `<div style="color:#9aa;">Ids</div><div style="color:#9aa;font-size:10px;">tts=${esc(ttsIdShort)} tok=${esc(tokShort)}</div>` +
-      `<div style="color:#9aa;">Sentinel</div><div style="color:${colSentinel};">${s.tts.mainTtsPlaybackActive ? "active" : "inactive"}${sentinelRed ? ' <span style="color:#ff6b6b;">(no tracked srcs!)</span>' : ""}</div>` +
-      `<div style="color:#9aa;">Barge-in</div><div style="color:${colAllowed};font-weight:600;">${s.bargeIn.allowed ? "ALLOWED" : "BLOCKED"} <span style="color:#9aa;font-weight:400;">(${esc(s.bargeIn.reason)})</span></div>` +
-      `<div style="color:#9aa;">VAD</div><div style="color:${colVad};">armed=${s.vad.armed ? "y" : "n"} speech=${esc(s.vad.speechAccumMs ?? 0)}ms partial=${esc(s.vad.partialAccumMs ?? 0)}ms</div>` +
-      `<div style="color:#9aa;">Frames</div><div>frames=${esc(s.vad.speechFrames ?? 0)} sinceTts=${esc(s.vad.sinceTtsStartMs ?? "—")}ms</div>` +
-      `<div style="color:#9aa;">Capture</div><div>recIntr=${s.capture.interruptRecording ? "y" : "n"} prearm=${esc(s.capture.prearmRecorderState ?? "—")} detect=${s.capture.detectRecognitionPresent ? "y" : "n"}</div>` +
-      `<div style="color:#9aa;">Cancel</div><div style="color:${colCancel};">delay=${esc(cancelText)} <span style="color:#9aa;">early=${esc(s.cancel.lastEarlyReturnReason ?? "—")} src=${esc(s.cancel.lastCancelSource ?? "—")}</span></div>` +
-      `<div style="color:#9aa;">Render</div><div>news=${s.newsRender.duringNewsRender ? "y" : "n"} hidden=${s.newsRender.appHidden ? "y" : "n"} actx=${esc(s.newsRender.audioCtxState ?? "—")} nrDur=${esc(Math.round(s.newsRender.lastNewsRenderDurationMs || 0))}ms rafGap=${esc(Math.round(s.newsRender.lastRafGapMs || 0))}ms</div>` +
-    '</div>' +
-    '<div style="margin-top:6px;border-top:1px solid rgba(120,135,160,0.25);padding-top:5px;">' +
-      '<div style="color:#9aa;margin-bottom:2px;">Events (most recent first):</div>' +
-      (eventsHtml || '<div style="color:#666;">(no events yet — start a TTS turn and speak over it)</div>') +
-    '</div>';
-
-  /* Re-anchor after layout changes (mic button position can shift between
-   * VERA and BMO modes or when the side panel opens). */
-  try { _bargeInDebugPositionOverlay(); } catch (_) {}
-}
-
-function _bargeInDebugBuildSnapshot() {
-  let snap = null;
-  try { snap = _bargeInDebugBuildState(); } catch (_) {}
-  return snap;
-}
-
-if (typeof window !== "undefined") {
-  try {
-    window.VERA_DEBUG_BARGE_IN_UI = _bargeInDebugUiEnabled();
-  } catch (_) {}
-
-  /* Imperative toggle — flips both the in-memory flag and the localStorage
-   * persistence, then mounts/unmounts immediately. */
-  window.toggleBargeInDebugUi = function toggleBargeInDebugUi(force) {
-    const next = typeof force === "boolean" ? force : !_bargeInDebugUiEnabled();
-    try { window.VERA_DEBUG_BARGE_IN_UI = next; } catch (_) {}
-    if (next) safeSetLocalStorage("vera_debug_barge_in_ui", "1");
-    else safeRemoveLocalStorage("vera_debug_barge_in_ui");
-    _veraBargeInDebug.enabled = next;
-    if (next) {
-      if (typeof document !== "undefined" && document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", _bargeInDebugMount, { once: true });
-      } else {
-        _bargeInDebugMount();
-      }
-    } else {
-      _bargeInDebugUnmount();
-    }
-    try {
-      console.warn("[barge_in_debug_ui_toggled]", { enabled: next });
-    } catch (_) {}
-    return next;
-  };
-
-  /* Clipboard snapshot — usable from devtools without the overlay open. */
-  window.copyBargeInDebugSnapshot = function copyBargeInDebugSnapshot() {
-    const snap = _bargeInDebugBuildSnapshot();
-    const text = JSON.stringify(snap, null, 2);
-    try {
-      if (navigator?.clipboard?.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {});
-      } else if (typeof document !== "undefined") {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;";
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        try { document.execCommand("copy"); } catch (_) {}
-        document.body.removeChild(ta);
-      }
-    } catch (_) {}
-    try { console.info("[barge_in_debug_snapshot_copied]", snap); } catch (_) {}
-    return snap;
-  };
-
-  /* Low-frequency polling so the user can flip
-   *   window.VERA_DEBUG_BARGE_IN_UI = true
-   * (or set the localStorage key from another tab) and have the overlay
-   * appear without an explicit toggle call. Stops itself once mounted. */
-  if (_veraBargeInDebug.pollIntervalId == null) {
-    _veraBargeInDebug.pollIntervalId = setInterval(() => {
-      const wantOn = _bargeInDebugUiEnabled();
-      const isOn = !!_veraBargeInDebug.containerEl;
-      if (wantOn !== _veraBargeInDebug.enabled) _veraBargeInDebug.enabled = wantOn;
-      if (wantOn && !isOn) _bargeInDebugMount();
-      if (!wantOn && isOn) _bargeInDebugUnmount();
-    }, 1000);
-  }
-
-  /* Auto-mount if a previous session left the flag set. */
-  setTimeout(() => {
-    if (_bargeInDebugUiEnabled()) {
-      _veraBargeInDebug.enabled = true;
-      if (typeof document !== "undefined" && document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", _bargeInDebugMount, { once: true });
-      } else {
-        _bargeInDebugMount();
-      }
-    }
-  }, 0);
-}
-
+ * The "INTERRUPTION / BARGE-IN DEBUG + TIMING + CANCEL-SOURCE" hot-path state
+ * (_veraInterruptRafLastAt, _veraCurrentTtsDebugContext) stays here because
+ * it is written by the RAF detectInterrupt loop and the NDJSON TTS playback
+ * checkpoints, neither of which is part of the overlay contract. */
 /* fastStopTtsOnVadOnly → moved to voice/interruption.js (Stage 6, 2026-05-27). */
 
 /** Debounce main SR onend → startListening recovery (Chrome sometimes ends the session with no error). */
@@ -1731,85 +1071,24 @@ try {
 } catch (_) {}
 
 /* logInterruptTranscriptDebug → moved to utils/logging.js (Stage 3,
- * 2026-05-27). `_veraBargeInDebug` + `_bargeInDebugCaptureEvent` remain
- * in app.js and are reached via the shared global lexical environment. */
+ * 2026-05-27). `_veraBargeInDebug` + `_bargeInDebugCaptureEvent` were
+ * subsequently moved to debug/voiceDebug.js (Stage 18 / Patch A-12,
+ * 2026-05-31); the logger reaches them via the shared classic-script
+ * global lexical environment at call time, with try/catch + typeof
+ * guards in case an event fires before debug/voiceDebug.js has loaded. */
 
-/* =========================
-   INTERRUPTION TRANSCRIPT CLASSIFICATION
-
-   Barge-in already stopped TTS instantly (see fastStopTtsOnVadOnly). The
-   remaining decision after the ASR transcript is finalized is:
-
-     - "stop", "never mind", "shut up" → cancel-only. TTS already stopped,
-       nothing else to do; just resume listening.
-     - "stop, sync the plan" → strip the leading cancel prefix and route
-       the remainder as a normal user command.
-     - "sync the plan", "remove the first item", "set a timer", "put that
-       in the panel" → route the full transcript as a normal user command.
-
-   The "normal user command" routing reuses the SAME shortcut handlers the
-   regular voice / typed pipelines use (maybeHandleWorkChecklistSync*,
-   maybeHandleWorkChecklistPlan*, maybeHandleMoveLatestVoiceTaskToReasoning)
-   so a sync request that arrives as an interruption produces the same
-   client-side mutation a normal voice request would.
-========================= */
-
-const INTERRUPT_CANCEL_ONLY_RE =
-  /^(?:stop|stop\s+it|stop\s+talking|shut\s*up|shush|hush(?:\s+up)?|be\s+quiet|quiet|cancel(?:\s+that)?|never\s*mind|nevermind|forget\s+it|forget\s+about\s+it|pause|mute(?:\s+yourself)?|enough|that's\s+enough|thats\s+enough|okay\s+stop|ok\s+stop)$/i;
-
-const INTERRUPT_CANCEL_PREFIX_RE =
-  /^(?:stop|stop\s+talking|stop\s+it|shut\s*up|shush|hush(?:\s+up)?|be\s+quiet|quiet|cancel(?:\s+that)?|never\s*mind|nevermind|forget\s+it|forget\s+about\s+it|pause|hold\s+on|hold\s+up|wait(?:\s+a\s+(?:second|sec|minute|moment))?|actually|um|uh|no|nope|okay|ok)\b[\s,;:.\-—–]+(.+)$/i;
-
-/**
- * Classify a finalized interruption transcript. Returns the shape the spec
- * calls out:
- *   { isCancelOnly, hasActionIntent, normalizedCommandText,
- *     leadingCancelStripped, reason }
- *
- * Pure judgement function — no side effects, safe to call from anywhere.
- */
-function classifyInterruptionTranscript(text) {
-  const raw = String(text || "").trim();
-  if (!raw) {
-    return {
-      isCancelOnly: false,
-      hasActionIntent: false,
-      normalizedCommandText: "",
-      leadingCancelStripped: false,
-      reason: "empty"
-    };
-  }
-  const lowered = raw.toLowerCase().replace(/[.?!,;:\s]+$/g, "").trim();
-  if (INTERRUPT_CANCEL_ONLY_RE.test(lowered)) {
-    return {
-      isCancelOnly: true,
-      hasActionIntent: false,
-      normalizedCommandText: "",
-      leadingCancelStripped: false,
-      reason: "pure_cancel_phrase"
-    };
-  }
-  const m = raw.match(INTERRUPT_CANCEL_PREFIX_RE);
-  if (m) {
-    const tail = String(m[1] || "").trim();
-    if (tail && tail.split(/\s+/).filter(Boolean).length >= 1) {
-      return {
-        isCancelOnly: false,
-        hasActionIntent: true,
-        normalizedCommandText: tail,
-        leadingCancelStripped: true,
-        reason: "stripped_leading_cancel_prefix"
-      };
-    }
-  }
-  return {
-    isCancelOnly: false,
-    hasActionIntent: true,
-    normalizedCommandText: raw,
-    leadingCancelStripped: false,
-    reason: "normal_command"
-  };
-}
+/* INTERRUPT_CANCEL_ONLY_RE, INTERRUPT_CANCEL_PREFIX_RE, classifyInterruptionTranscript
+ * -> moved to voice/interruption.js (Stage 14, 2026-05-31). The
+ * "INTERRUPTION TRANSCRIPT CLASSIFICATION" block (two regex consts + one
+ * pure-judgement function) now lives there. The single external call site in
+ * this file (`const classification = classifyInterruptionTranscript(trimmed);`
+ * in the post-ASR shortcut router) continues to resolve the name as a bare
+ * identifier through the shared classic-script global lexical environment at
+ * call time, since voice/interruption.js loads before app.js per index.html.
+ * The block is self-contained: it has no bare-identifier dependencies on
+ * helpers defined in app.js. The [interrupt_transcript_debug] log calls in
+ * app.js continue to resolve to utils/logging.js as before (Stage 3) and were
+ * never part of this block. */
 
 /* interruptTranscriptNewTtsId → moved to voice/interruption.js (Stage 6, 2026-05-27). */
 
@@ -2052,152 +1331,38 @@ let browserAsrPermanentlyDisabled = false;
  *   window.setVeraAsrMode)
  *   → moved to voice/asr.js (Stage 7, 2026-05-27). */
 
-/* =========================================================================
-   PART 12 — MediaRecorder construction helper
-   --------------------------------------------------------------------------
-   Centralizes mimeType + audioBitsPerSecond preference order so every
-   recording path (main, interrupt-prearm, hybrid sidecar) gets the best
-   format the browser supports. Opus is widely supported, decodes cleanly
-   on the server via pydub/ffmpeg, and survives small chunk drops better
-   than legacy webm. The 64 kbps default is plenty for Whisper accuracy on
-   a single voice mic.
-   ========================================================================= */
-const VERA_RECORDER_BITS_PER_SECOND = 64_000;
-const VERA_RECORDER_MIME_PREFS = [
-  "audio/webm;codecs=opus",
-  "audio/ogg;codecs=opus",
-  "audio/webm",
-  "", // browser default
-];
-function _pickRecorderMime() {
-  if (typeof MediaRecorder === "undefined") return "";
-  const isSupported = typeof MediaRecorder.isTypeSupported === "function";
-  if (!isSupported) return "";
-  for (const m of VERA_RECORDER_MIME_PREFS) {
-    if (!m) return "";
-    try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (_) {}
-  }
-  return "";
-}
-function createVeraMediaRecorder(stream, opts = {}) {
-  if (typeof MediaRecorder === "undefined") throw new Error("MediaRecorder unavailable");
-  const mimeType = opts.mimeType != null ? opts.mimeType : _pickRecorderMime();
-  const audioBitsPerSecond = opts.audioBitsPerSecond != null ? opts.audioBitsPerSecond : VERA_RECORDER_BITS_PER_SECOND;
-  const init = {};
-  if (mimeType) init.mimeType = mimeType;
-  if (audioBitsPerSecond) init.audioBitsPerSecond = audioBitsPerSecond;
-  try {
-    return new MediaRecorder(stream, init);
-  } catch (_) {
-    /* Some browsers throw on unknown init keys. Fall back to bare ctor. */
-    try { return new MediaRecorder(stream, mimeType ? { mimeType } : undefined); }
-    catch (_) { return new MediaRecorder(stream); }
-  }
-}
-
-/* =========================================================================
-   PART 5 + 7 — Hybrid sidecar recorder
-   --------------------------------------------------------------------------
-   When the ASR mode is "hybrid", we run the existing browser SpeechRecognition
-   path AND record the same microphone audio in parallel. On finalization,
-   decideAsrFinalizationMode() inspects the browser transcript. If a Whisper
-   verification is warranted, we send BOTH the browser transcript AND the
-   recorded audio blob to /infer with request_whisper_verify=1. Otherwise
-   the blob is discarded.
-   ========================================================================= */
-let hybridSidecarRecorder = null;
-let hybridSidecarChunks = [];
-let hybridSidecarMimeType = "";
-let hybridSidecarStartedAt = 0;
-
-function isHybridSidecarRunning() {
-  return !!hybridSidecarRecorder && hybridSidecarRecorder.state === "recording";
-}
-
-function _stopAndCollectHybridSidecar() {
-  return new Promise((resolve) => {
-    const rec = hybridSidecarRecorder;
-    if (!rec) {
-      resolve({ blob: null, mimeType: "", durationMs: 0, chunkCount: 0 });
-      return;
-    }
-    const startedAt = hybridSidecarStartedAt;
-    const mimeType = hybridSidecarMimeType || rec.mimeType || "audio/webm";
-    const finalize = () => {
-      try {
-        const blob = hybridSidecarChunks.length
-          ? new Blob(hybridSidecarChunks, { type: mimeType })
-          : null;
-        resolve({
-          blob,
-          mimeType,
-          durationMs: startedAt ? Math.max(0, performance.now() - startedAt) : 0,
-          chunkCount: hybridSidecarChunks.length,
-        });
-      } catch (_) {
-        resolve({ blob: null, mimeType, durationMs: 0, chunkCount: 0 });
-      } finally {
-        hybridSidecarChunks = [];
-        hybridSidecarRecorder = null;
-        hybridSidecarStartedAt = 0;
-        hybridSidecarMimeType = "";
-      }
-    };
-    if (rec.state === "inactive") { finalize(); return; }
-    const prev = rec.onstop;
-    rec.onstop = (e) => {
-      try { if (typeof prev === "function") prev(e); } catch (_) {}
-      finalize();
-    };
-    try { rec.stop(); } catch (_) { finalize(); }
-  });
-}
-
-function _discardHybridSidecar() {
-  const rec = hybridSidecarRecorder;
-  if (!rec) return;
-  try { if (rec.state !== "inactive") rec.stop(); } catch (_) {}
-  hybridSidecarChunks = [];
-  hybridSidecarRecorder = null;
-  hybridSidecarStartedAt = 0;
-  hybridSidecarMimeType = "";
-}
-
-function startHybridSidecarRecorderIfNeeded(micStream) {
-  if (!isHybridAsrMode()) return false;
-  if (!micStream || !micStream.active) return false;
-  if (typeof MediaRecorder === "undefined") return false;
-  if (isHybridSidecarRunning()) return true;
-  try {
-    const rec = createVeraMediaRecorder(micStream);
-    hybridSidecarChunks = [];
-    hybridSidecarMimeType = rec.mimeType || _pickRecorderMime() || "audio/webm";
-    rec.ondataavailable = (e) => {
-      if (e && e.data && e.data.size > 0) hybridSidecarChunks.push(e.data);
-    };
-    rec.onerror = (e) => {
-      try {
-        console.warn("[asr_mode_debug]", { stage: "hybrid_sidecar_error", error: String(e?.error || e) });
-      } catch (_) {}
-    };
-    /* Request periodic chunks so we don't lose anything if the recorder is
-       stopped before the browser ASR final settles. 250ms is plenty for
-       short commands and small enough that interrupt path is responsive. */
-    rec.start(250);
-    hybridSidecarRecorder = rec;
-    hybridSidecarStartedAt = performance.now();
-    try {
-      console.info("[asr_mode_debug]", { stage: "hybrid_sidecar_started", mimeType: hybridSidecarMimeType });
-    } catch (_) {}
-    return true;
-  } catch (e) {
-    try {
-      console.warn("[asr_mode_debug]", { stage: "hybrid_sidecar_start_failed", error: String(e?.message || e) });
-    } catch (_) {}
-    return false;
-  }
-}
-
+/* VERA_RECORDER_BITS_PER_SECOND, VERA_RECORDER_MIME_PREFS,
+ * _pickRecorderMime, createVeraMediaRecorder
+ * -> moved to voice/asr.js (Stage 17, 2026-05-31). The "PART 12 -
+ * MediaRecorder construction helper" block now lives there alongside the
+ * hybrid sidecar recorder (Stage 16) that was already its primary intra-file
+ * client. The 4 external call sites in this file
+ * (interruptRecorder = createVeraMediaRecorder(micStream) at the interrupt
+ * recorder arm path, interruptPrearmRecorder = createVeraMediaRecorder(...)
+ * at the interrupt prearm path, and the two mediaRecorder = createVeraMediaRecorder(...)
+ * sites at the main recorder arm paths) continue to resolve those names as
+ * bare identifiers through the shared classic-script global lexical
+ * environment at call time. MIME-type selection order and audio-bits-per-
+ * second default (64 kbps Opus) are byte-identical to pre-move. This patch
+ * supersedes the Stage 7 / Stage 16 "left in app.js" justification for these
+ * four symbols. */
+/* isHybridSidecarRunning, _stopAndCollectHybridSidecar, _discardHybridSidecar,
+ * startHybridSidecarRecorderIfNeeded (and their backing state
+ * hybridSidecarRecorder, hybridSidecarChunks, hybridSidecarMimeType,
+ * hybridSidecarStartedAt) -> moved to voice/asr.js (Stage 16, 2026-05-31).
+ * The "PART 5 + 7 - Hybrid sidecar recorder" block now lives there.
+ * The 5 external call sites in this file (the isHybridSidecarRunning
+ * gate plus _stopAndCollectHybridSidecar / _discardHybridSidecar in the
+ * /infer finalize path, and startHybridSidecarRecorderIfNeeded in the
+ * mic-arming path) continue to resolve those names as bare identifiers
+ * through the shared classic-script global lexical environment at call
+ * time. The moved block still calls back into app.js for the recorder
+ * construction helpers (createVeraMediaRecorder, _pickRecorderMime),
+ * which are intentionally left here per Stage 7 spec (MediaRecorder
+ * construction is coupled to the broader recorder lifecycle, not to the
+ * ASR-mode decision). isHybridAsrMode lives in voice/asr.js (Stage 7).
+ * ASR mode selection logic, whisper/browser/hybrid behavior, and recorder
+ * options are byte-identical to pre-move. */
 /* MAIN_ASR_PARTIAL_MIN_CHAR_OPTIONS, MAIN_ASR_PARTIAL_MIN_CHARS_DEFAULT,
  * normalizeMainAsrPartialMinChars, getMainAsrPartialMinChars,
  * setMainAsrPartialMinChars → moved to voice/asr.js (Stage 7, 2026-05-27).
@@ -5214,225 +4379,27 @@ function collectWorkModeVoiceExcerptForContext(maxChars = 3500, maxRows = 8) {
   return out;
 }
 
-/* =========================
-   MOVE LATEST VOICE RESULT → REASONING PANEL
-
-   Important distinction:
-     - "go back to the English essay panel" = panel navigation.
-     - "put that in the panel" / "do that in reasoning" = move the latest
-       Voice UI answer/task into reasoning. "that" is a task reference, not a
-       panel title.
-========================= */
-const MOVE_LATEST_VOICE_TASK_TO_REASONING_RE =
-  /\b(?:do|put|move|show|open|copy|send|transfer|continue|expand|make)\s+(?:that|this|it|the\s+(?:email|draft|answer|response|reply|version|full\s+version))\s+(?:in|into|to|on)\s+(?:the\s+)?(?:reasoning(?:\s+(?:panel|space|tab))?|panel|space|tab)\b|\b(?:make|create|open|start)\s+(?:a\s+)?(?:reasoning\s+)?panel\s+for\s+(?:that|this|it|the\s+(?:email|draft|answer|response|reply))\b|\b(?:can\s+you|could\s+you|please)\s+(?:do|put|move|show|open|copy|send|transfer|continue|expand)\s+(?:that|this|it|the\s+(?:email|draft|answer|response|reply|version|full\s+version))\s+(?:in|into|to|on)\s+(?:the\s+)?(?:reasoning(?:\s+(?:panel|space|tab))?|panel|space|tab)\b|\b(?:put|show)\s+(?:the\s+)?(?:email|draft|answer|response|reply|full\s+version)\s+(?:in|into|to|on)\s+(?:the\s+)?(?:reasoning(?:\s+(?:panel|space|tab))?|panel|space|tab)\b/i;
-
-function detectMoveLatestVoiceTaskToReasoningIntent(text) {
-  const raw = String(text || "").trim();
-  if (!raw) return { matched: false, deictic: false };
-  const matched = MOVE_LATEST_VOICE_TASK_TO_REASONING_RE.test(raw);
-  return {
-    matched,
-    deictic: /\b(that|this|it|there)\b/i.test(raw)
-  };
-}
-
-function collectLatestRelevantVoiceAssistantOutput(maxChars = 6000) {
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return "";
-  const convo = document.getElementById("vera-conversation");
-  if (!(convo instanceof HTMLElement)) return "";
-  const rows = [...convo.querySelectorAll(".message-row")];
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const row = rows[i];
-    if (!row?.classList?.contains("vera")) continue;
-    const bubble = row.querySelector(".bubble");
-    if (!(bubble instanceof HTMLElement)) continue;
-    if (
-      bubble.classList.contains("vera-work-mode-stage1-ack") ||
-      bubble.classList.contains("vera-pending-status") ||
-      bubble.classList.contains("interrupt-preview")
-    ) {
-      continue;
-    }
-    const text = String(bubble.textContent || "").replace(/\s+/g, " ").trim();
-    if (!text || text.length < 12) continue;
-    if (/^I(?:'ll| will)\s+work\b/i.test(text)) continue;
-    if (/^Done\s+[—-]\s+I (?:put|moved|created)\b/i.test(text)) continue;
-    return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
-  }
-  return "";
-}
-
-function inferVoiceTaskPanelTitle({ latestVoiceOutput = "", recentVoiceContext = "", latestUserText = "" } = {}) {
-  const hay = `${latestUserText}\n${latestVoiceOutput}\n${recentVoiceContext}`.toLowerCase();
-  if (/\b(ticket|traffic\s+stop|pulled\s+over|police|officer|complain|complaint|dispute|citation)\b/.test(hay)) {
-    if (/\b(email|draft|letter|message)\b/.test(hay)) return "Ticket Complaint Email";
-    return "Police Ticket Review";
-  }
-  if (/\b(homework|assignment|essay|teacher|professor|extension|deadline)\b/.test(hay) && /\b(email|draft|letter|message)\b/.test(hay)) {
-    return "Homework Extension Email";
-  }
-  if (/\b(resume|résumé|cv)\b/.test(hay) && /\b(bullet|revision|rewrite|edit)\b/.test(hay)) {
-    return "Resume Bullet Revisions";
-  }
-  if (/\b(travel|trip|itinerary|flight|hotel|vacation)\b/.test(hay)) return "Travel Plan";
-  if (/\b(email|draft|letter|message)\b/.test(hay)) return "Email Draft";
-  if (/\b(plan|schedule|timeline|roadmap)\b/.test(hay)) return "Planning Draft";
-  const tokens = topicTokensForWorkModeTopic(`${latestVoiceOutput} ${recentVoiceContext}`)
-    .filter((w) => !/^(assistant|user|would|could|should|there|their|about)$/.test(w))
-    .slice(0, 4);
-  if (tokens.length) return tokens.map(toTitleCaseWord).join(" ");
-  return "Voice Answer";
-}
-
-function buildMovedVoiceTaskMarkdown({ title, latestVoiceOutput, recentVoiceContext } = {}) {
-  const t = String(title || "Voice Answer").trim();
-  const out = String(latestVoiceOutput || "").trim();
-  const ctx = String(recentVoiceContext || "").trim();
-  const contextLines = ctx
-    .split(/\n+/)
-    .filter((line) => /^User:\s*/i.test(line))
-    .slice(-3)
-    .map((line) => line.replace(/^User:\s*/i, "").trim())
-    .filter(Boolean);
-  const contextBlock = contextLines.length
-    ? contextLines.map((line) => `- ${line}`).join("\n")
-    : "- Moved from the recent Voice UI conversation.";
-  return [
-    `# ${t}`,
-    "",
-    "## Context",
-    contextBlock,
-    "",
-    "## Draft / Answer From Voice UI",
-    out || "_I could not find a recent Voice UI answer to move._",
-    "",
-    "## Notes",
-    "If you want, I can revise this here with a firmer, more formal, or shorter version."
-  ].join("\n");
-}
-
-function findRelatedReasoningLaneForVoiceTask(seedText) {
-  const seed = String(seedText || "").trim();
-  if (!seed) return { laneIdx: null, score: 0, title: "" };
-  let best = { laneIdx: null, score: 0, title: "" };
-  for (const idx of getReasoningPanelIndices()) {
-    const panel = getReasoningPanelElementByLaneIdx(idx);
-    const title = panel instanceof HTMLElement ? getReasoningTabTopicLabel(panel) : "";
-    const excerpt = collectWorkModeReasoningExcerptForLaneIndex(idx, 1200);
-    const score = Math.max(
-      topicSimilarityScore(seed, `${title} ${excerpt}`),
-      topicCoverageScore(seed, `${title} ${excerpt}`)
-    );
-    if (score > best.score) best = { laneIdx: idx, score, title };
-  }
-  return best;
-}
-
-function logMoveLatestVoiceTaskToReasoningDebug(payload) {
-  try {
-    console.warn("[MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG]", payload);
-  } catch (_) {}
-}
-
-async function maybeHandleMoveLatestVoiceTaskToReasoning(trimmed, opts = {}) {
-  const text = String(trimmed || "").trim();
-  const intent = detectMoveLatestVoiceTaskToReasoningIntent(text);
-  if (!intent.matched || !isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
-
-  const latestVoiceOutput = collectLatestRelevantVoiceAssistantOutput(7000);
-  const recentVoiceContext = collectWorkModeVoiceExcerptForContext(2500, 8);
-  const activeIdx = getActiveReasoningLaneIndex();
-  const activePanel = activeIdx != null ? getReasoningPanelElementByLaneIdx(activeIdx) : null;
-  const activePanelTitle = activePanel instanceof HTMLElement ? getReasoningTabTopicLabel(activePanel) : "";
-
-  if (!latestVoiceOutput) {
-    const reply = "Do you want me to move the latest answer into a new panel, or switch to an existing panel?";
-    commitServerUserTranscriptBubble(text, opts.path || "move-voice-task-unresolved");
-    addBubble(reply, "vera", { path: "move-latest-voice-task-clarify" });
-    logMoveLatestVoiceTaskToReasoningDebug({
-      latest_user_text: text.slice(0, 240),
-      detected_intent: "move_latest_voice_task_to_reasoning",
-      deictic_reference_detected: intent.deictic,
-      deictic_resolution: "unresolved",
-      latest_voice_output_excerpt: "",
-      recent_voice_context_excerpt: recentVoiceContext.slice(0, 240),
-      active_panel_title: activePanelTitle,
-      selected_panel_id: null,
-      create_new_panel: false,
-      new_panel_title: "",
-      reason_for_decision: "no_recent_voice_assistant_output"
-    });
-    return true;
-  }
-
-  const title = inferVoiceTaskPanelTitle({ latestVoiceOutput, recentVoiceContext, latestUserText: text });
-  const seedText = `${title}\n${latestVoiceOutput}\n${recentVoiceContext}`;
-  const related = findRelatedReasoningLaneForVoiceTask(seedText);
-  const reuseExisting = related.laneIdx != null && related.score >= REASONING_PANEL_ROUTE_REUSE_FLOOR;
-  const laneIdx = reuseExisting
-    ? await acquireWorkModeReasoningLaneForIndex(related.laneIdx)
-    : await acquireWorkModeReasoningLane(seedText);
-  const laneId = getWorkModeReasoningLaneId(laneIdx);
-  const panel = getReasoningPanelElementByLaneIdx(laneIdx);
-  const scrollEl = getReasoningScrollElByLane(laneIdx);
-  const markdown = buildMovedVoiceTaskMarkdown({ title, latestVoiceOutput, recentVoiceContext });
-
-  try {
-    activateReasoningTab(laneIdx);
-    if (panel instanceof HTMLElement) {
-      panel.dataset.laneLabel = title;
-      panel.dataset.tabTopic = title;
-      panel.dataset.tabTopicSet = "1";
-      panel.dataset.reasoningLlmTitleDone = "1";
-    }
-    try {
-      if (laneId) patchReasoningLaneRegistryTitle(laneId, title, "move_latest_voice_task_to_reasoning");
-    } catch (_) {}
-    laneTopicSeedByIdx[laneIdx] = seedText;
-    laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
-    const turnEl = appendReasoningTurnMount(scrollEl);
-    if (turnEl) {
-      turnEl.dataset.markdownAcc = markdown;
-      turnEl.dataset.summaryText = "";
-      renderWorkModeMarkdown(turnEl, markdown, "");
-      maybeReasoningScrollToLatest(scrollEl);
-      scheduleSyncPlanButtonRefresh(0);
-    }
-    renderReasoningTabStrip();
-    persistReasoningTabsState();
-  } finally {
-    endWorkModeReasoningLaneRun(laneIdx);
-  }
-
-  const itemKind = /\b(email|subject:|dear\s+)/i.test(latestVoiceOutput) ? "email draft" : "answer";
-  const reply = reuseExisting
-    ? `Done — I moved the ${itemKind} into the reasoning panel.`
-    : `Done — I put the ${itemKind} in a new reasoning panel.`;
-  commitServerUserTranscriptBubble(text, opts.path || "move-latest-voice-task");
-  addBubble(reply, "vera", { path: "move-latest-voice-task-success" });
-  if (opts.isVoice) {
-    try {
-      await playWorkModeTtsOnlyPhrase(reply, opts.signal);
-    } catch (_) {}
-  }
-  setStatus("Ready", "idle");
-  logMoveLatestVoiceTaskToReasoningDebug({
-    latest_user_text: text.slice(0, 240),
-    detected_intent: "move_latest_voice_task_to_reasoning",
-    deictic_reference_detected: intent.deictic,
-    deictic_resolution: "latest_voice_output",
-    latest_voice_output_excerpt: latestVoiceOutput.slice(0, 240),
-    recent_voice_context_excerpt: recentVoiceContext.slice(0, 240),
-    active_panel_title: activePanelTitle,
-    selected_panel_id: laneId || null,
-    selected_panel_index: laneIdx,
-    create_new_panel: !reuseExisting,
-    new_panel_title: title,
-    related_panel_score: Number((related.score || 0).toFixed(3)),
-    reason_for_decision: reuseExisting ? "existing_related_panel_high_similarity" : "no_related_panel_create_new"
-  });
-  return true;
-}
+/* MOVE_LATEST_VOICE_TASK_TO_REASONING_RE, detectMoveLatestVoiceTaskToReasoningIntent,
+ * collectLatestRelevantVoiceAssistantOutput, inferVoiceTaskPanelTitle,
+ * buildMovedVoiceTaskMarkdown, findRelatedReasoningLaneForVoiceTask,
+ * logMoveLatestVoiceTaskToReasoningDebug, maybeHandleMoveLatestVoiceTaskToReasoning
+ * -> moved to workmode/panels.js (Stage 13, 2026-05-31). The "MOVE LATEST VOICE
+ * RESULT -> REASONING PANEL" block now lives there. Call sites in this file
+ * (the four maybeHandleMoveLatestVoiceTaskToReasoning(...) invocations in the
+ * typed-input and voice/ASR handlers, plus the two
+ * detectMoveLatestVoiceTaskToReasoningIntent(s).matched gates) continue to
+ * resolve those names as bare identifiers through the shared classic-script
+ * global lexical environment at call time. The cross-file helpers the moved
+ * block calls back into app.js (topicTokensForWorkModeTopic, toTitleCaseWord,
+ * topicSimilarityScore, topicCoverageScore, REASONING_PANEL_ROUTE_REUSE_FLOOR,
+ * collectWorkModeReasoningExcerptForLaneIndex, collectWorkModeVoiceExcerptForContext,
+ * getReasoningPanelIndices, appendReasoningTurnMount, maybeReasoningScrollToLatest,
+ * patchReasoningLaneRegistryTitle, addBubble, commitServerUserTranscriptBubble,
+ * getActiveReasoningLaneIndex, renderWorkModeMarkdown, persistReasoningTabsState,
+ * endWorkModeReasoningLaneRun, playWorkModeTtsOnlyPhrase, setStatus,
+ * laneTopicSeedByIdx, laneReasoningTurnCountByIdx) likewise resolve via the
+ * same global environment because workmode/panels.js loads before app.js per
+ * index.html. */
 
 /**
  * Same-thread requests that still need the reasoning stream (implementation, proofs, full solves).
@@ -7202,10 +6169,11 @@ wireProductivityModeButtons();
  * moved to workmode/checklist.js (Stage 9, 2026-05-27). */
 const VERA_TAB_ACTIVE_USER_KEY = "vera_active_user_tab_v1";
 const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
-const REASONING_TABS_DEFAULT = 3;
-const REASONING_TABS_MAX = 8;
-const REASONING_UNTITLED_TAB_NAME = "Untitled";
-const REASONING_TABS_STATE_STORAGE_KEY_PREFIX = "vera_reasoning_tabs_state_v2";
+/* REASONING_TABS_DEFAULT, REASONING_TABS_MAX, REASONING_UNTITLED_TAB_NAME,
+ * REASONING_TABS_STATE_STORAGE_KEY_PREFIX -> moved to workmode/panels.js
+ * (Stage 20 / Patch A-4, 2026-05-31). Bare-identifier references from the
+ * rest of this file (and from other classic-script modules) continue to
+ * resolve via the shared global lexical environment at call time. */
 const WORK_MODE_STATE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERA_CHAT_STATE_STORAGE_KEY_PREFIX = "vera_chat_state_v1";
 let chatStateHydrating = false;
@@ -7341,1061 +6309,65 @@ function restoreVeraChatState() {
   }
 }
 
-function getReasoningTabsStateStorageKey() {
-  return `${REASONING_TABS_STATE_STORAGE_KEY_PREFIX}:${getSessionId()}`;
-}
-
-function getReasoningPanelCountToEnsure(savedByIdx) {
-  if (!(savedByIdx instanceof Map) || savedByIdx.size === 0) return REASONING_TABS_DEFAULT;
-  let maxIdx = -1;
-  for (const k of savedByIdx.keys()) {
-    const n = Number(k);
-    if (Number.isFinite(n)) maxIdx = Math.max(maxIdx, n);
-  }
-  if (maxIdx < 0) return REASONING_TABS_DEFAULT;
-  return Math.min(REASONING_TABS_MAX, Math.max(REASONING_TABS_DEFAULT, maxIdx + 1));
-}
-
-function getReasoningPanelIndices() {
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return [0, 1, 2];
-  const idxs = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")]
-    .map((p) => Number(p.dataset.tabIndex))
-    .filter((n) => Number.isFinite(n));
-  if (!idxs.length) return [0, 1, 2];
-  return idxs.sort((a, b) => a - b);
-}
-
-/** After panels are added/removed/rebuilt, keep busy flags aligned with `data-tab-index` keys. */
-function syncReasoningLaneBusySlotsAfterDomChange() {
-  const idxs = getReasoningPanelIndices();
-  const next = new Map();
-  for (const i of idxs) {
-    next.set(i, Boolean(workModeReasoningLaneBusy.get(i)));
-  }
-  workModeReasoningLaneBusy.clear();
-  for (const [k, v] of next) workModeReasoningLaneBusy.set(k, v);
-  syncWorkModeReasoningCancelButton();
-}
-
-/* getWorkModeReasoningLaneLabel, getWorkModeReasoningLaneId,
- * createReasoningLanePanel → moved to workmode/panels.js
- * (Stage 8, 2026-05-27). */
-
-function ensureFixedReasoningLanePanels(savedByIdx = new Map(), activeIdx = 0) {
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return;
-  const count = getReasoningPanelCountToEnsure(savedByIdx);
-  panelsRoot.replaceChildren();
-  for (let i = 0; i < count; i++) {
-    const saved = savedByIdx.get(i) || {};
-    const isActive = Number(activeIdx) === i || (i === 0 && (activeIdx == null || activeIdx === ""));
-    const panel = createReasoningLanePanel(i, saved.html || "", isActive, {
-      topic: saved.topic,
-      topicSet: saved.topicSet,
-      laneLabel: saved.laneLabel,
-      laneId: saved.laneId
-    });
-    panelsRoot.appendChild(panel);
-  }
-  syncPanelStableLaneIdsInDom();
-  migrateLegacyLaneRegistryKeys();
-  syncReasoningLaneBusySlotsAfterDomChange();
-}
-
-/* getReasoningScrollElByLane → moved to workmode/panels.js
- * (Stage 8, 2026-05-27). */
-
-/** Snapshot reasoning tabs to localStorage — call only on page unload (see wireReasoningTabStrip). */
-function persistReasoningTabsState() {
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return;
-  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
-  const payload = {
-    ts: Date.now(),
-    tabs: panels.map((p) => ({
-      idx: Number(p.dataset.tabIndex) || 0,
-      laneId: String(p.dataset.laneId || "").trim() || ensureStableLaneIdForPanelIndex(Number(p.dataset.tabIndex) || 0),
-      topic: String(p.dataset.tabTopic || REASONING_UNTITLED_TAB_NAME),
-      topicSet: String(p.dataset.tabTopicSet || "0"),
-      laneLabel: String(p.dataset.laneLabel || "").trim(),
-      active: p.classList.contains("is-active"),
-      html: (p.querySelector(".vera-reasoning-md-panel") || p.querySelector(".vera-reasoning-scroll"))?.innerHTML || ""
-    }))
-  };
-  try {
-    localStorage.setItem(getReasoningTabsStateStorageKey(), JSON.stringify(payload));
-  } catch (_) {}
-}
-
-function restoreReasoningTabsState() {
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return;
-  let raw = "";
-  try {
-    raw = localStorage.getItem(getReasoningTabsStateStorageKey()) || "";
-  } catch (_) {
-    return;
-  }
-  if (!raw) {
-    ensureFixedReasoningLanePanels(new Map(), 0);
-    return;
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (_) {
-    ensureFixedReasoningLanePanels(new Map(), 0);
-    return;
-  }
-  const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs.slice(0, REASONING_TABS_MAX) : [];
-  initWorkModeStableLaneIdSlots();
-  if (!tabs.length) {
-    ensureFixedReasoningLanePanels(new Map(), 0);
-    return;
-  }
-  const ts = Number(parsed?.ts) || 0;
-  if (!ts || Date.now() - ts > WORK_MODE_STATE_TTL_MS) {
-    try {
-      localStorage.removeItem(getReasoningTabsStateStorageKey());
-    } catch (_) {}
-    ensureFixedReasoningLanePanels(new Map(), 0);
-    return;
-  }
-  const savedByIdx = new Map();
-  let activeIdx = 0;
-  tabs.forEach((t) => {
-    const idx = Number(t?.idx);
-    if (!Number.isFinite(idx) || idx < 0 || idx >= REASONING_TABS_MAX) return;
-    if (Boolean(t?.active)) activeIdx = idx;
-    const laneId = String(t?.laneId || "").trim() || ensureStableLaneIdForPanelIndex(idx);
-    if (laneId) workModeStableLaneIdByIdx[idx] = laneId;
-    savedByIdx.set(idx, {
-      html: String(t?.html || ""),
-      topic: String(t?.topic || REASONING_UNTITLED_TAB_NAME),
-      topicSet: String(t?.topicSet != null ? t.topicSet : "0"),
-      laneLabel: String(t?.laneLabel || "").trim() || undefined,
-      laneId
-    });
-  });
-  ensureFixedReasoningLanePanels(savedByIdx, activeIdx);
-}
-
-function getActiveReasoningScrollEl() {
-  const p = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active .vera-reasoning-md-panel");
-  if (p) return p;
-  return document.getElementById("vera-reasoning-md");
-}
-
-/** Each assistant reasoning run appends a new block inside the active space (scroll container). */
-function appendReasoningTurnMount(scrollEl) {
-  let el = scrollEl;
-  if (!el) {
-    el = document.getElementById("vera-reasoning-md");
-    if (!el) return null;
-  }
-  if (el.querySelector(".vera-reasoning-turn")) {
-    const sep = document.createElement("div");
-    sep.className = "vera-reasoning-turn-sep";
-    const hr = document.createElement("hr");
-    hr.className = "vera-reasoning-turn-hr";
-    hr.setAttribute("aria-hidden", "true");
-    sep.appendChild(hr);
-    el.appendChild(sep);
-  }
-  const turn = document.createElement("div");
-  turn.className = "vera-reasoning-turn";
-  el.appendChild(turn);
-  return turn;
-}
-
-/** Tab / panel titles safe to replace with LLM or heuristic (user-defined titles stay). */
-/* isGenericAutoRenamableReasoningPanelTitle + getReasoningTabTopicLabel
- * → moved to workmode/panels.js (Stage 8, 2026-05-27). */
-
-function toTitleCaseWord(w) {
-  if (!w) return "";
-  if (/^[A-Z0-9]{2,}$/.test(w)) return w;
-  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-}
-
-/** Skip headings / tab titles that are generic assistant filler, not the task topic. */
-function isBanalReasoningTopicLabel(s) {
-  const t = String(s || "")
-    .toLowerCase()
-    .replace(/[—–-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!t) return true;
-  if (/^(yes|yeah|yep|sure|ok|okay|absolutely)\b/.test(t)) return true;
-  if (/\b(i can help|i'll help|i will help|happy to help|let me help|here to help)\b/.test(t)) return true;
-  if (/\b(work through it|help you work|walk you through)\b/.test(t) && t.split(/\s+/).length <= 8) return true;
-  return false;
-}
-
-function compactTopicPhrase(text, maxWords = 4) {
-  const raw = String(text || "")
-    .replace(/[`*_#>[\]()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!raw) return "";
-  const withoutLead = raw
-    .replace(/^(here(?:'s| is)\s+)?(?:an?\s+)?(?:short\s+)?example(?:\s+of)?[:\-\s]*/i, "")
-    .trim();
-  const candidate = withoutLead || raw;
-  const words = candidate.match(/[A-Za-z0-9][A-Za-z0-9'+-]*/g) || [];
-  if (!words.length) return "";
-  const badEdge = new Set([
-    "a", "an", "the", "is", "are", "was", "were", "be", "being", "been", "to", "of", "and", "or",
-    "for", "with", "in", "on", "at", "from", "by", "as", "that", "this"
-  ]);
-  let start = 0;
-  let end = words.length;
-  while (start < end && badEdge.has(words[start].toLowerCase())) start += 1;
-  while (end > start && badEdge.has(words[end - 1].toLowerCase())) end -= 1;
-  const core = words.slice(start, end).slice(0, maxWords);
-  if (!core.length) return "";
-  const out = core.map((w) => toTitleCaseWord(w)).join(" ");
-  if (isBanalReasoningTopicLabel(out)) return "";
-  return out;
-}
-
-function keywordTopicFromText(text, maxWords = 4) {
-  const tokens = (String(text || "").toLowerCase().match(/[a-z][a-z0-9'+-]*/g) || []);
-  if (!tokens.length) return "";
-  const stop = new Set([
-    "the", "and", "for", "with", "that", "this", "from", "into", "your", "you", "show", "example",
-    "short", "here", "there", "what", "when", "where", "which", "about", "have", "has", "had", "can",
-    "could", "would", "should", "step", "steps", "then", "than", "just", "more", "most", "some", "any",
-    "using", "use", "used", "also", "very", "much", "into", "onto", "over", "under",
-    "yes", "yeah", "yep", "sure", "help", "i'll", "okay", "ok"
-  ]);
-  const counts = new Map();
-  const firstPos = new Map();
-  tokens.forEach((t, i) => {
-    if (t.length < 3 || stop.has(t)) return;
-    if (!firstPos.has(t)) firstPos.set(t, i);
-    counts.set(t, (counts.get(t) || 0) + 1);
-  });
-  const ranked = [...counts.entries()]
-    .sort((a, b) => (b[1] - a[1]) || ((firstPos.get(a[0]) || 0) - (firstPos.get(b[0]) || 0)))
-    .slice(0, maxWords)
-    .map(([t]) => toTitleCaseWord(t));
-  return ranked.join(" ");
-}
-
-function extractMarkdownBoldStandaloneTitle(markdownText) {
-  const lines = String(markdownText || "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  for (const line of lines) {
-    const m = line.match(/^\*{2}([^*]+)\*{2}\s*$/);
-    if (!m) continue;
-    const inner = String(m[1] || "").trim();
-    if (inner.length < 6 || inner.length > 160) continue;
-    if (isBanalReasoningTopicLabel(inner)) continue;
-    const t = compactTopicPhrase(inner, 6);
-    if (t) return t;
-  }
-  return "";
-}
-
-/** First substantive non-heading, non-list line (e.g. "Delta-Hedging a Short 45-Strike Call"). */
-function extractFirstTitleLikeMarkdownLine(markdownText) {
-  const lines = String(markdownText || "").split("\n");
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (/^#{1,6}\s+/.test(line)) continue;
-    if (/^[-*+]\s+/.test(line) || /^\d+\.\s+/.test(line)) continue;
-    if (/^>{1,3}\s+/.test(line)) continue;
-    if (line.length < 12 || line.length > 160) continue;
-    let cleaned = line.replace(/^\*{1,2}|\*{1,2}$/g, "").replace(/\*\*([^*]+)\*\*/g, "$1").trim();
-    if (cleaned.length < 12) continue;
-    if (isBanalReasoningTopicLabel(cleaned)) continue;
-    const t = compactTopicPhrase(cleaned, 10);
-    if (t && t.length >= 6) return t;
-  }
-  return "";
-}
-
-function normalizeMarkdownLeadForHeadingExtract(markdown) {
-  return String(markdown || "")
-    .replace(/^\uFEFF/, "")
-    .replace(/^[\u200B-\u200D\uFEFF]+/, "")
-    .trimStart();
-}
-
-/**
- * First line / start of markdown begins with `#` → lane/tab title (handles heading + body on one line).
- * @returns {{ extracted_heading: string, extraction_rejected_reason: string, md_first_200: string, starts_with_hash: boolean }}
- */
-function diagnoseLeadingMarkdownHeadingExtraction(markdown) {
-  const mdNorm = normalizeMarkdownLeadForHeadingExtract(markdown);
-  const md_first_200 = mdNorm.slice(0, 200);
-  const starts_with_hash = mdNorm.startsWith("#");
-  const fail = (reason) => ({
-    extracted_heading: "",
-    extraction_rejected_reason: reason,
-    md_first_200,
-    starts_with_hash
-  });
-  if (!mdNorm) return fail("empty_markdown");
-  if (!starts_with_hash) return fail("does_not_start_with_hash_after_trimStart");
-  const firstLine = mdNorm.split("\n")[0].trim();
-  const m = firstLine.match(/^#{1,6}\s+(.+)$/);
-  if (!m) return fail("first_line_not_hash_heading_pattern");
-  let rest = String(m[1] || "").trim();
-  if (rest.includes(" ## ")) rest = rest.split(/\s+##\s+/)[0].trim();
-  rest = rest.replace(/\s+#+\s*$/, "").trim();
-  const mashLong = rest.match(
-    /^(.+?)\s+The\s+[A-Z][a-z]+(?:\s+[a-zA-Z'’-]+){0,8}\s+(?:was|is|are|has|had|were|became)\b/i
-  );
-  if (mashLong) rest = mashLong[1].trim();
-  else {
-    const mashIt = rest.match(/^(.+?)\s+It\s+was\b/i);
-    if (mashIt) rest = mashIt[1].trim();
-    else {
-      const mashDup = rest.match(/^(.+?)\s+The\s+(.+?)\s+(?:was|is|are)\b/i);
-      if (mashDup) {
-        const a = mashDup[1].trim().toLowerCase();
-        const b = mashDup[2].trim().toLowerCase();
-        if (b.startsWith(a) || a === b) rest = mashDup[1].trim();
-      }
-    }
-  }
-  rest = rest.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1");
-  rest = rest.replace(/\s+/g, " ").trim();
-  if (rest.length < 2) return fail("heading_text_too_short_after_parse");
-  let titled = rest;
-  const wordCount = rest.split(/\s+/).filter(Boolean).length;
-  if (wordCount > 8) {
-    titled =
-      compactTopicPhrase(rest, 6) ||
-      rest
-        .split(/\s+/)
-        .slice(0, 6)
-        .join(" ")
-        .trim();
-  }
-  if (!titled || isBanalReasoningTopicLabel(titled)) return fail("banal_or_empty_topic_label");
-  const out = sanitizeLlmReasoningPanelTitle(titled);
-  if (!out) return fail("sanitizeLlmReasoningPanelTitle_empty");
-  return {
-    extracted_heading: out,
-    extraction_rejected_reason: "",
-    md_first_200,
-    starts_with_hash: true
-  };
-}
-
-function extractLeadingMarkdownHeadingAsLaneTitle(markdown) {
-  return diagnoseLeadingMarkdownHeadingExtraction(markdown).extracted_heading || "";
-}
-
-function logHeadingTitleExtractAttempt(laneId, oldTitle, mdSource, markdown) {
-  const diag = diagnoseLeadingMarkdownHeadingExtraction(markdown);
-  try {
-    console.info("[heading_title_extract_attempt]", {
-      lane_id: laneId ?? null,
-      old_title: String(oldTitle ?? ""),
-      old_title_is_generic: isGenericAutoRenamableReasoningPanelTitle(oldTitle),
-      md_source: mdSource,
-      md_first_200: diag.md_first_200,
-      starts_with_hash: diag.starts_with_hash,
-      extracted_heading: diag.extracted_heading || "",
-      extraction_rejected_reason: diag.extraction_rejected_reason || ""
-    });
-  } catch (_) {}
-  return diag;
-}
-
-/**
- * If lane title is generic and markdown has a leading # heading, sync registry + tab DOM.
- * @returns {{ applied: boolean, allowed: boolean, reason: string, extracted_heading: string }}
- */
-function maybeSyncGenericLaneTitleFromMarkdown(laneId, markdown, calledFrom) {
-  const lid = String(laneId || "").trim();
-  const source = String(calledFrom || "maybeSyncGenericLaneTitleFromMarkdown").trim();
-  const panel = lid ? getReasoningPanelElementByLaneId(lid) : null;
-  const regBefore = lid ? getWorkModeLaneHandoff(lid) : null;
-  const oldFromDom = panel instanceof HTMLElement ? String(getReasoningTabTopicLabel(panel) || "").trim() : "";
-  const oldFromReg = String(regBefore?.title || regBefore?.lane_title || "").trim();
-  const oldTitle = oldFromDom || oldFromReg || (lid ? getWorkModeLaneTitle(lid) : "");
-  const before_registry_title = oldFromReg || oldTitle;
-
-  const mdRaw = String(markdown || "").trim();
-  const mdSource = mdRaw ? "main_excerpt" : "none";
-  const diag = logHeadingTitleExtractAttempt(lid, oldTitle, mdSource, mdRaw);
-  const extracted = diag.extracted_heading || "";
-
-  let allowed = false;
-  let reason = "not_attempted";
-  if (!lid) reason = "no_lane_id";
-  else if (!extracted) reason = diag.extraction_rejected_reason || "extract_empty";
-  else if (!isGenericAutoRenamableReasoningPanelTitle(oldTitle)) {
-    reason = "old_title_not_generic_auto_renamable";
-  } else {
-    allowed = true;
-    reason = "heading_sync_apply";
-  }
-
-  let domSynced = false;
-  let after_registry_title = before_registry_title;
-
-  if (allowed && extracted) {
-    const row = regBefore || { lane_id: lid, active_lane_id: lid };
-    setWorkModeLaneHandoff(
-      lid,
-      {
-        ...row,
-        lane_id: lid,
-        active_lane_id: lid,
-        title: extracted,
-        lane_title: extracted
-      },
-      { source: `heading_title_sync:${source}`, forceSubstantive: false }
-    );
-  }
-
-  const regAfter = lid ? getWorkModeLaneHandoff(lid) : null;
-  after_registry_title = String(regAfter?.title || regAfter?.lane_title || "").trim() || before_registry_title;
-
-  const panelAfter = lid ? getReasoningPanelElementByLaneId(lid) : null;
-  if (allowed && extracted && panelAfter instanceof HTMLElement) {
-    panelAfter.dataset.laneLabel = extracted;
-    panelAfter.dataset.tabTopic = extracted;
-    panelAfter.dataset.tabTopicSet = "1";
-    panelAfter.dataset.reasoningLlmTitleDone = "1";
-    renderReasoningTabStrip();
-    try {
-      persistReasoningTabsState();
-    } catch (_) {}
-    domSynced = true;
-  } else if (allowed && extracted && !(panelAfter instanceof HTMLElement)) {
-    reason = `${reason};no_panel_dom`;
-  }
-
-  const tab_text_after =
-    panelAfter instanceof HTMLElement ? String(getReasoningTabTopicLabel(panelAfter) || "").trim() : "(no_panel)";
-
-  try {
-    console.info("[heading_title_apply_attempt]", {
-      lane_id: lid || null,
-      old_title: oldTitle,
-      extracted_heading: extracted || "",
-      allowed,
-      reason,
-      before_registry_title,
-      after_registry_title,
-      dom_synced: domSynced,
-      tab_text_after,
-      panel_dataset_lane_label_after:
-        panelAfter instanceof HTMLElement ? String(panelAfter.dataset.laneLabel || "").trim() : "",
-      panel_dataset_tab_topic_after:
-        panelAfter instanceof HTMLElement ? String(panelAfter.dataset.tabTopic || "").trim() : "",
-      called_from: source
-    });
-  } catch (_) {}
-
-  return {
-    applied: allowed && Boolean(extracted) && after_registry_title === extracted,
-    allowed,
-    reason,
-    extracted_heading: extracted
-  };
-}
-
-function buildReasoningTopicLabel({ summaryText = "", markdownText = "", userPrompt = "" } = {}) {
-  const md = String(markdownText || "");
-  const headingLines = md
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /^#{1,6}\s+/.test(line))
-    .map((line) => line.replace(/^#{1,6}\s+/, "").trim());
-  for (const h of headingLines) {
-    if (isBanalReasoningTopicLabel(h)) continue;
-    const t = compactTopicPhrase(h, 4);
-    if (t) return t;
-  }
-  const boldTitle = extractMarkdownBoldStandaloneTitle(md);
-  if (boldTitle) return boldTitle;
-  const firstLineTitle = extractFirstTitleLikeMarkdownLine(md);
-  if (firstLineTitle) return firstLineTitle;
-  const keywordTopic = keywordTopicFromText(`${summaryText}\n${markdownText}`, 4);
-  if (keywordTopic && !isBanalReasoningTopicLabel(keywordTopic)) return keywordTopic;
-  const summaryTopic = compactTopicPhrase(summaryText, 4);
-  if (summaryTopic && !isBanalReasoningTopicLabel(summaryTopic)) return summaryTopic;
-  const promptTopic = compactTopicPhrase(userPrompt, 4);
-  if (promptTopic && !isBanalReasoningTopicLabel(promptTopic)) return promptTopic;
-  return "";
-}
-
-function readPersistedReasoningTabSnapshotForLane(laneId, tabIndex) {
-  let localStorage_laneLabel = "(unread)";
-  let localStorage_topic = "(unread)";
-  let localStorage_title = "(unread)";
-  try {
-    const raw = localStorage.getItem(getReasoningTabsStateStorageKey());
-    if (!raw || !String(raw).trim()) {
-      return { localStorage_laneLabel: "(none)", localStorage_topic: "(none)", localStorage_title: "(empty_store)" };
-    }
-    const parsed = JSON.parse(raw);
-    const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs : [];
-    const lid = String(laneId || "").trim();
-    let row = lid ? tabs.find((x) => String(x?.laneId || "").trim() === lid) : null;
-    if (!row && tabIndex != null && Number.isFinite(Number(tabIndex))) {
-      row = tabs.find((x) => Number(x?.idx) === Number(tabIndex));
-    }
-    if (!row) {
-      return {
-        localStorage_laneLabel: "(no_matching_tab)",
-        localStorage_topic: "(no_matching_tab)",
-        localStorage_title: "(no_matching_tab)"
-      };
-    }
-    localStorage_laneLabel = String(row?.laneLabel || "").trim() || "(empty)";
-    localStorage_topic = String(row?.topic || "").trim() || "(empty)";
-    localStorage_title = `laneLabel=${localStorage_laneLabel}; topic=${localStorage_topic}`;
-  } catch (_) {
-    localStorage_title = "(localStorage_parse_failed)";
-    localStorage_laneLabel = "(error)";
-    localStorage_topic = "(error)";
-  }
-  return { localStorage_laneLabel, localStorage_topic, localStorage_title };
-}
-
-function reasoningTitleCandidateDebugLog(panel, blob) {
-  try {
-    const p = panel instanceof HTMLElement ? panel : null;
-    const eff = p ? String(getReasoningTabTopicLabel(p) || "").trim() : "";
-    console.info("[reasoning_title_candidate]", {
-      turn_id: blob.turn_id ?? null,
-      lane_id:
-        (p ? String(p.dataset.laneId || "").trim() : String(blob.lane_id ?? "").trim()) || null,
-      old_lane_label: p ? String(p.dataset.laneLabel || "").trim() : "",
-      old_tab_topic: p ? String(p.dataset.tabTopic || "").trim() : "",
-      effective_old_title: eff,
-      is_generic_auto_renamable: p ? isGenericAutoRenamableReasoningPanelTitle(eff) : false,
-      candidate_title: blob.candidate_title ?? "",
-      candidate_source: blob.candidate_source ?? "",
-      called_from: blob.called_from ?? "",
-      ...(blob.extra && typeof blob.extra === "object" ? blob.extra : {})
-    });
-  } catch (_) {}
-}
-
-function reasoningTitleUpdateDebugLog(lane_id, old_title, new_title, allowed, reason) {
-  try {
-    console.info("[reasoning_title_update]", {
-      lane_id: lane_id ?? null,
-      old_title: String(old_title ?? ""),
-      new_title: String(new_title ?? ""),
-      allowed: Boolean(allowed),
-      reason: String(reason || "")
-    });
-  } catch (_) {}
-}
-
-function reasoningLaneTitleSyncDebugLog(panel) {
-  try {
-    if (!(panel instanceof HTMLElement)) return;
-    try {
-      persistReasoningTabsState();
-    } catch (_) {}
-    const lane_id = String(panel.dataset.laneId || "").trim() || null;
-    const idx = Number(panel.dataset.tabIndex);
-    const tab_text = String(getReasoningTabTopicLabel(panel) || "").trim();
-    const reg = lane_id ? getWorkModeLaneHandoff(lane_id) : null;
-    const persisted = readPersistedReasoningTabSnapshotForLane(lane_id, idx);
-    console.info("[lane_title_sync]", {
-      lane_id,
-      registry_title: String(reg?.title || reg?.lane_title || "").trim() || "(none)",
-      tab_text,
-      panel_dataset_lane_label: String(panel.dataset.laneLabel || "").trim(),
-      panel_dataset_tab_topic: String(panel.dataset.tabTopic || "").trim(),
-      localStorage_title: persisted.localStorage_title
-    });
-  } catch (_) {}
-}
-
-function reasoningLlmTitleQueueDecision(panel) {
-  if (!(panel instanceof HTMLElement)) {
-    return { ok: false, reason: "not_html_element", effective_title: "", detail: {} };
-  }
-  if (!isVeraWorkModeOn()) {
-    return { ok: false, reason: "work_mode_off", effective_title: "", detail: {} };
-  }
-  if (panel.dataset.reasoningLlmTitleDone === "1") {
-    return { ok: false, reason: "reasoningLlmTitleDone_set", effective_title: "", detail: {} };
-  }
-  const effective_title = String(getReasoningTabTopicLabel(panel) || "").trim();
-  if (!isGenericAutoRenamableReasoningPanelTitle(effective_title)) {
-    return {
-      ok: false,
-      reason: "effective_title_not_generic_auto_renamable",
-      effective_title,
-      detail: {
-        reasoningLlmTitleDone: panel.dataset.reasoningLlmTitleDone || "",
-        tabTopicSet: panel.dataset.tabTopicSet || ""
-      }
-    };
-  }
-  return { ok: true, reason: "eligible_for_llm_title_queue", effective_title, detail: {} };
-}
-
-function setReasoningTabTopicFromFinal(turnEl, opts = {}) {
-  const calledFrom = String(opts.calledFrom ?? opts.called_from ?? "wm.reasoning_title.unknown_path").trim();
-  const turnId = opts?.turnId ?? opts?.turn_id ?? null;
-  try {
-    console.info("[reasoning_title_path]", {
-      phase: "setReasoningTabTopicFromFinal_enter",
-      called_from: calledFrom,
-      turn_id: turnId
-    });
-  } catch (_) {}
-
-  if (!turnEl) {
-    reasoningTitleCandidateDebugLog(null, {
-      turn_id: turnId,
-      lane_id: null,
-      candidate_title: "",
-      candidate_source: "(none)",
-      called_from: `${calledFrom}.skip_no_turnEl`,
-      extra: { note: "turnEl falsy — title path never ran" }
-    });
-    reasoningTitleUpdateDebugLog(null, "(n/a)", "(n/a)", false, "skip_heuristic_missing_turn_el");
-    return;
-  }
-
-  const panel = turnEl.closest(".vera-reasoning-tab-panel");
-  if (!(panel instanceof HTMLElement)) {
-    reasoningTitleCandidateDebugLog(null, {
-      turn_id: turnId,
-      lane_id: null,
-      candidate_title: "",
-      candidate_source: "(none)",
-      called_from: `${calledFrom}.skip_no_parent_panel`,
-      extra: { note: ".closest vera-reasoning-tab-panel missing" }
-    });
-    reasoningTitleUpdateDebugLog(null, "(n/a)", "(n/a)", false, "skip_heuristic_turn_not_inside_tab_panel");
-    return;
-  }
-
-  const laneId = String(panel.dataset.laneId || "").trim();
-  const panelIdx = Number(panel.dataset.tabIndex);
-  if (!panel.isConnected) {
-    reasoningTitleUpdateDebugLog(
-      laneId || null,
-      String(getReasoningTabTopicLabel(panel) || "").trim(),
-      "",
-      false,
-      "skip_heuristic_panel_removed_from_dom_before_title_apply"
-    );
-    return;
-  }
-  if (Number.isFinite(panelIdx)) {
-    const currentPanelForIndex = document.querySelector(
-      `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${panelIdx}"]`
-    );
-    const currentLaneId = String(currentPanelForIndex?.dataset?.laneId || "").trim();
-    if (currentPanelForIndex && currentLaneId && laneId && currentLaneId !== laneId) {
-      reasoningTitleUpdateDebugLog(
-        laneId || null,
-        String(getReasoningTabTopicLabel(panel) || "").trim(),
-        "",
-        false,
-        "skip_heuristic_panel_identity_changed_before_title_apply"
-      );
-      try {
-        console.info("[reasoning_title_stale_apply_blocked]", {
-          original_lane_id: laneId,
-          current_lane_id: currentLaneId,
-          tab_index: panelIdx,
-          candidate_title: "",
-          called_from: calledFrom,
-        });
-      } catch (_) {}
-      return;
-    }
-  }
-  const display = String(getReasoningTabTopicLabel(panel) || "").trim();
-  if (!isGenericAutoRenamableReasoningPanelTitle(display)) {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: turnId,
-      candidate_title: "",
-      candidate_source: "heuristic_blocked_precheck",
-      called_from,
-      extra: {}
-    });
-    reasoningTitleUpdateDebugLog(
-      laneId || null,
-      display,
-      "",
-      false,
-      "skip_effective_title_not_generic_auto_renamable"
-    );
-    return;
-  }
-
-  const topic = buildReasoningTopicLabel(opts);
-  if (!topic) {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: turnId,
-      candidate_title: "",
-      candidate_source: "heuristic_failed_no_candidate_from_content",
-      called_from,
-      extra: {}
-    });
-    reasoningTitleUpdateDebugLog(
-      laneId || null,
-      display,
-      "",
-      false,
-      "skip_heuristic_buildReasoningTopicLabel_empty"
-    );
-    return;
-  }
-
-  reasoningTitleCandidateDebugLog(panel, {
-    turn_id: turnId,
-    candidate_title: topic,
-    candidate_source: "heuristic_from_stream_labels",
-    called_from
-  });
-
-  reasoningTitleUpdateDebugLog(laneId || null, display, topic, true, "applied_heuristic_to_dom_and_registry");
-
-  panel.dataset.laneLabel = topic;
-  panel.dataset.tabTopic = topic;
-  panel.dataset.tabTopicSet = "1";
-  try {
-    patchReasoningLaneRegistryTitle(laneId, topic, `heuristic_from_stream:${calledFrom}`);
-  } catch (_) {}
-  renderReasoningTabStrip();
-  try {
-    persistReasoningTabsState();
-  } catch (_) {}
-  reasoningLaneTitleSyncDebugLog(panel);
-}
-
-/* isDefaultWorkModeReasoningPanelLaneLabel → moved to workmode/panels.js
- * (Stage 8, 2026-05-27). */
-
-function sanitizeLlmReasoningPanelTitle(s) {
-  let t = String(s || "")
-    .replace(/\s+/g, " ")
-    .replace(/[\r\n\t]+/g, " ")
-    .trim();
-  t = t.replace(/^["'“”‘’]+|["'“”‘’]+$/g, "").trim();
-  if (t.length > 42) {
-    const cut = t.slice(0, 42).replace(/\s+\S*$/, "").trim();
-    t = cut || t.slice(0, 42).trim();
-  }
-  return t;
-}
-
-/** Same order idea as auth: local override / localhost first, then public worker (see `localBackendBase`). */
-function veraWorkModeBackendBasesInTryOrder() {
-  const bases = [];
-  const push = (u) => {
-    const x = String(u || "").replace(/\/$/, "").trim();
-    if (x && !bases.includes(x)) bases.push(x);
-  };
-  try {
-    if (typeof localBackendBase === "function") push(localBackendBase());
-  } catch (_) {}
-  push(API_URL);
-  return bases.length ? bases : [String(API_URL).replace(/\/$/, "")];
-}
-
-async function fetchReasoningPanelTitleLlm(userPrompt, md, summ) {
-  const body = JSON.stringify({
-    session_id: getSessionId(),
-    user_prompt: String(userPrompt || "").trim(),
-    markdown_excerpt: String(md || "").trim().slice(0, 12000),
-    summary_excerpt: String(summ || "").trim().slice(0, 2500)
-  });
-  for (const base of veraWorkModeBackendBasesInTryOrder()) {
-    try {
-      const res = await fetch(`${base}/work_mode/reasoning_panel_title`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body
-      });
-      if (!res.ok) continue;
-      const j = await res.json().catch(() => ({}));
-      const title = sanitizeLlmReasoningPanelTitle(String(j?.title || ""));
-      if (title && !isBanalReasoningTopicLabel(title)) return title;
-    } catch (_) {}
-  }
-  return null;
-}
-
-function heuristicReasoningPanelTitle(userPrompt, md, summ) {
-  const up = String(userPrompt || "").trim();
-  const mdS = String(md || "").trim();
-  const sm = String(summ || "").trim();
-  let t = buildReasoningTopicLabel({
-    summaryText: sm,
-    markdownText: mdS,
-    userPrompt: up
-  });
-  let s = sanitizeLlmReasoningPanelTitle(t);
-  if (!s || isBanalReasoningTopicLabel(s)) {
-    s = sanitizeLlmReasoningPanelTitle(compactTopicPhrase(`${sm}\n${mdS}\n${up}`, 5));
-  }
-  if (!s || isBanalReasoningTopicLabel(s)) return "";
-  return s;
-}
-
-function shouldQueueLlmReasoningPanelTitle(panel) {
-  return reasoningLlmTitleQueueDecision(panel).ok;
-}
-
-/** After substantive reasoning NDJSON completes, optionally refresh tab via LLM / heuristic fallback. */
-function queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panel, opts = {}) {
-  const calledFrom =
-    String(opts.calledFrom ?? opts.called_from ?? "wm.reasoning_title.queue_unknown").trim() ||
-    "wm.reasoning_title.queue_unknown";
-  const tid = opts.turnId ?? opts.turn_id ?? null;
-  const up0 = String(opts.userPrompt ?? "").trim();
-  const md0 = String(opts.markdownText ?? "").trim();
-  const summ0 = String(opts.summaryText ?? "").trim();
-
-  if (!(panel instanceof HTMLElement)) {
-    reasoningTitleCandidateDebugLog(null, {
-      turn_id: tid,
-      lane_id: null,
-      candidate_title: "",
-      candidate_source: "queue_skipped_no_panel",
-      called_from: `${calledFrom}`,
-      extra: { note: "panel not an HTMLElement — queue never ran" }
-    });
-    reasoningTitleUpdateDebugLog(null, "", "", false, "queue_skip_panel_not_html_element");
-    return;
-  }
-
-  const laneRef = String(panel.dataset.laneId || "").trim();
-
-  const qc = reasoningLlmTitleQueueDecision(panel);
-  if (!qc.ok) {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: tid,
-      candidate_title: "",
-      candidate_source: "queue_blocked_precheck",
-      called_from,
-      extra: {
-        blocking_reason: qc.reason,
-        effective_title_seen: qc.effective_title,
-        ...(qc.detail || {})
-      }
-    });
-    reasoningTitleUpdateDebugLog(
-      laneRef || null,
-      String(qc.effective_title || getReasoningTabTopicLabel(panel) || "").trim(),
-      "",
-      false,
-      `skip_llm_title_queue:${qc.reason}`
-    );
-    return;
-  }
-
-  const effectiveAtEntry = qc.effective_title;
-
-  if (panel.dataset.reasoningLlmTitleInFlight === "1") {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: tid,
-      candidate_title: "",
-      candidate_source: "queue_blocked_in_flight",
-      called_from,
-      extra: {}
-    });
-    reasoningTitleUpdateDebugLog(
-      laneRef || null,
-      effectiveAtEntry,
-      "",
-      false,
-      "skip_llm_title_queue_reasoningLlmTitleInFlight"
-    );
-    return;
-  }
-
-  const idx = Number(panel.dataset.tabIndex);
-  if (!Number.isFinite(idx)) {
-    reasoningTitleUpdateDebugLog(
-      laneRef || null,
-      effectiveAtEntry,
-      "",
-      false,
-      "skip_llm_title_queue_invalid_panel_tab_index"
-    );
-    return;
-  }
-
-  if (!up0 && !md0 && !summ0) {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: tid,
-      candidate_title: "",
-      candidate_source: "queue_skipped_empty_inputs",
-      called_from,
-      extra: {}
-    });
-    reasoningTitleUpdateDebugLog(laneRef || null, effectiveAtEntry, "", false, "skip_llm_title_queue_empty_content_inputs");
-    return;
-  }
-
-  try {
-    console.info("[reasoning_title_path]", {
-      phase: "queueLlmReasoningPanelTitleAfterFirstCompletedTurn_enter",
-      called_from: calledFrom,
-      turn_id: tid
-    });
-  } catch (_) {}
-
-  reasoningTitleCandidateDebugLog(panel, {
-    turn_id: tid,
-    candidate_title: "(async_fetch_pending)",
-    candidate_source: "llm_then_heuristic_queued",
-    called_from,
-    extra: { input_lens: { userPrompt: up0.length, markdown: md0.length, summary: summ0.length } }
-  });
-
-  panel.dataset.reasoningLlmTitleInFlight = "1";
-
-  void (async () => {
-    let chosenSource = "none";
-    try {
-      let title = (await fetchReasoningPanelTitleLlm(up0, md0, summ0)) || null;
-      if (title) chosenSource = "llm_reasoning_panel_title_endpoint";
-      if (!title) {
-        title = heuristicReasoningPanelTitle(up0, md0, summ0);
-        if (title) chosenSource = "heuristic_fallback_inside_queue";
-      }
-
-      const cur = document.querySelector(
-        `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
-      );
-
-      if (!title) {
-        const effStale = cur instanceof HTMLElement
-          ? String(getReasoningTabTopicLabel(cur) || "").trim()
-          : effectiveAtEntry;
-        reasoningTitleCandidateDebugLog(panel, {
-          turn_id: tid,
-          candidate_title: "",
-          candidate_source: "(none)",
-          called_from: `${calledFrom}.fetch_complete`,
-          extra: { outcome: "no_title_from_llm_or_heuristic" }
-        });
-        reasoningTitleUpdateDebugLog(laneRef || null, effStale, "", false, "no_title_from_llm_or_heuristic");
-        return;
-      }
-
-      if (!(cur instanceof HTMLElement)) {
-        reasoningTitleUpdateDebugLog(
-          laneRef || null,
-          effectiveAtEntry,
-          title,
-          false,
-          "queue_abort_panel_removed_from_dom_before_apply"
-        );
-        return;
-      }
-
-      const curLaneId = String(cur.dataset.laneId || "").trim();
-      if (laneRef && curLaneId && curLaneId !== laneRef) {
-        reasoningTitleUpdateDebugLog(
-          laneRef || null,
-          effectiveAtEntry,
-          title,
-          false,
-          "queue_abort_panel_identity_changed_before_title_apply"
-        );
-        try {
-          console.info("[reasoning_title_stale_apply_blocked]", {
-            turn_id: tid,
-            original_lane_id: laneRef,
-            current_lane_id: curLaneId,
-            tab_index: idx,
-            candidate_title: title,
-            called_from: calledFrom,
-          });
-        } catch (_) {}
-        return;
-      }
-
-      reasoningTitleCandidateDebugLog(cur, {
-        turn_id: tid,
-        candidate_title: title,
-        candidate_source: chosenSource,
-        called_from: `${calledFrom}.candidate_ready`,
-      });
-
-      if (cur.dataset.reasoningLlmTitleDone === "1") {
-        const curDisplayBlocked = String(getReasoningTabTopicLabel(cur) || "").trim();
-        reasoningTitleUpdateDebugLog(
-          String(cur.dataset.laneId || "").trim() || null,
-          curDisplayBlocked,
-          title,
-          false,
-          "skip_apply_reasoningLlmTitleDone_race_mid_queue"
-        );
-        return;
-      }
-
-      const curDisplay = String(getReasoningTabTopicLabel(cur) || "").trim();
-      if (!isGenericAutoRenamableReasoningPanelTitle(curDisplay)) {
-        reasoningTitleUpdateDebugLog(
-          String(cur.dataset.laneId || "").trim() || null,
-          curDisplay,
-          title,
-          false,
-          "title_locked_non_generic_after_stream_heuristic_may_have_renamed_panel"
-        );
-        return;
-      }
-
-      reasoningTitleUpdateDebugLog(
-        String(cur.dataset.laneId || "").trim() || null,
-        curDisplay,
-        title,
-        true,
-        `applied_${chosenSource}`
-      );
-
-      cur.dataset.reasoningLlmTitleDone = "1";
-      cur.dataset.laneLabel = title;
-      cur.dataset.tabTopic = title;
-      cur.dataset.tabTopicSet = "1";
-      try {
-        patchReasoningLaneRegistryTitle(
-          String(cur.dataset.laneId || "").trim(),
-          title,
-          `llm_panel_title:${chosenSource}:${calledFrom}`
-        );
-      } catch (_) {}
-      renderReasoningTabStrip();
-      try {
-        persistReasoningTabsState();
-      } catch (_) {}
-      reasoningLaneTitleSyncDebugLog(cur);
-    } catch (_) {
-      reasoningTitleUpdateDebugLog(laneRef || null, effectiveAtEntry, "", false, "llm_title_queue_async_throw");
-    } finally {
-      const curFinish = document.querySelector(
-        `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
-      );
-      if (
-        curFinish instanceof HTMLElement &&
-        String(curFinish.dataset.laneId || "").trim() === laneRef
-      ) {
-        curFinish.dataset.reasoningLlmTitleInFlight = "";
-      }
-    }
-  })();
-}
+/* WORK MODE REASONING STREAM + TAB-TITLE PIPELINE -> moved to
+ * workmode/panels.js (Stage 20 / Patch A-4, 2026-05-31).
+ *
+ * Functions moved (all function declarations; they hoist within
+ * panels.js and remain callable from app.js + other classic-script
+ * modules through the shared global lexical environment at call time):
+ *
+ *   tab-state / ensure-and-restore:
+ *     getReasoningTabsStateStorageKey
+ *     getReasoningPanelCountToEnsure
+ *     getReasoningPanelIndices
+ *     syncReasoningLaneBusySlotsAfterDomChange
+ *     ensureFixedReasoningLanePanels
+ *     persistReasoningTabsState
+ *     restoreReasoningTabsState
+ *
+ *   reasoning stream / scroll mount:
+ *     getActiveReasoningScrollEl
+ *     appendReasoningTurnMount
+ *
+ *   title heuristics + extraction:
+ *     toTitleCaseWord
+ *     isBanalReasoningTopicLabel
+ *     compactTopicPhrase
+ *     keywordTopicFromText
+ *     extractMarkdownBoldStandaloneTitle
+ *     extractFirstTitleLikeMarkdownLine
+ *     normalizeMarkdownLeadForHeadingExtract
+ *     diagnoseLeadingMarkdownHeadingExtraction
+ *     extractLeadingMarkdownHeadingAsLaneTitle
+ *     logHeadingTitleExtractAttempt
+ *     maybeSyncGenericLaneTitleFromMarkdown
+ *     buildReasoningTopicLabel
+ *     readPersistedReasoningTabSnapshotForLane
+ *
+ *   debug-log helpers (reasoning title pipeline):
+ *     reasoningTitleCandidateDebugLog
+ *     reasoningTitleUpdateDebugLog
+ *     reasoningLaneTitleSyncDebugLog
+ *     reasoningLlmTitleQueueDecision
+ *
+ *   tab-topic application + LLM/heuristic fallback:
+ *     setReasoningTabTopicFromFinal
+ *     sanitizeLlmReasoningPanelTitle
+ *     veraWorkModeBackendBasesInTryOrder
+ *     fetchReasoningPanelTitleLlm
+ *     heuristicReasoningPanelTitle
+ *     shouldQueueLlmReasoningPanelTitle
+ *     queueLlmReasoningPanelTitleAfterFirstCompletedTurn
+ *
+ * VERA chat-state persistence ABOVE (ensureVeraSessionIdForPersistence,
+ * getVeraChatStateStorageKey, migrateLegacyVeraChatStorageKey,
+ * persistVeraClientStateOnUnload, persistVeraChatState,
+ * restoreVeraChatState, chatStateHydrating, WORK_MODE_STATE_TTL_MS,
+ * VERA_CHAT_STATE_STORAGE_KEY_PREFIX) intentionally LEFT here -- it
+ * manages the main VERA conversation bubble store, not the Work Mode
+ * reasoning stream. persistVeraClientStateOnUnload still calls
+ * persistReasoningTabsState (now in panels.js) through the shared
+ * global lexical environment at call time. */
 
 /* renderReasoningTabStrip, logReasoningPanelSelectDebug,
  * activateReasoningTab, addReasoningTab → moved to workmode/panels.js
