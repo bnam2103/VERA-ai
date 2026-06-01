@@ -2938,6 +2938,19 @@ document.addEventListener("click", () => {
      logVoicePipe, logVoiceTranscript, logFinalTranscriptSentToLlm,
      logTurnTextIntegrity + helpers). Extracted 2026-05-27, Stage 3. -->
 <script src="utils/logging.js?v=1"></script>
+<!-- users/signinUi.js must load AFTER utils/logging.js (its bodies
+     do not depend on logging primitives at parse time, but it sits
+     in the utils tier conceptually) and BEFORE voice/asr.js,
+     workmode/panels.js, workmode/checklist.js, news/*, and app.js,
+     because:
+       - workmode/checklist.js calls authApiUrl(...) as a bare
+         identifier (work-mode checklist sync endpoints);
+       - workmode/panels.js calls localBackendBase() in the multi-
+         tier base-URL fallback;
+       - app.js + Spotify code call localBackendBase + authApiUrl
+         in many places.
+     Extracted 2026-06-01, Patch B-4. -->
+<script src="users/signinUi.js?v=1"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies
