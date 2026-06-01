@@ -18707,42 +18707,16 @@ function resolveAudioUrls(data) {
  *  global lexical environment.
  * ========================================================================= */
 
-function isAssistantTtsPlaying() {
-  const outAudio = getAudioEl();
-  const htmlAudioPlaying = outAudio && !outAudio.paused;
-  const webAudioMainTtsPlaying =
-    activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
-  return Boolean(htmlAudioPlaying || webAudioMainTtsPlaying);
-}
-
-let activePipelineAbort = null;
-let queuedAssistantTtsPlayback = Promise.resolve();
-
-function attachPipelineAbortSignal() {
-  activePipelineAbort?.abort();
-  activePipelineAbort = new AbortController();
-  return activePipelineAbort.signal;
-}
-
-function enqueueAssistantTtsPlayback(task) {
-  const run = queuedAssistantTtsPlayback
-    .catch(() => {})
-    .then(async () => {
-      await waitUntilAssistantTtsIdle();
-      await task();
-      await waitUntilAssistantTtsIdle();
-    });
-  queuedAssistantTtsPlayback = run.catch(() => {});
-  return run;
-}
-
-async function waitUntilAssistantTtsIdle(maxWaitMs = 60000) {
-  const start = performance.now();
-  while (isAssistantTtsPlaying()) {
-    if (performance.now() - start > maxWaitMs) break;
-    await new Promise((resolve) => window.setTimeout(resolve, 40));
-  }
-}
+/* MAIN-TTS PIPELINE BOOKKEEPING (isAssistantTtsPlaying,
+ * activePipelineAbort, queuedAssistantTtsPlayback,
+ * attachPipelineAbortSignal, enqueueAssistantTtsPlayback,
+ * waitUntilAssistantTtsIdle) -> moved to voice/ttsQueue.js
+ * (Stage 21 / Patch A-7, 2026-05-31). voice/ttsQueue.js loads before
+ * app.js per index.html, so the moved function declarations and the
+ * two top-level `let` bindings are visible to every later classic
+ * script through the shared global lexical environment at call time.
+ * Stage 5 (the file that created voice/ttsQueue.js) explicitly listed
+ * these as future-move candidates in its header comment. */
 
 async function waitForAssistantPlaybackEnd(onFinishHook) {
   let done = false;
