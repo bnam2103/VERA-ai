@@ -3037,6 +3037,17 @@ document.addEventListener("click", () => {
      getTtsDebugState / getInterruptionDebugState / getAsrDebugState.
      Extracted 2026-05-27, Stage 9. -->
 <script src="workmode/checklist.js?v=1"></script>
+<!-- workmode/multiActionPlanner.js must load AFTER workmode/panels.js +
+     workmode/checklist.js (the executor calls activateReasoningTab /
+     addReasoningTab from panels.js, and the planner segments include
+     checklist verbs that are resolved through the same shared global
+     lex env), and BEFORE news/* + app.js + debug/* (so the inline
+     GATE block inside sendVeraWorkModeTypedInferTurn can resolve
+     shouldUseWorkModeMultiActionPlanner / planWorkModeMultiAction /
+     logWorkModeMultiActionPlannerDecision / executeWorkModeActionPlan
+     at parse time as bare identifiers via the shared global lexical
+     environment). Extracted 2026-06-01, Patch B-5. -->
+<script src="workmode/multiActionPlanner.js?v=1"></script>
 <!-- news/newsRouter.js + news/newsPanel.js must load BEFORE app.js (so the
      moved declarations — NEWS_EVENT_CLUE_RE, NEWS_NAMED_ENTITY_RE,
      PENDING_NEWS_STATUS_TIMEOUT_MS, PENDING_NEWS_STATUS_TEXT,
