@@ -2726,3 +2726,324 @@ try {
   window.getReasoningPanelOrder = getReasoningPanelOrder;
   window.maybeHandleCloseReasoningPanelShortcut = maybeHandleCloseReasoningPanelShortcut;
 } catch (_) {}
+/* =========================================================================
+ *  STAGE 12 (2026-05-31) â€” Per-panel follow-up queue (visible in each
+ *  reasoning panel) moved here from app.js. The Map + queue cap, plus the
+ *  full enqueue/edit/delete/drain/clear surface and the
+ *  `window.workModeReasoningPanelQueue` debug-export object, came over
+ *  together. Behavior is preserved EXACTLY:
+ *
+ *    - same `workModeReasoningPanelFollowUpQueue` Map<laneIdx, items[]>
+ *      (distinct from the global `workModeTypedTurnQueue` and the lane
+ *      wait queue),
+ *    - same REASONING_PANEL_QUEUE_MAX = 6 cap, same enqueue/dequeue order,
+ *    - same `[QUEUE_DEBUG][enqueue|delete|edit|dequeue_run|dequeue_run_error|enqueue_rejected]`
+ *      console-log labels (byte-identical),
+ *    - same `window.workModeReasoningPanelQueue = { enqueue, delete, edit,
+ *      render, drain, clear, list }` debug export.
+ *
+ *  Bare-identifier references that resolve at CALL TIME through the
+ *  shared classic-script global lexical environment:
+ *    helpers already in this module (Stage 8):
+ *      getReasoningTabTopicLabel, getWorkModeReasoningLaneLabel,
+ *      activateReasoningTab.
+ *    helpers already in workmode/checklist.js (Stage 9):
+ *      isVeraWorkModeOn.
+ *    helpers still owned by app.js:
+ *      appModePrefix, workModeReasoningLaneBusy (lane busy-queue),
+ *      getActiveReasoningLaneIndex, sendVeraWorkModeTypedInferTurn
+ *      (the typed-turn infer entry, deliberately out of scope for 1B).
+ *
+ *  No routing changes. No regex changes. No log changes. Pure relocation.
+ * ========================================================================= */
+// =========================
+// Per-panel follow-up queue (visible in each reasoning panel)
+// =========================
+// Map<laneIdx (number), Array<{ id, text, opts, createdAt, panelLabel }>>.
+// Distinct from the global `workModeTypedTurnQueue` and the lane wait queue:
+// this queue is *visible* inside the targeted panel so the user can review,
+// edit, or delete their follow-ups before the panel starts running them.
+const workModeReasoningPanelFollowUpQueue = new Map();
+const REASONING_PANEL_QUEUE_MAX = 6;
+
+function getReasoningPanelFollowUpQueueForIdx(laneIdx) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return [];
+  let q = workModeReasoningPanelFollowUpQueue.get(idx);
+  if (!Array.isArray(q)) {
+    q = [];
+    workModeReasoningPanelFollowUpQueue.set(idx, q);
+  }
+  return q;
+}
+
+function newReasoningPanelQueueItemId() {
+  return `wmq-${Date.now().toString(36)}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
+}
+
+function getReasoningPanelElementByLaneIdx(laneIdx) {
+  return document.querySelector(
+    `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${Number(laneIdx)}"]`
+  );
+}
+
+function renderReasoningPanelFollowUpQueueUi(laneIdx) {
+  const panel = getReasoningPanelElementByLaneIdx(laneIdx);
+  if (!(panel instanceof HTMLElement)) return;
+  const queue = getReasoningPanelFollowUpQueueForIdx(laneIdx);
+  let host = panel.querySelector(":scope > .vera-reasoning-queue-host");
+  if (!queue.length) {
+    if (host) host.remove();
+    return;
+  }
+  if (!host) {
+    host = document.createElement("div");
+    host.className = "vera-reasoning-queue-host";
+    host.setAttribute("aria-live", "polite");
+    panel.insertBefore(host, panel.firstChild);
+  }
+  const heading = document.createElement("div");
+  heading.className = "vera-reasoning-queue-heading";
+  heading.textContent = `Queued (${queue.length})`;
+  const list = document.createElement("ol");
+  list.className = "vera-reasoning-queue-list";
+  queue.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "vera-reasoning-queue-item";
+    li.dataset.queueItemId = String(item.id || "");
+
+    const textWrap = document.createElement("div");
+    textWrap.className = "vera-reasoning-queue-item-text";
+    textWrap.textContent = String(item.text || "");
+
+    const actions = document.createElement("div");
+    actions.className = "vera-reasoning-queue-item-actions";
+
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "vera-reasoning-queue-btn vera-reasoning-queue-btn--edit";
+    editBtn.textContent = "edit";
+    editBtn.title = "Edit this queued follow-up";
+    editBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      beginEditReasoningPanelQueueItem(laneIdx, item.id);
+    });
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "vera-reasoning-queue-btn vera-reasoning-queue-btn--delete";
+    delBtn.textContent = "delete";
+    delBtn.title = "Remove this queued follow-up";
+    delBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      deleteReasoningPanelQueueItem(laneIdx, item.id);
+    });
+
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+    li.appendChild(textWrap);
+    li.appendChild(actions);
+    list.appendChild(li);
+  });
+  host.replaceChildren(heading, list);
+}
+
+function enqueueReasoningPanelFollowUp(laneIdx, text, opts = {}) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return null;
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return null;
+  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
+  if (queue.length >= REASONING_PANEL_QUEUE_MAX) {
+    try {
+      console.warn("[QUEUE_DEBUG][enqueue_rejected]", {
+        panel_id: idx,
+        reason: "panel_queue_max",
+        queue_length: queue.length,
+        max: REASONING_PANEL_QUEUE_MAX
+      });
+    } catch (_) {}
+    return null;
+  }
+  const panel = getReasoningPanelElementByLaneIdx(idx);
+  const panelLabel =
+    (panel instanceof HTMLElement && getReasoningTabTopicLabel(panel)) ||
+    getWorkModeReasoningLaneLabel(idx) ||
+    `Panel ${idx + 1}`;
+  const item = {
+    id: newReasoningPanelQueueItemId(),
+    text: trimmed,
+    opts: { ...(opts || {}) },
+    createdAt: Date.now(),
+    panelLabel
+  };
+  queue.push(item);
+  renderReasoningPanelFollowUpQueueUi(idx);
+  try {
+    console.info("[QUEUE_DEBUG][enqueue]", {
+      panel_id: idx,
+      panel_title: panelLabel,
+      queued_text: trimmed.slice(0, 160),
+      queue_length_after: queue.length
+    });
+  } catch (_) {}
+  return item;
+}
+
+function deleteReasoningPanelQueueItem(laneIdx, itemId) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return false;
+  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
+  const beforeLen = queue.length;
+  const next = queue.filter((it) => it.id !== itemId);
+  if (next.length === beforeLen) return false;
+  workModeReasoningPanelFollowUpQueue.set(idx, next);
+  renderReasoningPanelFollowUpQueueUi(idx);
+  try {
+    console.info("[QUEUE_DEBUG][delete]", {
+      panel_id: idx,
+      queue_item_id: itemId,
+      queue_length_after: next.length
+    });
+  } catch (_) {}
+  return true;
+}
+
+function editReasoningPanelQueueItem(laneIdx, itemId, newText) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return false;
+  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
+  const target = queue.find((it) => it.id === itemId);
+  if (!target) return false;
+  const nextText = String(newText || "").trim();
+  if (!nextText) {
+    deleteReasoningPanelQueueItem(idx, itemId);
+    return true;
+  }
+  const oldText = target.text;
+  if (oldText === nextText) {
+    renderReasoningPanelFollowUpQueueUi(idx);
+    return false;
+  }
+  target.text = nextText;
+  renderReasoningPanelFollowUpQueueUi(idx);
+  try {
+    console.info("[QUEUE_DEBUG][edit]", {
+      panel_id: idx,
+      queue_item_id: itemId,
+      old_text: String(oldText || "").slice(0, 160),
+      new_text: nextText.slice(0, 160)
+    });
+  } catch (_) {}
+  return true;
+}
+
+function beginEditReasoningPanelQueueItem(laneIdx, itemId) {
+  const panel = getReasoningPanelElementByLaneIdx(laneIdx);
+  if (!(panel instanceof HTMLElement)) return;
+  const li = panel.querySelector(
+    `.vera-reasoning-queue-item[data-queue-item-id="${itemId}"]`
+  );
+  if (!(li instanceof HTMLElement)) return;
+  const textEl = li.querySelector(".vera-reasoning-queue-item-text");
+  if (!(textEl instanceof HTMLElement)) return;
+  if (li.classList.contains("is-editing")) return;
+  li.classList.add("is-editing");
+  const oldText = textEl.textContent || "";
+  const input = document.createElement("textarea");
+  input.className = "vera-reasoning-queue-edit-input";
+  input.rows = 2;
+  input.value = oldText;
+  textEl.replaceWith(input);
+  input.focus();
+  input.select();
+  const finish = (commit) => {
+    if (!li.classList.contains("is-editing")) return;
+    li.classList.remove("is-editing");
+    if (commit) {
+      editReasoningPanelQueueItem(laneIdx, itemId, input.value);
+    } else {
+      renderReasoningPanelFollowUpQueueUi(laneIdx);
+    }
+  };
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) {
+      ev.preventDefault();
+      finish(true);
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+function scheduleReasoningPanelFollowUpQueueDrain(laneIdx) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return;
+  window.setTimeout(() => drainReasoningPanelFollowUpQueue(idx), 0);
+}
+
+async function drainReasoningPanelFollowUpQueue(laneIdx) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return;
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
+  if (workModeReasoningLaneBusy.get(idx) === true) return;
+  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
+  if (!queue.length) return;
+  const next = queue.shift();
+  workModeReasoningPanelFollowUpQueue.set(idx, queue);
+  renderReasoningPanelFollowUpQueueUi(idx);
+  try {
+    console.info("[QUEUE_DEBUG][dequeue_run]", {
+      panel_id: idx,
+      queue_item_id: next?.id || null,
+      text: String(next?.text || "").slice(0, 160),
+      queue_length_after: queue.length
+    });
+  } catch (_) {}
+  // Switch to the originating panel so the frozen turn context picks the
+  // right lane. The user can switch back manually after; this guarantees
+  // the queued follow-up runs in the panel where it was queued.
+  try {
+    const activeIdxNow = getActiveReasoningLaneIndex();
+    if (activeIdxNow !== idx && typeof activateReasoningTab === "function") {
+      activateReasoningTab(idx);
+    }
+  } catch (_) {}
+  try {
+    await sendVeraWorkModeTypedInferTurn(next.text, {
+      ...(next.opts || {}),
+      __fromReasoningPanelQueue: true,
+      __reasoningPanelQueueLaneIdx: idx
+    });
+  } catch (err) {
+    try {
+      console.warn("[QUEUE_DEBUG][dequeue_run_error]", {
+        panel_id: idx,
+        queue_item_id: next?.id || null,
+        error: String((err && err.message) || err || "")
+      });
+    } catch (_) {}
+  }
+}
+
+function clearReasoningPanelFollowUpQueueForIdx(laneIdx) {
+  const idx = Number(laneIdx);
+  if (!Number.isFinite(idx)) return;
+  workModeReasoningPanelFollowUpQueue.delete(idx);
+  renderReasoningPanelFollowUpQueueUi(idx);
+}
+
+window.workModeReasoningPanelQueue = {
+  enqueue: enqueueReasoningPanelFollowUp,
+  delete: deleteReasoningPanelQueueItem,
+  edit: editReasoningPanelQueueItem,
+  render: renderReasoningPanelFollowUpQueueUi,
+  drain: drainReasoningPanelFollowUpQueue,
+  clear: clearReasoningPanelFollowUpQueueForIdx,
+  list: (laneIdx) =>
+    getReasoningPanelFollowUpQueueForIdx(laneIdx).map((it) => ({ ...it }))
+};
