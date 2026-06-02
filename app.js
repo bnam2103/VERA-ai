@@ -8891,8 +8891,15 @@ function resolveReasoningPanelTopicFromContext() {
  */
 const _WMC_PANEL_FAMILY_RE =
   /\b(?:go(?:\s+back)?\s+to|jump\s+to|switch\s+to|change\s+to|open|close|hide|dismiss|create|make|add|new|navigate\s+to|use|show|select)\s+(?:a\s+|the\s+|my\s+|all\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i;
+/* 2026-06-01 — added "help me plan|draft|outline|brainstorm" and the
+   bare ``plan <my|an|the|out>`` reasoning verb so compound utterances
+   like "Open panel 2 and help me plan my essay there" register the
+   reasoning family and reach the backend planner (instead of
+   collapsing to panel-only navigation). The ``plan`` branch is gated
+   by a determiner/possessive token so "follow the plan" / "the plan"
+   noun usages don't pollute the family detector. */
 const _WMC_REASONING_FAMILY_RE =
-  /\b(?:explain|describe|tell\s+me\s+about|summari[sz]e|analy[sz]e|solve|prove|derive|write|draft|compose|outline|compare|teach\s+me|walk\s+me\s+through|break\s+down|step[-\s]*by[-\s]*step|in\s+detail|deep\s*dive|thorough\s+(?:overview|explanation|analysis))\b/i;
+  /\b(?:explain|describe|tell\s+me\s+about|summari[sz]e|analy[sz]e|solve|prove|derive|write|draft|compose|outline|compare|teach\s+me|walk\s+me\s+through|break\s+down|step[-\s]*by[-\s]*step|in\s+detail|deep\s*dive|thorough\s+(?:overview|explanation|analysis)|help\s+me\s+(?:plan|draft|outline|brainstorm|write|solve|understand|with)|plan\s+(?:out\s+)?(?:my|an?|the|this|that)\b)/i;
 const _WMC_MUSIC_FAMILY_RE =
   /\b(?:play|pause|stop|resume|mute|unmute|unpause|skip(?:\s+(?:to\s+the\s+)?(?:next|previous|forward|back))?|next\s+(?:song|track)|previous\s+(?:song|track))\b|\b(?:turn|raise|lower|crank)\s+(?:up\s+|down\s+)?(?:the\s+)?(?:music|volume)\b/i;
 const _WMC_TIMER_FAMILY_RE =
@@ -14062,17 +14069,48 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   };
 
   workModeReasoningConfirmPending = null;
+  /* 2026-06-01 — explicit-panel target takes priority over the frozen-turn
+     lane and the active-tab fallback. ``opts.__reasoningGateTargetPanel``
+     is set upstream by the explicit panel-reference detector (e.g. when
+     the user says "in panel 2") and used to live as a flag-only field
+     that never influenced lane selection. The priority order is now:
+       1. explicit panel target ("in panel 2")
+       2. frozen submission lane (multi-turn / compound dispatch)
+       3. force-active-lane (continuation requests)
+       4. selectLaneForWorkModeReasoningTurn fallback (topic bucket /
+          recently-opened / active panel)
+     Visual panel index is 1-based ("panel 2" → idxs[1]); when the target
+     panel does not exist we fall through to the existing priority chain
+     so the planner doesn't deadlock on a missing tab. */
+  let explicitTargetLaneIdx = null;
+  try {
+    const targetPanel1Based = Number(opts && opts.__reasoningGateTargetPanel);
+    if (Number.isFinite(targetPanel1Based) && targetPanel1Based >= 1) {
+      const idxs = (typeof getReasoningPanelIndices === "function")
+        ? getReasoningPanelIndices()
+        : [];
+      const candidate = Array.isArray(idxs) ? idxs[targetPanel1Based - 1] : undefined;
+      if (Number.isFinite(candidate)) {
+        explicitTargetLaneIdx = Number(candidate);
+      }
+    }
+  } catch (_) {}
   const frozenIdx = frozenTurnLaneIndex(turnContext);
-  const reasoningUserFocusLaneIdx = frozenIdx != null ? frozenIdx : getActiveReasoningLaneIndex();
+  const reasoningUserFocusLaneIdx =
+    explicitTargetLaneIdx != null
+      ? explicitTargetLaneIdx
+      : (frozenIdx != null ? frozenIdx : getActiveReasoningLaneIndex());
   const reasoningUploadState = hasUpload ? { failed: false } : null;
   const laneIdx =
-    frozenIdx != null
-      ? await acquireWorkModeReasoningLaneForIndex(frozenIdx)
-      : forceActiveLaneReasoningContent
-        ? await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0)
-        : await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
-            continuePriorLane: continueLaneForThisTurn
-          });
+    explicitTargetLaneIdx != null
+      ? await acquireWorkModeReasoningLaneForIndex(explicitTargetLaneIdx)
+      : frozenIdx != null
+        ? await acquireWorkModeReasoningLaneForIndex(frozenIdx)
+        : forceActiveLaneReasoningContent
+          ? await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0)
+          : await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
+              continuePriorLane: continueLaneForThisTurn
+            });
   /* PART 3+7 (2026-05-28): consume the recently-opened bias flag once
      a reasoning turn lands, and emit [reasoning_destination_resolved]
      so the console shows resolution provenance for every reasoning
@@ -16509,6 +16547,14 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
       void sendVeraWorkModeTypedInferTurn(promptClean, {
         path: "wm-multi-action:reasoning.request.open_and_stream",
         __skipMultiActionPlanner: true,
+        /* 2026-06-01 — thread the explicit target panel into the recursive
+           turn so the reasoning prep's lane acquisition cannot drift onto
+           a different panel between the activate-tab call above and the
+           recursive ``maybePrepareWorkModeReasoning`` run. The cleaned
+           prompt has had the "in panel N" suffix stripped, so without
+           this hint we would lose the planner's target signal and the
+           lane would fall back to ``getActiveReasoningLaneIndex()``. */
+        __reasoningGateTargetPanel: Number.isFinite(target1based) ? target1based : null,
       });
       try {
         console.info("[reasoning_stream_called]", {
@@ -22593,9 +22639,18 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   } catch (_) {}
 
   /* Reasoning: parallel across panels (lane chains); voice `/infer`: one chain, does not wait on other lanes' reasoning. */
+  /* 2026-06-01 — forward ``opts.__reasoningGateTargetPanel`` from the
+     recursive open_and_stream submit so the explicit panel target the
+     backend planner resolved survives the cleaned-prompt re-dispatch.
+     Without this hop the reasoning lane would fall back to the active
+     tab and could land on the wrong panel under high concurrency. */
+  const _forwardedTargetPanel = Number.isFinite(Number(opts && opts.__reasoningGateTargetPanel))
+    ? Number(opts.__reasoningGateTargetPanel)
+    : null;
   const reasoningPrepP = maybePrepareWorkModeReasoning(formData, trimmed || transcriptLine, undefined, {
     attachments: pendingFiles,
-    turnContext
+    turnContext,
+    __reasoningGateTargetPanel: _forwardedTargetPanel
   });
 
   const enqueued = enqueueWorkModeTypedVoiceInfer(async () => {

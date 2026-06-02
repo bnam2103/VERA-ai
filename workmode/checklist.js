@@ -138,6 +138,7 @@
  *                              insertWorkChecklistEmptyOngoingAfter,
  *                              loadWorkChecklistItems,
  *                              persistWorkChecklistToggle,
+ *                              persistWorkChecklistToggleWithSubtree,
  *                              persistWorkChecklistUpdateText,
  *                              persistWorkChecklistRemove
  *    non-cancelable commit     NON_CANCELABLE_AFTER_COMMIT_ACTIONS,
@@ -1054,6 +1055,13 @@ function loadWorkChecklistItems() {
         typeof window.matchMedia === "function" &&
         window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+      /* 2026-06-01 — manual checkbox cascade. When the user clicks the
+         checkbox for a TOP-LEVEL item, the whole subtree (parent + every
+         sub-item) must toggle in lockstep so a partially-checked group is
+         never visually orphaned in the opposite list. Sub-item clicks stay
+         single-row so the user can still check off individual substeps.
+         Voice/text "mark first item complete" continues to flow through
+         the backend executor's cascade and is unaffected by this change. */
       if (wantDone && !it.done) {
         const textInp = li.querySelector(".vera-wm-checklist-task-input");
         const t = textInp instanceof HTMLInputElement ? textInp.value : it.text;
@@ -1064,7 +1072,7 @@ function loadWorkChecklistItems() {
         if (textInp instanceof HTMLInputElement) persistWorkChecklistUpdateText(id, textInp.value);
 
         if (reduceMotion) {
-          persistWorkChecklistToggle(id, true);
+          persistWorkChecklistToggleWithSubtree(id, true);
           loadWorkChecklistItems();
           return;
         }
@@ -1076,7 +1084,7 @@ function loadWorkChecklistItems() {
           finished = true;
           window.clearTimeout(fallbackTimer);
           li.removeEventListener("transitionend", onTransitionEnd);
-          persistWorkChecklistToggle(id, true);
+          persistWorkChecklistToggleWithSubtree(id, true);
           loadWorkChecklistItems();
           queueWorkChecklistRowEnterAnimation("vera-wm-checklist-completed", id);
         };
@@ -1092,7 +1100,7 @@ function loadWorkChecklistItems() {
 
       if (!wantDone && it.done) {
         if (reduceMotion) {
-          persistWorkChecklistToggle(id, false);
+          persistWorkChecklistToggleWithSubtree(id, false);
           loadWorkChecklistItems();
           return;
         }
@@ -1104,7 +1112,7 @@ function loadWorkChecklistItems() {
           finished = true;
           window.clearTimeout(fallbackTimer);
           li.removeEventListener("transitionend", onTransitionEnd);
-          persistWorkChecklistToggle(id, false);
+          persistWorkChecklistToggleWithSubtree(id, false);
           loadWorkChecklistItems();
           queueWorkChecklistRowEnterAnimation("vera-wm-checklist-ongoing", id);
         };
@@ -1118,7 +1126,7 @@ function loadWorkChecklistItems() {
         return;
       }
 
-      persistWorkChecklistToggle(id, wantDone);
+      persistWorkChecklistToggleWithSubtree(id, wantDone);
       loadWorkChecklistItems();
     });
 
@@ -1250,6 +1258,68 @@ function persistWorkChecklistToggle(id, done) {
     if (!Array.isArray(items)) items = [];
     items = items.map((x) =>
       String(x.id) === id ? { ...x, done: Boolean(done) } : x
+    );
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
+    queueWorkChecklistSyncToServer();
+  } catch (_) {}
+}
+
+/**
+ * Cascade variant of ``persistWorkChecklistToggle`` for manual checkbox
+ * clicks in the UI.
+ *
+ * Behavior (2026-06-01 patch):
+ *   - If the clicked item is a TOP-LEVEL row (no ``parent_id``), toggle the
+ *     parent AND every descendant under it. This matches the user's mental
+ *     model that "Apply to internships" includes its substeps; checking the
+ *     parent should not leave the substeps in a half-checked state.
+ *   - If the clicked item is a SUB-ITEM, toggle only that row — substeps
+ *     are still independently checkable so the user can mark one step done
+ *     without consuming the whole group.
+ *
+ * Sub-items are gathered by walking the ``parent_id`` graph (BFS) so deeper
+ * grandchildren (today the depth cap is 1, but the data model allows more)
+ * would also cascade correctly if the indent rules ever loosen. The bare
+ * ``persistWorkChecklistToggle`` is deliberately left untouched so external
+ * callers (server sync, voice/text action executor, debug tools) continue
+ * to operate on a single row — the voice/text "remove/complete the first
+ * item" path already cascades inside ``apply_checklist_action`` on the
+ * backend, so cascading here only changes the UI checkbox click path.
+ */
+function persistWorkChecklistToggleWithSubtree(id, done) {
+  try {
+    const sid = String(id || "");
+    if (!sid) return;
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items)) items = [];
+
+    const target = items.find((x) => String(x?.id || "") === sid);
+    const wantDone = Boolean(done);
+
+    // Default: toggle just the clicked row. For a top-level parent we
+    // also gather every descendant under it; sub-items stay single-row.
+    const idsToToggle = new Set([sid]);
+    const isTopLevel = !target || !target.parent_id;
+    if (isTopLevel) {
+      const queue = [sid];
+      let guard = 0;
+      while (queue.length && guard < 5000) {
+        guard += 1;
+        const cur = queue.shift();
+        for (const it of items) {
+          const childId = String(it?.id || "");
+          if (!childId || idsToToggle.has(childId)) continue;
+          if (String(it?.parent_id || "") === cur) {
+            idsToToggle.add(childId);
+            queue.push(childId);
+          }
+        }
+      }
+    }
+
+    items = items.map((x) =>
+      idsToToggle.has(String(x?.id || "")) ? { ...x, done: wantDone } : x
     );
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
     queueWorkChecklistSyncToServer();
