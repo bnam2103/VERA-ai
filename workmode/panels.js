@@ -351,26 +351,14 @@ function renderReasoningTabStrip() {
     addBtn.title = atMax ? "Maximum 8 spaces" : `Add space (up to ${REASONING_TABS_MAX})`;
   }
   /* PART 4: toggle the empty-state copy. The active panel gets the
-     "No reasoning in this panel yet." line when it's blank, and the
-     dedicated "Fresh workspace ready." line shows only when EVERY visible
-     panel is blank (so the user sees a workspace-style reset, not a
-     stale/failed feel). */
-  try {
-    const root = document.getElementById("vera-reasoning-pane") || document;
-    const hintPerPanel = root.querySelector(".vera-wm-empty-hint--reasoning");
-    const hintFresh = root.querySelector(".vera-wm-empty-hint--fresh");
-    const allBlank = panels.length > 0 && panels.every((p) => _isBlankReasoningPanelElement(p));
-    const activePanel = panels.find((p) => p.classList.contains("is-active")) || panels[0];
-    const activeBlank = activePanel ? _isBlankReasoningPanelElement(activePanel) : true;
-    if (hintFresh) {
-      const shouldShowFresh = allBlank;
-      hintFresh.hidden = !shouldShowFresh;
-    }
-    if (hintPerPanel) {
-      const shouldShowPerPanel = !allBlank && activeBlank;
-      hintPerPanel.hidden = !shouldShowPerPanel;
-    }
-  } catch (_) {}
+     "No reasoning in this panel yet." line when it's blank AND not
+     currently generating; the dedicated "Fresh workspace ready." line
+     shows only when EVERY visible panel is empty-and-idle. The actual
+     visibility computation lives in ``recomputeReasoningPanelEmptyHints``
+     so the same rules are applied from cheap chokepoints like
+     ``syncWorkModeReasoningCancelButton`` without re-rendering the
+     whole strip. */
+  recomputeReasoningPanelEmptyHints();
 }
 
 function logReasoningPanelSelectDebug(payload) {
@@ -694,6 +682,74 @@ function _isBlankReasoningPanelElement(panelEl) {
     panelEl.querySelector(".vera-reasoning-scroll");
   const html = String(scroll?.innerHTML || "").trim();
   return !html;
+}
+
+/* 2026-06-01 — empty-placeholder visibility fix.
+   A reasoning panel may have ZERO innerHTML and yet be "active" because
+   we just kicked off a reasoning stream for it. In that window the
+   first chunk hasn't landed yet, but the user has already requested
+   work — showing "No reasoning in this panel yet. Ask VERA to work
+   through something, or type below." over a generating panel looks
+   broken and overlaps with content the moment it arrives.
+
+   We treat a panel as generating whenever its tab index is marked
+   busy in the global ``workModeReasoningLaneBusy`` map (declared in
+   app.js, populated by the lane acquire/release helpers, and toggled
+   by the stream lifecycle). Both files share the classic-script
+   global scope. */
+function _panelIsCurrentlyGenerating(panelEl) {
+  if (!(panelEl instanceof HTMLElement)) return false;
+  try {
+    if (typeof workModeReasoningLaneBusy === "undefined" || !workModeReasoningLaneBusy) {
+      return false;
+    }
+    const idx = Number(panelEl.dataset?.tabIndex);
+    if (!Number.isFinite(idx)) return false;
+    return workModeReasoningLaneBusy.get(idx) === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/* The empty-placeholder must hide whenever the panel is generating OR
+   has any reasoning content. Spec rule:
+       placeholderVisible = !panel.isGenerating && !panel.hasReasoningContent
+   Implemented as: blank-by-content AND not-currently-generating. */
+function _panelShouldShowEmptyHint(panelEl) {
+  if (!(panelEl instanceof HTMLElement)) return false;
+  if (_panelIsCurrentlyGenerating(panelEl)) return false;
+  return _isBlankReasoningPanelElement(panelEl);
+}
+
+/* Recompute the two empty-state hints ("No reasoning in this panel
+   yet." per-panel and "Fresh workspace ready." workspace-wide).
+   Exposed as its own helper so app.js can call it on the cheap
+   chokepoints — busy-state toggles, stream start, stream end — without
+   re-rendering the entire tab strip. ``renderReasoningTabStrip``
+   below also calls into this so the strip path stays correct. */
+function recomputeReasoningPanelEmptyHints() {
+  try {
+    const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+    if (!panelsRoot) return;
+    const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+    const root = document.getElementById("vera-reasoning-pane") || document;
+    const hintPerPanel = root.querySelector(".vera-wm-empty-hint--reasoning");
+    const hintFresh = root.querySelector(".vera-wm-empty-hint--fresh");
+    /* "All blank" is computed using the same hint-visibility rule so
+       that a single generating panel keeps the workspace-fresh hint
+       hidden too — the workspace isn't fresh, it's actively working. */
+    const allBlank =
+      panels.length > 0 && panels.every((p) => _panelShouldShowEmptyHint(p));
+    const activePanel =
+      panels.find((p) => p.classList.contains("is-active")) || panels[0];
+    const activeBlank = activePanel ? _panelShouldShowEmptyHint(activePanel) : true;
+    if (hintFresh) {
+      hintFresh.hidden = !allBlank;
+    }
+    if (hintPerPanel) {
+      hintPerPanel.hidden = !(!allBlank && activeBlank);
+    }
+  } catch (_) {}
 }
 
 function snapshotReasoningLaneRegistryForDebug(laneIds = []) {

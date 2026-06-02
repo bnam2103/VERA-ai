@@ -7549,9 +7549,21 @@ let workModeTypedQueueDraining = false;
 
 function syncWorkModeReasoningCancelButton() {
   const btn = document.getElementById("vera-reasoning-cancel");
-  if (!btn) return;
-  const activeIdx = getActiveReasoningLaneIndex();
-  btn.hidden = activeIdx == null || !workModeReasoningAbortControllers.has(Number(activeIdx));
+  if (btn) {
+    const activeIdx = getActiveReasoningLaneIndex();
+    btn.hidden = activeIdx == null || !workModeReasoningAbortControllers.has(Number(activeIdx));
+  }
+  /* 2026-06-01 — the cancel-button sync is the single chokepoint that
+     gets called after every reasoning-lane busy-state toggle
+     (acquire/release/queue drain). Piggy-back the empty-placeholder
+     visibility recompute here so the "No reasoning in this panel yet."
+     hint disappears immediately when a panel starts generating, and
+     correctly reappears only on panels that are both empty and idle. */
+  try {
+    if (typeof recomputeReasoningPanelEmptyHints === "function") {
+      recomputeReasoningPanelEmptyHints();
+    }
+  } catch (_) {}
 }
 
 function getActiveReasoningLaneIndex() {
