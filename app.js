@@ -8766,7 +8766,7 @@ const _REASONING_PANEL_PUT_RE =
   /\b(?:put|place|write|answer|show|drop|paste)\s+(?:(this|that|it|them)|the\s+answer|the\s+explanation|an?\s+explanation\s+of\s+(.+?))\s+(?:in|into|onto|on)\s+(?:the\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?/i;
 
 const _REASONING_PANEL_IN_RE =
-  /\b(?:in|into|using|on|via|inside)\s+(?:the\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?\b/i;
+  /\b(?:in|into|using|on|via|inside|within)\s+(?:(?:the|this|that|a)\s+)?(?:(?:current|active|same|previous|reasoning|work\s*mode|workmode)\s+)*(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?\b/i;
 
 const _REASONING_PANEL_IMPERATIVE_RE =
   /\b(?:use|open|launch|spin\s*up|fire\s*up)\s+(?:up\s+)?(?:(?:a|another|the|one\s+more|some)\s+)?(?:(?:new|extra|additional|empty|fresh|another)\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|work\s*mode|workmode)\b/i;
@@ -8852,13 +8852,20 @@ function isExplicitReasoningPanelReference(text) {
     const targetPanel = Number.isFinite(num)
       ? num
       : (_REASONING_PANEL_ORD_MAP[ord] != null ? _REASONING_PANEL_ORD_MAP[ord] : null);
-    const hasPronoun = _REASONING_PANEL_PRONOUN_RE.test(s);
+    /* Only treat "this/that/it" as a pronoun TOPIC reference when it occurs
+       OUTSIDE the matched panel-destination phrase. Otherwise "explain
+       tennis in this panel" would mistake the destination determiner
+       "this" for a missing topic and bail to Voice UI even though the
+       topic ("tennis") is right there in the utterance. */
+    const idx = mIn.index ?? 0;
+    const outsidePanelPhrase = (s.slice(0, idx) + " " + s.slice(idx + mIn[0].length)).trim();
+    const hasPronoun = _REASONING_PANEL_PRONOUN_RE.test(outsidePanelPhrase);
     return {
       matched: true,
       topic: null,
       targetPanel,
       wasPronoun: hasPronoun,
-      pronoun: hasPronoun ? (s.match(/\b(that|this|it)\b/i) || [])[1] || null : null
+      pronoun: hasPronoun ? (outsidePanelPhrase.match(/\b(that|this|it)\b/i) || [])[1] || null : null
     };
   }
   if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
@@ -13504,6 +13511,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
    * Each short-circuit emits [REQUEST_SHAPE_ROUTE_DEBUG] with the new
    * reasoning_gate_* fields so the route is auditable from the console.
    * ---------------------------------------------------------------------- */
+  /* 2026-06-12 — caller-supplied force route. The backend planner's
+     reasoning.request open_and_stream dispatcher re-submits the cleaned
+     content task as a recursive typed turn with
+     ``__reasoningGateForceRoute="reasoning_panel"`` whenever the user gave
+     an explicit panel destination ("explain tennis in panel 1 / in a new
+     panel"). Priority rule: an explicit panel destination OVERRIDES the
+     simple-chat shortcut, so when this flag is set we must NOT let the
+     brief/simple-definition/compound short-circuits divert the answer to
+     Voice UI, and routeReasoning is forced true below. */
+  const callerForcedReasoning =
+    Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel");
   const _priorTopicForResolve = String(workModeLastSubstantiveUserText || "").trim();
   const _explicitPanelRef = isExplicitReasoningPanelReference(trimmed);
   const _briefModifier = isBriefExplanationModifier(trimmed);
@@ -13600,7 +13618,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     opts.__reasoningGateReason = "explicit_panel_reference";
     opts.__reasoningGateResolvedTopic = resolvedTopic || null;
     opts.__reasoningGateTargetPanel = _explicitPanelRef.targetPanel ?? null;
-  } else if (_briefModifier) {
+  } else if (_briefModifier && !callerForcedReasoning) {
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
       reasoning_gate_called: true,
@@ -13636,7 +13654,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     });
     if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
-  } else if (_simpleDefinition.matched) {
+  } else if (_simpleDefinition.matched && !callerForcedReasoning) {
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
       reasoning_gate_called: true,
@@ -13691,7 +13709,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
    * — exactly the failing case the spec calls out.
    */
   const _compound = detectCompoundActionFamilies(trimmed);
-  if (_compound.isCompound) {
+  if (_compound.isCompound && !callerForcedReasoning) {
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
       reasoning_gate_called: true,
@@ -13934,14 +13952,42 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       effectiveClassifyRoute = false;
     }
 
-    routeReasoning =
-      (effectiveClassifyRoute || heuristicReasoning || forceActiveLaneReasoningContent) &&
-      !taskFollowUpContinuing;
+    /* 2026-06-12 — explicit panel destination overrides simple-chat.
+       When the gate has a force-route sentinel (set either by the
+       explicit-panel-reference branch above, or supplied by the recursive
+       open_and_stream reasoning.request dispatcher), route to the reasoning
+       panel unconditionally — bypassing the classifier/heuristic result and
+       the personal-statement / news / follow-up vetoes. */
+    const gateForcedReasoning =
+      Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel");
+    routeReasoning = gateForcedReasoning
+      ? true
+      : ((effectiveClassifyRoute || heuristicReasoning || forceActiveLaneReasoningContent) &&
+         !taskFollowUpContinuing);
+
+    if (gateForcedReasoning && !(effectiveClassifyRoute || heuristicReasoning)) {
+      try {
+        console.warn("[routing_override]", {
+          reason: "explicit_panel_destination_overrides_simple_chat",
+          gate_reason: (opts && opts.__reasoningGateReason) || "explicit_panel_destination",
+          would_have_routed: "voice_ui",
+          forced_route: "reasoning_panel",
+          target_panel_index_1based:
+            opts && Number.isFinite(Number(opts.__reasoningGateTargetPanel))
+              ? Number(opts.__reasoningGateTargetPanel)
+              : null,
+          prompt_preview: String(trimmed || "").slice(0, 160),
+        });
+      } catch (_) {}
+    }
 
     let finalRoute = "chat";
     if (routeReasoning) finalRoute = "reasoning";
 
-    if (personalAdviceVeto) {
+    if (gateForcedReasoning) {
+      _routeDebugReason =
+        (opts && opts.__reasoningGateReason) || "forced_reasoning_panel";
+    } else if (personalAdviceVeto) {
       _routeDebugReason = "personal_statement_veto";
     } else if (_routeDebugNewsLookupVeto) {
       _routeDebugReason = "news_lookup_veto";
@@ -16511,6 +16557,11 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
     String(payload?.target_panel || "").toLowerCase() === "new";
   const newPanelRequestId = String(payload?.new_panel_request_id || payload?.panel_open_request_id || "").trim();
   const actionPlanId = String(payload?.action_plan_id || "").trim();
+  /* 2026-06-12 — the user gave an explicit panel destination ("... in
+     panel N", "... in a new panel"). The recursive reasoning turn must be
+     FORCED into the reasoning panel even if the bare task ("explain
+     tennis") would otherwise qualify as a simple Voice-UI answer. */
+  const explicitPanelDestination = payload?.explicit_panel_destination === true;
 
   /* Hard warning: a contaminated prompt would let the reasoning model see
      "play lo-fi" or "go to panel 2" — which would either produce a noisy
@@ -16692,9 +16743,25 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
          we just activated, when a target was supplied). */
   if (typeof sendVeraWorkModeTypedInferTurn === "function") {
     try {
+      if (explicitPanelDestination) {
+        try {
+          console.info("[routing_override]", {
+            reason: "explicit_panel_destination_forces_reasoning_panel",
+            content_task: promptClean.slice(0, 160),
+            target_panel_index_1based: Number.isFinite(target1based) ? target1based : null,
+            target_panel: wantsNewPanel ? "new" : (target1based ?? "active"),
+            panel_open_request_id: newPanelRequestId || null,
+            action_plan_id: actionPlanId || null,
+          });
+        } catch (_) {}
+      }
       void sendVeraWorkModeTypedInferTurn(promptClean, {
         path: "wm-multi-action:reasoning.request.open_and_stream",
         __skipMultiActionPlanner: true,
+        /* Explicit panel destination overrides the simple-chat shortcut:
+           force the recursive turn's reasoning gate to route to the panel. */
+        __reasoningGateForceRoute: explicitPanelDestination ? "reasoning_panel" : undefined,
+        __reasoningGateReason: explicitPanelDestination ? "explicit_panel_destination" : undefined,
         /* 2026-06-01 — thread the explicit target panel into the recursive
            turn so the reasoning prep's lane acquisition cannot drift onto
            a different panel between the activate-tab call above and the
@@ -22863,10 +22930,17 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   const _forwardedTargetPanel = Number.isFinite(Number(opts && opts.__reasoningGateTargetPanel))
     ? Number(opts.__reasoningGateTargetPanel)
     : null;
+  /* 2026-06-12 — forward the explicit-panel-destination force-route flag so
+     the reasoning gate routes a simple content task ("explain tennis") into
+     the panel when the user named a panel destination. */
+  const _forwardedForceRoute =
+    opts && opts.__reasoningGateForceRoute === "reasoning_panel" ? "reasoning_panel" : undefined;
   const reasoningPrepP = maybePrepareWorkModeReasoning(formData, trimmed || transcriptLine, undefined, {
     attachments: pendingFiles,
     turnContext,
-    __reasoningGateTargetPanel: _forwardedTargetPanel
+    __reasoningGateTargetPanel: _forwardedTargetPanel,
+    __reasoningGateForceRoute: _forwardedForceRoute,
+    __reasoningGateReason: opts && opts.__reasoningGateReason ? opts.__reasoningGateReason : undefined
   });
 
   const enqueued = enqueueWorkModeTypedVoiceInfer(async () => {
@@ -22919,6 +22993,23 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
               prompt_preview: String(trimmed || "").slice(0, 160),
             });
           } catch (_) {}
+          /* Bug-level warning: an explicit panel destination was supplied
+             (force-route requested) yet the answer is still about to land
+             in Voice UI. This means the gate force-route failed and the
+             priority rule was violated. */
+          if (opts.__reasoningGateForceRoute === "reasoning_panel") {
+            try {
+              console.error("[panel_destination_routed_to_chat_bug]", {
+                explicit_panel_destination: true,
+                action_type: "reasoning.request",
+                origin_path: opts.path,
+                target_panel_index_1based: _forwardedTargetPanel,
+                append_destination: "voice_ui_chat",
+                expected_destination: "reasoning_panel_body",
+                prompt_preview: String(trimmed || "").slice(0, 160),
+              });
+            } catch (_) {}
+          }
         }
         const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prepWrap, { signal: inferSig });
         if (prepFail === "reasoning-upload-failed") {
