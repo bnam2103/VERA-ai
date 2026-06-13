@@ -434,9 +434,9 @@ function activateReasoningTab(index, opts = {}) {
    ===================================================================== */
 const RECENTLY_OPENED_REASONING_PANEL_TTL_MS = 3 * 60 * 1000;
 let recentlyOpenedReasoningPanel = null;
-/* Shape: { laneId, tabIndex, openedAt, source, consumed: false } */
+/* Shape: { laneId, tabIndex, openedAt, source, requestId, consumed: false } */
 
-function setRecentlyOpenedReasoningPanel(laneId, tabIndex, source) {
+function setRecentlyOpenedReasoningPanel(laneId, tabIndex, source, requestId = "") {
   const lid = String(laneId || "").trim();
   const idx = Number(tabIndex);
   if (!lid || !Number.isFinite(idx)) return;
@@ -445,6 +445,7 @@ function setRecentlyOpenedReasoningPanel(laneId, tabIndex, source) {
     tabIndex: idx,
     openedAt: Date.now(),
     source: String(source || "unknown"),
+    requestId: String(requestId || "").trim(),
     consumed: false,
   };
 }
@@ -464,7 +465,13 @@ function getValidRecentlyOpenedReasoningPanel() {
   /* Lane id must still resolve to the same panel. */
   const sameLane = String(stillExists.dataset.laneId || "").trim() === r.laneId;
   if (!sameLane) return null;
-  return { laneId: r.laneId, tabIndex: r.tabIndex, source: r.source, openedAt: r.openedAt };
+  return {
+    laneId: r.laneId,
+    tabIndex: r.tabIndex,
+    source: r.source,
+    requestId: r.requestId || "",
+    openedAt: r.openedAt,
+  };
 }
 
 function consumeRecentlyOpenedReasoningPanel(reason = "consumed") {
@@ -476,6 +483,7 @@ function consumeRecentlyOpenedReasoningPanel(reason = "consumed") {
         lane_id: snap.laneId,
         tab_index: snap.tabIndex,
         source: snap.source,
+        request_id: snap.requestId || null,
         reason,
         age_ms: Date.now() - snap.openedAt,
       }));
@@ -491,6 +499,7 @@ function clearRecentlyOpenedReasoningPanel(reason = "cleared") {
         lane_id: recentlyOpenedReasoningPanel.laneId,
         tab_index: recentlyOpenedReasoningPanel.tabIndex,
         source: recentlyOpenedReasoningPanel.source,
+        request_id: recentlyOpenedReasoningPanel.requestId || null,
         reason,
         age_ms: Date.now() - recentlyOpenedReasoningPanel.openedAt,
       }));
@@ -509,6 +518,7 @@ try {
 function addReasoningTab(opts) {
   const opts_ = opts && typeof opts === "object" ? opts : {};
   const source = String(opts_.source || "ui_plus_button");
+  const requestId = String(opts_.requestId || opts_.panelOpenRequestId || "").trim();
   try {
     console.info("[open_panel_route_called] " + JSON.stringify({
       source,
@@ -547,7 +557,7 @@ function addReasoningTab(opts) {
     }
   } catch (_) {}
 
-  setRecentlyOpenedReasoningPanel(newLaneId, idx, source);
+  setRecentlyOpenedReasoningPanel(newLaneId, idx, source, requestId);
 
   /* PART 7: structured open-panel log with before/after state so the
      console can audit which tab was active before the open and confirm
@@ -563,6 +573,7 @@ function addReasoningTab(opts) {
       selected_panel_after: newLaneId,
       current_reasoning_target_after: newLaneId,
       recently_opened_panel_flag_set: true,
+      panel_open_request_id: requestId || null,
       panel_count_after: panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length,
     }));
   } catch (_) {}

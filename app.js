@@ -14123,6 +14123,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     path: "maybePrepareWorkModeReasoning",
   });
   const reasoningLaneId = turnContext?.turn_lane_id || getWorkModeReasoningLaneId(laneIdx);
+  try {
+    console.info("[reasoning_stream_panel]", {
+      prompt_preview: String(effectiveUserText || "").slice(0, 160),
+      target_panel_index_1based: explicitTargetLaneIdx != null ? Number(opts.__reasoningGateTargetPanel) : null,
+      target_lane_idx: laneIdx,
+      target_panel_id: reasoningLaneId || null,
+      explicit_target_lane_idx: explicitTargetLaneIdx,
+      frozen_lane_taken: frozenIdx != null,
+      source: "maybePrepareWorkModeReasoning",
+    });
+  } catch (_) {}
   if (turnContext && reasoningLaneId !== turnContext.turn_lane_id) {
     workModeTurnLaneGuard(turnContext, reasoningLaneId, "reasoning_route_lane_mismatch");
   }
@@ -15953,7 +15964,12 @@ function shouldPlayMusicThisInvocation(payload, op) {
 function workModeReasoningDedupeKey(payload) {
   if (!payload || payload.panel_type !== "work_mode_reasoning") return "";
   const op = String(payload.op || "");
-  if (op === "open_new") return `open_new:${Math.max(1, Number(payload.count) || 1)}`;
+  if (op === "open_new") {
+    const requestId = String(payload.panel_open_request_id || payload.new_panel_request_id || "").trim();
+    return requestId
+      ? `open_new:${requestId}`
+      : `open_new:${Math.max(1, Number(payload.count) || 1)}`;
+  }
   if (op === "activate" && payload.panel_index != null) {
     return `activate:${Number(payload.panel_index)}`;
   }
@@ -16458,9 +16474,15 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
     if (Number.isFinite(tgt1) && tgt1 >= 1) resolvedIdx0 = tgt1 - 1;
   }
   const titleHint = String(payload?.title_hint || "").trim();
-  const target1based = Number.isFinite(Number(payload?.target_panel_index_1based))
+  let target1based = Number.isFinite(Number(payload?.target_panel_index_1based))
     ? Number(payload.target_panel_index_1based)
     : (Number.isFinite(resolvedIdx0) ? resolvedIdx0 + 1 : null);
+  const wantsNewPanel =
+    payload?.target_panel === "new" ||
+    payload?.target_new_panel === true ||
+    String(payload?.target_panel || "").toLowerCase() === "new";
+  const newPanelRequestId = String(payload?.new_panel_request_id || payload?.panel_open_request_id || "").trim();
+  const actionPlanId = String(payload?.action_plan_id || "").trim();
 
   /* Hard warning: a contaminated prompt would let the reasoning model see
      "play lo-fi" or "go to panel 2" — which would either produce a noisy
@@ -16488,6 +16510,56 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
   const beforeOrder = (typeof getReasoningPanelOrder === "function") ? getReasoningPanelOrder() : [];
   const activeBefore = beforeOrder.find((p) => p?.tabIndex != null && document.querySelector(`#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${p.tabIndex}"]`)?.classList.contains("is-active")) || null;
   let activatedPanelLaneId = "";
+  try {
+    console.info("[active_panel_before_action]", {
+      op: "open_and_stream",
+      prompt_preview: promptClean.slice(0, 160),
+      active_panel_before: activeBefore?.laneId || null,
+      target_panel: wantsNewPanel ? "new" : target1based,
+      panel_open_request_id: newPanelRequestId || null,
+      action_plan_id: actionPlanId || null,
+    });
+  } catch (_) {}
+
+  if (wantsNewPanel && typeof getValidRecentlyOpenedReasoningPanel === "function") {
+    let recent = null;
+    try { recent = getValidRecentlyOpenedReasoningPanel(); } catch (_) { recent = null; }
+    const recentRequestId = String(recent?.requestId || "").trim();
+    const requestMatches =
+      Boolean(recent) &&
+      (!newPanelRequestId || !recentRequestId || recentRequestId === newPanelRequestId);
+    if (requestMatches) {
+      resolvedIdx0 = Number(recent.tabIndex);
+      target1based = Number.isFinite(resolvedIdx0) ? resolvedIdx0 + 1 : target1based;
+      activatedPanelLaneId = String(recent.laneId || "");
+      try {
+        if (typeof consumeRecentlyOpenedReasoningPanel === "function") {
+          consumeRecentlyOpenedReasoningPanel("planner_open_and_stream_new_panel_target");
+        }
+      } catch (_) {}
+      try {
+        console.info("[reasoning_target_panel]", {
+          target_panel: "new",
+          resolved_panel_id: activatedPanelLaneId || null,
+          resolved_tab_index: resolvedIdx0,
+          panel_open_request_id: newPanelRequestId || null,
+          action_plan_id: actionPlanId || null,
+          source: "recently_opened_panel",
+        });
+      } catch (_) {}
+    } else {
+      try {
+        console.warn("[reasoning_target_panel]", {
+          target_panel: "new",
+          resolved_panel_id: null,
+          panel_open_request_id: newPanelRequestId || null,
+          recent_panel_request_id: recentRequestId || null,
+          action_plan_id: actionPlanId || null,
+          reason: recent ? "recent_panel_request_mismatch" : "no_recent_panel",
+        });
+      } catch (_) {}
+    }
+  }
 
   /* Activate or open the target panel. If the requested index doesn't
      exist yet (e.g. user asked for Panel 4 but only Panel 1-2 are open),
@@ -16514,7 +16586,7 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
         requestedIndex: target1based || (resolvedIdx0 + 1),
         resolvedFrom: "planner_reasoning_request_open_and_stream",
       });
-      activatedPanelLaneId = String(panelEl.dataset.laneId || "");
+      activatedPanelLaneId = String(panelEl.dataset.laneId || activatedPanelLaneId || "");
     }
   }
 
@@ -16525,6 +16597,9 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
       target_panel_index_1based: target1based,
       target_panel_index_0based: resolvedIdx0,
       target_panel_title: payload?.target_panel_title || null,
+      target_panel: wantsNewPanel ? "new" : null,
+      panel_open_request_id: newPanelRequestId || null,
+      action_plan_id: actionPlanId || null,
       active_panel_before: activeBefore?.laneId || null,
       active_panel_after_activate: activatedPanelLaneId || (activeBefore?.laneId || null),
       contamination_markers: contamination,
@@ -16561,7 +16636,18 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
           reasoning_stream_called: true,
           reasoning_stream_prompt: promptClean.slice(0, 240),
           reasoning_target_panel: target1based,
+          reasoning_target_panel_id: activatedPanelLaneId || null,
           active_panel_after: activatedPanelLaneId || (activeBefore?.laneId || null),
+          panel_open_request_id: newPanelRequestId || null,
+          action_plan_id: actionPlanId || null,
+          source: "open_and_stream_dispatcher",
+        });
+        console.info("[reasoning_stream_panel]", {
+          prompt_preview: promptClean.slice(0, 160),
+          target_panel_index_1based: target1based,
+          target_panel_id: activatedPanelLaneId || null,
+          panel_open_request_id: newPanelRequestId || null,
+          action_plan_id: actionPlanId || null,
           source: "open_and_stream_dispatcher",
         });
       } catch (_) {}
@@ -16701,11 +16787,68 @@ function applyActionPayload(data) {
     const op = payload.op || "";
     if (op === "open_new") {
       const count = Math.max(1, Math.min(REASONING_TABS_MAX, Number(payload.count) || 1));
+      const panelOpenRequestId = String(payload.panel_open_request_id || payload.new_panel_request_id || "").trim();
+      const actionPlanId = String(payload.action_plan_id || "").trim();
+      let activeBeforeOpen = null;
+      try {
+        const beforeOrder = typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+        activeBeforeOpen = beforeOrder.find((p) => p?.isActive)?.laneId || null;
+        console.info("[panel_action_start]", {
+          op: "open_new",
+          count,
+          active_panel_before: activeBeforeOpen,
+          panel_open_request_id: panelOpenRequestId || null,
+          action_plan_id: actionPlanId || null,
+          source: "frontend_open_new_applier",
+        });
+      } catch (_) {}
+      if (panelOpenRequestId) {
+        if (!window.__veraPanelOpenRequestIds || !(window.__veraPanelOpenRequestIds instanceof Map)) {
+          window.__veraPanelOpenRequestIds = new Map();
+        }
+        const prev = window.__veraPanelOpenRequestIds.get(panelOpenRequestId);
+        if (prev && performance.now() - Number(prev.at || 0) < 30000) {
+          try {
+            console.warn("[duplicate_panel_open_blocked]", {
+              panel_open_request_id: panelOpenRequestId,
+              previous_lane_id: prev.laneId || null,
+              previous_tab_index: prev.tabIndex ?? null,
+              action_plan_id: actionPlanId || null,
+              source: "frontend_open_new_guard",
+            });
+          } catch (_) {}
+          return;
+        }
+      }
       /* PART 5+6 (2026-05-28): tag each open with the backend-payload
          source so the recently-opened flag is set with provenance the
          dest-resolver log can show. */
       for (let i = 0; i < count; i += 1) {
-        addReasoningTab({ source: "backend_open_panel_action" });
+        const opened = addReasoningTab({
+          source: "backend_open_panel_action",
+          requestId: panelOpenRequestId,
+        });
+        if (panelOpenRequestId && opened) {
+          try {
+            window.__veraPanelOpenRequestIds.set(panelOpenRequestId, {
+              at: performance.now(),
+              laneId: opened.laneId || "",
+              tabIndex: opened.tabIndex,
+            });
+          } catch (_) {}
+        }
+        try {
+          console.info("[panel_action_result]", {
+            op: "open_new",
+            opened_panel_id: opened?.laneId || null,
+            opened_tab_index: opened?.tabIndex ?? null,
+            active_panel_before: activeBeforeOpen,
+            active_panel_after: opened?.laneId || null,
+            panel_open_request_id: panelOpenRequestId || null,
+            action_plan_id: actionPlanId || null,
+            source: "frontend_open_new_applier",
+          });
+        } catch (_) {}
       }
       return;
     }
