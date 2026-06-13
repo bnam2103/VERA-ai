@@ -8552,6 +8552,29 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
             stream_lane_id: streamLaneId || null,
             current_active_dom_lane_id: getActiveDomReasoningLaneId() || null
           });
+          try {
+            const renderPanel = mdEl.closest(".vera-reasoning-tab-panel");
+            const renderPanelId = renderPanel instanceof HTMLElement
+              ? String(renderPanel.dataset.laneId || "").trim()
+              : "";
+            const activePanelId = getActiveDomReasoningLaneId() || null;
+            console.info("[ui_render_panel]", {
+              turn_id: turnContext?.turn_id || null,
+              stream_lane_id: streamLaneId || null,
+              render_panel_id: renderPanelId || null,
+              current_active_dom_lane_id: activePanelId,
+              matches_stream_lane: Boolean(renderPanelId && streamLaneId && renderPanelId === streamLaneId),
+            });
+            if (renderPanelId && streamLaneId && renderPanelId !== streamLaneId) {
+              console.warn("[panel_target_mismatch]", {
+                stage: "reasoning_chunk_append",
+                expected_panel_id: streamLaneId,
+                ui_render_panel_id: renderPanelId,
+                current_active_dom_lane_id: activePanelId,
+                turn_id: turnContext?.turn_id || null,
+              });
+            }
+          } catch (_) {}
           markdownAcc += String(o.text);
           mdEl.dataset.markdownAcc = markdownAcc;
           renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
@@ -15970,6 +15993,11 @@ function workModeReasoningDedupeKey(payload) {
       ? `open_new:${requestId}`
       : `open_new:${Math.max(1, Number(payload.count) || 1)}`;
   }
+  if (op === "open_and_stream") {
+    const requestId = String(payload.new_panel_request_id || payload.panel_open_request_id || "").trim();
+    const prompt = String(payload.prompt || "").trim().toLowerCase().slice(0, 120);
+    return requestId ? `open_and_stream:${requestId}:${prompt}` : "";
+  }
   if (op === "activate" && payload.panel_index != null) {
     return `activate:${Number(payload.panel_index)}`;
   }
@@ -16530,8 +16558,17 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
       (!newPanelRequestId || !recentRequestId || recentRequestId === newPanelRequestId);
     if (requestMatches) {
       resolvedIdx0 = Number(recent.tabIndex);
-      target1based = Number.isFinite(resolvedIdx0) ? resolvedIdx0 + 1 : target1based;
       activatedPanelLaneId = String(recent.laneId || "");
+      const currentOrderForRecent = (typeof getReasoningPanelOrder === "function") ? getReasoningPanelOrder() : [];
+      const recentInOrder = Array.isArray(currentOrderForRecent)
+        ? currentOrderForRecent.find((p) =>
+            String(p?.laneId || "").trim() === activatedPanelLaneId ||
+            Number(p?.tabIndex) === Number(resolvedIdx0)
+          )
+        : null;
+      target1based = Number.isFinite(Number(recentInOrder?.visualIndex))
+        ? Number(recentInOrder.visualIndex)
+        : target1based;
       try {
         if (typeof consumeRecentlyOpenedReasoningPanel === "function") {
           consumeRecentlyOpenedReasoningPanel("planner_open_and_stream_new_panel_target");
@@ -16542,6 +16579,7 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
           target_panel: "new",
           resolved_panel_id: activatedPanelLaneId || null,
           resolved_tab_index: resolvedIdx0,
+          resolved_visual_index_1based: target1based,
           panel_open_request_id: newPanelRequestId || null,
           action_plan_id: actionPlanId || null,
           source: "recently_opened_panel",
@@ -16558,6 +16596,18 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
           reason: recent ? "recent_panel_request_mismatch" : "no_recent_panel",
         });
       } catch (_) {}
+      try {
+        console.warn("[panel_target_missing]", {
+          target_panel: "new",
+          prompt_preview: promptClean.slice(0, 160),
+          panel_open_request_id: newPanelRequestId || null,
+          action_plan_id: actionPlanId || null,
+          recent_panel_request_id: recentRequestId || null,
+          reason: recent ? "recent_panel_request_mismatch" : "no_recent_panel",
+          source: "open_and_stream_dispatcher",
+        });
+      } catch (_) {}
+      return;
     }
   }
 
@@ -16589,6 +16639,29 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
       activatedPanelLaneId = String(panelEl.dataset.laneId || activatedPanelLaneId || "");
     }
   }
+
+  try {
+    const finalSelectedPanelId = getActiveDomReasoningLaneId() || null;
+    console.info("[final_selected_panel]", {
+      stage: "after_open_and_stream_activate",
+      prompt_preview: promptClean.slice(0, 160),
+      created_or_target_panel_id: activatedPanelLaneId || null,
+      final_selected_panel_id: finalSelectedPanelId,
+      target_panel_index_1based: target1based,
+      target_panel_index_0based: resolvedIdx0,
+      panel_open_request_id: newPanelRequestId || null,
+      action_plan_id: actionPlanId || null,
+    });
+    if (activatedPanelLaneId && finalSelectedPanelId && activatedPanelLaneId !== finalSelectedPanelId) {
+      console.warn("[panel_target_mismatch]", {
+        stage: "after_open_and_stream_activate",
+        expected_panel_id: activatedPanelLaneId,
+        actual_selected_panel_id: finalSelectedPanelId,
+        panel_open_request_id: newPanelRequestId || null,
+        action_plan_id: actionPlanId || null,
+      });
+    }
+  } catch (_) {}
 
   try {
     console.info("[reasoning_open_and_stream_payload_received]", {
@@ -22822,6 +22895,30 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
           });
           resumeAfterAssistantReplyPlayback();
           return;
+        }
+        /* 2026-06-12 investigation guard — a reasoning.request that arrived via
+           the backend planner's open_and_stream payload (with a resolved/forwarded
+           target panel) must land in the reasoning panel body, NOT the Voice UI
+           chat transcript. If we reach this branch the recursive turn FAILED to
+           re-qualify as reasoning (reasoningRouted === false), so the model answer
+           is about to be appended to Voice UI instead of the panel. Log only —
+           no behavior change — so a live repro surfaces the mismatch in console. */
+        const _wasReasoningRequestOpenAndStream =
+          typeof opts?.path === "string" &&
+          opts.path.indexOf("reasoning.request.open_and_stream") !== -1;
+        if (_wasReasoningRequestOpenAndStream) {
+          try {
+            console.warn("[reasoning_destination_mismatch]", {
+              reason: "reasoning_request_with_target_panel_routed_to_voice_ui",
+              action_type: "reasoning.request",
+              origin_path: opts.path,
+              target_panel_index_1based: _forwardedTargetPanel,
+              reasoning_routed: false,
+              append_destination: "voice_ui_chat",
+              expected_destination: "reasoning_panel_body",
+              prompt_preview: String(trimmed || "").slice(0, 160),
+            });
+          } catch (_) {}
         }
         const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prepWrap, { signal: inferSig });
         if (prepFail === "reasoning-upload-failed") {

@@ -576,6 +576,13 @@ function addReasoningTab(opts) {
       panel_open_request_id: requestId || null,
       panel_count_after: panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length,
     }));
+    console.info("[selected_panel_after_open] " + JSON.stringify({
+      source,
+      selected_panel_id: newLaneId,
+      selected_tab_index: idx,
+      panel_open_request_id: requestId || null,
+      panel_count_after: panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length,
+    }));
   } catch (_) {}
 
   return { laneId: newLaneId, tabIndex: idx };
