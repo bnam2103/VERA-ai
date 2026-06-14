@@ -8786,6 +8786,98 @@ const _REASONING_PANEL_BROAD_TOPIC_RE_LIST = [
   ["economics", /\b(?:economic\s+(?:recession|depression|crisis|cycle|policy)|great\s+depression|2008\s+financial\s+crisis|stagflation|inflation\s+(?:dynamics|mechanism|causes)|monetary\s+policy|fiscal\s+policy|supply[-\s]*side|keynesian\s+economics|comparative\s+advantage|game\s+theory|nash\s+equilibrium|market\s+failure|externalit(?:y|ies))\b/i]
 ];
 
+/* 2026-06-13 — narrow Work Mode false-positive guard (mirrors
+   CHAT_REASONING._detect_conversational_check). Obvious short greetings /
+   acknowledgments / presence-or-hearing checks answer in the Voice UI and
+   must never open a reasoning panel. Conservative by design: the ENTIRE
+   normalized utterance must be whitelisted conversational chunks, with no
+   explicit panel/work-mode wording, and short — so real "can you …" requests
+   ("can you solve this?", "can you start a 10 minute timer?") never match. */
+const _CONVERSATIONAL_EXPLICIT_TRIGGER_RE =
+  /\b(?:reasoning\s+(?:panel|space|tab|page)|work\s*mode|workmode|panel\s*#?\s*\d+|new\s+panel|in\s+(?:the\s+)?panel|in\s+(?:the\s+)?reasoning|think\s+through|plan\s+in\s+the\s+panel|use\s+work\s+mode)\b/i;
+
+const _CONVERSATIONAL_MAX_WORDS = 8;
+
+/* Ordered longest-first so multi-word phrases consume before single tokens. */
+const _CONVERSATIONAL_PHRASES = [
+  "can you hear me now",
+  "can you hear me",
+  "could you hear me",
+  "do you hear me",
+  "can you read me",
+  "could you read me",
+  "are you still there",
+  "are you there",
+  "are you here",
+  "you still there",
+  "you there",
+  "still there",
+  "you with me",
+  "thank you so much",
+  "thank you",
+  "thank u",
+  "hello there",
+  "hi there",
+  "hey there",
+  "mic check",
+  "sound check",
+  "check check",
+  "sounds good",
+  "got it",
+  "all good",
+  "whats up",
+  "what up",
+  "sup",
+  "hello",
+  "hullo",
+  "hi",
+  "hey",
+  "hiya",
+  "heya",
+  "yo",
+  "testing",
+  "test",
+  "thanks",
+  "thx",
+  "ty",
+  "okay",
+  "ok",
+  "cool",
+  "alright",
+  "gotcha"
+];
+
+function normalizeConversationalCheck(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/['\u2019]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function detectWorkModeConversationalCheck(text) {
+  const s = normalizeConversationalCheck(text);
+  if (!s) return false;
+  if (_CONVERSATIONAL_EXPLICIT_TRIGGER_RE.test(s)) return false;
+  if (s.split(" ").length > _CONVERSATIONAL_MAX_WORDS) return false;
+  let remaining = s;
+  let consumedAny = false;
+  while (remaining) {
+    let matched = false;
+    for (const phrase of _CONVERSATIONAL_PHRASES) {
+      if (remaining === phrase || remaining.startsWith(phrase + " ")) {
+        remaining = remaining.slice(phrase.length).trim();
+        matched = true;
+        consumedAny = true;
+        break;
+      }
+    }
+    if (!matched) return false;
+  }
+  return consumedAny;
+}
+
 function isBriefExplanationModifier(text) {
   const s = String(text || "").trim().toLowerCase();
   if (!s) return false;
@@ -13524,6 +13616,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel");
   const _priorTopicForResolve = String(workModeLastSubstantiveUserText || "").trim();
   const _explicitPanelRef = isExplicitReasoningPanelReference(trimmed);
+  const _conversationalCheck = detectWorkModeConversationalCheck(trimmed);
   const _briefModifier = isBriefExplanationModifier(trimmed);
   const _simpleDefinition = isSimpleDefinitionQuestion(trimmed);
   if (_explicitPanelRef.matched) {
@@ -13618,6 +13711,54 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     opts.__reasoningGateReason = "explicit_panel_reference";
     opts.__reasoningGateResolvedTopic = resolvedTopic || null;
     opts.__reasoningGateTargetPanel = _explicitPanelRef.targetPanel ?? null;
+  } else if (_conversationalCheck && !callerForcedReasoning) {
+    /* 2026-06-13 — narrow conversational / check-in guard. Runs AFTER the
+       explicit-panel branch so explicit Work Mode requests always win.
+       Obvious greetings / acks / presence-or-hearing checks answer in the
+       Voice UI; they never open or stream into a reasoning panel. */
+    try {
+      console.info("[workmode_conversational_short_circuit]", {
+        original_text: String(trimmed || "").slice(0, 240),
+        normalized_text: normalizeConversationalCheck(trimmed).slice(0, 240),
+        route: "voice_ui",
+        reason: "conversational_check"
+      });
+    } catch (_) {}
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "voice_ui",
+      reasoning_gate_reason: "conversational_check",
+      explicit_panel_reference: false,
+      conversational_check_detected: true,
+      simple_definition_detected: false,
+      brief_explanation_detected: false,
+      broad_complex_topic_detected: false,
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: null,
+      route_source: "frontend_conversational_short_circuit",
+      final_panel_target: null,
+      final_route: "chat",
+      final_route_reasoning: false,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: false,
+      artifact_signals: [],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: "conversational_check",
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   } else if (_briefModifier && !callerForcedReasoning) {
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
