@@ -171,7 +171,7 @@ async function refreshSupabaseMemoriesList() {
       return;
     }
     for (const row of memories) {
-      const content = String(row?.content || "").trim();
+      const content = String(row?.display_content || row?.content || "").trim();
       if (!content) continue;
       const li = document.createElement("li");
       li.className = "vera-account-memories-item";
