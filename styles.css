@@ -2826,6 +2826,67 @@ body.chat-started .input-container {
   margin: 0 0 8px;
 }
 
+.vera-account-memories-wrap {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.vera-account-memories-heading {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.vera-account-memories-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.vera-account-memories-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.vera-account-memories-text {
+  flex: 1;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.vera-account-memories-delete {
+  flex-shrink: 0;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 120, 120, 0.35);
+  background: transparent;
+  color: #f5a5a5;
+  cursor: pointer;
+}
+
+.vera-account-memories-delete:hover {
+  background: rgba(255, 80, 80, 0.12);
+}
+
+.vera-account-memories-empty {
+  font-size: 0.88rem;
+  opacity: 0.75;
+  padding: 0.25rem 0;
+}
+
 .bmo-mode-guide {
   position: relative;
   pointer-events: auto;

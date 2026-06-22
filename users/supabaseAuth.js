@@ -106,6 +106,7 @@ function _renderAccountPanel(me) {
   const passIn = document.getElementById("vera-account-password");
   const displayIn = document.getElementById("vera-account-display-name");
   const errEl = document.getElementById("vera-account-error");
+  const memoriesWrap = document.getElementById("vera-account-memories-wrap");
 
   if (errEl instanceof HTMLElement) {
     errEl.textContent = "";
@@ -116,6 +117,7 @@ function _renderAccountPanel(me) {
     if (statusEl) statusEl.textContent = "Supabase auth is not configured on this server.";
     signedOut?.setAttribute("hidden", "");
     signedIn?.setAttribute("hidden", "");
+    memoriesWrap?.setAttribute("hidden", "");
     return;
   }
 
@@ -128,12 +130,66 @@ function _renderAccountPanel(me) {
     if (displayIn instanceof HTMLInputElement) {
       displayIn.value = String(me.profile?.display_name || "").trim();
     }
+    refreshSupabaseMemoriesList().catch(() => {});
   } else {
     if (statusEl) statusEl.textContent = "Not signed in — Vera works anonymously.";
     signedOut?.removeAttribute("hidden");
     signedIn?.setAttribute("hidden", "");
+    memoriesWrap?.setAttribute("hidden", "");
     if (emailIn instanceof HTMLInputElement) emailIn.value = "";
     if (passIn instanceof HTMLInputElement) passIn.value = "";
+    const list = document.getElementById("vera-account-memories-list");
+    if (list) list.innerHTML = "";
+  }
+}
+
+async function refreshSupabaseMemoriesList() {
+  const wrap = document.getElementById("vera-account-memories-wrap");
+  const list = document.getElementById("vera-account-memories-list");
+  if (!(wrap instanceof HTMLElement) || !(list instanceof HTMLElement)) return;
+  if (!_lastMeSnapshot?.authenticated) {
+    wrap.setAttribute("hidden", "");
+    list.innerHTML = "";
+    return;
+  }
+
+  try {
+    const res = await authFetchImpl(authApiUrl("/api/memories"), { method: "GET" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      wrap.setAttribute("hidden", "");
+      return;
+    }
+    wrap.removeAttribute("hidden");
+    const memories = Array.isArray(data.memories) ? data.memories : [];
+    list.innerHTML = "";
+    if (!memories.length) {
+      const empty = document.createElement("li");
+      empty.className = "vera-account-memories-empty";
+      empty.textContent = "No saved memories yet.";
+      list.appendChild(empty);
+      return;
+    }
+    for (const row of memories) {
+      const content = String(row?.content || "").trim();
+      if (!content) continue;
+      const li = document.createElement("li");
+      li.className = "vera-account-memories-item";
+      const text = document.createElement("span");
+      text.className = "vera-account-memories-text";
+      text.textContent = content;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "vera-account-memories-delete";
+      del.textContent = "Delete";
+      del.dataset.memoryId = String(row.id || "");
+      del.title = "Delete this memory";
+      li.appendChild(text);
+      li.appendChild(del);
+      list.appendChild(li);
+    }
+  } catch (_) {
+    wrap.setAttribute("hidden", "");
   }
 }
 
@@ -292,6 +348,28 @@ function wireSupabaseAccountUi() {
     }
   });
 
+  document.getElementById("vera-account-memories-list")?.addEventListener("click", async (ev) => {
+    const btn = ev.target?.closest?.(".vera-account-memories-delete");
+    if (!(btn instanceof HTMLButtonElement)) return;
+    const memoryId = btn.dataset.memoryId || "";
+    if (!memoryId) return;
+    btn.disabled = true;
+    try {
+      const res = await authFetchImpl(authApiUrl(`/api/memories/${encodeURIComponent(memoryId)}`), {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        _showAccountError("Could not delete that memory.");
+        btn.disabled = false;
+        return;
+      }
+      await refreshSupabaseMemoriesList();
+    } catch (e) {
+      _showAccountError(String(e?.message || e || "Could not delete memory."));
+      btn.disabled = false;
+    }
+  });
+
   document.getElementById("vera-account-save-profile")?.addEventListener("click", async () => {
     const displayName = document.getElementById("vera-account-display-name")?.value?.trim() || "";
     _showAccountError("");
@@ -324,6 +402,7 @@ try {
     window.initSupabaseAuth = initSupabaseAuth;
     window.wireSupabaseAccountUi = wireSupabaseAccountUi;
     window.refreshSupabaseAccountLabel = refreshSupabaseAccountLabel;
+    window.refreshSupabaseMemoriesList = refreshSupabaseMemoriesList;
     window.authFetch = authFetchImpl;
   }
 } catch (_) {}

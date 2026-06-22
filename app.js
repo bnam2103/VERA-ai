@@ -14907,7 +14907,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         if (modelPrep.voiceToPanelContext) {
           fd.append("voice_to_panel_context", JSON.stringify(modelPrep.voiceToPanelContext));
         }
-        sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
+        sr = await authFetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
           method: "POST",
           body: fd,
           signal: laneAbortController.signal
@@ -14946,7 +14946,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           return "reasoning-upload-failed";
         }
       } else {
-        sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+        sr = await authFetch(`${API_URL}/work_mode/reasoning_stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
