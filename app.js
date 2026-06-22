@@ -9877,6 +9877,302 @@ function logLaneMainContextResolve(laneId, meta = {}) {
   } catch (_) {}
 }
 
+/** Voice UI → Reasoning Panel context handoff (Phase 1, 2026-06-15). */
+const VOICE_TO_PANEL_MAX_TURN_PAIRS = 3;
+const VOICE_TO_PANEL_MAX_BLOCK_CHARS = 4000;
+const VOICE_TO_PANEL_TOPIC_CONTINUITY_FLOOR = 0.12;
+
+function detectVoiceToPanelDeictic(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  return /\b(?:that|this|it|these|those|earlier|previous|prior|before|what we discussed|what we talked about|continue from|continue with|why that worked|why it worked|why this worked|the same|last time|from earlier)\b/i.test(
+    s
+  );
+}
+
+/** Deictic Voice UI → panel writing/help handoff (e.g. "help me write that in the reasoning space"). */
+function detectVoiceToPanelDeicticWritingHandoff(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  if (!detectVoiceToPanelDeictic(s)) return false;
+  const hasCreationVerb =
+    /\b(?:write|draft|compose|prepare|explain|describe|outline|help\s+me\s+(?:write|draft|compose|prepare|explain|with)|(?:turn|convert|make)\s+(?:that|this|it)\s+into|create)\b/i.test(
+      s
+    );
+  const hasWorkspaceTarget =
+    /\b(?:reasoning\s+(?:space|panel|tab|page)|(?:reasoning\s+)?panel(?:\s+\d+)?|panel\s+\d+|reasoning\s+space|workspace|work\s*mode)\b/i.test(
+      s
+    ) ||
+    /\b(?:in|into|to)\s+(?:the\s+)?(?:reasoning\s+(?:space|panel|tab|page)|panel(?:\s+\d+)?)\b/i.test(s);
+  return Boolean(hasCreationVerb && hasWorkspaceTarget);
+}
+
+function summarizeVoiceTopicAnchorForPanel(text, maxLen = 280) {
+  const t = String(text || "").trim();
+  if (!t) return "";
+  const first = (t.split(/(?<=[.!?])\s+/)[0] || t).trim();
+  const pick = first.length >= 24 ? first : t;
+  return pick.length > maxLen ? `${pick.slice(0, maxLen).trim()}…` : pick;
+}
+
+function _stripDeicticHandoffLeadFromClause(clause) {
+  let s = String(clause || "").trim();
+  if (!s) return "";
+  s = s.replace(/^(?:please\s+)?(?:can|could|would|will)\s+you\s+/i, "").trim();
+  s = s.replace(
+    /\b(?:help\s+me\s+)?(?:write|draft|compose|prepare|explain|describe|outline)\s+(?:that|this|it)\s+(?:in|into|to)\s+(?:the\s+)?(?:reasoning\s+(?:space|panel|tab|page)|panel(?:\s*#?\s*\d+)?|reasoning\s+space|workspace)(?:\s+(?:first|second|third|fourth|fifth|sixth|seventh|eighth|\d+))?\s*[?.!]?\s*/i,
+    ""
+  );
+  s = s.replace(
+    /\b(?:open|use)\s+(?:the\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel(?:\s*#?\s*\d+)?)\s+and\s+(?:help\s+me\s+)?(?:write|draft|compose|prepare|explain|describe|outline)\s+(?:that|this|it)\s+/i,
+    ""
+  );
+  s = s.replace(
+    /\b(?:turn|convert|make)\s+(?:that|this|it)\s+into\b[^?.!]*?(?:in|into|to)\s+(?:the\s+)?(?:reasoning\s+(?:space|panel|tab|page)|panel(?:\s*#?\s*\d+)?|workspace)\s*[?.!]?\s*/i,
+    ""
+  );
+  return s.trim().replace(/^[?.!,\s:;]+|[?.!,\s:;]+$/g, "").trim();
+}
+
+function extractSupplementalDetailsFromDeicticHandoff(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  const clauses = raw.split(/\?\s+|\.\s+(?=[A-Za-z"'(])/).map((c) => c.trim()).filter(Boolean);
+  if (clauses.length >= 2) {
+    for (let i = 0; i < clauses.length; i++) {
+      if (detectVoiceToPanelDeicticWritingHandoff(clauses[i])) {
+        const rest = clauses.slice(i + 1).join(". ").trim();
+        if (rest) return rest;
+      }
+    }
+  }
+  const stripped = _stripDeicticHandoffLeadFromClause(raw);
+  if (stripped && stripped !== raw && !detectVoiceToPanelDeicticWritingHandoff(stripped)) {
+    return stripped;
+  }
+  return "";
+}
+
+function composeDeicticVoiceToPanelReasoningTask(opts = {}) {
+  const original = String(opts.userText || opts.originalUserText || "").trim();
+  if (!detectVoiceToPanelDeicticWritingHandoff(original)) return null;
+  const topicAnchor = String(opts.topicAnchor || workModeLastSubstantiveUserText || "").trim();
+  const resolvedReferent = String(opts.resolvedReferent || topicAnchor || "").trim();
+  if (!resolvedReferent) return null;
+
+  const referentSummary = summarizeVoiceTopicAnchorForPanel(resolvedReferent);
+  const newDetails = extractSupplementalDetailsFromDeicticHandoff(original);
+  const actionVerb = /\bdraft\b/i.test(original)
+    ? "draft"
+    : /\bcompose\b/i.test(original)
+      ? "compose"
+      : /\b(?:turn|convert|make)\s+(?:that|this|it)\s+into\b/i.test(original)
+        ? "turn into the requested form for"
+        : /\bexplain\b/i.test(original)
+          ? "explain"
+          : /\bdescribe\b/i.test(original)
+            ? "describe"
+            : "write";
+
+  let composedTask = `Using the prior Voice UI context, help the user ${actionVerb} the referenced item: ${referentSummary}.`;
+  if (newDetails) {
+    composedTask += ` Also incorporate these new details from the current message: ${newDetails}.`;
+  }
+  composedTask +=
+    " Produce the full deliverable in the reasoning panel; do not focus only on supplemental details when they accompany a deictic writing request.";
+
+  return {
+    composedTask,
+    resolvedReferent: referentSummary,
+    newDetails: newDetails || null,
+    originalUserText: original
+  };
+}
+
+function detectVoiceToPanelActionReference(text) {
+  const s = String(text || "").trim().toLowerCase();
+  if (!s) return false;
+  return (
+    /\bwhy(?:\s+did|\s+does|\s+that|\s+it|\s+this)?\s+(?:that|it|this)\s+work/i.test(s) ||
+    /\bwhy\s+(?:that|it|this)\s+(?:worked|failed|succeeded|happened)\b/i.test(s) ||
+    /\b(?:explain|describe)\s+(?:why|how)\s+(?:that|it|this|the)\s+(?:worked|failed|route|routing)\b/i.test(s) ||
+    /\b(?:recent|last)\s+(?:action|command|request|play|pause|route|routing)\b/i.test(s)
+  );
+}
+
+function detectPanelLocalFollowUp(text, hasLaneSubstance) {
+  if (!hasLaneSubstance) return false;
+  const low = String(text || "").toLowerCase();
+  return (
+    /\b(?:section|paragraph|part|step|heading|bullet|line)\s+\d+\b/i.test(low) ||
+    /\b(?:make|keep|shorten|tighten|expand|revise|rewrite|edit|polish|fix)\s+(?:this|the)\s+(?:draft|outline|plan|section|paragraph|answer|solution)\b/i.test(
+      low
+    ) ||
+    /\b(?:above|in the panel|this draft|this outline|the outline|the draft)\b/i.test(low)
+  );
+}
+
+function parseVoiceExcerptToTurnPairs(excerpt, maxPairs) {
+  const lines = String(excerpt || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const pairs = [];
+  let cur = null;
+  for (const line of lines) {
+    const um = line.match(/^User:\s*(.+)$/i);
+    const am = line.match(/^Assistant:\s*(.+)$/i);
+    if (um) {
+      if (cur) pairs.push(cur);
+      cur = { role: "user", content: um[1].trim() };
+    } else if (am) {
+      if (!cur) cur = { role: "user", content: "" };
+      pairs.push({ ...cur, assistant: am[1].trim() });
+      cur = null;
+    }
+  }
+  if (cur && cur.content) pairs.push({ role: "user", content: cur.content, assistant: "" });
+  const normalized = [];
+  for (const p of pairs.slice(-Math.max(1, maxPairs))) {
+    const row = { role: "user", content: String(p.content || "").slice(0, 800) };
+    if (p.assistant) normalized.push(row, { role: "assistant", content: String(p.assistant).slice(0, 800) });
+    else normalized.push(row);
+  }
+  return normalized.slice(-Math.max(2, maxPairs * 2));
+}
+
+function collectRecentVoiceTurnPairs(maxPairs = VOICE_TO_PANEL_MAX_TURN_PAIRS) {
+  const excerpt = collectWorkModeVoiceExcerptForContext(2800, maxPairs * 2 + 2);
+  return parseVoiceExcerptToTurnPairs(excerpt, maxPairs);
+}
+
+function shouldIncludeVoiceContextForPanel(opts = {}) {
+  const task = String(opts.cleanedPanelTask || opts.userText || "").trim();
+  const topicAnchor = String(opts.topicAnchor || workModeLastSubstantiveUserText || "").trim();
+  const mainExcerpt = String(opts.mainExcerpt || "").trim();
+  const visible = String(opts.visible || "").trim();
+  const laneBody = mainExcerpt || visible;
+  const hasLaneSubstance =
+    laneBody.length >= 120 || workModeVisibleLaneHasCompletedSolution(laneBody);
+
+  const deictic = detectVoiceToPanelDeictic(task);
+  const actionRef = detectVoiceToPanelActionReference(task);
+  const panelLocal = detectPanelLocalFollowUp(task, hasLaneSubstance);
+  const isNewEmptyLane = !hasLaneSubstance;
+  const voiceTurns = collectRecentVoiceTurnPairs(1);
+  const hasRecentVoice = voiceTurns.length > 0 || topicAnchor.length >= 6;
+
+  const topicContinuity =
+    Boolean(topicAnchor) &&
+    (topicSimilarityScore(task, topicAnchor) >= VOICE_TO_PANEL_TOPIC_CONTINUITY_FLOOR ||
+      topicCoverageScore(task, topicAnchor) >= 0.18 ||
+      topicCoverageScore(topicAnchor, task) >= 0.18);
+
+  const reasons = [];
+
+  if (panelLocal && !deictic && !actionRef) {
+    return { include: false, reasons: ["panel_local_follow_up"], deictic, actionRef, topicContinuity };
+  }
+
+  if (deictic) reasons.push("deictic_reference");
+  if (actionRef) reasons.push("recent_action_reference");
+  if (isNewEmptyLane && hasRecentVoice) reasons.push("new_panel_from_voice");
+  if (topicContinuity && hasRecentVoice) reasons.push("topic_continuity");
+
+  if (isNewEmptyLane && hasRecentVoice && !deictic && !actionRef && !topicContinuity && topicAnchor) {
+    const sim = topicSimilarityScore(task, topicAnchor);
+    if (sim < 0.08 && detectNewDeliverableIntent(task).detected) {
+      return { include: false, reasons: ["unrelated_new_topic"], deictic, actionRef, topicContinuity };
+    }
+  }
+
+  if (hasLaneSubstance && !deictic && !actionRef && !topicContinuity) {
+    return { include: false, reasons: ["lane_has_substance"], deictic, actionRef, topicContinuity };
+  }
+
+  if (isNewEmptyLane && hasRecentVoice && reasons.length === 0) {
+    reasons.push("new_empty_lane");
+  }
+
+  const include = reasons.length > 0 && hasRecentVoice;
+  return { include, reasons, deictic, actionRef, topicContinuity };
+}
+
+function buildVoiceToPanelContextPacket(opts = {}) {
+  const cleanedPanelTask = String(opts.cleanedPanelTask || opts.userText || "").trim();
+  const originalUserText = String(opts.originalUserText || cleanedPanelTask || "").trim();
+  const topicAnchor = String(opts.topicAnchor || workModeLastSubstantiveUserText || "").trim();
+  const resolvedReferent = String(opts.resolvedReferent || "").trim() || null;
+  const mainExcerpt = String(opts.mainExcerpt || "").trim();
+  const visible = String(opts.visible || "").trim();
+
+  const policy = shouldIncludeVoiceContextForPanel({
+    cleanedPanelTask,
+    userText: cleanedPanelTask,
+    topicAnchor,
+    mainExcerpt,
+    visible,
+    isNewPanelFromVoice: Boolean(opts.isNewPanelFromVoice || opts.isNewPanelExplicit)
+  });
+
+  if (!policy.include) {
+    return { include: false, policy, packet: null };
+  }
+
+  const recentVoiceTurns = collectRecentVoiceTurnPairs(VOICE_TO_PANEL_MAX_TURN_PAIRS);
+  const packet = {
+    source: "voice_ui",
+    version: 1,
+    original_user_text: originalUserText,
+    cleaned_panel_task: cleanedPanelTask,
+    topic_anchor: topicAnchor || null,
+    resolved_referent: resolvedReferent,
+    recent_voice_turns: recentVoiceTurns,
+    inclusion_reasons: policy.reasons,
+    deictic_detected: Boolean(policy.deictic),
+    turn_id: opts.turnId || null
+  };
+  return { include: true, policy, packet };
+}
+
+function renderVoiceToPanelContextBlock(packet) {
+  if (!packet || !packet.include || !packet.packet) return "";
+  const p = packet.packet;
+  const lines = [
+    "RELEVANT_PRIOR_VOICE_UI_CONTEXT",
+    "This is session background from Voice UI. Use it only when the current task refers to earlier discussion, actions, or deictic phrases. Do not treat it as prior panel work unless the user asks to move/continue it in the panel.",
+    ""
+  ];
+  if (p.resolved_referent) {
+    lines.push(`Resolved referent: ${p.resolved_referent}`);
+  } else if (p.topic_anchor) {
+    lines.push(`Topic anchor: ${p.topic_anchor}`);
+  }
+  if (p.original_user_text && p.original_user_text !== p.cleaned_panel_task) {
+    lines.push(`Original user utterance: ${p.original_user_text}`);
+  }
+  if (p.cleaned_panel_task) {
+    lines.push(`Current reasoning task: ${p.cleaned_panel_task}`);
+  }
+  const turns = Array.isArray(p.recent_voice_turns) ? p.recent_voice_turns : [];
+  if (turns.length) {
+    lines.push("", "Recent Voice UI turns:");
+    for (const t of turns) {
+      const role = t.role === "assistant" ? "Assistant" : "User";
+      const content = String(t.content || "").trim();
+      if (content) lines.push(`${role}: ${content}`);
+    }
+  }
+  if (Array.isArray(p.inclusion_reasons) && p.inclusion_reasons.length) {
+    lines.push("", `Included because: ${p.inclusion_reasons.join(", ")}`);
+  }
+  let block = lines.join("\n").trim();
+  if (block.length > VOICE_TO_PANEL_MAX_BLOCK_CHARS) {
+    block = `${block.slice(0, VOICE_TO_PANEL_MAX_BLOCK_CHARS)}\n…`;
+  }
+  return block;
+}
+
 /**
  * Resync registry from DOM, build lane context for reasoning_stream, log before model call.
  */
@@ -9902,7 +10198,20 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
   const laneTitle =
     turnContext?.turn_lane_title || handoff?.title || handoff?.lane_title || getWorkModeLaneTitle(laneId) || "";
 
+  const voiceToPanelBuilt = buildVoiceToPanelContextPacket({
+    ...(opts.voiceToPanelContextOpts || {}),
+    cleanedPanelTask: userText,
+    userText,
+    mainExcerpt,
+    visible,
+    turnId: turnContext?.turn_id || null
+  });
+  const voiceBlock = renderVoiceToPanelContextBlock(voiceToPanelBuilt);
+
   const parts = [];
+  if (voiceBlock) {
+    parts.push(voiceBlock);
+  }
   if (mainExcerpt) {
     parts.push(
       "ACTIVE_LANE_PRIOR_CONTEXT (authoritative — visible reasoning panel for this frozen lane; " +
@@ -9966,7 +10275,9 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     model_user_text: userText.slice(0, 500),
     will_ask_for_missing_info_allowed: willAsk,
     request_has_code_intent: requestHasCodeIntent,
-    lane_client_context_len: laneClientContextCapped.length
+    lane_client_context_len: laneClientContextCapped.length,
+    voice_to_panel_included: Boolean(voiceToPanelBuilt?.include),
+    voice_to_panel_reasons: voiceToPanelBuilt?.policy?.reasons || []
   };
 
   if (!opts.skipLog) {
@@ -9988,6 +10299,7 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     mainExcerpt,
     laneClientContext: laneClientContextCapped,
     modelUserText: userText,
+    voiceToPanelContext: voiceToPanelBuilt?.include ? voiceToPanelBuilt.packet : null,
     debug: debugRow,
     willAskForMissingInfo: willAsk
   };
@@ -10952,7 +11264,8 @@ function buildWorkModeLaneClientMergeBlockForUpload(laneId, userText = "", uploa
     turnContext: uploadOpts.turnContext || null,
     requestHasCodeIntent: uploadOpts.requestHasCodeIntent,
     skipLog: true,
-    currentAttachmentMeta: uploadOpts.currentAttachmentMeta || []
+    currentAttachmentMeta: uploadOpts.currentAttachmentMeta || [],
+    voiceToPanelContextOpts: uploadOpts.voiceToPanelContextOpts || null
   });
   return prep.laneClientContext || "";
 }
@@ -13921,9 +14234,32 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     (hasUpload
       ? "[Uploaded attachment(s)] — use the attached file(s) as the problem context."
       : "");
+  const priorVoiceTopic = String(
+    opts.__voiceToPanelResolvedReferent ||
+      opts.__reasoningGateResolvedTopic ||
+      priorThreadAnchor ||
+      ""
+  ).trim();
+  const deicticCompose = composeDeicticVoiceToPanelReasoningTask({
+    userText: effectiveUserText,
+    originalUserText: rawTrimmed,
+    resolvedReferent: priorVoiceTopic,
+    topicAnchor: priorThreadAnchor
+  });
+  const streamUserRequestForReasoning = deicticCompose?.composedTask || effectiveUserText;
+  if (deicticCompose) {
+    try {
+      console.info("[voice_to_panel_deictic_compose]", {
+        original_preview: String(rawTrimmed || "").slice(0, 160),
+        resolved_referent: deicticCompose.resolvedReferent,
+        new_details: deicticCompose.newDetails,
+        composed_preview: String(deicticCompose.composedTask || "").slice(0, 240)
+      });
+    } catch (_) {}
+  }
   const textForReasoningStream = planningIntent
-    ? `${workModePlanningTimeInjectionPrefix()}${effectiveUserText}\n\n${WORK_MODE_PLANNING_REASONING_INSTRUCTION_SUFFIX}`
-    : effectiveUserText;
+    ? `${workModePlanningTimeInjectionPrefix()}${streamUserRequestForReasoning}\n\n${WORK_MODE_PLANNING_REASONING_INSTRUCTION_SUFFIX}`
+    : streamUserRequestForReasoning;
 
   let classifyRoute = false;
   let continuePriorLane = false;
@@ -14354,7 +14690,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     continueLaneForThisTurn
   );
   if (!isGenericExampleFollowUpText(effectiveUserText)) {
-    laneTopicSeedByIdx[laneIdx] = effectiveUserText;
+    laneTopicSeedByIdx[laneIdx] = deicticCompose?.resolvedReferent || effectiveUserText;
     workModeLastSubstantiveLaneIdx = laneIdx;
     workModeLastSubstantiveUserText = rawTrimmed || effectiveUserText;
   }
@@ -14383,7 +14719,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         has_files: Boolean(hasUpload)
       });
     } catch (_) {}
-    const streamUserRequest = effectiveUserText;
+    const streamUserRequest = streamUserRequestForReasoning;
     const currentAttachmentMeta = attachmentList.map((f) => ({
       name: f.name,
       mime_type: f.type || guessMimeFromWorkModeFileName(f.name)
@@ -14402,7 +14738,20 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       turnContext,
       requestHasCodeIntent,
       planningIntent,
-      currentAttachmentMeta
+      currentAttachmentMeta,
+      voiceToPanelContextOpts: {
+        originalUserText: String(opts.__voiceToPanelOriginalText || rawTrimmed || trimmed || "").trim(),
+        cleanedPanelTask: streamUserRequest,
+        resolvedReferent:
+          String(
+            deicticCompose?.resolvedReferent ||
+              opts.__voiceToPanelResolvedReferent ||
+              opts.__reasoningGateResolvedTopic ||
+              ""
+          ).trim() || null,
+        isNewPanelExplicit: Boolean(opts.__voiceToPanelNewPanel),
+        isNewPanelFromVoice: Boolean(opts.__voiceToPanelNewPanel)
+      }
     });
 
     workModeReasoningLaneBusy.set(laneIdx, true);
@@ -14539,9 +14888,25 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           turnContext,
           requestHasCodeIntent,
           currentAttachmentMeta,
-          attachments: attachmentList
+          attachments: attachmentList,
+          voiceToPanelContextOpts: {
+            originalUserText: String(opts.__voiceToPanelOriginalText || rawTrimmed || trimmed || "").trim(),
+            cleanedPanelTask: streamUserRequest,
+            resolvedReferent:
+              String(
+                deicticCompose?.resolvedReferent ||
+                  opts.__voiceToPanelResolvedReferent ||
+                  opts.__reasoningGateResolvedTopic ||
+                  ""
+              ).trim() || null,
+            isNewPanelExplicit: Boolean(opts.__voiceToPanelNewPanel),
+            isNewPanelFromVoice: Boolean(opts.__voiceToPanelNewPanel)
+          }
         });
         if (laneMerge) fd.append("work_mode_lane_client_context", laneMerge);
+        if (modelPrep.voiceToPanelContext) {
+          fd.append("voice_to_panel_context", JSON.stringify(modelPrep.voiceToPanelContext));
+        }
         sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
           method: "POST",
           body: fd,
@@ -14588,7 +14953,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             session_id: getSessionId(),
             text: streamReasoningText,
             lane_id: laneId,
-            work_mode_lane_client_context: modelPrep.laneClientContext || ""
+            work_mode_lane_client_context: modelPrep.laneClientContext || "",
+            voice_to_panel_context: modelPrep.voiceToPanelContext || null
           }),
           signal: laneAbortController.signal
         });
@@ -14946,7 +15312,12 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
     laneId: streamLaneId,
     userText: streamUserRequest,
     turnContext,
-    requestHasCodeIntent
+    requestHasCodeIntent,
+    voiceToPanelContextOpts: {
+      originalUserText: streamUserRequest,
+      cleanedPanelTask: streamUserRequest,
+      resolvedReferent: null
+    }
   });
   const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
   const laneId = streamLaneId;
@@ -15033,7 +15404,8 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         session_id: getSessionId(),
         text,
         lane_id: laneId,
-        work_mode_lane_client_context: modelPrep.laneClientContext || ""
+        work_mode_lane_client_context: modelPrep.laneClientContext || "",
+        voice_to_panel_context: modelPrep.voiceToPanelContext || null
       }),
       signal: laneAbortController.signal
     });
@@ -16911,6 +17283,14 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
            this hint we would lose the planner's target signal and the
            lane would fall back to ``getActiveReasoningLaneIndex()``. */
         __reasoningGateTargetPanel: Number.isFinite(target1based) ? target1based : null,
+        __voiceToPanelOriginalText: String(
+          payload?.original_user_text || data?.transcript || data?.user_text || ""
+        ).trim(),
+        __voiceToPanelResolvedReferent:
+          detectVoiceToPanelDeictic(promptClean) || detectVoiceToPanelActionReference(promptClean)
+            ? resolveReasoningPanelTopicFromContext() || null
+            : null,
+        __voiceToPanelNewPanel: Boolean(wantsNewPanel)
       });
       try {
         console.info("[reasoning_stream_called]", {
