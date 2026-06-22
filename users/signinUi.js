@@ -134,6 +134,18 @@ function authApiUrl(path) {
   return new URL(p, `${root}/`).href;
 }
 
+/**
+ * fetch() with optional Supabase Authorization header when logged in.
+ * Implemented in users/supabaseAuth.js when Supabase is configured; otherwise
+ * falls through to plain fetch (anonymous Vera still works).
+ */
+async function authFetch(url, init) {
+  if (typeof window !== "undefined" && typeof window.__veraAuthFetchImpl === "function") {
+    return window.__veraAuthFetchImpl(url, init);
+  }
+  return fetch(url, init);
+}
+
 function setVeraActiveUserLabel(usernameOrNull) {
   const el = document.getElementById("vera-active-user-label");
   if (!el) return;
@@ -147,6 +159,10 @@ function setVeraActiveUserLabel(usernameOrNull) {
 }
 
 async function refreshVeraActiveUserLabel() {
+  if (typeof refreshSupabaseAccountLabel === "function") {
+    const supabaseHandled = await refreshSupabaseAccountLabel();
+    if (supabaseHandled) return;
+  }
   const tabUser = sessionStorage.getItem(VERA_TAB_ACTIVE_USER_KEY) || "";
   if (!tabUser) {
     setVeraActiveUserLabel(null);

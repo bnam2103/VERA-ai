@@ -228,7 +228,7 @@ async function syncWorkChecklistToServerNow() {
     try {
       const items = readChecklistItemsFromStorage();
       const completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
-      await fetch(authApiUrl("/api/work-mode/checklist"), {
+      await authFetch(authApiUrl("/api/work-mode/checklist"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -262,7 +262,7 @@ async function hydrateWorkChecklistFromServer(force = false) {
   const startVersion = workChecklistLocalMutationVersion;
   workChecklistHydrationPromise = (async () => {
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `${authApiUrl("/api/work-mode/checklist")}?session_id=${encodeURIComponent(getSessionId())}`,
         { method: "GET" }
       );

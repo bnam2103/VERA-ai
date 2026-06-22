@@ -13778,7 +13778,7 @@ async function playWorkModeTtsOnlyPhrase(text, abortSignal) {
   const s = String(text || "").trim();
   if (!s || !isVeraWorkModeOn()) return;
   if (isWorkModeMuteEnabled() || inputMuted) return;
-  const res = await fetch(`${API_URL}/text`, {
+  const res = await authFetch(`${API_URL}/text`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -22158,7 +22158,7 @@ async function runInferMainPipeline(formData, opts = {}) {
     try { formData.set("client_request_id", _inferClientRequestId); } catch (_) {
       try { formData.append("client_request_id", _inferClientRequestId); } catch (_) {}
     }
-    const res = await fetch(`${API_URL}/infer`, {
+    const res = await authFetch(`${API_URL}/infer`, {
       method: "POST",
       headers: {
         "X-Vera-Request-Id": _inferClientRequestId,
@@ -22487,7 +22487,7 @@ async function runInferInterruptPipeline(formData) {
   try {
     logVoicePipe("POST /infer starting (interrupt, upload in flight)");
     const inferFetchStart = performance.now();
-    const res = await fetch(`${API_URL}/infer`, {
+    const res = await authFetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData,
       signal: attachPipelineAbortSignal()
@@ -22734,7 +22734,7 @@ async function handleUtterance() {
       preForm.append("transcribe_only", "1");
 
       const preFetchStart = performance.now();
-      const preRes = await fetch(`${API_URL}/infer`, {
+      const preRes = await authFetch(`${API_URL}/infer`, {
         method: "POST",
         body: preForm,
         signal: pipelineSig
@@ -23752,7 +23752,7 @@ async function sendTextMessage() {
       request_id: _textClientRequestId,
       path: "typed-text",
     });
-    const res = await fetch(`${API_URL}/text`, {
+    const res = await authFetch(`${API_URL}/text`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -24506,7 +24506,12 @@ function wireVeraSettingsPanel() {
 
 wireVeraUserSignInHoldAndModal();
 wireVeraSettingsPanel();
-refreshVeraActiveUserLabel();
+if (typeof wireSupabaseAccountUi === "function") wireSupabaseAccountUi();
+if (typeof initSupabaseAuth === "function") {
+  initSupabaseAuth().finally(() => refreshVeraActiveUserLabel());
+} else {
+  refreshVeraActiveUserLabel();
+}
 
 (function stripSpotifyOAuthQueryParams() {
   try {
