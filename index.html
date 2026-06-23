@@ -3000,6 +3000,9 @@ document.addEventListener("click", () => {
 <!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="users/accountSettingsSync.js?v=1"></script>
+<!-- users/feedback.js — thumbs up/down on main chat Vera replies (Feedback MVP).
+     Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
+<script src="users/feedback.js?v=1"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies

@@ -2131,6 +2131,26 @@ function inferTranscriptFromFormData(formData) {
   return String(formData.get("transcript") || "").trim();
 }
 
+/** Attach feedback controls to a finalized main-chat Vera bubble (no-op if feedback.js not loaded). */
+function veraFeedbackMarkFinalFromBubble(bubbleEl, payload, clientRequestId) {
+  if (!(bubbleEl instanceof HTMLElement)) return;
+  try {
+    if (typeof window.veraFeedbackMarkFinal !== "function") return;
+    const p = payload && typeof payload === "object" ? payload : {};
+    window.veraFeedbackMarkFinal(bubbleEl, {
+      requestId: String(
+        p.request_id ||
+          clientRequestId ||
+          (typeof VERA_LAST_REQUEST_IDS !== "undefined" &&
+            (VERA_LAST_REQUEST_IDS.text || VERA_LAST_REQUEST_IDS.infer)) ||
+          ""
+      ).trim(),
+      turnId: String(p.turn_id || p.status_turn_id || "").trim(),
+      userExcerpt: "",
+    });
+  } catch (_) {}
+}
+
 function addBubble(text, who, meta) {
   const convoEl = uiEl("conversation");
   if (!convoEl) return;
@@ -2202,6 +2222,11 @@ function addBubble(text, who, meta) {
   row.appendChild(bubble);
   convoEl.appendChild(row);
   convoEl.scrollTop = convoEl.scrollHeight;
+  if (who === "user" && !chatStateHydrating) {
+    try {
+      window.veraFeedbackSetPendingUser?.(text);
+    } catch (_) {}
+  }
   if (!chatStateHydrating && (who === "user" || who === "vera")) {
     persistVeraChatState();
   }
@@ -13634,6 +13659,9 @@ function ensureStage2VoiceBubble(prep, effectiveText, replyBack = null) {
   if (prep?.stage2VoiceBubble instanceof HTMLElement && prep.stage2VoiceBubble.isConnected) {
     prep.stage2VoiceBubble.textContent = t;
     if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
+    veraFeedbackMarkFinalFromBubble(prep.stage2VoiceBubble, {
+      turn_id: prep?.turnContext?.turn_id || ""
+    }, null);
     persistVeraChatState();
     return prep.stage2VoiceBubble;
   }
@@ -13641,6 +13669,9 @@ function ensureStage2VoiceBubble(prep, effectiveText, replyBack = null) {
   if (replyBack) opts = mergeReplyBackIntoBubbleMeta(opts, replyBack);
   const bubble = addBubble(t, "vera", opts);
   if (prep) prep.stage2VoiceBubble = bubble;
+  veraFeedbackMarkFinalFromBubble(bubble, {
+    turn_id: prep?.turnContext?.turn_id || ""
+  }, null);
   if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
   persistVeraChatState();
   return bubble;
@@ -18139,7 +18170,8 @@ function applyAssistantReplyAndPanels(data) {
   // before the actual assistant bubble appears so the user only sees the
   // final answer (no double-bubble flash).
   cancelPendingNewsStatusBubble("assistant_reply_applied");
-  addBubble(data.reply, "vera");
+  const bubble = addBubble(data.reply, "vera");
+  veraFeedbackMarkFinalFromBubble(bubble, data, null);
 }
 
 function createNdjsonStreamingReplyState(initialReplyBack = null, opts = {}) {
@@ -18230,6 +18262,7 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   if (state.bubble?.isConnected) {
     state.bubble.textContent = done.reply;
     state.stage2EffectiveLocked = true;
+    veraFeedbackMarkFinalFromBubble(state.bubble, merged, null);
     persistVeraChatState();
     return;
   }
@@ -18246,6 +18279,7 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   }
   state.bubble = addBubble(done.reply, "vera", finOpts);
   state.stage2EffectiveLocked = true;
+  veraFeedbackMarkFinalFromBubble(state.bubble, merged, null);
   persistVeraChatState();
 }
 

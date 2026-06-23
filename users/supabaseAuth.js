@@ -301,6 +301,11 @@ async function refreshSupabaseAccountLabel() {
       syncEl.textContent = "";
     }
   }
+  if (typeof window.veraFeedbackOnAuthChanged === "function") {
+    try {
+      window.veraFeedbackOnAuthChanged();
+    } catch (_) {}
+  }
   return Boolean(me?.authenticated);
 }
 

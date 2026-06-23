@@ -7352,6 +7352,79 @@ body.bmo-open .bubble.user.interrupt-preview {
   }
 }
 
+/* Main-chat response feedback (thumbs up/down MVP) */
+.vera-feedback-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: 70%;
+  margin-top: 4px;
+  margin-left: auto;
+  padding: 2px 0 4px;
+}
+
+.vera-feedback-btn {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(15, 26, 34, 0.65);
+  color: rgba(255, 255, 255, 0.82);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 0.95rem;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.vera-feedback-btn:hover:not(:disabled) {
+  background: rgba(30, 44, 56, 0.9);
+}
+
+.vera-feedback-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.vera-feedback-note-wrap {
+  display: flex;
+  flex: 1 1 100%;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 2px;
+}
+
+.vera-feedback-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: vertical;
+  max-height: 6rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(8, 14, 20, 0.85);
+  color: rgba(255, 255, 255, 0.9);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 6px 8px;
+}
+
+.vera-feedback-note-submit {
+  border: 1px solid rgba(120, 180, 255, 0.35);
+  background: rgba(40, 70, 110, 0.55);
+  color: rgba(230, 240, 255, 0.95);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.vera-feedback-note-submit:hover:not(:disabled) {
+  background: rgba(50, 85, 130, 0.75);
+}
+
+.vera-feedback-bar.is-submitted .vera-feedback-btn--up,
+.vera-feedback-bar.is-submitted .vera-feedback-btn--down {
+  opacity: 0.55;
+}
+
 /* =========================
    INPUT BAR
 ========================= */
