@@ -2224,6 +2224,7 @@ function addBubble(text, who, meta) {
   convoEl.scrollTop = convoEl.scrollHeight;
   if (who === "user" && !chatStateHydrating) {
     try {
+      window.veraFeedbackOnNewUserMessage?.();
       window.veraFeedbackSetPendingUser?.(text);
     } catch (_) {}
   }

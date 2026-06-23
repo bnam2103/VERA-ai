@@ -40,24 +40,78 @@
     return Boolean(convo && convo.contains(row));
   }
 
-  function hideAllFeedbackBars() {
+  /** Remove every feedback bar from the conversation (previous replies). */
+  function clearActiveFeedbackBars() {
     const convo = feedbackConversationEl();
     if (!convo) return;
     convo.querySelectorAll(".vera-feedback-bar").forEach((bar) => {
-      bar.hidden = true;
-      bar.setAttribute("aria-hidden", "true");
+      bar.remove();
     });
+    _activeRow = null;
   }
 
-  function disableFeedbackBar(row) {
-    const bar = row?.querySelector?.(".vera-feedback-bar");
+  function getBarParts(bar) {
+    if (!(bar instanceof HTMLElement)) return {};
+    return {
+      controls: bar.querySelector(".vera-feedback-controls"),
+      upBtn: bar.querySelector(".vera-feedback-btn--up"),
+      downBtn: bar.querySelector(".vera-feedback-btn--down"),
+      noteWrap: bar.querySelector(".vera-feedback-note-wrap"),
+      noteInput: bar.querySelector(".vera-feedback-note"),
+      noteSubmit: bar.querySelector(".vera-feedback-note-submit"),
+      thanks: bar.querySelector(".vera-feedback-thanks"),
+    };
+  }
+
+  function isNoteEditorOpen(bar) {
+    const { noteWrap } = getBarParts(bar);
+    return Boolean(
+      noteWrap instanceof HTMLElement &&
+        !noteWrap.hidden &&
+        noteWrap.classList.contains("is-open")
+    );
+  }
+
+  function closeNoteEditor(bar) {
+    const { noteWrap, noteInput, upBtn, downBtn } = getBarParts(bar);
+    if (!(noteWrap instanceof HTMLElement)) return;
+    noteWrap.hidden = true;
+    noteWrap.classList.remove("is-open");
+    if (noteInput instanceof HTMLInputElement) noteInput.value = "";
+    if (upBtn instanceof HTMLButtonElement) upBtn.disabled = false;
+    if (downBtn instanceof HTMLButtonElement) downBtn.disabled = false;
+  }
+
+  function showThanksState(bar) {
     if (!(bar instanceof HTMLElement)) return;
-    bar.querySelectorAll("button, textarea").forEach((el) => {
-      if (el instanceof HTMLButtonElement || el instanceof HTMLTextAreaElement) {
-        el.disabled = true;
-      }
-    });
+    closeNoteEditor(bar);
+    const { controls, thanks, upBtn, downBtn, noteSubmit } = getBarParts(bar);
+    if (controls instanceof HTMLElement) {
+      controls.hidden = true;
+      controls.setAttribute("aria-hidden", "true");
+    }
+    if (upBtn instanceof HTMLButtonElement) upBtn.disabled = true;
+    if (downBtn instanceof HTMLButtonElement) downBtn.disabled = true;
+    if (noteSubmit instanceof HTMLButtonElement) noteSubmit.disabled = true;
+    if (thanks instanceof HTMLElement) {
+      thanks.hidden = false;
+      thanks.removeAttribute("aria-hidden");
+    }
     bar.classList.add("is-submitted");
+  }
+
+  function finishDownSubmit(bar) {
+    if (!(bar instanceof HTMLElement)) return;
+    closeNoteEditor(bar);
+    const { controls, upBtn, downBtn, noteSubmit } = getBarParts(bar);
+    if (upBtn instanceof HTMLButtonElement) upBtn.disabled = true;
+    if (downBtn instanceof HTMLButtonElement) downBtn.disabled = true;
+    if (noteSubmit instanceof HTMLButtonElement) noteSubmit.disabled = true;
+    bar.classList.add("is-submitted");
+    if (controls instanceof HTMLElement) {
+      controls.hidden = true;
+      controls.setAttribute("aria-hidden", "true");
+    }
   }
 
   function submitFeedback(row, rating, note) {
@@ -68,6 +122,7 @@
     if (typeof getSessionId !== "function") return;
 
     const bubble = row.querySelector(".bubble.vera");
+    const bar = row.querySelector(".vera-feedback-bar");
     const payload = {
       rating,
       note: rating === "down" ? truncateText(note, MAX_NOTE) || null : null,
@@ -83,7 +138,11 @@
     };
 
     row.dataset.feedbackSubmitted = "1";
-    disableFeedbackBar(row);
+    if (rating === "up") {
+      showThanksState(bar);
+    } else {
+      finishDownSubmit(bar);
+    }
 
     void authFetch(authApiUrl("/api/feedback"), {
       method: "POST",
@@ -103,6 +162,9 @@
     bar.setAttribute("role", "group");
     bar.setAttribute("aria-label", "Rate this response");
 
+    const controls = document.createElement("div");
+    controls.className = "vera-feedback-controls";
+
     const upBtn = document.createElement("button");
     upBtn.type = "button";
     upBtn.className = "vera-feedback-btn vera-feedback-btn--up";
@@ -121,9 +183,9 @@
     noteWrap.className = "vera-feedback-note-wrap";
     noteWrap.hidden = true;
 
-    const noteInput = document.createElement("textarea");
+    const noteInput = document.createElement("input");
+    noteInput.type = "text";
     noteInput.className = "vera-feedback-note";
-    noteInput.rows = 2;
     noteInput.maxLength = MAX_NOTE;
     noteInput.placeholder = "What went wrong? (optional)";
     noteInput.setAttribute("aria-label", "Optional feedback note");
@@ -136,15 +198,25 @@
     noteWrap.appendChild(noteInput);
     noteWrap.appendChild(noteSubmit);
 
+    const thanks = document.createElement("span");
+    thanks.className = "vera-feedback-thanks";
+    thanks.hidden = true;
+    thanks.setAttribute("aria-hidden", "true");
+    thanks.textContent = "Thanks";
+
     upBtn.addEventListener("click", () => {
+      if (row.dataset.feedbackSubmitted === "1") return;
+      if (isNoteEditorOpen(bar)) {
+        closeNoteEditor(bar);
+        return;
+      }
       submitFeedback(row, "up", null);
     });
 
     downBtn.addEventListener("click", () => {
       if (row.dataset.feedbackSubmitted === "1") return;
       noteWrap.hidden = false;
-      downBtn.disabled = true;
-      upBtn.disabled = true;
+      noteWrap.classList.add("is-open");
       noteInput.focus();
     });
 
@@ -153,15 +225,20 @@
     });
 
     noteInput.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && !ev.shiftKey) {
+      if (ev.key === "Enter") {
         ev.preventDefault();
         submitFeedback(row, "down", noteInput.value);
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeNoteEditor(bar);
       }
     });
 
-    bar.appendChild(upBtn);
-    bar.appendChild(downBtn);
-    bar.appendChild(noteWrap);
+    controls.appendChild(upBtn);
+    controls.appendChild(downBtn);
+    controls.appendChild(noteWrap);
+    bar.appendChild(controls);
+    bar.appendChild(thanks);
     row.appendChild(bar);
     return bar;
   }
@@ -170,10 +247,10 @@
     if (!(row instanceof HTMLElement)) return;
     if (row.dataset.feedbackSubmitted === "1") return;
     if (!feedbackAuthenticated()) {
-      hideAllFeedbackBars();
+      clearActiveFeedbackBars();
       return;
     }
-    hideAllFeedbackBars();
+    clearActiveFeedbackBars();
     _activeRow = row;
     const bar = buildFeedbackBar(row);
     bar.hidden = false;
@@ -182,6 +259,10 @@
 
   function veraFeedbackSetPendingUser(text) {
     _pendingUserExcerpt = truncateText(text, MAX_EXCERPT);
+  }
+
+  function veraFeedbackOnNewUserMessage() {
+    clearActiveFeedbackBars();
   }
 
   function veraFeedbackMarkFinal(bubbleEl, ctx) {
@@ -218,12 +299,13 @@
         return;
       }
     }
-    hideAllFeedbackBars();
+    clearActiveFeedbackBars();
   }
 
   try {
     if (typeof window !== "undefined") {
       window.veraFeedbackSetPendingUser = veraFeedbackSetPendingUser;
+      window.veraFeedbackOnNewUserMessage = veraFeedbackOnNewUserMessage;
       window.veraFeedbackMarkFinal = veraFeedbackMarkFinal;
       window.veraFeedbackOnAuthChanged = veraFeedbackOnAuthChanged;
     }
