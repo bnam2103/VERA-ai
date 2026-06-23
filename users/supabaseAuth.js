@@ -231,7 +231,7 @@ async function _hydrateChecklistAccountWhenReady(userId) {
   if (!hydrateFn) {
     if (_checklistHydrateAttempts === 0) {
       console.warn(
-        "[VERA][CHECKLIST] hydrateChecklistMergeOnLogin missing — waiting for users/checklistSupabaseSync.js"
+        "[VERA][CHECKLIST] hydrateChecklistMergeOnLogin missing — waiting for workmode/checklist.js supabase sync"
       );
     }
     if (_checklistHydrateAttempts < 50) {
@@ -244,8 +244,8 @@ async function _hydrateChecklistAccountWhenReady(userId) {
       return;
     }
     console.warn(
-      "[VERA][CHECKLIST] checklistSupabaseSync.js not loaded — account checklist will not sync. " +
-        "Ensure index.html includes <script src=\"users/checklistSupabaseSync.js\"> after workmode/checklist.js."
+      "[VERA][CHECKLIST] hydrateChecklistMergeOnLogin missing — account checklist sync not in checklist.js. " +
+        "Hard-refresh (Ctrl+Shift+R) to load workmode/checklist.js?v=4+."
     );
     return;
   }

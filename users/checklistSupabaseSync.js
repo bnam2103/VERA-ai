@@ -1,14 +1,8 @@
 /* =========================================================================
- *  users/checklistSupabaseSync.js — Supabase account checklist sync (Phase 4b).
+ *  users/checklistSupabaseSync.js — smoke-test mirror of checklist Supabase sync.
  *
- *  Load order: AFTER workmode/checklist.js (readChecklistItemsFromStorage,
- *  loadWorkChecklistItems) and users/supabaseAuth.js (authFetch).
- *
- *  Logged-out: localStorage only (no API calls).
- *  Logged-in: localStorage is UI cache; Supabase is durable account storage.
- *
- *  Login: POST /api/checklist/merge (local + remote dedupe, done wins).
- *  Mutations: PUT /api/checklist in background via syncWorkChecklistToSupabaseNow.
+ *  Production code lives in workmode/checklist.js (search: checklist_supabase_sync_loaded).
+ *  This file is kept so tests/smoke/__checklist_sync_smoke.mjs can run in isolation.
  * ========================================================================= */
 
 console.info("[checklist_supabase_sync_loaded]");

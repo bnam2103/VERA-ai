@@ -2571,6 +2571,188 @@ function getChecklistDebugState() {
   };
 }
 
+/* =========================
+   SUPABASE ACCOUNT CHECKLIST SYNC (Phase 4b)
+   Canonical copy — also mirrored in users/checklistSupabaseSync.js for smoke tests.
+========================= */
+
+console.info("[checklist_supabase_sync_loaded]");
+
+const WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY = "vera_wm_checklist_supabase_unsynced_v1";
+let _checklistSbHydratePromise = null;
+let _checklistSbSaveInFlight = null;
+
+function _checklistSbIsLoggedIn() {
+  return (
+    typeof isSupabaseUserAuthenticated === "function" &&
+    isSupabaseUserAuthenticated()
+  );
+}
+
+async function _checklistSbAwaitAuthToken(maxWaitMs = 4000) {
+  if (typeof getSupabaseAccessToken !== "function") return null;
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const token = await getSupabaseAccessToken();
+    if (token) return token;
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+  return null;
+}
+
+function _readLocalChecklistBundleForSupabase() {
+  return {
+    items: readChecklistItemsFromStorage(),
+    completed_collapsed: localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1",
+  };
+}
+
+function _markChecklistSupabaseUnsynced(unsynced) {
+  try {
+    if (unsynced) localStorage.setItem(WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY, "1");
+    else localStorage.removeItem(WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY);
+  } catch (_) {}
+}
+
+function isWorkChecklistSupabaseUnsynced() {
+  try {
+    return localStorage.getItem(WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function _applyChecklistBundleToLocalForSupabase(items, completed_collapsed) {
+  const rows = Array.isArray(items) ? items : [];
+  console.info("[checklist_apply_local]", { item_count: rows.length });
+  try {
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(rows));
+    if (typeof completed_collapsed === "boolean") {
+      localStorage.setItem(
+        WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
+        completed_collapsed ? "1" : "0"
+      );
+    }
+  } catch (_) {
+    return false;
+  }
+  loadWorkChecklistItems();
+  applyWorkChecklistCompletedCollapseFromStorage();
+  return true;
+}
+
+async function syncWorkChecklistToSupabaseNow() {
+  if (!_checklistSbIsLoggedIn()) return false;
+  if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
+
+  const token = await _checklistSbAwaitAuthToken();
+  if (!token) {
+    console.warn("[VERA][CHECKLIST] supabase PUT skipped — no auth token");
+    _markChecklistSupabaseUnsynced(true);
+    return false;
+  }
+
+  const bundle = _readLocalChecklistBundleForSupabase();
+  const run = async () => {
+    try {
+      const res = await authFetch(authApiUrl("/api/checklist"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(bundle),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.warn("[VERA][CHECKLIST] supabase PUT failed", data);
+        _markChecklistSupabaseUnsynced(true);
+        return false;
+      }
+      console.info("[checklist_put]", {
+        item_count: bundle.items.length,
+        saved_count: data.items_count,
+      });
+      _markChecklistSupabaseUnsynced(false);
+      return true;
+    } catch (err) {
+      console.warn("[VERA][CHECKLIST] supabase PUT error", err);
+      _markChecklistSupabaseUnsynced(true);
+      return false;
+    }
+  };
+
+  if (_checklistSbSaveInFlight) {
+    _checklistSbSaveInFlight = _checklistSbSaveInFlight.then(run, run);
+  } else {
+    _checklistSbSaveInFlight = run();
+  }
+  try {
+    return await _checklistSbSaveInFlight;
+  } finally {
+    _checklistSbSaveInFlight = null;
+  }
+}
+
+async function hydrateChecklistMergeOnLogin() {
+  if (!_checklistSbIsLoggedIn()) return false;
+  if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
+  if (_checklistSbHydratePromise) return _checklistSbHydratePromise;
+
+  _checklistSbHydratePromise = (async () => {
+    try {
+      const token = await _checklistSbAwaitAuthToken();
+      if (!token) {
+        console.warn("[VERA][CHECKLIST] merge hydrate skipped — no auth token");
+        return false;
+      }
+
+      const local = _readLocalChecklistBundleForSupabase();
+      console.info("[checklist_hydrate]", {
+        phase: "request",
+        local_count: local.items.length,
+      });
+
+      const res = await authFetch(authApiUrl("/api/checklist/merge"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(local),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.warn("[VERA][CHECKLIST] merge hydrate failed", data);
+        return false;
+      }
+
+      const appliedCount = Array.isArray(data.items) ? data.items.length : 0;
+      console.info("[checklist_hydrate]", {
+        phase: "response",
+        local_count: local.items.length,
+        remote_count: Number(data.remote_count) || 0,
+        applied_count: appliedCount,
+      });
+
+      if (Array.isArray(data.items)) {
+        _applyChecklistBundleToLocalForSupabase(data.items, data.completed_collapsed);
+      }
+      _markChecklistSupabaseUnsynced(false);
+      queueWorkChecklistSyncToServer();
+      return true;
+    } catch (err) {
+      console.warn("[VERA][CHECKLIST] merge hydrate error", err);
+      return false;
+    } finally {
+      _checklistSbHydratePromise = null;
+    }
+  })();
+
+  return _checklistSbHydratePromise;
+}
+
 try {
   window.getChecklistDebugState = getChecklistDebugState;
+  window.syncWorkChecklistToSupabaseNow = syncWorkChecklistToSupabaseNow;
+  window.hydrateChecklistMergeOnLogin = hydrateChecklistMergeOnLogin;
+  window.isWorkChecklistSupabaseUnsynced = isWorkChecklistSupabaseUnsynced;
+  console.info("[checklist_supabase_sync_ready]", {
+    hydrate: typeof window.hydrateChecklistMergeOnLogin,
+    put: typeof window.syncWorkChecklistToSupabaseNow,
+  });
 } catch (_) {}
