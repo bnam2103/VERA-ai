@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <!-- Optional: override user auth backend (otherwise localhost = same origin; GitHub Pages = Worker below) -->
+  <!-- Optional deploy overrides (set content for GitHub Pages / static hosting): -->
   <meta name="vera-local-backend-origin" content="">
+  <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="styles.css?v=11">
+  <link rel="stylesheet" href="styles.css?v=12">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -935,6 +936,9 @@
     <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
   </div>
   <div class="vera-bottom-left-tools" aria-label="Settings tools">
+    <button type="button" id="vera-account-open" class="vera-account-fab" title="Account — sign in or sign up">
+      Account
+    </button>
     <button type="button" id="vera-settings-open" class="vera-settings-fab" title="Open settings">
       Settings
     </button>
@@ -2378,6 +2382,11 @@ function revealApp() {
     document.body.classList.add("app-open");
     document.body.classList.remove("bmo-open");
     document.body.classList.add("vera-mode");
+    try {
+      if (typeof window.trackUsageSessionStart === "function") {
+        window.trackUsageSessionStart();
+      }
+    } catch (_) {}
 
     requestAnimationFrame(() => {
       veraApp.classList.add("fade-in");
@@ -2794,6 +2803,44 @@ document.addEventListener("click", () => {
       <button type="button" id="vera-settings-close" class="vera-settings-close" aria-label="Close settings">✕</button>
     </div>
 
+    <section id="vera-account-section" class="vera-settings-section">
+      <h3>Account</h3>
+      <p id="vera-account-status" class="vera-settings-hint">Loading account…</p>
+      <p id="vera-account-error" class="vera-account-error" hidden role="alert"></p>
+
+      <div id="vera-account-signed-out">
+        <div class="vera-settings-row">
+          <label for="vera-account-email" class="vera-settings-label">Email</label>
+          <input id="vera-account-email" class="vera-account-input" type="email" autocomplete="email" placeholder="you@example.com" />
+        </div>
+        <div class="vera-settings-row">
+          <label for="vera-account-password" class="vera-settings-label">Password</label>
+          <input id="vera-account-password" class="vera-account-input" type="password" autocomplete="current-password" placeholder="Password" />
+        </div>
+        <div class="vera-settings-row vera-account-actions">
+          <button type="button" id="vera-account-sign-in" class="vera-settings-save-btn">Log in</button>
+          <button type="button" id="vera-account-sign-up" class="vera-account-secondary-btn">Sign up</button>
+        </div>
+      </div>
+
+      <div id="vera-account-signed-in" hidden>
+        <div class="vera-settings-row">
+          <label for="vera-account-display-name" class="vera-settings-label">Display name</label>
+          <input id="vera-account-display-name" class="vera-account-input" type="text" maxlength="120" placeholder="Your name" />
+        </div>
+        <div class="vera-settings-row vera-account-actions">
+          <button type="button" id="vera-account-save-profile" class="vera-settings-save-btn">Save profile</button>
+          <button type="button" id="vera-account-sign-out" class="vera-account-secondary-btn">Log out</button>
+        </div>
+        <p id="vera-checklist-sync-status" class="vera-settings-hint vera-checklist-sync-status" hidden></p>
+        <div id="vera-account-memories-wrap" class="vera-account-memories-wrap" hidden>
+          <h4 class="vera-account-memories-heading">Saved memories</h4>
+          <p class="vera-settings-hint">Things you've explicitly asked Vera to remember.</p>
+          <ul id="vera-account-memories-list" class="vera-account-memories-list" aria-live="polite"></ul>
+        </div>
+      </div>
+    </section>
+
     <section class="vera-settings-section">
       <h3>Universal</h3>
 
@@ -2906,21 +2953,8 @@ document.addEventListener("click", () => {
 </div>
 
 <script>
-(function () {
-  if (typeof window === "undefined") return;
-  try {
-    if (window.VERA_LOCAL_BACKEND_ORIGIN) return;
-    var m = document.querySelector('meta[name="vera-local-backend-origin"]');
-    if (m && String(m.content || "").trim()) return;
-    var o = location.origin;
-    var local =
-      /^(https?:\/\/)(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(o);
-    if (local || o === "null" || (o && o.startsWith("file:"))) return;
-    if (o && !o.startsWith("file:")) {
-      window.VERA_LOCAL_BACKEND_ORIGIN = "https://vera-api.vera-api-ned.workers.dev";
-    }
-  } catch (e) {}
-})();
+/* Deploy: set meta vera-api-base-url or vera-local-backend-origin to your public API URL.
+   Local dev uses same-origin localhost automatically via users/signinUi.js. */
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
@@ -2938,6 +2972,33 @@ document.addEventListener("click", () => {
      logVoicePipe, logVoiceTranscript, logFinalTranscriptSentToLlm,
      logTurnTextIntegrity + helpers). Extracted 2026-05-27, Stage 3. -->
 <script src="utils/logging.js?v=1"></script>
+<!-- users/signinUi.js must load AFTER utils/logging.js (its bodies
+     do not depend on logging primitives at parse time, but it sits
+     in the utils tier conceptually) and BEFORE voice/asr.js,
+     workmode/panels.js, workmode/checklist.js, news/*, and app.js,
+     because:
+       - workmode/checklist.js calls authApiUrl(...) as a bare
+         identifier (work-mode checklist sync endpoints);
+       - workmode/panels.js calls localBackendBase() in the multi-
+         tier base-URL fallback;
+       - app.js + Spotify code call localBackendBase + authApiUrl
+         in many places.
+     Extracted 2026-06-01, Patch B-4. -->
+<script src="users/signinUi.js?v=2"></script>
+<!-- users/supabaseAuth.js — Supabase Auth UI + JWT on backend calls (Phase 2).
+     Must load AFTER signinUi.js (authApiUrl, authFetch stub) and BEFORE
+     workmode/checklist.js + app.js. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="users/supabaseAuth.js?v=7"></script>
+<!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
+     Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
+<script src="users/accountSettingsSync.js?v=1"></script>
+<!-- users/feedback.js — thumbs up/down on main chat Vera replies (Feedback MVP).
+     Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
+<script src="users/feedback.js?v=4"></script>
+<!-- users/usageEvents.js — lightweight behavioral analytics (MVP).
+     Must load AFTER utils/ids.js + supabaseAuth.js, BEFORE app.js. -->
+<script src="users/usageEvents.js?v=1"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies
@@ -2984,7 +3045,7 @@ document.addEventListener("click", () => {
      New accessor getReasoningPanelDebugState() mirrors getTtsDebugState /
      getInterruptionDebugState / getAsrDebugState. Extracted 2026-05-27,
      Stage 8. -->
-<script src="workmode/panels.js?v=4"></script>
+<script src="workmode/panels.js?v=7"></script>
 <!-- workmode/checklist.js must load AFTER workmode/panels.js (its
      plan-sync helpers reach reasoning-panel helpers like
      getReasoningTabTopicLabel and getWorkModeReasoningLaneId through
@@ -3002,6 +3063,7 @@ document.addEventListener("click", () => {
      readChecklistItemsFromStorageSafe, writeChecklistItemsToStorageSafe,
      ensureWorkChecklistListDnD, wireWorkChecklistCompletedCollapse,
      loadWorkChecklistItems, persistWorkChecklistToggle,
+     persistWorkChecklistToggleWithSubtree,
      persistWorkChecklistUpdateText, persistWorkChecklistRemove,
      ensureWorkChecklistTrailingEmptyOngoing,
      insertWorkChecklistEmptyOngoingAfter,
@@ -3023,7 +3085,19 @@ document.addEventListener("click", () => {
      getChecklistDebugState() mirrors getReasoningPanelDebugState /
      getTtsDebugState / getInterruptionDebugState / getAsrDebugState.
      Extracted 2026-05-27, Stage 9. -->
-<script src="workmode/checklist.js?v=1"></script>
+<script src="workmode/checklist.js?v=6"></script>
+<!-- Account checklist Supabase sync is bundled in workmode/checklist.js (Phase 4b). -->
+<!-- workmode/multiActionPlanner.js must load AFTER workmode/panels.js +
+     workmode/checklist.js (the executor calls activateReasoningTab /
+     addReasoningTab from panels.js, and the planner segments include
+     checklist verbs that are resolved through the same shared global
+     lex env), and BEFORE news/* + app.js + debug/* (so the inline
+     GATE block inside sendVeraWorkModeTypedInferTurn can resolve
+     shouldUseWorkModeMultiActionPlanner / planWorkModeMultiAction /
+     logWorkModeMultiActionPlannerDecision / executeWorkModeActionPlan
+     at parse time as bare identifiers via the shared global lexical
+     environment). Extracted 2026-06-01, Patch B-5. -->
+<script src="workmode/multiActionPlanner.js?v=1"></script>
 <!-- news/newsRouter.js + news/newsPanel.js must load BEFORE app.js (so the
      moved declarations — NEWS_EVENT_CLUE_RE, NEWS_NAMED_ENTITY_RE,
      PENDING_NEWS_STATUS_TIMEOUT_MS, PENDING_NEWS_STATUS_TEXT,
@@ -3045,9 +3119,9 @@ document.addEventListener("click", () => {
      time. New accessors `getNewsRouterDebugState()` /
      `getNewsPanelDebugState()` mirror the other stage debug accessors.
      Extracted 2026-05-27, Stage 10. -->
-<script src="news/newsRouter.js?v=2"></script>
-<script src="news/newsPanel.js?v=1"></script>
-<script src="app.js?v=88"></script>
+<script src="news/newsRouter.js?v=3"></script>
+<script src="news/newsPanel.js?v=4"></script>
+<script src="app.js?v=108"></script>
 <!-- debug/voiceDebug.js loads AFTER app.js — only attaches the manual
      DevTools helpers window.veraConcurrencyDebug, window.dumpVeraVoiceState,
      window.resetVeraVoiceRuntimeState; their function bodies reach the
@@ -3055,7 +3129,17 @@ document.addEventListener("click", () => {
      mainTtsPlaybackActive, interruptBargeInLatched, …) through the shared
      classic-script global lexical environment at CALL time. Extracted
      2026-05-27, Stage 4. -->
-<script src="debug/voiceDebug.js?v=1"></script>
+<script src="debug/voiceDebug.js?v=3"></script>
+<!-- debug/reasoningGate.js loads AFTER app.js — only attaches the manual
+     DevTools helper window.debugReasoningGate(text, opts). The function
+     body reaches the live-routing helpers that remain in app.js
+     (isExplicitReasoningPanelReference, isBriefExplanationModifier,
+     isSimpleDefinitionQuestion, detectBroadComplexTopicFrontend,
+     detectCompoundActionFamilies) plus globals (API_URL,
+     workModeLastSubstantiveUserText) through the shared classic-script
+     global lexical environment at CALL time. Extracted 2026-06-01,
+     Patch B-2 option b. -->
+<script src="debug/reasoningGate.js?v=1"></script>
 </body>
 </html>
 

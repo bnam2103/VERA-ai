@@ -1,0 +1,22 @@
+{"id": "voice_001", "text": "what is tennis?", "expected_route": "voice_ui", "expected_reason": "simple_definition"}
+{"id": "voice_002", "text": "can you tell me what tennis is?", "expected_route": "voice_ui", "expected_reason": "simple_definition"}
+{"id": "voice_003", "text": "explain tennis", "expected_route": "voice_ui"}
+{"id": "voice_004", "text": "briefly explain the Vietnam War", "expected_route": "voice_ui", "expected_reason": "brief_explanation"}
+{"id": "voice_005", "text": "what was the Vietnam War?", "expected_route": "voice_ui", "expected_reason": "simple_definition"}
+{"id": "voice_006", "text": "can you briefly explain inflation?", "expected_route": "voice_ui", "expected_reason": "brief_explanation"}
+{"id": "voice_007", "text": "who is Serena Williams?", "expected_route": "voice_ui", "expected_reason": "simple_definition"}
+{"id": "voice_008", "text": "what does Black-Scholes mean?", "expected_route": "voice_ui", "expected_reason": "simple_definition"}
+{"id": "reason_001", "text": "explain the Vietnam War", "expected_route": "reasoning_panel", "expected_reason": "broad_complex_topic"}
+{"id": "reason_002", "text": "give me a detailed explanation of the Vietnam War", "expected_route": "reasoning_panel"}
+{"id": "reason_003", "text": "explain this step by step", "expected_route": "reasoning_panel"}
+{"id": "reason_004", "text": "solve this probability problem", "expected_route": "reasoning_panel", "expected_reason": "complex_task"}
+{"id": "reason_005", "text": "write an essay about the Vietnam War", "expected_route": "reasoning_panel"}
+{"id": "reason_006", "text": "compare the causes and effects of the Vietnam War", "expected_route": "reasoning_panel"}
+{"id": "reason_007", "text": "explain Black-Scholes delta in detail", "expected_route": "reasoning_panel"}
+{"id": "panel_001", "text": "can you explain tennis in the reasoning panel?", "expected_route": "reasoning_panel", "expected_reason": "explicit_panel_reference"}
+{"id": "panel_002", "text": "put an explanation of tennis in panel 2", "expected_route": "reasoning_panel", "expected_reason": "explicit_panel_reference", "expected_target_panel": 2}
+{"id": "panel_003", "text": "use the reasoning space to explain tennis", "expected_route": "reasoning_panel", "expected_reason": "explicit_panel_reference"}
+{"id": "panel_004", "text": "open a new panel and explain tennis", "expected_route": "reasoning_panel", "expected_reason": "explicit_panel_reference"}
+{"id": "panel_005", "text": "answer this in the panel", "expected_route": "reasoning_panel", "expected_reason": "explicit_panel_pronoun_resolved_from_prior", "previous_user_text": "what is tennis?", "expected_resolved_topic": "tennis"}
+{"id": "clar_001", "text": "explain that in the panel", "expected_route": "clarification", "expected_reason": "explicit_panel_pronoun_without_prior_topic"}
+{"id": "clar_002", "text": "answer this in the reasoning panel", "expected_route": "clarification", "expected_reason": "explicit_panel_pronoun_without_prior_topic"}

@@ -1,0 +1,40 @@
+{"id": "E001", "category": "panel_music_variant", "text": "go to panel 2 and play lo-fi", "expected_actions": ["panel.navigate", "music.play"]}
+{"id": "E002", "category": "panel_music_variant", "text": "switch to the second panel and start lo-fi", "expected_actions": ["panel.navigate", "music.play"]}
+{"id": "E003", "category": "panel_music_variant", "text": "open a new panel and play my Peak playlist", "expected_actions": ["panel.open", "music.play"]}
+{"id": "E004", "category": "panel_music_variant", "text": "close panel 1 and pause the music", "expected_actions": ["panel.close", "music.pause"]}
+{"id": "M001", "category": "music_volume_variant", "text": "crank up the music and then play Feather by Sabrina", "expected_actions": ["music.volume", "music.play"]}
+{"id": "M002", "category": "music_volume_variant", "text": "raise the music and play Fragile by Laufey", "expected_actions": ["music.volume", "music.play"]}
+{"id": "M003", "category": "music_volume_variant", "text": "make the music quieter and play Peak in my playlist", "expected_actions": ["music.volume", "music.play"]}
+{"id": "M004", "category": "music_volume_variant", "text": "increase the volume and then decrease the volume", "expected_actions": ["music.volume", "music.volume"]}
+{"id": "M005", "category": "music_volume_variant", "text": "turn it down and play the lo-fi mix", "expected_actions": ["music.volume", "music.play"]}
+{"id": "M006", "category": "music_control_variant", "text": "stop the music and play Feather by Sabrina Carpenter", "expected_actions": ["music.pause", "music.play"]}
+{"id": "M007", "category": "music_control_variant", "text": "resume the music and skip to the next song", "expected_actions": ["music.resume", "music.next"]}
+{"id": "M008", "category": "music_control_variant", "text": "continue playback and go back a song", "expected_actions": ["music.resume", "music.previous"]}
+{"id": "M009", "category": "music_playlist_variant", "text": "play playlist Peak and turn down the music", "expected_actions": ["music.play", "music.volume"]}
+{"id": "M010", "category": "music_playlist_variant", "text": "play my Peak playlist and set a timer for twenty seconds", "expected_actions": ["music.play", "timer.set"]}
+{"id": "T001", "category": "timer_word_variant", "text": "start a timer for one hour and switch to the second panel", "expected_actions": ["timer.set", "panel.navigate"]}
+{"id": "T002", "category": "timer_word_variant", "text": "remind me in ten minutes and play lo-fi", "expected_actions": ["timer.set", "music.play"]}
+{"id": "T003", "category": "timer_cancel_variant", "text": "cancel the timer and unpause the music", "expected_actions": ["timer.cancel", "music.resume"]}
+{"id": "T004", "category": "timer_cancel_variant", "text": "close the timer and pause the music", "expected_actions": ["timer.cancel", "music.pause"]}
+{"id": "T005", "category": "timer_cancel_variant", "text": "stop the timer and go to panel 2", "expected_actions": ["timer.cancel", "panel.navigate"]}
+{"id": "C001", "category": "checklist_variant", "text": "put milk on the checklist and start lo-fi", "expected_actions": ["checklist.add", "music.play"]}
+{"id": "C002", "category": "checklist_variant", "text": "add milk and eggs to the checklist and crank up the music", "expected_actions": ["checklist.add", "music.volume"]}
+{"id": "C003", "category": "checklist_variant", "text": "delete the first item from the checklist and play Peak in my playlist", "expected_actions": ["checklist.remove", "music.play"]}
+{"id": "C004", "category": "checklist_variant", "text": "check off the first item and pause the music", "expected_actions": ["checklist.complete", "music.pause"]}
+{"id": "C005", "category": "checklist_variant", "text": "mark the first item complete and continue playback", "expected_actions": ["checklist.complete", "music.resume"]}
+{"id": "R001", "category": "reasoning_mixed_variant", "text": "go to panel 2, explain the Vietnam War, and play the lo-fi mix", "expected_actions": ["panel.navigate", "reasoning.request", "music.play"], "expected_clean_reasoning_prompt": "explain the Vietnam War"}
+{"id": "R002", "category": "reasoning_mixed_variant", "text": "use the reasoning space to explain the Vietnam War and play lo-fi", "expected_actions": ["reasoning.request", "music.play"], "expected_clean_reasoning_prompt": "explain the Vietnam War"}
+{"id": "R003", "category": "reasoning_mixed_variant", "text": "put an explanation of the squeeze theorem in panel 3 and play lo-fi", "expected_actions": ["panel.navigate", "reasoning.request", "music.play"], "expected_clean_reasoning_prompt": "explanation of the squeeze theorem"}
+{"id": "R004", "category": "reasoning_mixed_variant", "text": "play lo-fi and explain the Vietnam War in panel 2", "expected_actions": ["music.play", "panel.navigate", "reasoning.request"], "expected_clean_reasoning_prompt": "explain the Vietnam War"}
+{"id": "R005", "category": "reasoning_mixed_variant", "text": "set a timer for one hour and explain the Vietnam War in panel 2", "expected_actions": ["timer.set", "panel.navigate", "reasoning.request"], "expected_clean_reasoning_prompt": "explain the Vietnam War"}
+{"id": "I001", "category": "info_time_action", "text": "what time is it in Tokyo and pause the music", "expected_actions": ["info.time", "music.pause"], "known_gap": "info/tool actions may not yet be first-class planner families"}
+{"id": "I002", "category": "info_weather_action", "text": "tell me the weather in Irvine and play lo-fi", "expected_actions": ["info.weather", "music.play"], "known_gap": "info/tool actions may not yet be first-class planner families"}
+{"id": "I003", "category": "info_time_action", "text": "what time is it in Tokyo, play lo-fi, and go to panel 2", "expected_actions": ["info.time", "music.play", "panel.navigate"], "known_gap": "info/tool actions may not yet be first-class planner families"}
+{"id": "I004", "category": "info_finance_action", "text": "what’s VGT trading at and open a new panel", "expected_actions": ["info.finance", "panel.open"], "known_gap": "info/tool actions may not yet be first-class planner families"}
+{"id": "I005", "category": "info_sports_action", "text": "did the Lakers win and play lo-fi", "expected_actions": ["info.sports", "music.play"], "known_gap": "info/tool actions may not yet be first-class planner families"}
+{"id": "I006", "category": "info_product_action", "text": "best mic under one hundred dollars and turn down the music", "expected_actions": ["info.product", "music.volume"], "known_gap": "info/tool actions may not yet be first-class planner families"}
+{"id": "I007", "category": "info_location_action", "text": "coffee shops in Irvine and open the map panel", "expected_actions": ["info.location", "panel.open"], "known_gap": "info/tool actions may not yet be first-class planner families"}
+{"id": "S001", "category": "stress_4_action", "text": "switch to the second panel, explain the Vietnam War, crank up the music, and play lo-fi", "expected_actions": ["panel.navigate", "reasoning.request", "music.volume", "music.play"]}
+{"id": "S002", "category": "stress_4_action", "text": "put milk on the checklist, start a timer for twenty seconds, play Peak in my playlist, and open a new panel", "expected_actions": ["checklist.add", "timer.set", "music.play", "panel.open"]}
+{"id": "S003", "category": "stress_4_action", "text": "pause the music, close the timer, delete the first checklist item, and go to panel 3", "expected_actions": ["music.pause", "timer.cancel", "checklist.remove", "panel.navigate"]}
+{"id": "S004", "category": "stress_4_action", "text": "what time is it in Tokyo, start a timer for twenty seconds, play lo-fi, and switch to panel 2", "expected_actions": ["info.time", "timer.set", "music.play", "panel.navigate"], "known_gap": "info/tool actions may not yet be first-class planner families"}

@@ -44,39 +44,14 @@ try {
    `mainTtsPlaybackActive`, etc. through the shared classic-script global
    lexical environment at CALL time. */
 
-/* =========================
-   UNIFIED DEV-MODE FLAG  (added during cleanup pass, 2026-05-27)
-
-   `isVeraDevMode()` is the single switch that gates ALL future
-   dev-only overlays, console timelines, dump commands and smoke
-   runners. Today it is purely additive — existing per-feature flags
-   like `VERA_DEBUG_INTERRUPT` and `VERA_DEBUG_BARGE_IN_UI` continue
-   to work unchanged. New diagnostics added after this date should
-   key off `isVeraDevMode()` instead of inventing a new per-feature
-   flag.
-
-   Enable for the session:
-     window.VERA_DEV_MODE = true
-   Persist across reloads:
-     localStorage.setItem("vera_dev_mode", "1")
-
-   The matching backend env var is VERA_DEV_MODE=1 — checked in
-   `app.py` if/when we move smoke runners or dev endpoints under it.
-========================= */
-function isVeraDevMode() {
-  try {
-    if (typeof window !== "undefined" && window.VERA_DEV_MODE === true) return true;
-  } catch (_) {}
-  try {
-    if (typeof localStorage !== "undefined" && localStorage.getItem("vera_dev_mode") === "1") return true;
-  } catch (_) {}
-  return false;
-}
-try {
-  if (typeof window !== "undefined") {
-    window.isVeraDevMode = isVeraDevMode;
-  }
-} catch (_) {}
+/* UNIFIED DEV-MODE FLAG (function isVeraDevMode + window.isVeraDevMode
+ * attachment + its localStorage "vera_dev_mode" + window.VERA_DEV_MODE
+ * sources) -> moved to debug/voiceDebug.js (Stage 19 / Patch A-13,
+ * 2026-05-31). The only caller in this codebase is _bargeInDebugUiEnabled
+ * (also in debug/voiceDebug.js), so the move turns that cross-file
+ * `typeof isVeraDevMode === "function" && isVeraDevMode()` lookup into a
+ * same-file lexical-scope lookup. The defensive typeof guard is kept for
+ * load-order resilience. */
 
 /**
  * Call when opening BMO: new backend session, empty log, voice input default, clear side panel.
@@ -208,6 +183,10 @@ function resetVeraSessionAndUi() {
   window.__veraLastInferLaneDebug = null;
 
   hideSidePanel();
+
+  try {
+    window.trackUsageSessionStart?.();
+  } catch (_) {}
 }
 
 window.resetBmoSessionAndUi = resetBmoSessionAndUi;
@@ -237,12 +216,12 @@ let interruptPrearmSuccess = false;
 let audioChunks = [];
 let hasSpoken = false;
 let lastVoiceTime = 0;
-/* Speech-start guarded voice-duration cap. Pre-speech silence is governed
-   by the existing no-speech / idle timeouts; this fires only AFTER the user
-   actually starts speaking. See `armVoiceMaxDurationTimer`. */
-let voiceSpeechStartedAt = 0;
-let voiceMaxDurationTimerId = null;
-let voiceMaxDurationLastFiredAt = 0;
+/* voiceSpeechStartedAt, voiceMaxDurationTimerId, voiceMaxDurationLastFiredAt
+ * (+ their "Speech-start guarded voice-duration cap" doc comment)
+ * -> moved to voice/asr.js (Stage 15, 2026-05-31) together with the
+ * VOICE DURATION CAP function block. They are cap-internal state and are
+ * only read/written by clearVoiceMaxDurationTimer / armVoiceMaxDurationTimer /
+ * handleVoiceMaxDurationLimit, all of which now also live in voice/asr.js. */
 
 /* =========================
    SAFETY LIMITS (frontend)
@@ -373,6 +352,27 @@ async function veraSurfaceLlmFetchFailure({
 } = {}) {
   if (error && error.name === "AbortError") return null;
   const status = response?.status ?? 0;
+  try {
+    const usageSource =
+      feature === "text_endpoint"
+        ? "text"
+        : feature === "infer_main" || feature === "infer_interrupt"
+          ? "voice"
+          : String(feature || "unknown").slice(0, 32);
+    window.veraUsageOnAssistantReplyFailed?.({
+      source: usageSource,
+      errorCode:
+        status === 413
+          ? "input_too_long"
+          : status >= 500
+            ? "server_error"
+            : status >= 400
+              ? "api_error"
+              : "llm_fetch_failed",
+      httpStatus: status || undefined,
+      requestId: extra?.request_id || extra?.client_request_id || null,
+    });
+  } catch (_) {}
   const turnId = extra?.turn_id || extra?.user_message_id || null;
   if (status === 413) {
     let serverMsg = "";
@@ -512,118 +512,21 @@ function veraShowCapabilityFailureBubble(feature, message, opts = {}) {
  * cancelPendingNewsStatusBubble, failPendingNewsStatusBubble
  * moved to news/newsRouter.js (Stage 10, 2026-05-27). */
 
-/* =========================
-   VOICE DURATION CAP (60s after speech-start)
-========================= */
-
-/**
- * Clear any pending voice-duration timer. Always safe to call; no-op if
- * the timer was never armed.
- */
-function clearVoiceMaxDurationTimer() {
-  if (voiceMaxDurationTimerId != null) {
-    try { clearTimeout(voiceMaxDurationTimerId); } catch (_) {}
-    voiceMaxDurationTimerId = null;
-  }
-  voiceSpeechStartedAt = 0;
-}
-
-/**
- * Arm the 60s post-speech-start cap exactly once per utterance. Safe to
- * call from every spot where `hasSpoken` flips to true (browser ASR
- * partial / MediaRecorder VAD speech-frame); subsequent calls during the
- * same utterance are no-ops.
- *
- * When the timer fires it gracefully stops whichever recorder is alive:
- *   - For browser SpeechRecognition continuous: lets the current partial
- *     turn finalize via the normal end-of-utterance scheduling so a
- *     substantive transcript is not lost. If there is no transcript yet,
- *     just stops the recognizer and shows the duration bubble.
- *   - For MediaRecorder: calls `.stop()` which routes through the normal
- *     `handleUtterance` upload path, then shows the bubble.
- *
- * The fallback bubble appears at most once per ~5s to avoid duplicates
- * when both paths happen to be alive.
- */
-function armVoiceMaxDurationTimer(reason) {
-  if (voiceMaxDurationTimerId != null) return; // already armed
-  voiceSpeechStartedAt = Date.now();
-  const ms = Math.max(
-    5000,
-    Number(VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec) * 1000
-  );
-  try {
-    console.info("[voice_speech_started]", {
-      reason: String(reason || "first_partial"),
-      max_duration_sec: VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec
-    });
-  } catch (_) {}
-  voiceMaxDurationTimerId = setTimeout(() => {
-    voiceMaxDurationTimerId = null;
-    handleVoiceMaxDurationLimit();
-  }, ms);
-}
-
-function handleVoiceMaxDurationLimit() {
-  const now = Date.now();
-  // Burst guard — only one fallback per 5s even if both pipes trip.
-  if (now - voiceMaxDurationLastFiredAt < 5000) return;
-  voiceMaxDurationLastFiredAt = now;
-  try {
-    console.warn("[voice_duration_limit]", {
-      reason: "voice_duration_limit",
-      mode: isVeraWorkModeOn?.() ? "work_mode" : "non_work",
-      feature: "voice",
-      max_duration_sec: VERA_SAFETY_LIMITS.voiceMaxDurationAfterSpeechSec
-    });
-  } catch (_) {}
-
-  // 1) Try to stop the Web Speech recognizer cleanly, preserving any
-  //    accumulated transcript so the normal /infer flow can still run.
-  let webStopped = false;
-  try {
-    if (typeof mainBrowserRecognition !== "undefined" && mainBrowserRecognition) {
-      try { mainBrowserRecognition.stop(); } catch (_) {
-        try { mainBrowserRecognition.abort(); } catch (_) {}
-      }
-      webStopped = true;
-    }
-  } catch (_) {}
-
-  // 2) Stop active MediaRecorder so its `onstop` fires `handleUtterance`.
-  let mediaStopped = false;
-  try {
-    if (typeof mediaRecorder !== "undefined" && mediaRecorder &&
-        mediaRecorder.state === "recording") {
-      try { mediaRecorder.stop(); } catch (_) {}
-      mediaStopped = true;
-    }
-  } catch (_) {}
-
-  // 3) Reset wave / listening UI so the strip cannot appear stuck.
-  try {
-    listening = false;
-    processing = false;
-    waveState = "idle";
-    if (typeof updateMuteInputButton === "function") updateMuteInputButton();
-    setStatus("Ready", "idle");
-  } catch (_) {}
-
-  /* 4) Bubble — keep wording exactly to spec; voice + work-mode both show
-        this in the conversation strip (not inside the reasoning panel).
-        Skip if no recorder was actually stopped: the recording session
-        must have ended cleanly while the timer was still scheduled (e.g.
-        normal silence-stop landed milliseconds before the cap fired). */
-  if (webStopped || mediaStopped) {
-    veraShowCapabilityFailureBubble(
-      "voice_duration_limit",
-      VERA_SAFETY_LIMITS.messages.voiceDurationLimit,
-      { minIntervalMs: 5000 }
-    );
-  }
-  clearVoiceMaxDurationTimer();
-}
-
+/* clearVoiceMaxDurationTimer, armVoiceMaxDurationTimer, handleVoiceMaxDurationLimit
+ * -> moved to voice/asr.js (Stage 15, 2026-05-31). The "VOICE DURATION CAP
+ * (60s after speech-start)" block now lives there together with its
+ * cap-internal state (voiceSpeechStartedAt, voiceMaxDurationTimerId,
+ * voiceMaxDurationLastFiredAt). External call sites in this file (the
+ * 7 clearVoiceMaxDurationTimer() invocations and the 4 armVoiceMaxDurationTimer
+ * call sites in startListening, the VAD speech-frame path, and the browser-
+ * ASR first-partial paths) continue to resolve those names as bare
+ * identifiers through the shared classic-script global lexical environment
+ * at call time. The moved handle function still calls back into app.js for
+ * VERA_SAFETY_LIMITS, isVeraWorkModeOn, mainBrowserRecognition, mediaRecorder,
+ * listening / processing / waveState, updateMuteInputButton, setStatus, and
+ * veraShowCapabilityFailureBubble, all resolved via the same shared global
+ * lexical environment at call time. Max-duration value, user-facing safety
+ * message, and recording-stop behavior are byte-identical to pre-move. */
 let listening = false;
 let processing = false;
 let rafId = null;
@@ -742,566 +645,28 @@ let _veraCurrentTtsDebugContext = null;
 /* dumpVeraVoiceState + resetVeraVoiceRuntimeState IIFE body → moved to
  * debug/voiceDebug.js (Stage 4, 2026-05-27). */
 
-/* =========================================================================
- *  BARGE-IN DEBUG OVERLAY (dev-only diagnostic UI)
+/* BARGE-IN DEBUG OVERLAY (the entire `_veraBargeInDebug` state object,
+ * _bargeInDebugUiEnabled, _bargeInDebugCaptureEvent, _bargeInDebugBuildState,
+ * _bargeInDebugPositionOverlay, _bargeInDebugMount, _bargeInDebugUnmount,
+ * _bargeInDebugRender, _bargeInDebugBuildSnapshot, the window.toggleBargeInDebugUi
+ * + window.copyBargeInDebugSnapshot + window.VERA_DEBUG_BARGE_IN_UI exports, the
+ * 1 Hz polling tick that watches localStorage / DevTools toggles, and the
+ * setTimeout(0) auto-mount handler) -> moved to debug/voiceDebug.js
+ * (Stage 18, 2026-05-31).
  *
- *  Goal: make voice-interruption gating visible in real time so we can see
- *  whether the bug is "VAD didn't fire", "barge-in gate blocked", "TTS
- *  cancel never fired", or "cancel fired but queued audio kept playing".
+ * Hot-path callers in this codebase that read _veraBargeInDebug?.enabled and
+ * call _bargeInDebugCaptureEvent (utils/logging.js logVeraInterruptDebug +
+ * logInterruptTranscriptDebug; voice/interruption.js logVeraInterruptDebug)
+ * continue to resolve those names as bare identifiers through the shared
+ * classic-script global lexical environment at call time, even though
+ * debug/voiceDebug.js loads AFTER app.js per index.html. Each call site is
+ * wrapped in try/catch with a `typeof` guard so that an in-flight ASR / TTS
+ * event arriving before voiceDebug.js has executed cannot throw a ReferenceError.
  *
- *  Enable:
- *    window.VERA_DEBUG_BARGE_IN_UI = true        // session-only
- *    localStorage.setItem("vera_debug_barge_in_ui", "1")  // persisted
- *    window.toggleBargeInDebugUi(true|false)     // imperative
- *
- *  Snapshot:
- *    window.copyBargeInDebugSnapshot()           // copies JSON to clipboard
- *
- *  The overlay is hidden when both the window flag and the localStorage flag
- *  are off, so normal users never see it. It piggybacks on existing
- *  logVeraInterruptDebug + logInterruptTranscriptDebug calls — no extra
- *  instrumentation is added to barge-in hot paths.
- * ========================================================================= */
-const _veraBargeInDebug = {
-  /* Cached enabled flag — flipped by the polling tick / toggle so hot-path
-   * event capture is a single boolean check. */
-  enabled: false,
-
-  /* Ring buffer of the last few interruption-related events. */
-  events: [],
-  maxEvents: 14,
-
-  /* Latched timestamps for the cancel-delay summary line. */
-  ttsStartedAt: 0,
-  lastSpeechDetectedAt: 0,
-  lastTtsCancelCalledAt: 0,
-  lastInterruptEntryAt: 0,
-  lastEarlyReturnReason: null,
-  lastCancelSource: null,
-
-  /* Last render-blocking timings (filled when news_panel_render_end /
-   * interrupt_raf_gap fire). */
-  lastNewsRenderDurationMs: 0,
-  lastRafGapMs: 0,
-
-  /* DOM + render loop. */
-  containerEl: null,
-  bodyEl: null,
-  renderIntervalId: null,
-  pollIntervalId: null,
-};
-
-function _bargeInDebugUiEnabled() {
-  try {
-    if (typeof window !== "undefined" && window.VERA_DEBUG_BARGE_IN_UI === true) return true;
-  } catch (_) {}
-  try {
-    if (typeof localStorage !== "undefined" && localStorage.getItem("vera_debug_barge_in_ui") === "1") return true;
-  } catch (_) {}
-  /* Cleanup-pass additive gate: anyone in unified dev mode also sees the
-   * overlay. Pre-existing per-feature flags above keep working unchanged. */
-  try {
-    if (typeof isVeraDevMode === "function" && isVeraDevMode()) return true;
-  } catch (_) {}
-  return false;
-}
-
-/** Hot-path event capture. Called from logVeraInterruptDebug and
- *  logInterruptTranscriptDebug *before* any gating, so timeline events are
- *  recorded whenever the debug overlay is on (independent of
- *  VERA_DEBUG_INTERRUPT). */
-function _bargeInDebugCaptureEvent(eventName, payload) {
-  if (!_veraBargeInDebug.enabled) return;
-  try {
-    const nowMs = performance.now();
-    const name = String(eventName || "event");
-    const p = payload && typeof payload === "object" ? payload : { value: payload };
-
-    if (name === "tts_start") _veraBargeInDebug.ttsStartedAt = nowMs;
-    if (name === "speech_detected") _veraBargeInDebug.lastSpeechDetectedAt = nowMs;
-    if (name === "tts_cancel_called") {
-      _veraBargeInDebug.lastTtsCancelCalledAt = nowMs;
-      if (p?.source) _veraBargeInDebug.lastCancelSource = p.source;
-    }
-    if (name === "interrupt_speech_entry") {
-      if (p?.outcome === "early_return") {
-        _veraBargeInDebug.lastEarlyReturnReason = p?.reasonIfReturn || "early_return";
-      } else if (p?.outcome === "proceed_cancel_tts") {
-        _veraBargeInDebug.lastInterruptEntryAt = nowMs;
-        _veraBargeInDebug.lastEarlyReturnReason = null;
-      }
-    }
-    if (name === "news_panel_render_end" && Number.isFinite(p?.durationMs)) {
-      _veraBargeInDebug.lastNewsRenderDurationMs = Number(p.durationMs);
-    }
-    if (name === "interrupt_raf_gap" && Number.isFinite(p?.gapMs)) {
-      _veraBargeInDebug.lastRafGapMs = Number(p.gapMs);
-    }
-
-    const sinceTtsStartMs =
-      _veraBargeInDebug.ttsStartedAt > 0
-        ? Number((nowMs - _veraBargeInDebug.ttsStartedAt).toFixed(1))
-        : null;
-
-    _veraBargeInDebug.events.push({
-      event: name,
-      perfNow: Number(nowMs.toFixed(1)),
-      sinceTtsStartMs,
-      payload: p,
-    });
-    if (_veraBargeInDebug.events.length > _veraBargeInDebug.maxEvents) {
-      _veraBargeInDebug.events.shift();
-    }
-  } catch (_) {}
-}
-
-function _bargeInDebugBuildState() {
-  const base =
-    typeof window !== "undefined" && typeof window.dumpVeraVoiceState === "function"
-      ? window.dumpVeraVoiceState({ silent: true })
-      : {};
-  const extras = base?.extras || {};
-
-  const ttsPlaying = Boolean(
-    base.mainTtsPlaybackActive ||
-      (base.activeMainTtsBufferSourcesCount || 0) > 0 ||
-      (typeof isAssistantTtsPlaying === "function" && isAssistantTtsPlaying())
-  );
-  const useBrowserAsr = base.browserAsrPreferred === true;
-  const recorderReady =
-    Boolean(base.interruptRecording) ||
-    extras.interruptDetectRecognitionPresent === true;
-  const continuous = base.continuousListeningEnabled === true;
-  const micActive = extras.micStreamActive === true;
-  const vadArmed = base.vadFastStopArmed === true;
-  const latched = extras.interruptBargeInLatched === true;
-  const audioCtxState = extras.audioCtxState || null;
-
-  /* Reflect the *actual* gate logic. Order matters — first failing gate wins
-   * so the displayed reason matches what the runtime would reject on. */
-  let allowed = true;
-  let reason = "allowed";
-  if (!continuous) {
-    allowed = false;
-    reason = "not_continuous";
-  } else if (!ttsPlaying) {
-    allowed = false;
-    reason = "no_tts_playing";
-  } else if (extras.appHidden === true) {
-    allowed = false;
-    reason = "app_hidden_or_throttled";
-  } else if (!micActive) {
-    allowed = false;
-    reason = "mic_stream_inactive";
-  } else if (audioCtxState && audioCtxState !== "running") {
-    allowed = false;
-    reason = `audio_ctx_${audioCtxState}`;
-  } else if (latched) {
-    allowed = false;
-    reason = "already_latched";
-  } else if (!vadArmed) {
-    allowed = false;
-    reason = "vad_not_armed";
-  } else if (!useBrowserAsr && !recorderReady) {
-    /* The suspected single-ASR bug gate — gets surfaced verbatim. */
-    allowed = false;
-    reason = "interrupt_recording_false_single_asr";
-  } else if (useBrowserAsr && extras.interruptDetectRecognitionPresent !== true) {
-    allowed = false;
-    reason = "interrupt_detect_recognition_missing";
-  }
-
-  const speechAt = _veraBargeInDebug.lastSpeechDetectedAt;
-  const cancelAt = _veraBargeInDebug.lastTtsCancelCalledAt;
-  const cancelDelayMs =
-    speechAt > 0 && cancelAt >= speechAt
-      ? Number((cancelAt - speechAt).toFixed(1))
-      : null;
-
-  return {
-    timestamp: new Date().toISOString(),
-    bargeIn: {
-      allowed,
-      reason,
-      vadArmed,
-      latched,
-      useBrowserAsr,
-      continuous,
-      micActive,
-      ttsPlaying,
-      recorderReady,
-    },
-    voice: {
-      asrMode: base.asrMode,
-      listeningMode: base.listeningMode,
-      micState: base.micState,
-      inputMuted: base.inputMuted,
-      workModeOn: base.workModeOn,
-      workModeMuteEnabled: base.workModeMuteEnabled,
-    },
-    tts: {
-      playing: ttsPlaying,
-      mainTtsPlaybackActive: base.mainTtsPlaybackActive,
-      bufferSources: base.activeMainTtsBufferSourcesCount,
-      ndjsonReaderPresent: base.activeNdjsonBodyReaderPresent,
-      ttsId: base.currentTtsId,
-      token: base.mainTtsPlaybackToken,
-    },
-    vad: {
-      armed: vadArmed,
-      speechFrames: extras.interruptSpeechFrames,
-      speechAccumMs: extras.interruptSpeechAccumMs,
-      partialAccumMs: extras.interruptPartialAccumMs,
-      partialLastText: extras.interruptPartialLastText,
-      sinceTtsStartMs:
-        _veraBargeInDebug.ttsStartedAt > 0
-          ? Number((performance.now() - _veraBargeInDebug.ttsStartedAt).toFixed(0))
-          : null,
-    },
-    capture: {
-      interruptRecording: base.interruptRecording,
-      prearmRecorderState: base.interruptPrearmRecorderState,
-      detectRecognitionPresent: extras.interruptDetectRecognitionPresent,
-      mainBrowserRecognitionPresent: extras.mainBrowserRecognitionPresent,
-      browserAsrPermanentlyDisabled: extras.browserAsrPermanentlyDisabled,
-    },
-    cancel: {
-      lastSpeechDetectedPerfNow: speechAt > 0 ? Number(speechAt.toFixed(1)) : null,
-      lastTtsCancelCalledPerfNow: cancelAt > 0 ? Number(cancelAt.toFixed(1)) : null,
-      cancelDelayMs,
-      lastInterruptEntryPerfNow:
-        _veraBargeInDebug.lastInterruptEntryAt > 0
-          ? Number(_veraBargeInDebug.lastInterruptEntryAt.toFixed(1))
-          : null,
-      lastEarlyReturnReason: _veraBargeInDebug.lastEarlyReturnReason,
-      lastCancelSource:
-        _veraBargeInDebug.lastCancelSource ||
-        (typeof _veraTtsCancelSource !== "undefined" ? _veraTtsCancelSource : null) ||
-        null,
-    },
-    newsRender: {
-      duringNewsRender: extras.duringNewsRender,
-      lastNewsRenderDurationMs: _veraBargeInDebug.lastNewsRenderDurationMs,
-      lastRafGapMs: _veraBargeInDebug.lastRafGapMs,
-      appHidden: extras.appHidden,
-      appVisibilityState: extras.appVisibilityState,
-      audioCtxState,
-    },
-    events: _veraBargeInDebug.events.slice().reverse(),
-    underlyingDump: base,
-  };
-}
-
-function _bargeInDebugPositionOverlay() {
-  if (!_veraBargeInDebug.containerEl) return;
-  /* Anchor to the left of the active record/mic button when one is
-   * mounted (VERA + BMO modes). Fallback to fixed bottom-right corner. */
-  let anchor = null;
-  try {
-    const candidates = ["vera-record", "bmo-record"];
-    for (const id of candidates) {
-      const btn = document.getElementById(id);
-      if (!btn) continue;
-      const rect = btn.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
-        anchor = { el: btn, rect };
-        break;
-      }
-    }
-  } catch (_) {}
-
-  const el = _veraBargeInDebug.containerEl;
-  el.style.position = "fixed";
-  el.style.left = "auto";
-  if (anchor) {
-    const overlayW = el.offsetWidth || 320;
-    const leftPx = Math.max(8, anchor.rect.left - overlayW - 12);
-    const topPx = Math.max(8, anchor.rect.top - el.offsetHeight + anchor.rect.height);
-    el.style.left = `${leftPx}px`;
-    el.style.top = `${topPx}px`;
-    el.style.right = "auto";
-    el.style.bottom = "auto";
-  } else {
-    el.style.right = "16px";
-    el.style.bottom = "16px";
-    el.style.top = "auto";
-  }
-}
-
-function _bargeInDebugMount() {
-  if (typeof document === "undefined") return;
-  if (!_bargeInDebugUiEnabled()) return;
-  if (_veraBargeInDebug.containerEl && _veraBargeInDebug.containerEl.isConnected) return;
-
-  const el = document.createElement("div");
-  el.id = "vera-barge-in-debug-overlay";
-  el.setAttribute("data-vera-dev-overlay", "barge-in");
-  el.style.cssText = [
-    "position:fixed",
-    "right:16px",
-    "bottom:16px",
-    "width:320px",
-    "max-height:70vh",
-    "overflow:auto",
-    "background:rgba(8,12,18,0.96)",
-    "color:#d8e1ea",
-    "font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace",
-    "border:1px solid rgba(120,135,160,0.4)",
-    "border-radius:8px",
-    "padding:8px 10px 10px 10px",
-    "z-index:2147483646",
-    "box-shadow:0 4px 14px rgba(0,0,0,0.4)",
-    "pointer-events:auto",
-    "user-select:text",
-  ].join(";");
-  el.innerHTML =
-    '<div data-bd-header style="display:flex;align-items:center;justify-content:space-between;margin:-2px -2px 6px;gap:6px;">' +
-    '  <strong style="font-size:11px;letter-spacing:.04em;color:#79c8ff;">BARGE-IN DEBUG <span style="color:#666;font-weight:400;">(dev)</span></strong>' +
-    '  <span style="display:flex;gap:4px;">' +
-    '    <button data-bd-copy  type="button" title="Copy snapshot to clipboard" style="background:#1a2433;color:#cfe;border:1px solid #325;padding:2px 6px;border-radius:4px;font:11px/1 inherit;cursor:pointer;">Copy</button>' +
-    '    <button data-bd-reset type="button" title="Dev reset of voice runtime state" style="background:#3a1a1a;color:#fcc;border:1px solid #532;padding:2px 6px;border-radius:4px;font:11px/1 inherit;cursor:pointer;">Reset</button>' +
-    '    <button data-bd-close type="button" title="Hide overlay" style="background:transparent;color:#9aa;border:1px solid #555;padding:2px 6px;border-radius:4px;font:11px/1 inherit;cursor:pointer;">×</button>' +
-    '  </span>' +
-    '</div>' +
-    '<div data-bd-body></div>';
-  document.body.appendChild(el);
-  _veraBargeInDebug.containerEl = el;
-  _veraBargeInDebug.bodyEl = el.querySelector("[data-bd-body]");
-
-  el.querySelector("[data-bd-copy]").addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    try { window.copyBargeInDebugSnapshot(); } catch (_) {}
-  });
-  el.querySelector("[data-bd-reset]").addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (typeof window.resetVeraVoiceRuntimeState === "function") {
-      try {
-        window.resetVeraVoiceRuntimeState({ source: "barge_in_debug_overlay" });
-      } catch (_) {}
-    } else {
-      try { console.warn("[barge_in_debug] resetVeraVoiceRuntimeState not available"); } catch (_) {}
-    }
-  });
-  el.querySelector("[data-bd-close]").addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    /* Closing the overlay disables the flag so it doesn't re-mount on the
-     * next polling tick. The user can re-enable with toggleBargeInDebugUi(true). */
-    try { window.VERA_DEBUG_BARGE_IN_UI = false; } catch (_) {}
-    safeRemoveLocalStorage("vera_debug_barge_in_ui");
-    _bargeInDebugUnmount();
-  });
-
-  if (_veraBargeInDebug.renderIntervalId == null) {
-    _veraBargeInDebug.renderIntervalId = setInterval(() => {
-      if (!_bargeInDebugUiEnabled()) {
-        _bargeInDebugUnmount();
-        return;
-      }
-      _bargeInDebugRender();
-    }, 200);
-  }
-  _bargeInDebugRender();
-}
-
-function _bargeInDebugUnmount() {
-  if (_veraBargeInDebug.renderIntervalId != null) {
-    try { clearInterval(_veraBargeInDebug.renderIntervalId); } catch (_) {}
-    _veraBargeInDebug.renderIntervalId = null;
-  }
-  if (_veraBargeInDebug.containerEl && _veraBargeInDebug.containerEl.parentNode) {
-    try { _veraBargeInDebug.containerEl.parentNode.removeChild(_veraBargeInDebug.containerEl); } catch (_) {}
-  }
-  _veraBargeInDebug.containerEl = null;
-  _veraBargeInDebug.bodyEl = null;
-}
-
-function _bargeInDebugEscapeHtml(s) {
-  if (s == null) return "";
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function _bargeInDebugRender() {
-  if (!_veraBargeInDebug.bodyEl) return;
-  let s;
-  try { s = _bargeInDebugBuildState(); } catch (_) { return; }
-
-  const colAllowed = s.bargeIn.allowed ? "#7fe39a" : "#ff6b6b";
-  const colTts = s.tts.playing ? "#7fe39a" : "#9aa";
-  const sentinelRed = s.tts.mainTtsPlaybackActive && (s.tts.bufferSources || 0) === 0;
-  const colSentinel = sentinelRed ? "#ff6b6b" : "#9aa";
-
-  /* Cancel-delay color: green if cancel fired within 80 ms of speech detect,
-   * yellow up to 250 ms, red beyond that or if no cancel after a recent
-   * speech_detected. */
-  let colCancel = "#9aa";
-  let cancelText = "—";
-  if (s.cancel.cancelDelayMs != null) {
-    cancelText = `${s.cancel.cancelDelayMs}ms`;
-    if (s.cancel.cancelDelayMs <= 80) colCancel = "#7fe39a";
-    else if (s.cancel.cancelDelayMs <= 250) colCancel = "#f3d36b";
-    else colCancel = "#ff6b6b";
-  } else if (
-    s.cancel.lastSpeechDetectedPerfNow != null &&
-    s.tts.playing &&
-    performance.now() - s.cancel.lastSpeechDetectedPerfNow > 200
-  ) {
-    colCancel = "#ff6b6b";
-    cancelText = "none (TTS still playing)";
-  }
-
-  /* VAD color: green if armed + speech accum > 0, yellow if accumulating but
-   * threshold not yet passed (rough proxy: speechAccumMs > 0 but no
-   * speech_detected this turn). */
-  let colVad = "#9aa";
-  if (s.vad.armed) {
-    if ((s.vad.speechAccumMs || 0) > 0) colVad = "#f3d36b";
-    else colVad = "#7fe39a";
-  } else {
-    /* If TTS is playing but VAD is not armed, that's actually a red flag —
-     * caller would be blocked. */
-    colVad = s.tts.playing ? "#ff6b6b" : "#9aa";
-  }
-
-  const esc = _bargeInDebugEscapeHtml;
-  const eventsHtml = s.events.slice(0, 10).map((ev) => {
-    const sinceTts =
-      ev.sinceTtsStartMs != null ? `+${Math.round(ev.sinceTtsStartMs)}ms` : "—";
-    const extras = [];
-    if (ev.payload?.outcome) extras.push(`outcome=${ev.payload.outcome}`);
-    if (ev.payload?.reasonIfReturn) extras.push(`reason=${ev.payload.reasonIfReturn}`);
-    if (ev.payload?.event) extras.push(`event=${ev.payload.event}`);
-    if (ev.payload?.source) extras.push(`src=${ev.payload.source}`);
-    if (Number.isFinite(ev.payload?.durationMs)) extras.push(`dur=${Math.round(ev.payload.durationMs)}ms`);
-    if (Number.isFinite(ev.payload?.gapMs)) extras.push(`gap=${Math.round(ev.payload.gapMs)}ms`);
-    if (ev.payload?.gatePath) extras.push(`gate=${ev.payload.gatePath}`);
-    const extraStr = extras.length
-      ? ` <span style="color:#9aa;">${esc(extras.join(" "))}</span>`
-      : "";
-    return (
-      `<div style="display:flex;gap:6px;line-height:1.35;">` +
-      `<span style="color:#79c8ff;min-width:64px;font-variant-numeric:tabular-nums;">${esc(sinceTts)}</span>` +
-      `<span style="color:#d8e1ea;">${esc(ev.event)}${extraStr}</span>` +
-      `</div>`
-    );
-  }).join("");
-
-  const ttsIdShort = s.tts.ttsId ? String(s.tts.ttsId).slice(0, 22) : "—";
-  const tokShort = s.tts.token == null ? "—" : String(s.tts.token);
-
-  _veraBargeInDebug.bodyEl.innerHTML =
-    '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px;">' +
-      `<div style="color:#9aa;">ASR</div><div>${esc(s.voice.asrMode || "?")} <span style="color:#9aa;">(${esc(s.voice.listeningMode || "?")})</span></div>` +
-      `<div style="color:#9aa;">Mic</div><div>${esc(s.voice.micState || "?")}${s.voice.inputMuted ? ' <span style="color:#f3d36b;">(muted)</span>' : ""}</div>` +
-      `<div style="color:#9aa;">TTS</div><div style="color:${colTts};">${s.tts.playing ? "playing" : "idle"} <span style="color:#9aa;">srcs=${esc(s.tts.bufferSources ?? "?")} rdr=${s.tts.ndjsonReaderPresent ? "y" : "n"}</span></div>` +
-      `<div style="color:#9aa;">Ids</div><div style="color:#9aa;font-size:10px;">tts=${esc(ttsIdShort)} tok=${esc(tokShort)}</div>` +
-      `<div style="color:#9aa;">Sentinel</div><div style="color:${colSentinel};">${s.tts.mainTtsPlaybackActive ? "active" : "inactive"}${sentinelRed ? ' <span style="color:#ff6b6b;">(no tracked srcs!)</span>' : ""}</div>` +
-      `<div style="color:#9aa;">Barge-in</div><div style="color:${colAllowed};font-weight:600;">${s.bargeIn.allowed ? "ALLOWED" : "BLOCKED"} <span style="color:#9aa;font-weight:400;">(${esc(s.bargeIn.reason)})</span></div>` +
-      `<div style="color:#9aa;">VAD</div><div style="color:${colVad};">armed=${s.vad.armed ? "y" : "n"} speech=${esc(s.vad.speechAccumMs ?? 0)}ms partial=${esc(s.vad.partialAccumMs ?? 0)}ms</div>` +
-      `<div style="color:#9aa;">Frames</div><div>frames=${esc(s.vad.speechFrames ?? 0)} sinceTts=${esc(s.vad.sinceTtsStartMs ?? "—")}ms</div>` +
-      `<div style="color:#9aa;">Capture</div><div>recIntr=${s.capture.interruptRecording ? "y" : "n"} prearm=${esc(s.capture.prearmRecorderState ?? "—")} detect=${s.capture.detectRecognitionPresent ? "y" : "n"}</div>` +
-      `<div style="color:#9aa;">Cancel</div><div style="color:${colCancel};">delay=${esc(cancelText)} <span style="color:#9aa;">early=${esc(s.cancel.lastEarlyReturnReason ?? "—")} src=${esc(s.cancel.lastCancelSource ?? "—")}</span></div>` +
-      `<div style="color:#9aa;">Render</div><div>news=${s.newsRender.duringNewsRender ? "y" : "n"} hidden=${s.newsRender.appHidden ? "y" : "n"} actx=${esc(s.newsRender.audioCtxState ?? "—")} nrDur=${esc(Math.round(s.newsRender.lastNewsRenderDurationMs || 0))}ms rafGap=${esc(Math.round(s.newsRender.lastRafGapMs || 0))}ms</div>` +
-    '</div>' +
-    '<div style="margin-top:6px;border-top:1px solid rgba(120,135,160,0.25);padding-top:5px;">' +
-      '<div style="color:#9aa;margin-bottom:2px;">Events (most recent first):</div>' +
-      (eventsHtml || '<div style="color:#666;">(no events yet — start a TTS turn and speak over it)</div>') +
-    '</div>';
-
-  /* Re-anchor after layout changes (mic button position can shift between
-   * VERA and BMO modes or when the side panel opens). */
-  try { _bargeInDebugPositionOverlay(); } catch (_) {}
-}
-
-function _bargeInDebugBuildSnapshot() {
-  let snap = null;
-  try { snap = _bargeInDebugBuildState(); } catch (_) {}
-  return snap;
-}
-
-if (typeof window !== "undefined") {
-  try {
-    window.VERA_DEBUG_BARGE_IN_UI = _bargeInDebugUiEnabled();
-  } catch (_) {}
-
-  /* Imperative toggle — flips both the in-memory flag and the localStorage
-   * persistence, then mounts/unmounts immediately. */
-  window.toggleBargeInDebugUi = function toggleBargeInDebugUi(force) {
-    const next = typeof force === "boolean" ? force : !_bargeInDebugUiEnabled();
-    try { window.VERA_DEBUG_BARGE_IN_UI = next; } catch (_) {}
-    if (next) safeSetLocalStorage("vera_debug_barge_in_ui", "1");
-    else safeRemoveLocalStorage("vera_debug_barge_in_ui");
-    _veraBargeInDebug.enabled = next;
-    if (next) {
-      if (typeof document !== "undefined" && document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", _bargeInDebugMount, { once: true });
-      } else {
-        _bargeInDebugMount();
-      }
-    } else {
-      _bargeInDebugUnmount();
-    }
-    try {
-      console.warn("[barge_in_debug_ui_toggled]", { enabled: next });
-    } catch (_) {}
-    return next;
-  };
-
-  /* Clipboard snapshot — usable from devtools without the overlay open. */
-  window.copyBargeInDebugSnapshot = function copyBargeInDebugSnapshot() {
-    const snap = _bargeInDebugBuildSnapshot();
-    const text = JSON.stringify(snap, null, 2);
-    try {
-      if (navigator?.clipboard?.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {});
-      } else if (typeof document !== "undefined") {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;";
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        try { document.execCommand("copy"); } catch (_) {}
-        document.body.removeChild(ta);
-      }
-    } catch (_) {}
-    try { console.info("[barge_in_debug_snapshot_copied]", snap); } catch (_) {}
-    return snap;
-  };
-
-  /* Low-frequency polling so the user can flip
-   *   window.VERA_DEBUG_BARGE_IN_UI = true
-   * (or set the localStorage key from another tab) and have the overlay
-   * appear without an explicit toggle call. Stops itself once mounted. */
-  if (_veraBargeInDebug.pollIntervalId == null) {
-    _veraBargeInDebug.pollIntervalId = setInterval(() => {
-      const wantOn = _bargeInDebugUiEnabled();
-      const isOn = !!_veraBargeInDebug.containerEl;
-      if (wantOn !== _veraBargeInDebug.enabled) _veraBargeInDebug.enabled = wantOn;
-      if (wantOn && !isOn) _bargeInDebugMount();
-      if (!wantOn && isOn) _bargeInDebugUnmount();
-    }, 1000);
-  }
-
-  /* Auto-mount if a previous session left the flag set. */
-  setTimeout(() => {
-    if (_bargeInDebugUiEnabled()) {
-      _veraBargeInDebug.enabled = true;
-      if (typeof document !== "undefined" && document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", _bargeInDebugMount, { once: true });
-      } else {
-        _bargeInDebugMount();
-      }
-    }
-  }, 0);
-}
-
+ * The "INTERRUPTION / BARGE-IN DEBUG + TIMING + CANCEL-SOURCE" hot-path state
+ * (_veraInterruptRafLastAt, _veraCurrentTtsDebugContext) stays here because
+ * it is written by the RAF detectInterrupt loop and the NDJSON TTS playback
+ * checkpoints, neither of which is part of the overlay contract. */
 /* fastStopTtsOnVadOnly → moved to voice/interruption.js (Stage 6, 2026-05-27). */
 
 /** Debounce main SR onend → startListening recovery (Chrome sometimes ends the session with no error). */
@@ -1731,85 +1096,24 @@ try {
 } catch (_) {}
 
 /* logInterruptTranscriptDebug → moved to utils/logging.js (Stage 3,
- * 2026-05-27). `_veraBargeInDebug` + `_bargeInDebugCaptureEvent` remain
- * in app.js and are reached via the shared global lexical environment. */
+ * 2026-05-27). `_veraBargeInDebug` + `_bargeInDebugCaptureEvent` were
+ * subsequently moved to debug/voiceDebug.js (Stage 18 / Patch A-12,
+ * 2026-05-31); the logger reaches them via the shared classic-script
+ * global lexical environment at call time, with try/catch + typeof
+ * guards in case an event fires before debug/voiceDebug.js has loaded. */
 
-/* =========================
-   INTERRUPTION TRANSCRIPT CLASSIFICATION
-
-   Barge-in already stopped TTS instantly (see fastStopTtsOnVadOnly). The
-   remaining decision after the ASR transcript is finalized is:
-
-     - "stop", "never mind", "shut up" → cancel-only. TTS already stopped,
-       nothing else to do; just resume listening.
-     - "stop, sync the plan" → strip the leading cancel prefix and route
-       the remainder as a normal user command.
-     - "sync the plan", "remove the first item", "set a timer", "put that
-       in the panel" → route the full transcript as a normal user command.
-
-   The "normal user command" routing reuses the SAME shortcut handlers the
-   regular voice / typed pipelines use (maybeHandleWorkChecklistSync*,
-   maybeHandleWorkChecklistPlan*, maybeHandleMoveLatestVoiceTaskToReasoning)
-   so a sync request that arrives as an interruption produces the same
-   client-side mutation a normal voice request would.
-========================= */
-
-const INTERRUPT_CANCEL_ONLY_RE =
-  /^(?:stop|stop\s+it|stop\s+talking|shut\s*up|shush|hush(?:\s+up)?|be\s+quiet|quiet|cancel(?:\s+that)?|never\s*mind|nevermind|forget\s+it|forget\s+about\s+it|pause|mute(?:\s+yourself)?|enough|that's\s+enough|thats\s+enough|okay\s+stop|ok\s+stop)$/i;
-
-const INTERRUPT_CANCEL_PREFIX_RE =
-  /^(?:stop|stop\s+talking|stop\s+it|shut\s*up|shush|hush(?:\s+up)?|be\s+quiet|quiet|cancel(?:\s+that)?|never\s*mind|nevermind|forget\s+it|forget\s+about\s+it|pause|hold\s+on|hold\s+up|wait(?:\s+a\s+(?:second|sec|minute|moment))?|actually|um|uh|no|nope|okay|ok)\b[\s,;:.\-—–]+(.+)$/i;
-
-/**
- * Classify a finalized interruption transcript. Returns the shape the spec
- * calls out:
- *   { isCancelOnly, hasActionIntent, normalizedCommandText,
- *     leadingCancelStripped, reason }
- *
- * Pure judgement function — no side effects, safe to call from anywhere.
- */
-function classifyInterruptionTranscript(text) {
-  const raw = String(text || "").trim();
-  if (!raw) {
-    return {
-      isCancelOnly: false,
-      hasActionIntent: false,
-      normalizedCommandText: "",
-      leadingCancelStripped: false,
-      reason: "empty"
-    };
-  }
-  const lowered = raw.toLowerCase().replace(/[.?!,;:\s]+$/g, "").trim();
-  if (INTERRUPT_CANCEL_ONLY_RE.test(lowered)) {
-    return {
-      isCancelOnly: true,
-      hasActionIntent: false,
-      normalizedCommandText: "",
-      leadingCancelStripped: false,
-      reason: "pure_cancel_phrase"
-    };
-  }
-  const m = raw.match(INTERRUPT_CANCEL_PREFIX_RE);
-  if (m) {
-    const tail = String(m[1] || "").trim();
-    if (tail && tail.split(/\s+/).filter(Boolean).length >= 1) {
-      return {
-        isCancelOnly: false,
-        hasActionIntent: true,
-        normalizedCommandText: tail,
-        leadingCancelStripped: true,
-        reason: "stripped_leading_cancel_prefix"
-      };
-    }
-  }
-  return {
-    isCancelOnly: false,
-    hasActionIntent: true,
-    normalizedCommandText: raw,
-    leadingCancelStripped: false,
-    reason: "normal_command"
-  };
-}
+/* INTERRUPT_CANCEL_ONLY_RE, INTERRUPT_CANCEL_PREFIX_RE, classifyInterruptionTranscript
+ * -> moved to voice/interruption.js (Stage 14, 2026-05-31). The
+ * "INTERRUPTION TRANSCRIPT CLASSIFICATION" block (two regex consts + one
+ * pure-judgement function) now lives there. The single external call site in
+ * this file (`const classification = classifyInterruptionTranscript(trimmed);`
+ * in the post-ASR shortcut router) continues to resolve the name as a bare
+ * identifier through the shared classic-script global lexical environment at
+ * call time, since voice/interruption.js loads before app.js per index.html.
+ * The block is self-contained: it has no bare-identifier dependencies on
+ * helpers defined in app.js. The [interrupt_transcript_debug] log calls in
+ * app.js continue to resolve to utils/logging.js as before (Stage 3) and were
+ * never part of this block. */
 
 /* interruptTranscriptNewTtsId → moved to voice/interruption.js (Stage 6, 2026-05-27). */
 
@@ -1983,7 +1287,20 @@ function getInterruptSustainMs() {
 const INTERRUPT_GAP_RESET_MS = 110;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
 const INTERRUPT_MAX_CREST = 38;
-const API_URL = "https://vera-api.vera-api-ned.workers.dev";
+
+function resolveVeraApiBaseUrl() {
+  try {
+    if (typeof window !== "undefined" && window.VERA_API_BASE_URL) {
+      return String(window.VERA_API_BASE_URL).replace(/\/$/, "");
+    }
+    const m = document.querySelector('meta[name="vera-api-base-url"]');
+    const meta = m?.content?.trim();
+    if (meta) return meta.replace(/\/$/, "");
+  } catch (_) {}
+  return "";
+}
+
+const API_URL = resolveVeraApiBaseUrl();
 
 /** Request NDJSON streaming TTS from /infer and /text so the first /audio URL arrives as soon as it is synthesized. */
 const DEFAULT_STREAM_TTS = true;
@@ -2052,152 +1369,38 @@ let browserAsrPermanentlyDisabled = false;
  *   window.setVeraAsrMode)
  *   → moved to voice/asr.js (Stage 7, 2026-05-27). */
 
-/* =========================================================================
-   PART 12 — MediaRecorder construction helper
-   --------------------------------------------------------------------------
-   Centralizes mimeType + audioBitsPerSecond preference order so every
-   recording path (main, interrupt-prearm, hybrid sidecar) gets the best
-   format the browser supports. Opus is widely supported, decodes cleanly
-   on the server via pydub/ffmpeg, and survives small chunk drops better
-   than legacy webm. The 64 kbps default is plenty for Whisper accuracy on
-   a single voice mic.
-   ========================================================================= */
-const VERA_RECORDER_BITS_PER_SECOND = 64_000;
-const VERA_RECORDER_MIME_PREFS = [
-  "audio/webm;codecs=opus",
-  "audio/ogg;codecs=opus",
-  "audio/webm",
-  "", // browser default
-];
-function _pickRecorderMime() {
-  if (typeof MediaRecorder === "undefined") return "";
-  const isSupported = typeof MediaRecorder.isTypeSupported === "function";
-  if (!isSupported) return "";
-  for (const m of VERA_RECORDER_MIME_PREFS) {
-    if (!m) return "";
-    try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (_) {}
-  }
-  return "";
-}
-function createVeraMediaRecorder(stream, opts = {}) {
-  if (typeof MediaRecorder === "undefined") throw new Error("MediaRecorder unavailable");
-  const mimeType = opts.mimeType != null ? opts.mimeType : _pickRecorderMime();
-  const audioBitsPerSecond = opts.audioBitsPerSecond != null ? opts.audioBitsPerSecond : VERA_RECORDER_BITS_PER_SECOND;
-  const init = {};
-  if (mimeType) init.mimeType = mimeType;
-  if (audioBitsPerSecond) init.audioBitsPerSecond = audioBitsPerSecond;
-  try {
-    return new MediaRecorder(stream, init);
-  } catch (_) {
-    /* Some browsers throw on unknown init keys. Fall back to bare ctor. */
-    try { return new MediaRecorder(stream, mimeType ? { mimeType } : undefined); }
-    catch (_) { return new MediaRecorder(stream); }
-  }
-}
-
-/* =========================================================================
-   PART 5 + 7 — Hybrid sidecar recorder
-   --------------------------------------------------------------------------
-   When the ASR mode is "hybrid", we run the existing browser SpeechRecognition
-   path AND record the same microphone audio in parallel. On finalization,
-   decideAsrFinalizationMode() inspects the browser transcript. If a Whisper
-   verification is warranted, we send BOTH the browser transcript AND the
-   recorded audio blob to /infer with request_whisper_verify=1. Otherwise
-   the blob is discarded.
-   ========================================================================= */
-let hybridSidecarRecorder = null;
-let hybridSidecarChunks = [];
-let hybridSidecarMimeType = "";
-let hybridSidecarStartedAt = 0;
-
-function isHybridSidecarRunning() {
-  return !!hybridSidecarRecorder && hybridSidecarRecorder.state === "recording";
-}
-
-function _stopAndCollectHybridSidecar() {
-  return new Promise((resolve) => {
-    const rec = hybridSidecarRecorder;
-    if (!rec) {
-      resolve({ blob: null, mimeType: "", durationMs: 0, chunkCount: 0 });
-      return;
-    }
-    const startedAt = hybridSidecarStartedAt;
-    const mimeType = hybridSidecarMimeType || rec.mimeType || "audio/webm";
-    const finalize = () => {
-      try {
-        const blob = hybridSidecarChunks.length
-          ? new Blob(hybridSidecarChunks, { type: mimeType })
-          : null;
-        resolve({
-          blob,
-          mimeType,
-          durationMs: startedAt ? Math.max(0, performance.now() - startedAt) : 0,
-          chunkCount: hybridSidecarChunks.length,
-        });
-      } catch (_) {
-        resolve({ blob: null, mimeType, durationMs: 0, chunkCount: 0 });
-      } finally {
-        hybridSidecarChunks = [];
-        hybridSidecarRecorder = null;
-        hybridSidecarStartedAt = 0;
-        hybridSidecarMimeType = "";
-      }
-    };
-    if (rec.state === "inactive") { finalize(); return; }
-    const prev = rec.onstop;
-    rec.onstop = (e) => {
-      try { if (typeof prev === "function") prev(e); } catch (_) {}
-      finalize();
-    };
-    try { rec.stop(); } catch (_) { finalize(); }
-  });
-}
-
-function _discardHybridSidecar() {
-  const rec = hybridSidecarRecorder;
-  if (!rec) return;
-  try { if (rec.state !== "inactive") rec.stop(); } catch (_) {}
-  hybridSidecarChunks = [];
-  hybridSidecarRecorder = null;
-  hybridSidecarStartedAt = 0;
-  hybridSidecarMimeType = "";
-}
-
-function startHybridSidecarRecorderIfNeeded(micStream) {
-  if (!isHybridAsrMode()) return false;
-  if (!micStream || !micStream.active) return false;
-  if (typeof MediaRecorder === "undefined") return false;
-  if (isHybridSidecarRunning()) return true;
-  try {
-    const rec = createVeraMediaRecorder(micStream);
-    hybridSidecarChunks = [];
-    hybridSidecarMimeType = rec.mimeType || _pickRecorderMime() || "audio/webm";
-    rec.ondataavailable = (e) => {
-      if (e && e.data && e.data.size > 0) hybridSidecarChunks.push(e.data);
-    };
-    rec.onerror = (e) => {
-      try {
-        console.warn("[asr_mode_debug]", { stage: "hybrid_sidecar_error", error: String(e?.error || e) });
-      } catch (_) {}
-    };
-    /* Request periodic chunks so we don't lose anything if the recorder is
-       stopped before the browser ASR final settles. 250ms is plenty for
-       short commands and small enough that interrupt path is responsive. */
-    rec.start(250);
-    hybridSidecarRecorder = rec;
-    hybridSidecarStartedAt = performance.now();
-    try {
-      console.info("[asr_mode_debug]", { stage: "hybrid_sidecar_started", mimeType: hybridSidecarMimeType });
-    } catch (_) {}
-    return true;
-  } catch (e) {
-    try {
-      console.warn("[asr_mode_debug]", { stage: "hybrid_sidecar_start_failed", error: String(e?.message || e) });
-    } catch (_) {}
-    return false;
-  }
-}
-
+/* VERA_RECORDER_BITS_PER_SECOND, VERA_RECORDER_MIME_PREFS,
+ * _pickRecorderMime, createVeraMediaRecorder
+ * -> moved to voice/asr.js (Stage 17, 2026-05-31). The "PART 12 -
+ * MediaRecorder construction helper" block now lives there alongside the
+ * hybrid sidecar recorder (Stage 16) that was already its primary intra-file
+ * client. The 4 external call sites in this file
+ * (interruptRecorder = createVeraMediaRecorder(micStream) at the interrupt
+ * recorder arm path, interruptPrearmRecorder = createVeraMediaRecorder(...)
+ * at the interrupt prearm path, and the two mediaRecorder = createVeraMediaRecorder(...)
+ * sites at the main recorder arm paths) continue to resolve those names as
+ * bare identifiers through the shared classic-script global lexical
+ * environment at call time. MIME-type selection order and audio-bits-per-
+ * second default (64 kbps Opus) are byte-identical to pre-move. This patch
+ * supersedes the Stage 7 / Stage 16 "left in app.js" justification for these
+ * four symbols. */
+/* isHybridSidecarRunning, _stopAndCollectHybridSidecar, _discardHybridSidecar,
+ * startHybridSidecarRecorderIfNeeded (and their backing state
+ * hybridSidecarRecorder, hybridSidecarChunks, hybridSidecarMimeType,
+ * hybridSidecarStartedAt) -> moved to voice/asr.js (Stage 16, 2026-05-31).
+ * The "PART 5 + 7 - Hybrid sidecar recorder" block now lives there.
+ * The 5 external call sites in this file (the isHybridSidecarRunning
+ * gate plus _stopAndCollectHybridSidecar / _discardHybridSidecar in the
+ * /infer finalize path, and startHybridSidecarRecorderIfNeeded in the
+ * mic-arming path) continue to resolve those names as bare identifiers
+ * through the shared classic-script global lexical environment at call
+ * time. The moved block still calls back into app.js for the recorder
+ * construction helpers (createVeraMediaRecorder, _pickRecorderMime),
+ * which are intentionally left here per Stage 7 spec (MediaRecorder
+ * construction is coupled to the broader recorder lifecycle, not to the
+ * ASR-mode decision). isHybridAsrMode lives in voice/asr.js (Stage 7).
+ * ASR mode selection logic, whisper/browser/hybrid behavior, and recorder
+ * options are byte-identical to pre-move. */
 /* MAIN_ASR_PARTIAL_MIN_CHAR_OPTIONS, MAIN_ASR_PARTIAL_MIN_CHARS_DEFAULT,
  * normalizeMainAsrPartialMinChars, getMainAsrPartialMinChars,
  * setMainAsrPartialMinChars → moved to voice/asr.js (Stage 7, 2026-05-27).
@@ -2966,6 +2169,38 @@ function inferTranscriptFromFormData(formData) {
   return String(formData.get("transcript") || "").trim();
 }
 
+/** Attach feedback controls to a finalized main-chat Vera bubble (no-op if feedback.js not loaded). */
+function veraFeedbackMarkFinalFromBubble(bubbleEl, payload, clientRequestId) {
+  if (!(bubbleEl instanceof HTMLElement)) return;
+  try {
+    const p = payload && typeof payload === "object" ? payload : {};
+    const requestId = String(
+      p.request_id ||
+        clientRequestId ||
+        (typeof VERA_LAST_REQUEST_IDS !== "undefined" &&
+          (VERA_LAST_REQUEST_IDS.text || VERA_LAST_REQUEST_IDS.infer)) ||
+        ""
+    ).trim();
+    const usageSource = String(
+      p.path || p.client || (VERA_LAST_REQUEST_IDS?.text === requestId ? "text" : "voice")
+    ).slice(0, 32);
+    window.veraUsageOnAssistantReplyDone?.(bubbleEl, {
+      requestId,
+      source: usageSource,
+      latencyMs:
+        p.latency && typeof p.latency.total_s === "number"
+          ? Math.round(p.latency.total_s * 1000)
+          : undefined,
+    });
+    if (typeof window.veraFeedbackMarkFinal !== "function") return;
+    window.veraFeedbackMarkFinal(bubbleEl, {
+      requestId,
+      turnId: String(p.turn_id || p.status_turn_id || "").trim(),
+      userExcerpt: "",
+    });
+  } catch (_) {}
+}
+
 function addBubble(text, who, meta) {
   const convoEl = uiEl("conversation");
   if (!convoEl) return;
@@ -3037,6 +2272,12 @@ function addBubble(text, who, meta) {
   row.appendChild(bubble);
   convoEl.appendChild(row);
   convoEl.scrollTop = convoEl.scrollHeight;
+  if (who === "user" && !chatStateHydrating) {
+    try {
+      window.veraFeedbackOnNewUserMessage?.();
+      window.veraFeedbackSetPendingUser?.(text);
+    } catch (_) {}
+  }
   if (!chatStateHydrating && (who === "user" || who === "vera")) {
     persistVeraChatState();
   }
@@ -3328,6 +2569,7 @@ function setProductivityMusicSource(prefix, source) {
   const root = document.querySelector(`[data-productivity-root="${prefix}"]`);
   const selectedBefore = String(root?.dataset.musicSource || "spotify").toLowerCase();
   const activeBefore = getActivePlaybackSource(prefix);
+  const sourceStateBefore = (typeof veraMusicSourceState === "function") ? veraMusicSourceState() : null;
   const builtin = source === "builtin";
   if (root instanceof HTMLElement) root.dataset.musicSource = builtin ? "builtin" : "spotify";
   document.getElementById(`${prefix}-music-tab-spotify`)?.classList.toggle("active", !builtin);
@@ -3354,6 +2596,21 @@ function setProductivityMusicSource(prefix, source) {
     activePlaybackSource_before: activeBefore,
     activePlaybackSource_after: getActivePlaybackSource(prefix),
     stale_playback_state_prevented: true,
+  });
+  console.info("[music_source_state]", {
+    stage: "set_productivity_music_source",
+    music_tab_switched: selectedBefore !== (builtin ? "builtin" : "spotify"),
+    ui_tab_only_no_playback_change: true,
+    playback_source_changed: false,
+    active_tab_before: selectedBefore,
+    active_tab_after: builtin ? "builtin" : "spotify",
+    active_playback_source_before: sourceStateBefore?.active || activeBefore || "none",
+    active_playback_source_after: sourceStateBefore?.active || activeBefore || "none",
+    builtin_state_before: sourceStateBefore?.builtin?.state || "",
+    builtin_state_after: sourceStateBefore?.builtin?.state || "",
+    spotify_state_before: sourceStateBefore?.spotify?.state || "",
+    spotify_state_after: sourceStateBefore?.spotify?.state || "",
+    spotify_state_preserved: true
   });
 }
 
@@ -3410,13 +2667,35 @@ function _veraSpotifyAcquirePlayback(prefix, callerLabel) {
     const a = document.getElementById(`${p}-free-music-audio`);
     const builtinPlaying = !!(a && a.src && !a.paused && a.currentTime > 0);
     if (builtinPlaying) {
+      const st = (typeof veraMusicSourceState === "function") ? veraMusicSourceState() : null;
+      const preservedTime = Number(a.currentTime || 0);
       logMusicPlaybackDebug("provider_switch_stop_builtin", {
         prefix: p,
         reason: callerLabel || "spotify_play",
         ui_rendered_source: "spotify_active",
       });
       try {
-        stopBuiltinFreeMusic(p);
+        a.pause();
+        if (st) {
+          const snap = typeof _captureBuiltinSnapshot === "function" ? _captureBuiltinSnapshot() : {};
+          st.builtin.state = "suspended_for_spotify";
+          st.builtin.currentTime = preservedTime;
+          st.builtin.playlistId = String(snap.playlistId || st.builtin.playlistId || "");
+          st.builtin.soundId = String(snap.soundId || st.builtin.soundId || "");
+          st.active = "spotify";
+        }
+        if (typeof freeMusicSyncNowFromAudio === "function") freeMusicSyncNowFromAudio(p);
+        if (typeof spotifySyncPlayButtonUi === "function") spotifySyncPlayButtonUi(p);
+        console.info("[music_source_state]", {
+          playback_source_changed: true,
+          reason: callerLabel || "spotify_play",
+          active_music_source_before: "builtin",
+          active_music_source_after: "spotify",
+          builtin_state_after: st?.builtin?.state || "suspended_for_spotify",
+          spotify_state_after: st?.spotify?.state || "",
+          builtin_current_time_preserved: preservedTime,
+          builtin_suspended_for_spotify: true
+        });
       } catch (_) {
         /* ignore */
       }
@@ -3440,7 +2719,7 @@ async function loadFreeMusicCatalog(prefix) {
     if (typeof localBackendBase === "function") push(localBackendBase());
   } catch (_) {}
   push(typeof API_URL !== "undefined" ? API_URL : "");
-  const ordered = bases.length ? bases : ["https://vera-api.vera-api-ned.workers.dev"];
+  const ordered = bases.length ? bases : [resolveVeraApiBaseUrl()].filter(Boolean);
   let lastErr = null;
   for (const base of ordered) {
     try {
@@ -4003,6 +3282,20 @@ function freeMusicSyncNowFromAudio(prefix) {
         ? "Looping"
         : "Built-in music";
   syncFreeMusicTransportFlags();
+  // Persist built-in display state to its own snapshot so the built-in
+  // tab can re-render this lo-fi/sound even after the user switches to
+  // Spotify and back (spec test 1).
+  captureMusicPanelDisplay("builtin", {
+    title,
+    subtitle: sub,
+    cover_url: "",
+    paused: !!a.paused,
+    position_ms: pos,
+    duration_ms: dur,
+    playlistId: String(st.playlistId || st.playlist_id || ""),
+    soundId: String(st.soundId || st.sound_id || ""),
+    currentTime: Number(a.currentTime || 0)
+  });
   spotifyUpdateNowState({
     title,
     artist: sub,
@@ -5162,225 +4455,27 @@ function collectWorkModeVoiceExcerptForContext(maxChars = 3500, maxRows = 8) {
   return out;
 }
 
-/* =========================
-   MOVE LATEST VOICE RESULT → REASONING PANEL
-
-   Important distinction:
-     - "go back to the English essay panel" = panel navigation.
-     - "put that in the panel" / "do that in reasoning" = move the latest
-       Voice UI answer/task into reasoning. "that" is a task reference, not a
-       panel title.
-========================= */
-const MOVE_LATEST_VOICE_TASK_TO_REASONING_RE =
-  /\b(?:do|put|move|show|open|copy|send|transfer|continue|expand|make)\s+(?:that|this|it|the\s+(?:email|draft|answer|response|reply|version|full\s+version))\s+(?:in|into|to|on)\s+(?:the\s+)?(?:reasoning(?:\s+(?:panel|space|tab))?|panel|space|tab)\b|\b(?:make|create|open|start)\s+(?:a\s+)?(?:reasoning\s+)?panel\s+for\s+(?:that|this|it|the\s+(?:email|draft|answer|response|reply))\b|\b(?:can\s+you|could\s+you|please)\s+(?:do|put|move|show|open|copy|send|transfer|continue|expand)\s+(?:that|this|it|the\s+(?:email|draft|answer|response|reply|version|full\s+version))\s+(?:in|into|to|on)\s+(?:the\s+)?(?:reasoning(?:\s+(?:panel|space|tab))?|panel|space|tab)\b|\b(?:put|show)\s+(?:the\s+)?(?:email|draft|answer|response|reply|full\s+version)\s+(?:in|into|to|on)\s+(?:the\s+)?(?:reasoning(?:\s+(?:panel|space|tab))?|panel|space|tab)\b/i;
-
-function detectMoveLatestVoiceTaskToReasoningIntent(text) {
-  const raw = String(text || "").trim();
-  if (!raw) return { matched: false, deictic: false };
-  const matched = MOVE_LATEST_VOICE_TASK_TO_REASONING_RE.test(raw);
-  return {
-    matched,
-    deictic: /\b(that|this|it|there)\b/i.test(raw)
-  };
-}
-
-function collectLatestRelevantVoiceAssistantOutput(maxChars = 6000) {
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return "";
-  const convo = document.getElementById("vera-conversation");
-  if (!(convo instanceof HTMLElement)) return "";
-  const rows = [...convo.querySelectorAll(".message-row")];
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const row = rows[i];
-    if (!row?.classList?.contains("vera")) continue;
-    const bubble = row.querySelector(".bubble");
-    if (!(bubble instanceof HTMLElement)) continue;
-    if (
-      bubble.classList.contains("vera-work-mode-stage1-ack") ||
-      bubble.classList.contains("vera-pending-status") ||
-      bubble.classList.contains("interrupt-preview")
-    ) {
-      continue;
-    }
-    const text = String(bubble.textContent || "").replace(/\s+/g, " ").trim();
-    if (!text || text.length < 12) continue;
-    if (/^I(?:'ll| will)\s+work\b/i.test(text)) continue;
-    if (/^Done\s+[—-]\s+I (?:put|moved|created)\b/i.test(text)) continue;
-    return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
-  }
-  return "";
-}
-
-function inferVoiceTaskPanelTitle({ latestVoiceOutput = "", recentVoiceContext = "", latestUserText = "" } = {}) {
-  const hay = `${latestUserText}\n${latestVoiceOutput}\n${recentVoiceContext}`.toLowerCase();
-  if (/\b(ticket|traffic\s+stop|pulled\s+over|police|officer|complain|complaint|dispute|citation)\b/.test(hay)) {
-    if (/\b(email|draft|letter|message)\b/.test(hay)) return "Ticket Complaint Email";
-    return "Police Ticket Review";
-  }
-  if (/\b(homework|assignment|essay|teacher|professor|extension|deadline)\b/.test(hay) && /\b(email|draft|letter|message)\b/.test(hay)) {
-    return "Homework Extension Email";
-  }
-  if (/\b(resume|résumé|cv)\b/.test(hay) && /\b(bullet|revision|rewrite|edit)\b/.test(hay)) {
-    return "Resume Bullet Revisions";
-  }
-  if (/\b(travel|trip|itinerary|flight|hotel|vacation)\b/.test(hay)) return "Travel Plan";
-  if (/\b(email|draft|letter|message)\b/.test(hay)) return "Email Draft";
-  if (/\b(plan|schedule|timeline|roadmap)\b/.test(hay)) return "Planning Draft";
-  const tokens = topicTokensForWorkModeTopic(`${latestVoiceOutput} ${recentVoiceContext}`)
-    .filter((w) => !/^(assistant|user|would|could|should|there|their|about)$/.test(w))
-    .slice(0, 4);
-  if (tokens.length) return tokens.map(toTitleCaseWord).join(" ");
-  return "Voice Answer";
-}
-
-function buildMovedVoiceTaskMarkdown({ title, latestVoiceOutput, recentVoiceContext } = {}) {
-  const t = String(title || "Voice Answer").trim();
-  const out = String(latestVoiceOutput || "").trim();
-  const ctx = String(recentVoiceContext || "").trim();
-  const contextLines = ctx
-    .split(/\n+/)
-    .filter((line) => /^User:\s*/i.test(line))
-    .slice(-3)
-    .map((line) => line.replace(/^User:\s*/i, "").trim())
-    .filter(Boolean);
-  const contextBlock = contextLines.length
-    ? contextLines.map((line) => `- ${line}`).join("\n")
-    : "- Moved from the recent Voice UI conversation.";
-  return [
-    `# ${t}`,
-    "",
-    "## Context",
-    contextBlock,
-    "",
-    "## Draft / Answer From Voice UI",
-    out || "_I could not find a recent Voice UI answer to move._",
-    "",
-    "## Notes",
-    "If you want, I can revise this here with a firmer, more formal, or shorter version."
-  ].join("\n");
-}
-
-function findRelatedReasoningLaneForVoiceTask(seedText) {
-  const seed = String(seedText || "").trim();
-  if (!seed) return { laneIdx: null, score: 0, title: "" };
-  let best = { laneIdx: null, score: 0, title: "" };
-  for (const idx of getReasoningPanelIndices()) {
-    const panel = getReasoningPanelElementByLaneIdx(idx);
-    const title = panel instanceof HTMLElement ? getReasoningTabTopicLabel(panel) : "";
-    const excerpt = collectWorkModeReasoningExcerptForLaneIndex(idx, 1200);
-    const score = Math.max(
-      topicSimilarityScore(seed, `${title} ${excerpt}`),
-      topicCoverageScore(seed, `${title} ${excerpt}`)
-    );
-    if (score > best.score) best = { laneIdx: idx, score, title };
-  }
-  return best;
-}
-
-function logMoveLatestVoiceTaskToReasoningDebug(payload) {
-  try {
-    console.warn("[MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG]", payload);
-  } catch (_) {}
-}
-
-async function maybeHandleMoveLatestVoiceTaskToReasoning(trimmed, opts = {}) {
-  const text = String(trimmed || "").trim();
-  const intent = detectMoveLatestVoiceTaskToReasoningIntent(text);
-  if (!intent.matched || !isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
-
-  const latestVoiceOutput = collectLatestRelevantVoiceAssistantOutput(7000);
-  const recentVoiceContext = collectWorkModeVoiceExcerptForContext(2500, 8);
-  const activeIdx = getActiveReasoningLaneIndex();
-  const activePanel = activeIdx != null ? getReasoningPanelElementByLaneIdx(activeIdx) : null;
-  const activePanelTitle = activePanel instanceof HTMLElement ? getReasoningTabTopicLabel(activePanel) : "";
-
-  if (!latestVoiceOutput) {
-    const reply = "Do you want me to move the latest answer into a new panel, or switch to an existing panel?";
-    commitServerUserTranscriptBubble(text, opts.path || "move-voice-task-unresolved");
-    addBubble(reply, "vera", { path: "move-latest-voice-task-clarify" });
-    logMoveLatestVoiceTaskToReasoningDebug({
-      latest_user_text: text.slice(0, 240),
-      detected_intent: "move_latest_voice_task_to_reasoning",
-      deictic_reference_detected: intent.deictic,
-      deictic_resolution: "unresolved",
-      latest_voice_output_excerpt: "",
-      recent_voice_context_excerpt: recentVoiceContext.slice(0, 240),
-      active_panel_title: activePanelTitle,
-      selected_panel_id: null,
-      create_new_panel: false,
-      new_panel_title: "",
-      reason_for_decision: "no_recent_voice_assistant_output"
-    });
-    return true;
-  }
-
-  const title = inferVoiceTaskPanelTitle({ latestVoiceOutput, recentVoiceContext, latestUserText: text });
-  const seedText = `${title}\n${latestVoiceOutput}\n${recentVoiceContext}`;
-  const related = findRelatedReasoningLaneForVoiceTask(seedText);
-  const reuseExisting = related.laneIdx != null && related.score >= REASONING_PANEL_ROUTE_REUSE_FLOOR;
-  const laneIdx = reuseExisting
-    ? await acquireWorkModeReasoningLaneForIndex(related.laneIdx)
-    : await acquireWorkModeReasoningLane(seedText);
-  const laneId = getWorkModeReasoningLaneId(laneIdx);
-  const panel = getReasoningPanelElementByLaneIdx(laneIdx);
-  const scrollEl = getReasoningScrollElByLane(laneIdx);
-  const markdown = buildMovedVoiceTaskMarkdown({ title, latestVoiceOutput, recentVoiceContext });
-
-  try {
-    activateReasoningTab(laneIdx);
-    if (panel instanceof HTMLElement) {
-      panel.dataset.laneLabel = title;
-      panel.dataset.tabTopic = title;
-      panel.dataset.tabTopicSet = "1";
-      panel.dataset.reasoningLlmTitleDone = "1";
-    }
-    try {
-      if (laneId) patchReasoningLaneRegistryTitle(laneId, title, "move_latest_voice_task_to_reasoning");
-    } catch (_) {}
-    laneTopicSeedByIdx[laneIdx] = seedText;
-    laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
-    const turnEl = appendReasoningTurnMount(scrollEl);
-    if (turnEl) {
-      turnEl.dataset.markdownAcc = markdown;
-      turnEl.dataset.summaryText = "";
-      renderWorkModeMarkdown(turnEl, markdown, "");
-      maybeReasoningScrollToLatest(scrollEl);
-      scheduleSyncPlanButtonRefresh(0);
-    }
-    renderReasoningTabStrip();
-    persistReasoningTabsState();
-  } finally {
-    endWorkModeReasoningLaneRun(laneIdx);
-  }
-
-  const itemKind = /\b(email|subject:|dear\s+)/i.test(latestVoiceOutput) ? "email draft" : "answer";
-  const reply = reuseExisting
-    ? `Done — I moved the ${itemKind} into the reasoning panel.`
-    : `Done — I put the ${itemKind} in a new reasoning panel.`;
-  commitServerUserTranscriptBubble(text, opts.path || "move-latest-voice-task");
-  addBubble(reply, "vera", { path: "move-latest-voice-task-success" });
-  if (opts.isVoice) {
-    try {
-      await playWorkModeTtsOnlyPhrase(reply, opts.signal);
-    } catch (_) {}
-  }
-  setStatus("Ready", "idle");
-  logMoveLatestVoiceTaskToReasoningDebug({
-    latest_user_text: text.slice(0, 240),
-    detected_intent: "move_latest_voice_task_to_reasoning",
-    deictic_reference_detected: intent.deictic,
-    deictic_resolution: "latest_voice_output",
-    latest_voice_output_excerpt: latestVoiceOutput.slice(0, 240),
-    recent_voice_context_excerpt: recentVoiceContext.slice(0, 240),
-    active_panel_title: activePanelTitle,
-    selected_panel_id: laneId || null,
-    selected_panel_index: laneIdx,
-    create_new_panel: !reuseExisting,
-    new_panel_title: title,
-    related_panel_score: Number((related.score || 0).toFixed(3)),
-    reason_for_decision: reuseExisting ? "existing_related_panel_high_similarity" : "no_related_panel_create_new"
-  });
-  return true;
-}
+/* MOVE_LATEST_VOICE_TASK_TO_REASONING_RE, detectMoveLatestVoiceTaskToReasoningIntent,
+ * collectLatestRelevantVoiceAssistantOutput, inferVoiceTaskPanelTitle,
+ * buildMovedVoiceTaskMarkdown, findRelatedReasoningLaneForVoiceTask,
+ * logMoveLatestVoiceTaskToReasoningDebug, maybeHandleMoveLatestVoiceTaskToReasoning
+ * -> moved to workmode/panels.js (Stage 13, 2026-05-31). The "MOVE LATEST VOICE
+ * RESULT -> REASONING PANEL" block now lives there. Call sites in this file
+ * (the four maybeHandleMoveLatestVoiceTaskToReasoning(...) invocations in the
+ * typed-input and voice/ASR handlers, plus the two
+ * detectMoveLatestVoiceTaskToReasoningIntent(s).matched gates) continue to
+ * resolve those names as bare identifiers through the shared classic-script
+ * global lexical environment at call time. The cross-file helpers the moved
+ * block calls back into app.js (topicTokensForWorkModeTopic, toTitleCaseWord,
+ * topicSimilarityScore, topicCoverageScore, REASONING_PANEL_ROUTE_REUSE_FLOOR,
+ * collectWorkModeReasoningExcerptForLaneIndex, collectWorkModeVoiceExcerptForContext,
+ * getReasoningPanelIndices, appendReasoningTurnMount, maybeReasoningScrollToLatest,
+ * patchReasoningLaneRegistryTitle, addBubble, commitServerUserTranscriptBubble,
+ * getActiveReasoningLaneIndex, renderWorkModeMarkdown, persistReasoningTabsState,
+ * endWorkModeReasoningLaneRun, playWorkModeTtsOnlyPhrase, setStatus,
+ * laneTopicSeedByIdx, laneReasoningTurnCountByIdx) likewise resolve via the
+ * same global environment because workmode/panels.js loads before app.js per
+ * index.html. */
 
 /**
  * Same-thread requests that still need the reasoning stream (implementation, proofs, full solves).
@@ -5733,13 +4828,22 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
 
   const transportEl = veraSpotifyTransportEligibility();
   const webReady = Boolean(window.__veraSpotifyPlayer && window.__veraSpotifyDeviceId);
+  const sourceState = (typeof veraMusicSourceState === "function") ? veraMusicSourceState() : null;
   const music = {
     title: String(now.title || musicTitleDom || "").trim(),
     artist: String(now.artist || musicArtistDom || "").trim(),
     is_playing: Boolean(now.active) && !Boolean(now.paused),
     paused: Boolean(now.paused),
     position_ms: Number(now.position_ms) || 0,
-    duration_ms: Number(now.duration_ms) || 0
+    duration_ms: Number(now.duration_ms) || 0,
+    // Source-state fields (2026-05-29 spec). Backend uses these to route
+    // "play X in my playlist" to the user's actually-selected playlist
+    // instead of doing a global Spotify search.
+    active_music_source: sourceState ? sourceState.active : "none",
+    builtin_state: sourceState ? sourceState.builtin.state : "stopped",
+    spotify_state: sourceState ? sourceState.spotify.state : "stopped",
+    current_playlist_id: String(window.__veraSpotifyActivePlaylistId || (sourceState ? sourceState.spotify.playlist_id : "") || ""),
+    current_playlist_name: String(window.__veraSpotifyActivePlaylistName || (sourceState ? sourceState.spotify.playlist_name : "") || "")
   };
   /* Only send skip hints when Web Playback is active; otherwise false looks like "no next track" to the server. */
   if (webReady) {
@@ -5885,15 +4989,29 @@ function spotifySyncNowStateFromWebSdk(state) {
 
   spotifyClearPendingIfSdkMatches(sdkUri);
   const cover = curTrack.album?.images?.[0]?.url || "";
+  const sdkTitle = curTrack.name || "";
+  const sdkArtist = (curTrack.artists || []).map((a) => a.name).filter(Boolean).join(", ");
+  const sdkDuration = Number(curTrack.duration_ms) || 0;
   spotifyUpdateNowState({
-    title: curTrack.name || "",
-    artist: (curTrack.artists || []).map((a) => a.name).filter(Boolean).join(", "),
+    title: sdkTitle,
+    artist: sdkArtist,
     cover_url: cover,
     position_ms,
-    duration_ms: Number(curTrack.duration_ms) || 0,
+    duration_ms: sdkDuration,
     paused,
     active,
     ...qf
+  });
+  // Mirror to the Spotify-only display snapshot so the Spotify tab can
+  // re-render this track even if built-in is currently audible.
+  captureMusicPanelDisplay("spotify", {
+    title: sdkTitle,
+    artist: sdkArtist,
+    uri: sdkUri,
+    cover_url: cover,
+    paused,
+    position_ms,
+    duration_ms: sdkDuration
   });
   window.__veraSpotifyPlaybackActive = active;
 }
@@ -5957,7 +5075,7 @@ async function spotifyRefreshWebPlaybackStateToUi(prefix) {
 }
 
 function spotifyApplyNowStateToPanel(prefix) {
-  const s = spotifyEnsureNowState();
+  const liveNow = spotifyEnsureNowState();
   const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
   const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
   const ph = document.getElementById(`${prefix}-spotify-art-placeholder`);
@@ -5973,6 +5091,61 @@ function spotifyApplyNowStateToPanel(prefix) {
   // `data-inactive-tab="1"` so CSS can dim non-essential controls.
   const selectedTab = getProductivityMusicSource(prefix);
   const activeSource = getActivePlaybackSource(prefix);
+  const sourceState = veraMusicSourceState();
+  // Pick the snapshot the selected tab should render. When the selected
+  // tab matches the active source we keep using the shared live state so
+  // progress/elapsed updates stay smooth; when they differ we fall back
+  // to the per-source display snapshot so each tab preserves its own
+  // last-known item (spec test 1 & 2).
+  let s = liveNow;
+  let displaySource = "live";
+  if (selectedTab === "builtin" && activeSource !== "builtin" && veraMusicPanelDisplayHasData("builtin")) {
+    const bd = sourceState.builtin;
+    s = {
+      title: bd.title || "",
+      artist: bd.subtitle || "",
+      cover_url: bd.cover_url || "",
+      position_ms: Number(bd.position_ms) || 0,
+      duration_ms: Number(bd.duration_ms) || 0,
+      paused: bd.paused !== false,
+      active: false,
+      queue_next_available: false,
+      queue_previous_count: 0,
+      disallow_skip_prev: false
+    };
+    displaySource = "builtin_snapshot";
+  } else if (selectedTab === "spotify" && activeSource !== "spotify" && veraMusicPanelDisplayHasData("spotify")) {
+    const sd = sourceState.spotify;
+    s = {
+      title: sd.title || "",
+      artist: sd.artist || sd.playlist_name || "",
+      cover_url: sd.cover_url || "",
+      position_ms: Number(sd.position_ms) || 0,
+      duration_ms: Number(sd.duration_ms) || 0,
+      paused: sd.paused !== false,
+      active: false,
+      queue_next_available: false,
+      queue_previous_count: 0,
+      disallow_skip_prev: false
+    };
+    displaySource = "spotify_snapshot";
+  }
+  try {
+    console.info("[music_panel_render]", {
+      prefix,
+      selected_tab: selectedTab,
+      active_playback_source: activeSource,
+      display_source: displaySource,
+      builtin_display_restored: displaySource === "builtin_snapshot",
+      spotify_display_restored: displaySource === "spotify_snapshot",
+      builtin_state: sourceState.builtin.state,
+      spotify_state: sourceState.spotify.state,
+      builtin_title: sourceState.builtin.title || "",
+      spotify_title: sourceState.spotify.title || "",
+      spotify_artist: sourceState.spotify.artist || "",
+      spotify_uri: sourceState.spotify.uri || ""
+    });
+  } catch (_) {}
   const badgeEl = document.getElementById(`${prefix}-music-source-badge`);
   const panelRoot = document.querySelector(`[data-productivity-root="${prefix}"]`);
   const spotifyBanner = document.getElementById(`${prefix}-spotify-inactive-banner`);
@@ -6000,7 +5173,9 @@ function spotifyApplyNowStateToPanel(prefix) {
   if (spotifyBanner instanceof HTMLElement) {
     if (selectedTab === "spotify" && activeSource === "builtin") {
       if (spotifyBannerText) {
-        const tt = (s.title || "").trim();
+        // Banner describes the OTHER source's live activity, so read the
+        // built-in snapshot rather than the selected-tab snapshot `s`.
+        const tt = (sourceState.builtin.title || liveNow.title || "").trim();
         spotifyBannerText.textContent = tt
           ? `Built-in Music is currently playing — ${tt}`
           : "Built-in Music is currently playing.";
@@ -6013,7 +5188,7 @@ function spotifyApplyNowStateToPanel(prefix) {
   if (builtinBanner instanceof HTMLElement) {
     if (selectedTab === "builtin" && activeSource === "spotify") {
       if (builtinBannerText) {
-        const tt = (s.title || "").trim();
+        const tt = (sourceState.spotify.title || liveNow.title || "").trim();
         builtinBannerText.textContent = tt
           ? `Spotify is currently playing — ${tt}`
           : "Spotify is currently playing.";
@@ -6368,14 +5543,26 @@ function wireProductivityPanelEvents(prefix) {
   wireFreeMusicAudioElement(prefix);
 
   document.getElementById(`${prefix}-music-tab-spotify`)?.addEventListener("click", () => {
-    // PART 2 — selecting the Spotify tab changes the control surface only.
-    // We do NOT stop Built-in music here; if Built-in is currently the
-    // active source, the panel renders the inactive-source banner so the
-    // user can explicitly switch via the banner CTA or by starting a
-    // Spotify track from the search/playlist controls.
+    // Spec 2026-05-29 Rule 1: UI tab switch is visual only.
+    // We do NOT stop, resume, or seek Built-in/Spotify just because the
+    // user clicked a tab. The renderer picks up the Spotify display
+    // snapshot below so the panel re-renders the last known Spotify
+    // track even when Built-in is still the active audio source.
+    const prevTab = getProductivityMusicSource(prefix);
     setProductivityMusicSource(prefix, "spotify");
     spotifyApplyNowStateToPanel(prefix);
     spotifySyncPlayButtonUi(prefix);
+    console.info("[music_source_state]", {
+      music_tab_switched: true,
+      ui_tab_only_no_playback_change: true,
+      playback_source_changed: false,
+      active_tab_before: prevTab,
+      active_tab_after: "spotify",
+      spotify_display_restored: true,
+      blocked_auto_resume_reason: "ui_tab_switch_only"
+    });
+    // Pull the latest live Spotify state in the background so progress
+    // catches up if Spotify happens to be playing.
     void spotifyRefreshWebPlaybackStateToUi(prefix);
   });
 
@@ -6430,38 +5617,36 @@ function wireProductivityPanelEvents(prefix) {
     spotifySyncPlayButtonUi(prefix);
   });
   document.getElementById(`${prefix}-music-tab-builtin`)?.addEventListener("click", async () => {
-    // PART 2 — switching to the Built-in tab is a CONTROL-SURFACE change.
-    // It must not stop or reset Spotify playback just because the user
-    // clicked the tab; it also must not overwrite the shared now-state
-    // with a stale "Nothing playing" placeholder when Spotify is actually
-    // playing. The previous implementation paused Spotify on every tab
-    // click — that's now reserved for explicit "Switch playback to
-    // Built-in" intents (the inactive-source-banner button or the play
-    // controls inside the Built-in stack itself).
+    // Spec 2026-05-29 Rule 1: UI tab switch is visual only.
+    // Switching to the Built-in tab must not stop, resume, or reset
+    // Spotify; the renderer reads from the Built-in display snapshot so
+    // the tab still shows the user's last lo-fi/sound even when Spotify
+    // is currently the audible source. We also do not blank the shared
+    // now-state — that was eating the Built-in snapshot when Spotify
+    // hadn't been played yet (spec test 1).
+    const prevTab = getProductivityMusicSource(prefix);
     setProductivityMusicSource(prefix, "builtin");
     const fa = document.getElementById(`${prefix}-free-music-audio`);
     const builtinHasMedia = !!(fa?.src && !fa.ended);
-    const activeSource = getActivePlaybackSource(prefix);
     if (builtinHasMedia) {
+      // Refresh the snapshot from the live audio element so the tab
+      // matches the audio's current position when built-in is actually
+      // the audible source. Safe when suspended too — the audio element
+      // keeps its currentTime while paused.
       freeMusicSyncNowFromAudio(prefix);
-    } else if (activeSource === "none") {
-      // Only blank the shared now-state when nothing is playing globally.
-      spotifyUpdateNowState({
-        title: "Nothing playing",
-        artist: "Choose a playlist or sound below.",
-        cover_url: "",
-        position_ms: 0,
-        duration_ms: 0,
-        paused: true,
-        active: false,
-        queue_next_available: false,
-        queue_previous_count: 0,
-        disallow_skip_prev: false
-      });
     }
     await ensureFreeMusicCatalogUi(prefix);
     spotifyApplyNowStateToPanel(prefix);
     spotifySyncPlayButtonUi(prefix);
+    console.info("[music_source_state]", {
+      music_tab_switched: true,
+      ui_tab_only_no_playback_change: true,
+      playback_source_changed: false,
+      active_tab_before: prevTab,
+      active_tab_after: "builtin",
+      builtin_display_restored: true,
+      blocked_auto_resume_reason: "ui_tab_switch_only"
+    });
   });
 
   const applyPlaylistSelectedUi = () => {
@@ -7060,13 +6245,15 @@ wireProductivityModeButtons();
  * moved to workmode/checklist.js (Stage 9, 2026-05-27). */
 const VERA_TAB_ACTIVE_USER_KEY = "vera_active_user_tab_v1";
 const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
-const REASONING_TABS_DEFAULT = 3;
-const REASONING_TABS_MAX = 8;
-const REASONING_UNTITLED_TAB_NAME = "Untitled";
-const REASONING_TABS_STATE_STORAGE_KEY_PREFIX = "vera_reasoning_tabs_state_v2";
+/* REASONING_TABS_DEFAULT, REASONING_TABS_MAX, REASONING_UNTITLED_TAB_NAME,
+ * REASONING_TABS_STATE_STORAGE_KEY_PREFIX -> moved to workmode/panels.js
+ * (Stage 20 / Patch A-4, 2026-05-31). Bare-identifier references from the
+ * rest of this file (and from other classic-script modules) continue to
+ * resolve via the shared global lexical environment at call time. */
 const WORK_MODE_STATE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERA_CHAT_STATE_STORAGE_KEY_PREFIX = "vera_chat_state_v1";
 let chatStateHydrating = false;
+window.veraIsChatStateHydrating = () => chatStateHydrating;
 
 /** Same id source as `getSessionId()` for VERA — must never return "" or chat restore/save keys drift apart. */
 function ensureVeraSessionIdForPersistence() {
@@ -7199,1061 +6386,65 @@ function restoreVeraChatState() {
   }
 }
 
-function getReasoningTabsStateStorageKey() {
-  return `${REASONING_TABS_STATE_STORAGE_KEY_PREFIX}:${getSessionId()}`;
-}
-
-function getReasoningPanelCountToEnsure(savedByIdx) {
-  if (!(savedByIdx instanceof Map) || savedByIdx.size === 0) return REASONING_TABS_DEFAULT;
-  let maxIdx = -1;
-  for (const k of savedByIdx.keys()) {
-    const n = Number(k);
-    if (Number.isFinite(n)) maxIdx = Math.max(maxIdx, n);
-  }
-  if (maxIdx < 0) return REASONING_TABS_DEFAULT;
-  return Math.min(REASONING_TABS_MAX, Math.max(REASONING_TABS_DEFAULT, maxIdx + 1));
-}
-
-function getReasoningPanelIndices() {
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return [0, 1, 2];
-  const idxs = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")]
-    .map((p) => Number(p.dataset.tabIndex))
-    .filter((n) => Number.isFinite(n));
-  if (!idxs.length) return [0, 1, 2];
-  return idxs.sort((a, b) => a - b);
-}
-
-/** After panels are added/removed/rebuilt, keep busy flags aligned with `data-tab-index` keys. */
-function syncReasoningLaneBusySlotsAfterDomChange() {
-  const idxs = getReasoningPanelIndices();
-  const next = new Map();
-  for (const i of idxs) {
-    next.set(i, Boolean(workModeReasoningLaneBusy.get(i)));
-  }
-  workModeReasoningLaneBusy.clear();
-  for (const [k, v] of next) workModeReasoningLaneBusy.set(k, v);
-  syncWorkModeReasoningCancelButton();
-}
-
-/* getWorkModeReasoningLaneLabel, getWorkModeReasoningLaneId,
- * createReasoningLanePanel → moved to workmode/panels.js
- * (Stage 8, 2026-05-27). */
-
-function ensureFixedReasoningLanePanels(savedByIdx = new Map(), activeIdx = 0) {
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return;
-  const count = getReasoningPanelCountToEnsure(savedByIdx);
-  panelsRoot.replaceChildren();
-  for (let i = 0; i < count; i++) {
-    const saved = savedByIdx.get(i) || {};
-    const isActive = Number(activeIdx) === i || (i === 0 && (activeIdx == null || activeIdx === ""));
-    const panel = createReasoningLanePanel(i, saved.html || "", isActive, {
-      topic: saved.topic,
-      topicSet: saved.topicSet,
-      laneLabel: saved.laneLabel,
-      laneId: saved.laneId
-    });
-    panelsRoot.appendChild(panel);
-  }
-  syncPanelStableLaneIdsInDom();
-  migrateLegacyLaneRegistryKeys();
-  syncReasoningLaneBusySlotsAfterDomChange();
-}
-
-/* getReasoningScrollElByLane → moved to workmode/panels.js
- * (Stage 8, 2026-05-27). */
-
-/** Snapshot reasoning tabs to localStorage — call only on page unload (see wireReasoningTabStrip). */
-function persistReasoningTabsState() {
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return;
-  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
-  const payload = {
-    ts: Date.now(),
-    tabs: panels.map((p) => ({
-      idx: Number(p.dataset.tabIndex) || 0,
-      laneId: String(p.dataset.laneId || "").trim() || ensureStableLaneIdForPanelIndex(Number(p.dataset.tabIndex) || 0),
-      topic: String(p.dataset.tabTopic || REASONING_UNTITLED_TAB_NAME),
-      topicSet: String(p.dataset.tabTopicSet || "0"),
-      laneLabel: String(p.dataset.laneLabel || "").trim(),
-      active: p.classList.contains("is-active"),
-      html: (p.querySelector(".vera-reasoning-md-panel") || p.querySelector(".vera-reasoning-scroll"))?.innerHTML || ""
-    }))
-  };
-  try {
-    localStorage.setItem(getReasoningTabsStateStorageKey(), JSON.stringify(payload));
-  } catch (_) {}
-}
-
-function restoreReasoningTabsState() {
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return;
-  let raw = "";
-  try {
-    raw = localStorage.getItem(getReasoningTabsStateStorageKey()) || "";
-  } catch (_) {
-    return;
-  }
-  if (!raw) {
-    ensureFixedReasoningLanePanels(new Map(), 0);
-    return;
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (_) {
-    ensureFixedReasoningLanePanels(new Map(), 0);
-    return;
-  }
-  const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs.slice(0, REASONING_TABS_MAX) : [];
-  initWorkModeStableLaneIdSlots();
-  if (!tabs.length) {
-    ensureFixedReasoningLanePanels(new Map(), 0);
-    return;
-  }
-  const ts = Number(parsed?.ts) || 0;
-  if (!ts || Date.now() - ts > WORK_MODE_STATE_TTL_MS) {
-    try {
-      localStorage.removeItem(getReasoningTabsStateStorageKey());
-    } catch (_) {}
-    ensureFixedReasoningLanePanels(new Map(), 0);
-    return;
-  }
-  const savedByIdx = new Map();
-  let activeIdx = 0;
-  tabs.forEach((t) => {
-    const idx = Number(t?.idx);
-    if (!Number.isFinite(idx) || idx < 0 || idx >= REASONING_TABS_MAX) return;
-    if (Boolean(t?.active)) activeIdx = idx;
-    const laneId = String(t?.laneId || "").trim() || ensureStableLaneIdForPanelIndex(idx);
-    if (laneId) workModeStableLaneIdByIdx[idx] = laneId;
-    savedByIdx.set(idx, {
-      html: String(t?.html || ""),
-      topic: String(t?.topic || REASONING_UNTITLED_TAB_NAME),
-      topicSet: String(t?.topicSet != null ? t.topicSet : "0"),
-      laneLabel: String(t?.laneLabel || "").trim() || undefined,
-      laneId
-    });
-  });
-  ensureFixedReasoningLanePanels(savedByIdx, activeIdx);
-}
-
-function getActiveReasoningScrollEl() {
-  const p = document.querySelector("#vera-reasoning-tab-panels .vera-reasoning-tab-panel.is-active .vera-reasoning-md-panel");
-  if (p) return p;
-  return document.getElementById("vera-reasoning-md");
-}
-
-/** Each assistant reasoning run appends a new block inside the active space (scroll container). */
-function appendReasoningTurnMount(scrollEl) {
-  let el = scrollEl;
-  if (!el) {
-    el = document.getElementById("vera-reasoning-md");
-    if (!el) return null;
-  }
-  if (el.querySelector(".vera-reasoning-turn")) {
-    const sep = document.createElement("div");
-    sep.className = "vera-reasoning-turn-sep";
-    const hr = document.createElement("hr");
-    hr.className = "vera-reasoning-turn-hr";
-    hr.setAttribute("aria-hidden", "true");
-    sep.appendChild(hr);
-    el.appendChild(sep);
-  }
-  const turn = document.createElement("div");
-  turn.className = "vera-reasoning-turn";
-  el.appendChild(turn);
-  return turn;
-}
-
-/** Tab / panel titles safe to replace with LLM or heuristic (user-defined titles stay). */
-/* isGenericAutoRenamableReasoningPanelTitle + getReasoningTabTopicLabel
- * → moved to workmode/panels.js (Stage 8, 2026-05-27). */
-
-function toTitleCaseWord(w) {
-  if (!w) return "";
-  if (/^[A-Z0-9]{2,}$/.test(w)) return w;
-  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-}
-
-/** Skip headings / tab titles that are generic assistant filler, not the task topic. */
-function isBanalReasoningTopicLabel(s) {
-  const t = String(s || "")
-    .toLowerCase()
-    .replace(/[—–-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!t) return true;
-  if (/^(yes|yeah|yep|sure|ok|okay|absolutely)\b/.test(t)) return true;
-  if (/\b(i can help|i'll help|i will help|happy to help|let me help|here to help)\b/.test(t)) return true;
-  if (/\b(work through it|help you work|walk you through)\b/.test(t) && t.split(/\s+/).length <= 8) return true;
-  return false;
-}
-
-function compactTopicPhrase(text, maxWords = 4) {
-  const raw = String(text || "")
-    .replace(/[`*_#>[\]()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!raw) return "";
-  const withoutLead = raw
-    .replace(/^(here(?:'s| is)\s+)?(?:an?\s+)?(?:short\s+)?example(?:\s+of)?[:\-\s]*/i, "")
-    .trim();
-  const candidate = withoutLead || raw;
-  const words = candidate.match(/[A-Za-z0-9][A-Za-z0-9'+-]*/g) || [];
-  if (!words.length) return "";
-  const badEdge = new Set([
-    "a", "an", "the", "is", "are", "was", "were", "be", "being", "been", "to", "of", "and", "or",
-    "for", "with", "in", "on", "at", "from", "by", "as", "that", "this"
-  ]);
-  let start = 0;
-  let end = words.length;
-  while (start < end && badEdge.has(words[start].toLowerCase())) start += 1;
-  while (end > start && badEdge.has(words[end - 1].toLowerCase())) end -= 1;
-  const core = words.slice(start, end).slice(0, maxWords);
-  if (!core.length) return "";
-  const out = core.map((w) => toTitleCaseWord(w)).join(" ");
-  if (isBanalReasoningTopicLabel(out)) return "";
-  return out;
-}
-
-function keywordTopicFromText(text, maxWords = 4) {
-  const tokens = (String(text || "").toLowerCase().match(/[a-z][a-z0-9'+-]*/g) || []);
-  if (!tokens.length) return "";
-  const stop = new Set([
-    "the", "and", "for", "with", "that", "this", "from", "into", "your", "you", "show", "example",
-    "short", "here", "there", "what", "when", "where", "which", "about", "have", "has", "had", "can",
-    "could", "would", "should", "step", "steps", "then", "than", "just", "more", "most", "some", "any",
-    "using", "use", "used", "also", "very", "much", "into", "onto", "over", "under",
-    "yes", "yeah", "yep", "sure", "help", "i'll", "okay", "ok"
-  ]);
-  const counts = new Map();
-  const firstPos = new Map();
-  tokens.forEach((t, i) => {
-    if (t.length < 3 || stop.has(t)) return;
-    if (!firstPos.has(t)) firstPos.set(t, i);
-    counts.set(t, (counts.get(t) || 0) + 1);
-  });
-  const ranked = [...counts.entries()]
-    .sort((a, b) => (b[1] - a[1]) || ((firstPos.get(a[0]) || 0) - (firstPos.get(b[0]) || 0)))
-    .slice(0, maxWords)
-    .map(([t]) => toTitleCaseWord(t));
-  return ranked.join(" ");
-}
-
-function extractMarkdownBoldStandaloneTitle(markdownText) {
-  const lines = String(markdownText || "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  for (const line of lines) {
-    const m = line.match(/^\*{2}([^*]+)\*{2}\s*$/);
-    if (!m) continue;
-    const inner = String(m[1] || "").trim();
-    if (inner.length < 6 || inner.length > 160) continue;
-    if (isBanalReasoningTopicLabel(inner)) continue;
-    const t = compactTopicPhrase(inner, 6);
-    if (t) return t;
-  }
-  return "";
-}
-
-/** First substantive non-heading, non-list line (e.g. "Delta-Hedging a Short 45-Strike Call"). */
-function extractFirstTitleLikeMarkdownLine(markdownText) {
-  const lines = String(markdownText || "").split("\n");
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (/^#{1,6}\s+/.test(line)) continue;
-    if (/^[-*+]\s+/.test(line) || /^\d+\.\s+/.test(line)) continue;
-    if (/^>{1,3}\s+/.test(line)) continue;
-    if (line.length < 12 || line.length > 160) continue;
-    let cleaned = line.replace(/^\*{1,2}|\*{1,2}$/g, "").replace(/\*\*([^*]+)\*\*/g, "$1").trim();
-    if (cleaned.length < 12) continue;
-    if (isBanalReasoningTopicLabel(cleaned)) continue;
-    const t = compactTopicPhrase(cleaned, 10);
-    if (t && t.length >= 6) return t;
-  }
-  return "";
-}
-
-function normalizeMarkdownLeadForHeadingExtract(markdown) {
-  return String(markdown || "")
-    .replace(/^\uFEFF/, "")
-    .replace(/^[\u200B-\u200D\uFEFF]+/, "")
-    .trimStart();
-}
-
-/**
- * First line / start of markdown begins with `#` → lane/tab title (handles heading + body on one line).
- * @returns {{ extracted_heading: string, extraction_rejected_reason: string, md_first_200: string, starts_with_hash: boolean }}
- */
-function diagnoseLeadingMarkdownHeadingExtraction(markdown) {
-  const mdNorm = normalizeMarkdownLeadForHeadingExtract(markdown);
-  const md_first_200 = mdNorm.slice(0, 200);
-  const starts_with_hash = mdNorm.startsWith("#");
-  const fail = (reason) => ({
-    extracted_heading: "",
-    extraction_rejected_reason: reason,
-    md_first_200,
-    starts_with_hash
-  });
-  if (!mdNorm) return fail("empty_markdown");
-  if (!starts_with_hash) return fail("does_not_start_with_hash_after_trimStart");
-  const firstLine = mdNorm.split("\n")[0].trim();
-  const m = firstLine.match(/^#{1,6}\s+(.+)$/);
-  if (!m) return fail("first_line_not_hash_heading_pattern");
-  let rest = String(m[1] || "").trim();
-  if (rest.includes(" ## ")) rest = rest.split(/\s+##\s+/)[0].trim();
-  rest = rest.replace(/\s+#+\s*$/, "").trim();
-  const mashLong = rest.match(
-    /^(.+?)\s+The\s+[A-Z][a-z]+(?:\s+[a-zA-Z'’-]+){0,8}\s+(?:was|is|are|has|had|were|became)\b/i
-  );
-  if (mashLong) rest = mashLong[1].trim();
-  else {
-    const mashIt = rest.match(/^(.+?)\s+It\s+was\b/i);
-    if (mashIt) rest = mashIt[1].trim();
-    else {
-      const mashDup = rest.match(/^(.+?)\s+The\s+(.+?)\s+(?:was|is|are)\b/i);
-      if (mashDup) {
-        const a = mashDup[1].trim().toLowerCase();
-        const b = mashDup[2].trim().toLowerCase();
-        if (b.startsWith(a) || a === b) rest = mashDup[1].trim();
-      }
-    }
-  }
-  rest = rest.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1");
-  rest = rest.replace(/\s+/g, " ").trim();
-  if (rest.length < 2) return fail("heading_text_too_short_after_parse");
-  let titled = rest;
-  const wordCount = rest.split(/\s+/).filter(Boolean).length;
-  if (wordCount > 8) {
-    titled =
-      compactTopicPhrase(rest, 6) ||
-      rest
-        .split(/\s+/)
-        .slice(0, 6)
-        .join(" ")
-        .trim();
-  }
-  if (!titled || isBanalReasoningTopicLabel(titled)) return fail("banal_or_empty_topic_label");
-  const out = sanitizeLlmReasoningPanelTitle(titled);
-  if (!out) return fail("sanitizeLlmReasoningPanelTitle_empty");
-  return {
-    extracted_heading: out,
-    extraction_rejected_reason: "",
-    md_first_200,
-    starts_with_hash: true
-  };
-}
-
-function extractLeadingMarkdownHeadingAsLaneTitle(markdown) {
-  return diagnoseLeadingMarkdownHeadingExtraction(markdown).extracted_heading || "";
-}
-
-function logHeadingTitleExtractAttempt(laneId, oldTitle, mdSource, markdown) {
-  const diag = diagnoseLeadingMarkdownHeadingExtraction(markdown);
-  try {
-    console.info("[heading_title_extract_attempt]", {
-      lane_id: laneId ?? null,
-      old_title: String(oldTitle ?? ""),
-      old_title_is_generic: isGenericAutoRenamableReasoningPanelTitle(oldTitle),
-      md_source: mdSource,
-      md_first_200: diag.md_first_200,
-      starts_with_hash: diag.starts_with_hash,
-      extracted_heading: diag.extracted_heading || "",
-      extraction_rejected_reason: diag.extraction_rejected_reason || ""
-    });
-  } catch (_) {}
-  return diag;
-}
-
-/**
- * If lane title is generic and markdown has a leading # heading, sync registry + tab DOM.
- * @returns {{ applied: boolean, allowed: boolean, reason: string, extracted_heading: string }}
- */
-function maybeSyncGenericLaneTitleFromMarkdown(laneId, markdown, calledFrom) {
-  const lid = String(laneId || "").trim();
-  const source = String(calledFrom || "maybeSyncGenericLaneTitleFromMarkdown").trim();
-  const panel = lid ? getReasoningPanelElementByLaneId(lid) : null;
-  const regBefore = lid ? getWorkModeLaneHandoff(lid) : null;
-  const oldFromDom = panel instanceof HTMLElement ? String(getReasoningTabTopicLabel(panel) || "").trim() : "";
-  const oldFromReg = String(regBefore?.title || regBefore?.lane_title || "").trim();
-  const oldTitle = oldFromDom || oldFromReg || (lid ? getWorkModeLaneTitle(lid) : "");
-  const before_registry_title = oldFromReg || oldTitle;
-
-  const mdRaw = String(markdown || "").trim();
-  const mdSource = mdRaw ? "main_excerpt" : "none";
-  const diag = logHeadingTitleExtractAttempt(lid, oldTitle, mdSource, mdRaw);
-  const extracted = diag.extracted_heading || "";
-
-  let allowed = false;
-  let reason = "not_attempted";
-  if (!lid) reason = "no_lane_id";
-  else if (!extracted) reason = diag.extraction_rejected_reason || "extract_empty";
-  else if (!isGenericAutoRenamableReasoningPanelTitle(oldTitle)) {
-    reason = "old_title_not_generic_auto_renamable";
-  } else {
-    allowed = true;
-    reason = "heading_sync_apply";
-  }
-
-  let domSynced = false;
-  let after_registry_title = before_registry_title;
-
-  if (allowed && extracted) {
-    const row = regBefore || { lane_id: lid, active_lane_id: lid };
-    setWorkModeLaneHandoff(
-      lid,
-      {
-        ...row,
-        lane_id: lid,
-        active_lane_id: lid,
-        title: extracted,
-        lane_title: extracted
-      },
-      { source: `heading_title_sync:${source}`, forceSubstantive: false }
-    );
-  }
-
-  const regAfter = lid ? getWorkModeLaneHandoff(lid) : null;
-  after_registry_title = String(regAfter?.title || regAfter?.lane_title || "").trim() || before_registry_title;
-
-  const panelAfter = lid ? getReasoningPanelElementByLaneId(lid) : null;
-  if (allowed && extracted && panelAfter instanceof HTMLElement) {
-    panelAfter.dataset.laneLabel = extracted;
-    panelAfter.dataset.tabTopic = extracted;
-    panelAfter.dataset.tabTopicSet = "1";
-    panelAfter.dataset.reasoningLlmTitleDone = "1";
-    renderReasoningTabStrip();
-    try {
-      persistReasoningTabsState();
-    } catch (_) {}
-    domSynced = true;
-  } else if (allowed && extracted && !(panelAfter instanceof HTMLElement)) {
-    reason = `${reason};no_panel_dom`;
-  }
-
-  const tab_text_after =
-    panelAfter instanceof HTMLElement ? String(getReasoningTabTopicLabel(panelAfter) || "").trim() : "(no_panel)";
-
-  try {
-    console.info("[heading_title_apply_attempt]", {
-      lane_id: lid || null,
-      old_title: oldTitle,
-      extracted_heading: extracted || "",
-      allowed,
-      reason,
-      before_registry_title,
-      after_registry_title,
-      dom_synced: domSynced,
-      tab_text_after,
-      panel_dataset_lane_label_after:
-        panelAfter instanceof HTMLElement ? String(panelAfter.dataset.laneLabel || "").trim() : "",
-      panel_dataset_tab_topic_after:
-        panelAfter instanceof HTMLElement ? String(panelAfter.dataset.tabTopic || "").trim() : "",
-      called_from: source
-    });
-  } catch (_) {}
-
-  return {
-    applied: allowed && Boolean(extracted) && after_registry_title === extracted,
-    allowed,
-    reason,
-    extracted_heading: extracted
-  };
-}
-
-function buildReasoningTopicLabel({ summaryText = "", markdownText = "", userPrompt = "" } = {}) {
-  const md = String(markdownText || "");
-  const headingLines = md
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /^#{1,6}\s+/.test(line))
-    .map((line) => line.replace(/^#{1,6}\s+/, "").trim());
-  for (const h of headingLines) {
-    if (isBanalReasoningTopicLabel(h)) continue;
-    const t = compactTopicPhrase(h, 4);
-    if (t) return t;
-  }
-  const boldTitle = extractMarkdownBoldStandaloneTitle(md);
-  if (boldTitle) return boldTitle;
-  const firstLineTitle = extractFirstTitleLikeMarkdownLine(md);
-  if (firstLineTitle) return firstLineTitle;
-  const keywordTopic = keywordTopicFromText(`${summaryText}\n${markdownText}`, 4);
-  if (keywordTopic && !isBanalReasoningTopicLabel(keywordTopic)) return keywordTopic;
-  const summaryTopic = compactTopicPhrase(summaryText, 4);
-  if (summaryTopic && !isBanalReasoningTopicLabel(summaryTopic)) return summaryTopic;
-  const promptTopic = compactTopicPhrase(userPrompt, 4);
-  if (promptTopic && !isBanalReasoningTopicLabel(promptTopic)) return promptTopic;
-  return "";
-}
-
-function readPersistedReasoningTabSnapshotForLane(laneId, tabIndex) {
-  let localStorage_laneLabel = "(unread)";
-  let localStorage_topic = "(unread)";
-  let localStorage_title = "(unread)";
-  try {
-    const raw = localStorage.getItem(getReasoningTabsStateStorageKey());
-    if (!raw || !String(raw).trim()) {
-      return { localStorage_laneLabel: "(none)", localStorage_topic: "(none)", localStorage_title: "(empty_store)" };
-    }
-    const parsed = JSON.parse(raw);
-    const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs : [];
-    const lid = String(laneId || "").trim();
-    let row = lid ? tabs.find((x) => String(x?.laneId || "").trim() === lid) : null;
-    if (!row && tabIndex != null && Number.isFinite(Number(tabIndex))) {
-      row = tabs.find((x) => Number(x?.idx) === Number(tabIndex));
-    }
-    if (!row) {
-      return {
-        localStorage_laneLabel: "(no_matching_tab)",
-        localStorage_topic: "(no_matching_tab)",
-        localStorage_title: "(no_matching_tab)"
-      };
-    }
-    localStorage_laneLabel = String(row?.laneLabel || "").trim() || "(empty)";
-    localStorage_topic = String(row?.topic || "").trim() || "(empty)";
-    localStorage_title = `laneLabel=${localStorage_laneLabel}; topic=${localStorage_topic}`;
-  } catch (_) {
-    localStorage_title = "(localStorage_parse_failed)";
-    localStorage_laneLabel = "(error)";
-    localStorage_topic = "(error)";
-  }
-  return { localStorage_laneLabel, localStorage_topic, localStorage_title };
-}
-
-function reasoningTitleCandidateDebugLog(panel, blob) {
-  try {
-    const p = panel instanceof HTMLElement ? panel : null;
-    const eff = p ? String(getReasoningTabTopicLabel(p) || "").trim() : "";
-    console.info("[reasoning_title_candidate]", {
-      turn_id: blob.turn_id ?? null,
-      lane_id:
-        (p ? String(p.dataset.laneId || "").trim() : String(blob.lane_id ?? "").trim()) || null,
-      old_lane_label: p ? String(p.dataset.laneLabel || "").trim() : "",
-      old_tab_topic: p ? String(p.dataset.tabTopic || "").trim() : "",
-      effective_old_title: eff,
-      is_generic_auto_renamable: p ? isGenericAutoRenamableReasoningPanelTitle(eff) : false,
-      candidate_title: blob.candidate_title ?? "",
-      candidate_source: blob.candidate_source ?? "",
-      called_from: blob.called_from ?? "",
-      ...(blob.extra && typeof blob.extra === "object" ? blob.extra : {})
-    });
-  } catch (_) {}
-}
-
-function reasoningTitleUpdateDebugLog(lane_id, old_title, new_title, allowed, reason) {
-  try {
-    console.info("[reasoning_title_update]", {
-      lane_id: lane_id ?? null,
-      old_title: String(old_title ?? ""),
-      new_title: String(new_title ?? ""),
-      allowed: Boolean(allowed),
-      reason: String(reason || "")
-    });
-  } catch (_) {}
-}
-
-function reasoningLaneTitleSyncDebugLog(panel) {
-  try {
-    if (!(panel instanceof HTMLElement)) return;
-    try {
-      persistReasoningTabsState();
-    } catch (_) {}
-    const lane_id = String(panel.dataset.laneId || "").trim() || null;
-    const idx = Number(panel.dataset.tabIndex);
-    const tab_text = String(getReasoningTabTopicLabel(panel) || "").trim();
-    const reg = lane_id ? getWorkModeLaneHandoff(lane_id) : null;
-    const persisted = readPersistedReasoningTabSnapshotForLane(lane_id, idx);
-    console.info("[lane_title_sync]", {
-      lane_id,
-      registry_title: String(reg?.title || reg?.lane_title || "").trim() || "(none)",
-      tab_text,
-      panel_dataset_lane_label: String(panel.dataset.laneLabel || "").trim(),
-      panel_dataset_tab_topic: String(panel.dataset.tabTopic || "").trim(),
-      localStorage_title: persisted.localStorage_title
-    });
-  } catch (_) {}
-}
-
-function reasoningLlmTitleQueueDecision(panel) {
-  if (!(panel instanceof HTMLElement)) {
-    return { ok: false, reason: "not_html_element", effective_title: "", detail: {} };
-  }
-  if (!isVeraWorkModeOn()) {
-    return { ok: false, reason: "work_mode_off", effective_title: "", detail: {} };
-  }
-  if (panel.dataset.reasoningLlmTitleDone === "1") {
-    return { ok: false, reason: "reasoningLlmTitleDone_set", effective_title: "", detail: {} };
-  }
-  const effective_title = String(getReasoningTabTopicLabel(panel) || "").trim();
-  if (!isGenericAutoRenamableReasoningPanelTitle(effective_title)) {
-    return {
-      ok: false,
-      reason: "effective_title_not_generic_auto_renamable",
-      effective_title,
-      detail: {
-        reasoningLlmTitleDone: panel.dataset.reasoningLlmTitleDone || "",
-        tabTopicSet: panel.dataset.tabTopicSet || ""
-      }
-    };
-  }
-  return { ok: true, reason: "eligible_for_llm_title_queue", effective_title, detail: {} };
-}
-
-function setReasoningTabTopicFromFinal(turnEl, opts = {}) {
-  const calledFrom = String(opts.calledFrom ?? opts.called_from ?? "wm.reasoning_title.unknown_path").trim();
-  const turnId = opts?.turnId ?? opts?.turn_id ?? null;
-  try {
-    console.info("[reasoning_title_path]", {
-      phase: "setReasoningTabTopicFromFinal_enter",
-      called_from: calledFrom,
-      turn_id: turnId
-    });
-  } catch (_) {}
-
-  if (!turnEl) {
-    reasoningTitleCandidateDebugLog(null, {
-      turn_id: turnId,
-      lane_id: null,
-      candidate_title: "",
-      candidate_source: "(none)",
-      called_from: `${calledFrom}.skip_no_turnEl`,
-      extra: { note: "turnEl falsy — title path never ran" }
-    });
-    reasoningTitleUpdateDebugLog(null, "(n/a)", "(n/a)", false, "skip_heuristic_missing_turn_el");
-    return;
-  }
-
-  const panel = turnEl.closest(".vera-reasoning-tab-panel");
-  if (!(panel instanceof HTMLElement)) {
-    reasoningTitleCandidateDebugLog(null, {
-      turn_id: turnId,
-      lane_id: null,
-      candidate_title: "",
-      candidate_source: "(none)",
-      called_from: `${calledFrom}.skip_no_parent_panel`,
-      extra: { note: ".closest vera-reasoning-tab-panel missing" }
-    });
-    reasoningTitleUpdateDebugLog(null, "(n/a)", "(n/a)", false, "skip_heuristic_turn_not_inside_tab_panel");
-    return;
-  }
-
-  const laneId = String(panel.dataset.laneId || "").trim();
-  const panelIdx = Number(panel.dataset.tabIndex);
-  if (!panel.isConnected) {
-    reasoningTitleUpdateDebugLog(
-      laneId || null,
-      String(getReasoningTabTopicLabel(panel) || "").trim(),
-      "",
-      false,
-      "skip_heuristic_panel_removed_from_dom_before_title_apply"
-    );
-    return;
-  }
-  if (Number.isFinite(panelIdx)) {
-    const currentPanelForIndex = document.querySelector(
-      `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${panelIdx}"]`
-    );
-    const currentLaneId = String(currentPanelForIndex?.dataset?.laneId || "").trim();
-    if (currentPanelForIndex && currentLaneId && laneId && currentLaneId !== laneId) {
-      reasoningTitleUpdateDebugLog(
-        laneId || null,
-        String(getReasoningTabTopicLabel(panel) || "").trim(),
-        "",
-        false,
-        "skip_heuristic_panel_identity_changed_before_title_apply"
-      );
-      try {
-        console.info("[reasoning_title_stale_apply_blocked]", {
-          original_lane_id: laneId,
-          current_lane_id: currentLaneId,
-          tab_index: panelIdx,
-          candidate_title: "",
-          called_from: calledFrom,
-        });
-      } catch (_) {}
-      return;
-    }
-  }
-  const display = String(getReasoningTabTopicLabel(panel) || "").trim();
-  if (!isGenericAutoRenamableReasoningPanelTitle(display)) {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: turnId,
-      candidate_title: "",
-      candidate_source: "heuristic_blocked_precheck",
-      called_from,
-      extra: {}
-    });
-    reasoningTitleUpdateDebugLog(
-      laneId || null,
-      display,
-      "",
-      false,
-      "skip_effective_title_not_generic_auto_renamable"
-    );
-    return;
-  }
-
-  const topic = buildReasoningTopicLabel(opts);
-  if (!topic) {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: turnId,
-      candidate_title: "",
-      candidate_source: "heuristic_failed_no_candidate_from_content",
-      called_from,
-      extra: {}
-    });
-    reasoningTitleUpdateDebugLog(
-      laneId || null,
-      display,
-      "",
-      false,
-      "skip_heuristic_buildReasoningTopicLabel_empty"
-    );
-    return;
-  }
-
-  reasoningTitleCandidateDebugLog(panel, {
-    turn_id: turnId,
-    candidate_title: topic,
-    candidate_source: "heuristic_from_stream_labels",
-    called_from
-  });
-
-  reasoningTitleUpdateDebugLog(laneId || null, display, topic, true, "applied_heuristic_to_dom_and_registry");
-
-  panel.dataset.laneLabel = topic;
-  panel.dataset.tabTopic = topic;
-  panel.dataset.tabTopicSet = "1";
-  try {
-    patchReasoningLaneRegistryTitle(laneId, topic, `heuristic_from_stream:${calledFrom}`);
-  } catch (_) {}
-  renderReasoningTabStrip();
-  try {
-    persistReasoningTabsState();
-  } catch (_) {}
-  reasoningLaneTitleSyncDebugLog(panel);
-}
-
-/* isDefaultWorkModeReasoningPanelLaneLabel → moved to workmode/panels.js
- * (Stage 8, 2026-05-27). */
-
-function sanitizeLlmReasoningPanelTitle(s) {
-  let t = String(s || "")
-    .replace(/\s+/g, " ")
-    .replace(/[\r\n\t]+/g, " ")
-    .trim();
-  t = t.replace(/^["'“”‘’]+|["'“”‘’]+$/g, "").trim();
-  if (t.length > 42) {
-    const cut = t.slice(0, 42).replace(/\s+\S*$/, "").trim();
-    t = cut || t.slice(0, 42).trim();
-  }
-  return t;
-}
-
-/** Same order idea as auth: local override / localhost first, then public worker (see `localBackendBase`). */
-function veraWorkModeBackendBasesInTryOrder() {
-  const bases = [];
-  const push = (u) => {
-    const x = String(u || "").replace(/\/$/, "").trim();
-    if (x && !bases.includes(x)) bases.push(x);
-  };
-  try {
-    if (typeof localBackendBase === "function") push(localBackendBase());
-  } catch (_) {}
-  push(API_URL);
-  return bases.length ? bases : [String(API_URL).replace(/\/$/, "")];
-}
-
-async function fetchReasoningPanelTitleLlm(userPrompt, md, summ) {
-  const body = JSON.stringify({
-    session_id: getSessionId(),
-    user_prompt: String(userPrompt || "").trim(),
-    markdown_excerpt: String(md || "").trim().slice(0, 12000),
-    summary_excerpt: String(summ || "").trim().slice(0, 2500)
-  });
-  for (const base of veraWorkModeBackendBasesInTryOrder()) {
-    try {
-      const res = await fetch(`${base}/work_mode/reasoning_panel_title`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body
-      });
-      if (!res.ok) continue;
-      const j = await res.json().catch(() => ({}));
-      const title = sanitizeLlmReasoningPanelTitle(String(j?.title || ""));
-      if (title && !isBanalReasoningTopicLabel(title)) return title;
-    } catch (_) {}
-  }
-  return null;
-}
-
-function heuristicReasoningPanelTitle(userPrompt, md, summ) {
-  const up = String(userPrompt || "").trim();
-  const mdS = String(md || "").trim();
-  const sm = String(summ || "").trim();
-  let t = buildReasoningTopicLabel({
-    summaryText: sm,
-    markdownText: mdS,
-    userPrompt: up
-  });
-  let s = sanitizeLlmReasoningPanelTitle(t);
-  if (!s || isBanalReasoningTopicLabel(s)) {
-    s = sanitizeLlmReasoningPanelTitle(compactTopicPhrase(`${sm}\n${mdS}\n${up}`, 5));
-  }
-  if (!s || isBanalReasoningTopicLabel(s)) return "";
-  return s;
-}
-
-function shouldQueueLlmReasoningPanelTitle(panel) {
-  return reasoningLlmTitleQueueDecision(panel).ok;
-}
-
-/** After substantive reasoning NDJSON completes, optionally refresh tab via LLM / heuristic fallback. */
-function queueLlmReasoningPanelTitleAfterFirstCompletedTurn(panel, opts = {}) {
-  const calledFrom =
-    String(opts.calledFrom ?? opts.called_from ?? "wm.reasoning_title.queue_unknown").trim() ||
-    "wm.reasoning_title.queue_unknown";
-  const tid = opts.turnId ?? opts.turn_id ?? null;
-  const up0 = String(opts.userPrompt ?? "").trim();
-  const md0 = String(opts.markdownText ?? "").trim();
-  const summ0 = String(opts.summaryText ?? "").trim();
-
-  if (!(panel instanceof HTMLElement)) {
-    reasoningTitleCandidateDebugLog(null, {
-      turn_id: tid,
-      lane_id: null,
-      candidate_title: "",
-      candidate_source: "queue_skipped_no_panel",
-      called_from: `${calledFrom}`,
-      extra: { note: "panel not an HTMLElement — queue never ran" }
-    });
-    reasoningTitleUpdateDebugLog(null, "", "", false, "queue_skip_panel_not_html_element");
-    return;
-  }
-
-  const laneRef = String(panel.dataset.laneId || "").trim();
-
-  const qc = reasoningLlmTitleQueueDecision(panel);
-  if (!qc.ok) {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: tid,
-      candidate_title: "",
-      candidate_source: "queue_blocked_precheck",
-      called_from,
-      extra: {
-        blocking_reason: qc.reason,
-        effective_title_seen: qc.effective_title,
-        ...(qc.detail || {})
-      }
-    });
-    reasoningTitleUpdateDebugLog(
-      laneRef || null,
-      String(qc.effective_title || getReasoningTabTopicLabel(panel) || "").trim(),
-      "",
-      false,
-      `skip_llm_title_queue:${qc.reason}`
-    );
-    return;
-  }
-
-  const effectiveAtEntry = qc.effective_title;
-
-  if (panel.dataset.reasoningLlmTitleInFlight === "1") {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: tid,
-      candidate_title: "",
-      candidate_source: "queue_blocked_in_flight",
-      called_from,
-      extra: {}
-    });
-    reasoningTitleUpdateDebugLog(
-      laneRef || null,
-      effectiveAtEntry,
-      "",
-      false,
-      "skip_llm_title_queue_reasoningLlmTitleInFlight"
-    );
-    return;
-  }
-
-  const idx = Number(panel.dataset.tabIndex);
-  if (!Number.isFinite(idx)) {
-    reasoningTitleUpdateDebugLog(
-      laneRef || null,
-      effectiveAtEntry,
-      "",
-      false,
-      "skip_llm_title_queue_invalid_panel_tab_index"
-    );
-    return;
-  }
-
-  if (!up0 && !md0 && !summ0) {
-    reasoningTitleCandidateDebugLog(panel, {
-      turn_id: tid,
-      candidate_title: "",
-      candidate_source: "queue_skipped_empty_inputs",
-      called_from,
-      extra: {}
-    });
-    reasoningTitleUpdateDebugLog(laneRef || null, effectiveAtEntry, "", false, "skip_llm_title_queue_empty_content_inputs");
-    return;
-  }
-
-  try {
-    console.info("[reasoning_title_path]", {
-      phase: "queueLlmReasoningPanelTitleAfterFirstCompletedTurn_enter",
-      called_from: calledFrom,
-      turn_id: tid
-    });
-  } catch (_) {}
-
-  reasoningTitleCandidateDebugLog(panel, {
-    turn_id: tid,
-    candidate_title: "(async_fetch_pending)",
-    candidate_source: "llm_then_heuristic_queued",
-    called_from,
-    extra: { input_lens: { userPrompt: up0.length, markdown: md0.length, summary: summ0.length } }
-  });
-
-  panel.dataset.reasoningLlmTitleInFlight = "1";
-
-  void (async () => {
-    let chosenSource = "none";
-    try {
-      let title = (await fetchReasoningPanelTitleLlm(up0, md0, summ0)) || null;
-      if (title) chosenSource = "llm_reasoning_panel_title_endpoint";
-      if (!title) {
-        title = heuristicReasoningPanelTitle(up0, md0, summ0);
-        if (title) chosenSource = "heuristic_fallback_inside_queue";
-      }
-
-      const cur = document.querySelector(
-        `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
-      );
-
-      if (!title) {
-        const effStale = cur instanceof HTMLElement
-          ? String(getReasoningTabTopicLabel(cur) || "").trim()
-          : effectiveAtEntry;
-        reasoningTitleCandidateDebugLog(panel, {
-          turn_id: tid,
-          candidate_title: "",
-          candidate_source: "(none)",
-          called_from: `${calledFrom}.fetch_complete`,
-          extra: { outcome: "no_title_from_llm_or_heuristic" }
-        });
-        reasoningTitleUpdateDebugLog(laneRef || null, effStale, "", false, "no_title_from_llm_or_heuristic");
-        return;
-      }
-
-      if (!(cur instanceof HTMLElement)) {
-        reasoningTitleUpdateDebugLog(
-          laneRef || null,
-          effectiveAtEntry,
-          title,
-          false,
-          "queue_abort_panel_removed_from_dom_before_apply"
-        );
-        return;
-      }
-
-      const curLaneId = String(cur.dataset.laneId || "").trim();
-      if (laneRef && curLaneId && curLaneId !== laneRef) {
-        reasoningTitleUpdateDebugLog(
-          laneRef || null,
-          effectiveAtEntry,
-          title,
-          false,
-          "queue_abort_panel_identity_changed_before_title_apply"
-        );
-        try {
-          console.info("[reasoning_title_stale_apply_blocked]", {
-            turn_id: tid,
-            original_lane_id: laneRef,
-            current_lane_id: curLaneId,
-            tab_index: idx,
-            candidate_title: title,
-            called_from: calledFrom,
-          });
-        } catch (_) {}
-        return;
-      }
-
-      reasoningTitleCandidateDebugLog(cur, {
-        turn_id: tid,
-        candidate_title: title,
-        candidate_source: chosenSource,
-        called_from: `${calledFrom}.candidate_ready`,
-      });
-
-      if (cur.dataset.reasoningLlmTitleDone === "1") {
-        const curDisplayBlocked = String(getReasoningTabTopicLabel(cur) || "").trim();
-        reasoningTitleUpdateDebugLog(
-          String(cur.dataset.laneId || "").trim() || null,
-          curDisplayBlocked,
-          title,
-          false,
-          "skip_apply_reasoningLlmTitleDone_race_mid_queue"
-        );
-        return;
-      }
-
-      const curDisplay = String(getReasoningTabTopicLabel(cur) || "").trim();
-      if (!isGenericAutoRenamableReasoningPanelTitle(curDisplay)) {
-        reasoningTitleUpdateDebugLog(
-          String(cur.dataset.laneId || "").trim() || null,
-          curDisplay,
-          title,
-          false,
-          "title_locked_non_generic_after_stream_heuristic_may_have_renamed_panel"
-        );
-        return;
-      }
-
-      reasoningTitleUpdateDebugLog(
-        String(cur.dataset.laneId || "").trim() || null,
-        curDisplay,
-        title,
-        true,
-        `applied_${chosenSource}`
-      );
-
-      cur.dataset.reasoningLlmTitleDone = "1";
-      cur.dataset.laneLabel = title;
-      cur.dataset.tabTopic = title;
-      cur.dataset.tabTopicSet = "1";
-      try {
-        patchReasoningLaneRegistryTitle(
-          String(cur.dataset.laneId || "").trim(),
-          title,
-          `llm_panel_title:${chosenSource}:${calledFrom}`
-        );
-      } catch (_) {}
-      renderReasoningTabStrip();
-      try {
-        persistReasoningTabsState();
-      } catch (_) {}
-      reasoningLaneTitleSyncDebugLog(cur);
-    } catch (_) {
-      reasoningTitleUpdateDebugLog(laneRef || null, effectiveAtEntry, "", false, "llm_title_queue_async_throw");
-    } finally {
-      const curFinish = document.querySelector(
-        `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
-      );
-      if (
-        curFinish instanceof HTMLElement &&
-        String(curFinish.dataset.laneId || "").trim() === laneRef
-      ) {
-        curFinish.dataset.reasoningLlmTitleInFlight = "";
-      }
-    }
-  })();
-}
+/* WORK MODE REASONING STREAM + TAB-TITLE PIPELINE -> moved to
+ * workmode/panels.js (Stage 20 / Patch A-4, 2026-05-31).
+ *
+ * Functions moved (all function declarations; they hoist within
+ * panels.js and remain callable from app.js + other classic-script
+ * modules through the shared global lexical environment at call time):
+ *
+ *   tab-state / ensure-and-restore:
+ *     getReasoningTabsStateStorageKey
+ *     getReasoningPanelCountToEnsure
+ *     getReasoningPanelIndices
+ *     syncReasoningLaneBusySlotsAfterDomChange
+ *     ensureFixedReasoningLanePanels
+ *     persistReasoningTabsState
+ *     restoreReasoningTabsState
+ *
+ *   reasoning stream / scroll mount:
+ *     getActiveReasoningScrollEl
+ *     appendReasoningTurnMount
+ *
+ *   title heuristics + extraction:
+ *     toTitleCaseWord
+ *     isBanalReasoningTopicLabel
+ *     compactTopicPhrase
+ *     keywordTopicFromText
+ *     extractMarkdownBoldStandaloneTitle
+ *     extractFirstTitleLikeMarkdownLine
+ *     normalizeMarkdownLeadForHeadingExtract
+ *     diagnoseLeadingMarkdownHeadingExtraction
+ *     extractLeadingMarkdownHeadingAsLaneTitle
+ *     logHeadingTitleExtractAttempt
+ *     maybeSyncGenericLaneTitleFromMarkdown
+ *     buildReasoningTopicLabel
+ *     readPersistedReasoningTabSnapshotForLane
+ *
+ *   debug-log helpers (reasoning title pipeline):
+ *     reasoningTitleCandidateDebugLog
+ *     reasoningTitleUpdateDebugLog
+ *     reasoningLaneTitleSyncDebugLog
+ *     reasoningLlmTitleQueueDecision
+ *
+ *   tab-topic application + LLM/heuristic fallback:
+ *     setReasoningTabTopicFromFinal
+ *     sanitizeLlmReasoningPanelTitle
+ *     veraWorkModeBackendBasesInTryOrder
+ *     fetchReasoningPanelTitleLlm
+ *     heuristicReasoningPanelTitle
+ *     shouldQueueLlmReasoningPanelTitle
+ *     queueLlmReasoningPanelTitleAfterFirstCompletedTurn
+ *
+ * VERA chat-state persistence ABOVE (ensureVeraSessionIdForPersistence,
+ * getVeraChatStateStorageKey, migrateLegacyVeraChatStorageKey,
+ * persistVeraClientStateOnUnload, persistVeraChatState,
+ * restoreVeraChatState, chatStateHydrating, WORK_MODE_STATE_TTL_MS,
+ * VERA_CHAT_STATE_STORAGE_KEY_PREFIX) intentionally LEFT here -- it
+ * manages the main VERA conversation bubble store, not the Work Mode
+ * reasoning stream. persistVeraClientStateOnUnload still calls
+ * persistReasoningTabsState (now in panels.js) through the shared
+ * global lexical environment at call time. */
 
 /* renderReasoningTabStrip, logReasoningPanelSelectDebug,
  * activateReasoningTab, addReasoningTab → moved to workmode/panels.js
@@ -8490,887 +6681,20 @@ function finishReasoningCloseVoiceTurnAfterAssistant(opts = {}) {
 /* (bodies of closeReasoningPanelsByVisualIndices + closeReasoningTab
  * moved to workmode/panels.js, Stage 8) */
 
-/* ===== Voice/text close command parser (spec PART 14) ============= */
-
-const REASONING_CLOSE_ORDINAL_WORDS = new Map([
-  ["first", 1], ["1st", 1],
-  ["second", 2], ["2nd", 2],
-  ["third", 3], ["3rd", 3],
-  ["fourth", 4], ["4th", 4],
-  ["fifth", 5], ["5th", 5],
-  ["sixth", 6], ["6th", 6],
-  ["seventh", 7], ["7th", 7],
-  ["eighth", 8], ["8th", 8],
-]);
-
-const REASONING_CLOSE_COUNT_WORDS = new Map([
-  ["one", 1], ["two", 2], ["three", 3], ["four", 4],
-  ["five", 5], ["six", 6], ["seven", 7], ["eight", 8],
-]);
-
-/* Spec PART 13: phrases that look like checklist mutations, not panel closes.
- * _looksLikeChecklistCommand moved to workmode/checklist.js
- * (Stage 9, 2026-05-27). */
-
-function _hasReasoningCloseSubject(text) {
-  /* Panel/tab/reasoning/lane — the close intent must clearly mention one. */
-  return /\b(?:reasoning\s+(?:panel|tab|space|lane|page)s?|panels?|tabs?|reasoning\s+space|reasoning\s+lane|reasoning)\b/i.test(text || "");
-}
-
-function _explicitlyNonReasoningCloseSubject(text) {
-  const t = String(text || "").toLowerCase();
-  if (/\bnews\s+(?:panel|tab|results?)?\b/.test(t)) return "news";
-  if (/\b(?:music|spotify|playback)\s+(?:panel|tab|controls?|player|window)?\b/.test(t)) return "music";
-  if (/\bfinance\s+(?:panel|tab|chart)?\b/.test(t)) return "finance";
-  if (/\bsettings?\s+(?:panel|tab|page|menu)?\b/.test(t)) return "settings";
-  if (/\bchecklist\s+(?:panel|tab)?\b/.test(t)) return "checklist";
-  if (/\bbrowser\s+tab\b/.test(t)) return "browser_tab";
-  return "";
-}
-
-function _parseReasoningCloseRange(text) {
-  /* Returns { indices, scope } when matched, else null. */
-  const t = String(text || "").toLowerCase();
-
-  /* "close panels 1 through 3" / "close panels 1 to 3" */
-  let m = t.match(/\bclose\s+(?:the\s+)?(?:reasoning\s+)?(?:panels?|tabs?|reasoning\s+(?:panels?|tabs?|spaces?|lanes?))\s+(\d+)\s+(?:through|thru|to|-)\s+(\d+)\b/);
-  if (m) {
-    const a = parseInt(m[1], 10);
-    const b = parseInt(m[2], 10);
-    if (Number.isFinite(a) && Number.isFinite(b) && a <= b) {
-      const out = [];
-      for (let i = a; i <= b; i += 1) out.push(i);
-      return { indices: out, scope: "range" };
-    }
-  }
-
-  /* "close the first two/three panels" / "close the first 2 panels" */
-  m = t.match(/\bclose\s+(?:the\s+)?first\s+(\d+|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?|reasoning\s+(?:panels?|tabs?))\b/);
-  if (m) {
-    const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : REASONING_CLOSE_COUNT_WORDS.get(m[1]) || 0;
-    if (n > 0) {
-      const out = [];
-      for (let i = 1; i <= n; i += 1) out.push(i);
-      return { indices: out, scope: "range_first_n", rangeN: n };
-    }
-  }
-
-  /* "close the last two panels" */
-  m = t.match(/\bclose\s+(?:the\s+)?last\s+(\d+|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/);
-  if (m) {
-    const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : REASONING_CLOSE_COUNT_WORDS.get(m[1]) || 0;
-    if (n > 0) {
-      return { indices: null, scope: "range_last_n", rangeN: n };
-    }
-  }
-  return null;
-}
-
-function _parseReasoningCloseIndices(text) {
-  /* Extract numeric ordinals and word ordinals (spec PART 5+6).
-     Returns { indices: [1-based], scope } or null. */
-  const t = String(text || "").toLowerCase();
-  const found = [];
-  let sawSomething = false;
-
-  /* "close the first and third panel" / "close first, second, and fourth panels" */
-  const ordWordRe = /\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)\b/g;
-  let m;
-  while ((m = ordWordRe.exec(t)) !== null) {
-    if (m[1] === "last") {
-      found.push("LAST");
-    } else {
-      const n = REASONING_CLOSE_ORDINAL_WORDS.get(m[1]);
-      if (n) found.push(n);
-    }
-    sawSomething = true;
-  }
-
-  /* "close panel 2" / "close panels 1, 2, and 3" / "close the 2nd panel" */
-  const numRe = /\b(?:panels?|tabs?|reasoning\s+(?:panel|tab|space|lane)s?)\s+#?\s*(\d+(?:\s*(?:,\s*and|,\s*or|and|or|,|&)\s*\d+){0,8})\b/g;
-  while ((m = numRe.exec(t)) !== null) {
-    const nums = String(m[1]).split(/\s*(?:,\s*and|,\s*or|and|or|,|&)\s*/).map((x) => parseInt(x, 10)).filter(Number.isFinite);
-    for (const n of nums) found.push(n);
-    sawSomething = true;
-  }
-  /* Bare numbers after "close": "close 2 and 3" (only when followed by panel/tab keyword somewhere).
-     We don't run this in isolation — _hasReasoningCloseSubject already gates the parser. */
-  const bareRe = /\bclose\s+(\d+(?:\s*(?:,|and|or|&)\s*\d+){0,8})\b(?:[^.?!]*\b(?:panel|tab|reasoning)\b)?/g;
-  while ((m = bareRe.exec(t)) !== null) {
-    if (/\bitem|task|bullet|checklist|step\b/.test(t)) continue;
-    const nums = String(m[1]).split(/\s*(?:,|and|or|&)\s*/).map((x) => parseInt(x, 10)).filter(Number.isFinite);
-    for (const n of nums) found.push(n);
-    sawSomething = true;
-  }
-
-  if (!sawSomething || !found.length) return null;
-  return { indices: found, scope: "specific_indices" };
-}
-
-/* =========================================================================
-   PART 6 — ASR noise cleanup for close commands
-   --------------------------------------------------------------------------
-   Browser ASR often appends tail noise after a finalized close command:
-     - "can you hear me", "are you there", "hello"
-     - stuttered self-corrections like "I I" / "I can you"
-     - "you know" / "um" / "uh" repeats
-   Stripping these noise tails before parsing prevents the parser from
-   misreading a stray "I" as part of a different command and avoids the
-   "Closed Panel 1 ... Closed the first two panels" double-fire problem.
-   This is INTENTIONALLY only applied to close-command parsing — general
-   chat must keep the user's exact words.
-   ========================================================================= */
-const _REASONING_CLOSE_NOISE_TAIL_RES = [
-  /\s+(?:can\s+you\s+hear\s+me|are\s+you\s+there|hello|hey\s+vera|vera|hello\?+|are\s+you\s+listening)\s*[?!.,]*\s*$/i,
-  /\s+(?:um+|uh+|ah+|er+|hmm+|you\s+know|like\s+yeah)\s*[?!.,]*\s*$/i,
-];
-const _REASONING_CLOSE_NOISE_PREFIX_RES = [
-  /^\s*(?:hey\s+vera[, ]+|vera[, ]+|so[, ]+|um[, ]+|uh[, ]+|like[, ]+|you\s+know[, ]+)/i,
-];
-function _cleanCommandTextForClose(rawText) {
-  const original = String(rawText || "").trim();
-  if (!original) return "";
-  /* PART 6 hard rule: only mangle text that already looks like a close
-     command. General chat ("I really like the design, can you hear me?")
-     must come back UNCHANGED, otherwise we'd accidentally lose the user's
-     actual question whenever they said the words "can you hear me". */
-  const looksLikeClose =
-    /\b(?:close|clear|hide|dismiss|remove|delete|get\s+rid\s+of)\b/i.test(original)
-    && /\b(?:panels?|tabs?|reasoning)\b/i.test(original);
-  if (!looksLikeClose) return original;
-  let t = original;
-  /* Strip leading filler */
-  for (const re of _REASONING_CLOSE_NOISE_PREFIX_RES) {
-    t = t.replace(re, "");
-  }
-  /* Strip trailing noise tails, repeatedly (because two noise tails can
-     stack: "... close the first two panel. I. can you hear me"). */
-  let changed = true;
-  let guard = 0;
-  while (changed && guard < 6) {
-    changed = false;
-    guard += 1;
-    for (const re of _REASONING_CLOSE_NOISE_TAIL_RES) {
-      const next = t.replace(re, "");
-      if (next !== t) {
-        t = next;
-        changed = true;
-      }
-    }
-  }
-  /* Collapse pronoun stutters like "I I I" or repeated "I" with no verb.
-     Safe to do unconditionally now that the whole function is gated on
-     looksLikeClose above. */
-  t = t.replace(/\s+\bi\b(?:\s+\bi\b)*\s*[?!.,]*\s*$/i, "");
-  /* Also collapse "and you" / "and i" trailing stutters left over after
-     a duplicate-command run that we'll later collapse via the ranker. */
-  t = t.replace(/\s+\band\s+(?:you|i)\b\s*[?!.,]*\s*$/i, "");
-  return t.trim();
-}
-
-/* =========================================================================
-   PART 1 — detect ALL candidate close-command spans, rank, pick one
-   --------------------------------------------------------------------------
-   A real user utterance can contain several overlapping close phrasings,
-   either because the user self-corrected mid-sentence ("close the first
-   panel and you close the first two panels") or because the browser ASR
-   doubled a word. Rather than firing on the first match (which used to
-   produce 2-3 close confirmations), we collect every plausible close span
-   and pick the strongest by spec rank:
-        5 → close all panels
-        4 → close all other panels
-        3 → range (first/last N, "1 through 3")
-        2 → multiple specific indices
-        1 → single specific index / current_panel / by_title
-   Ties broken by latest end position (the more recently-spoken phrase
-   wins). The unselected spans are emitted as suppressed_close_phrases for
-   the spec PART 7 debug log.
-   ========================================================================= */
-
-function _scoreCloseScopeRank(scope) {
-  switch (scope) {
-    case "all_panels": return 5;
-    case "other_panels": return 4;
-    case "range":
-    case "range_first_n":
-    case "range_last_n":
-      return 3;
-    case "specific_indices_multi":
-      return 2;
-    default:
-      return 1;
-  }
-}
-
-/* Return [{scope, indices, rangeN, phrase, end}] for every close-target span
-   we can see in `text`. The end position is the regex.lastIndex of the
-   match (used as a tiebreaker so the LATEST occurrence wins). */
-function _extractAllCloseSpans(text, panelCount) {
-  const t = String(text || "").toLowerCase();
-  if (!t) return [];
-  const spans = [];
-
-  const push = (scope, indices, rangeN, phrase, end) => {
-    spans.push({
-      scope,
-      indices: Array.isArray(indices) ? indices.slice() : null,
-      rangeN: Number.isFinite(rangeN) ? rangeN : null,
-      phrase: String(phrase || "").trim(),
-      end: Number.isFinite(end) ? end : t.length,
-      rank: _scoreCloseScopeRank(scope === "specific_indices" && indices && indices.length > 1 ? "specific_indices_multi" : scope),
-    });
-  };
-
-  /* all_panels variants */
-  const allRe = /\b(?:close|clear)\s+(?:all\s+the\s+|all\s+|every\s+)?(?:reasoning\s+)?panels?\b/g;
-  let m;
-  while ((m = allRe.exec(t)) !== null) {
-    /* Filter out "all other" — that's other_panels, handled below. */
-    if (/\ball\s+other\b|\ball\s+the\s+other\b|\bother\b|\bevery\s+other\b/.test(m[0])) continue;
-    /* Must look like "all/every" or be the only panels noun in the cmd. */
-    if (/\b(?:all|every)\b/.test(m[0])) {
-      push("all_panels", null, null, m[0], allRe.lastIndex);
-    }
-  }
-  /* other_panels: "close all other panels" / "keep this one and close the rest" */
-  const otherRe = /\b(?:close|clear|hide|dismiss|remove)\s+(?:all\s+other\s+|all\s+the\s+other\s+|every\s+other\s+|the\s+other\s+|inactive\s+|other\s+)(?:reasoning\s+)?(?:panels?|tabs?)\b|\bkeep\s+this\s+one\s+(?:and\s+(?:close|hide|dismiss|remove)\s+)?(?:the\s+)?(?:rest|others?|other\s+panels?)\b/g;
-  while ((m = otherRe.exec(t)) !== null) {
-    push("other_panels", null, null, m[0], otherRe.lastIndex);
-  }
-  /* range "1 through 3" */
-  const rangeRe = /\bclose\s+(?:the\s+)?(?:reasoning\s+)?(?:panels?|tabs?)\s+(\d+)\s+(?:through|thru|to|-)\s+(\d+)\b/g;
-  while ((m = rangeRe.exec(t)) !== null) {
-    const a = parseInt(m[1], 10);
-    const b = parseInt(m[2], 10);
-    if (Number.isFinite(a) && Number.isFinite(b) && a <= b) {
-      const idx = [];
-      for (let i = a; i <= b; i += 1) idx.push(i);
-      push("range", idx, b - a + 1, m[0], rangeRe.lastIndex);
-    }
-  }
-  /* range_first_n */
-  const firstNRe = /\bclose\s+(?:the\s+)?first\s+(\d+|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
-  while ((m = firstNRe.exec(t)) !== null) {
-    const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : (REASONING_CLOSE_COUNT_WORDS.get(m[1]) || 0);
-    if (n > 0) {
-      const idx = [];
-      for (let i = 1; i <= n; i += 1) idx.push(i);
-      push("range_first_n", idx, n, m[0], firstNRe.lastIndex);
-    }
-  }
-  /* range_last_n */
-  const lastNRe = /\bclose\s+(?:the\s+)?last\s+(\d+|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
-  while ((m = lastNRe.exec(t)) !== null) {
-    const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : (REASONING_CLOSE_COUNT_WORDS.get(m[1]) || 0);
-    if (n > 0) {
-      const N = Math.max(0, Number(panelCount) || 0);
-      const k = Math.min(n, N);
-      const idx = [];
-      for (let i = N - k + 1; i <= N; i += 1) idx.push(i);
-      push("range_last_n", idx, n, m[0], lastNRe.lastIndex);
-    }
-  }
-  /* current_panel: "close this panel", "close current reasoning tab" */
-  const curRe = /\bclose\s+(?:this|the\s+current|current)\s+(?:reasoning\s+)?(?:panel|tab|space|lane)\b/g;
-  while ((m = curRe.exec(t)) !== null) {
-    push("current_panel", null, null, m[0], curRe.lastIndex);
-  }
-  /* specific_indices via ordinal words AND via "panel N" numerics */
-  const ordWordRe = /\bclose\s+(?:the\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)(?:\s+(?:and|or|,)\s+(?:the\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)){0,7}\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
-  while ((m = ordWordRe.exec(t)) !== null) {
-    const phrase = m[0];
-    const idx = [];
-    const wordsRe = /\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)\b/g;
-    let w;
-    while ((w = wordsRe.exec(phrase)) !== null) {
-      if (w[1] === "last") {
-        const N = Math.max(0, Number(panelCount) || 0);
-        if (N > 0) idx.push(N);
-      } else {
-        const n = REASONING_CLOSE_ORDINAL_WORDS.get(w[1]);
-        if (n) idx.push(n);
-      }
-    }
-    const dedup = [...new Set(idx)].sort((a, b) => a - b);
-    if (dedup.length) push("specific_indices", dedup, null, phrase, ordWordRe.lastIndex);
-  }
-  const numRe = /\bclose\s+(?:the\s+)?(?:reasoning\s+)?(?:panels?|tabs?)\s+#?\s*(\d+(?:\s*(?:,\s*and|,\s*or|and|or|,|&)\s*\d+){0,8})\b/g;
-  while ((m = numRe.exec(t)) !== null) {
-    const phrase = m[0];
-    const nums = String(m[1]).split(/\s*(?:,\s*and|,\s*or|and|or|,|&)\s*/).map((x) => parseInt(x, 10)).filter(Number.isFinite);
-    const dedup = [...new Set(nums)].sort((a, b) => a - b);
-    if (dedup.length) push("specific_indices", dedup, null, phrase, numRe.lastIndex);
-  }
-  return spans;
-}
-
-function _pickStrongestCloseSpan(spans) {
-  if (!Array.isArray(spans) || !spans.length) return null;
-  /* Sort: higher rank first; ties → later end position first. */
-  const sorted = spans.slice().sort((a, b) => {
-    if (b.rank !== a.rank) return b.rank - a.rank;
-    return b.end - a.end;
-  });
-  return sorted[0];
-}
-
-function parseCloseReasoningPanelsCommand(text, panelCount) {
-  /* Spec PART 14 returns:
-       {
-         intent: "close_reasoning_panels" | "reopen_last_reasoning_panel" | null,
-         closeScope: "specific_indices" | "range_first_n" | "range_last_n" |
-                     "range" | "all_panels" | "other_panels" |
-                     "by_title" | "current_panel" | "unresolved",
-         indices: [1-based, 1-based, ...] | null,
-         titleQuery: "..." | "",
-         refillToMinimum: true,
-         reason: "...",
-         failureReason: "" | "needs_clarification" | "non_reasoning_subject" |
-                        "looks_like_checklist" | "invalid_index" | "no_match",
-         parsedRangeType: same as closeScope,
-         rawCommandText: cleaned-and-stripped command text that was parsed,
-         allCloseSpans: [{scope, phrase, indices, rangeN, rank, end}, …],
-         suppressedCloseSpans: spans skipped in favor of the selected one,
-         selectedSpan: the chosen span (PART 1),
-       }
-     `panelCount` is the current number of visible reasoning panels (so we
-     can resolve "last N" deterministically here). */
-  const out = {
-    intent: null,
-    closeScope: "unresolved",
-    indices: null,
-    titleQuery: "",
-    refillToMinimum: true,
-    reason: "",
-    failureReason: "",
-    parsedRangeType: "unresolved",
-    rawIndexPhrase: "",
-    rawCommandText: "",
-    allCloseSpans: [],
-    suppressedCloseSpans: [],
-    selectedSpan: null,
-  };
-  const original = String(text || "").trim();
-  if (!original) {
-    out.failureReason = "empty_text";
-    return out;
-  }
-  /* PART 6: strip noisy ASR tails BEFORE parsing so we don't get a stray
-     "I" or "can you hear me" fragment dragging the parser into a different
-     scope than the user spoke. */
-  const raw = _cleanCommandTextForClose(original) || original;
-  out.rawCommandText = raw;
-  const t = raw.toLowerCase();
-
-  /* Undo / reopen */
-  if (/\b(?:undo\s+close|reopen\s+(?:the\s+)?(?:last\s+)?(?:reasoning\s+)?panel|restore\s+(?:the\s+)?(?:last\s+)?closed\s+(?:reasoning\s+)?panel|bring\s+back\s+(?:the\s+)?(?:last|previous)\s+(?:reasoning\s+)?panel)\b/.test(t)) {
-    out.intent = "reopen_last_reasoning_panel";
-    out.closeScope = "reopen_last";
-    out.parsedRangeType = "reopen_last";
-    out.reason = "undo_or_reopen_keyword";
-    return out;
-  }
-
-  /* Must say "close" (or "clear/remove/delete/get rid of" + panel/tab/reasoning). */
-  const hasCloseVerb = /\b(?:close|clear|hide|dismiss|remove|delete|get\s+rid\s+of)\b/.test(t);
-  if (!hasCloseVerb) {
-    out.failureReason = "no_close_verb";
-    return out;
-  }
-
-  /* Spec PART 13: don't eat checklist commands. */
-  if (_looksLikeChecklistCommand(raw)) {
-    out.failureReason = "looks_like_checklist";
-    out.reason = "checklist_pattern_match_blocks_panel_close";
-    return out;
-  }
-
-  /* Spec PART 3+17: route news/music/finance/settings panel closes elsewhere. */
-  const otherSubject = _explicitlyNonReasoningCloseSubject(raw);
-  if (otherSubject) {
-    out.failureReason = "non_reasoning_subject";
-    out.reason = `subject_is_${otherSubject}_panel`;
-    return out;
-  }
-
-  /* Must mention reasoning/panel/tab. Bare "close this" with no subject is
-     too risky — could mean "close this email", "close this email tab", etc.
-     We accept "close this panel/tab" though. Exception: "keep this one and
-     close the rest" / "close the others" implies the reasoning workspace
-     because that phrasing doesn't fit other surfaces (music tracks, news
-     headlines, etc.). */
-  const closeOthersImplicit = /\b(?:close|hide|dismiss|remove)\s+(?:all\s+)?(?:the\s+)?(?:rest|others?|other\s+ones?)\b|\bkeep\s+this\s+one\s+(?:and\s+(?:close|hide|dismiss|remove)\s+)?(?:the\s+)?(?:rest|others?)\b/.test(t);
-  if (!_hasReasoningCloseSubject(raw) && !closeOthersImplicit) {
-    out.failureReason = "no_panel_subject";
-    out.reason = "no_panel_or_tab_or_reasoning_keyword";
-    return out;
-  }
-
-  /* PART 1: scan ALL candidate close spans, pick strongest+latest, log
-     the suppressed siblings. This collapses repeated phrases ("close the
-     first panel and you close the first two panels") into one execution. */
-  const allSpans = _extractAllCloseSpans(raw, panelCount);
-  out.allCloseSpans = allSpans.map((s) => ({
-    scope: s.scope, phrase: s.phrase, indices: s.indices, rangeN: s.rangeN, rank: s.rank, end: s.end,
-  }));
-  const selected = _pickStrongestCloseSpan(allSpans);
-  if (selected) {
-    out.selectedSpan = {
-      scope: selected.scope, phrase: selected.phrase, indices: selected.indices, rangeN: selected.rangeN, rank: selected.rank, end: selected.end,
-    };
-    out.suppressedCloseSpans = allSpans
-      .filter((s) => s !== selected)
-      .map((s) => ({ scope: s.scope, phrase: s.phrase, indices: s.indices, rangeN: s.rangeN, rank: s.rank, end: s.end }));
-    out.intent = "close_reasoning_panels";
-    out.closeScope = selected.scope;
-    out.parsedRangeType = selected.scope;
-    out.reason = "ranked_pick";
-    if (selected.scope === "all_panels") {
-      out.rawIndexPhrase = "all_panels";
-      return out;
-    }
-    if (selected.scope === "other_panels") {
-      out.rawIndexPhrase = "other_panels";
-      return out;
-    }
-    if (selected.scope === "current_panel") {
-      out.rawIndexPhrase = "current_panel";
-      return out;
-    }
-    if (selected.scope === "range" || selected.scope === "range_first_n" || selected.scope === "range_last_n") {
-      out.indices = Array.isArray(selected.indices) ? selected.indices.slice() : [];
-      out.rawIndexPhrase = `${selected.scope}:${selected.rangeN ?? "n/a"}`;
-      if (!out.indices.length) {
-        out.failureReason = "invalid_range";
-      }
-      return out;
-    }
-    if (selected.scope === "specific_indices") {
-      out.indices = Array.isArray(selected.indices) ? selected.indices.slice() : [];
-      out.rawIndexPhrase = out.indices.join(",");
-      if (!out.indices.length) {
-        out.failureReason = "no_indices";
-      }
-      return out;
-    }
-  }
-
-  /* "close the X panel" — by title */
-  const titleMatch = raw.match(/\bclose\s+(?:the\s+)?(.+?)\s+(?:reasoning\s+)?(?:panel|tab|space|lane)\b/i);
-  if (titleMatch) {
-    const candidate = String(titleMatch[1] || "").trim();
-    /* Filter out generic words like "this/that/current/other/new/blank". */
-    if (candidate && !/^(?:this|that|the|a|an|current|other|inactive|new|blank|first|second|third|fourth|fifth|last|right|left|next|previous|prior|active|focused|selected)$/i.test(candidate)) {
-      out.intent = "close_reasoning_panels";
-      out.closeScope = "by_title";
-      out.parsedRangeType = "by_title";
-      out.titleQuery = candidate;
-      out.reason = "by_title_phrase";
-      out.rawIndexPhrase = `title:${candidate}`;
-      return out;
-    }
-  }
-
-  out.failureReason = "unresolved";
-  out.reason = "could_not_parse_close_target";
-  return out;
-}
-
-/* Title fuzzy match. Returns array of 1-based visual indices that match. */
-function findReasoningPanelIndicesByTitleQuery(query) {
-  const q = String(query || "").trim().toLowerCase().replace(/[^a-z0-9\s]+/g, " ").replace(/\s+/g, " ");
-  if (!q) return [];
-  const order = getReasoningPanelOrder();
-  const hits = [];
-  for (const p of order) {
-    const lab = String(p.label || "").toLowerCase().replace(/[^a-z0-9\s]+/g, " ").replace(/\s+/g, " ");
-    if (!lab) continue;
-    if (lab.includes(q) || q.includes(lab)) {
-      hits.push(p.visualIndex);
-      continue;
-    }
-    /* Token-overlap fallback. */
-    const qToks = q.split(" ").filter((w) => w.length >= 3);
-    const lToks = lab.split(" ").filter(Boolean);
-    if (qToks.length) {
-      const hit = qToks.filter((w) => lToks.includes(w)).length;
-      if (hit / qToks.length >= 0.6) hits.push(p.visualIndex);
-    }
-  }
-  return [...new Set(hits)].sort((a, b) => a - b);
-}
-
-/* Re-open the most recently closed panel (PART 11). */
-function reopenLastClosedReasoningPanel(opts = {}) {
-  const last = recentlyClosedReasoningPanels.pop();
-  if (!last) {
-    return { ok: false, failureReason: "stack_empty" };
-  }
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return { ok: false, failureReason: "no_panels_root" };
-
-  /* If we're at the cap, we can't add. Pop one blank first if any blanks
-     exist (a blank is one with no html content and a default-shaped
-     laneLabel). */
-  const cur = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
-  if (cur.length >= REASONING_TABS_MAX) {
-    const blankCandidate = cur.find((p) => {
-      const html = (p.querySelector(".vera-reasoning-md-panel") || p.querySelector(".vera-reasoning-scroll"))?.innerHTML || "";
-      const isDefaultLabel = /^Panel\s+\d+$/i.test(String(p.dataset.laneLabel || ""));
-      return !html.trim() && isDefaultLabel;
-    });
-    if (blankCandidate) {
-      try { blankCandidate.remove(); } catch (_) {}
-    } else {
-      /* Push back; user has to manually close something first. */
-      recentlyClosedReasoningPanels.push(last);
-      return { ok: false, failureReason: "at_max_panels" };
-    }
-  }
-
-  /* Restore each closed panel from the snapshot bundle (usually 1, but if
-     a single "close all" was undone we restore them in original order). */
-  for (const snap of last.panels) {
-    /* Reuse addReasoningTab to allocate a new tabIndex, then rewrite the
-       lane metadata and inner HTML to the saved state. */
-    addReasoningTab();
-    const all = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
-    const newest = all[all.length - 1];
-    if (!newest) continue;
-    newest.dataset.tabTopic = snap.topic || REASONING_UNTITLED_TAB_NAME;
-    newest.dataset.tabTopicSet = snap.topicSet || "0";
-    if (snap.laneLabel) newest.dataset.laneLabel = snap.laneLabel;
-    const scroll =
-      newest.querySelector(".vera-reasoning-md-panel") ||
-      newest.querySelector(".vera-reasoning-scroll");
-    if (scroll) scroll.innerHTML = String(snap.html || "");
-  }
-
-  /* If auto-refill earlier created surplus blanks beyond MIN_REASONING_PANELS,
-     trim the trailing blanks (only blanks, never user content). */
-  const order = getReasoningPanelOrder();
-  if (order.length > MIN_REASONING_PANELS) {
-    for (let i = order.length - 1; i >= 0; i -= 1) {
-      const p = order[i].element;
-      const scroll = p.querySelector(".vera-reasoning-md-panel") || p.querySelector(".vera-reasoning-scroll");
-      const empty = !((scroll?.innerHTML || "").trim());
-      const isDefaultLabel = /^Panel\s+\d+$/i.test(String(p.dataset.laneLabel || ""));
-      if (empty && isDefaultLabel) {
-        try { p.remove(); } catch (_) {}
-        const afterCount = document.querySelectorAll("#vera-reasoning-tab-panels .vera-reasoning-tab-panel").length;
-        if (afterCount <= MIN_REASONING_PANELS) break;
-      }
-    }
-  }
-  syncReasoningLaneBusySlotsAfterDomChange();
-  renderReasoningTabStrip();
-  logReasoningCloseDebug({
-    latest_user_text: String(opts?.userText || "").slice(0, 200),
-    close_reasoning_panel_intent_detected: false,
-    parsed_range_type: "reopen_last",
-    close_scope: "reopen_last",
-    reopened_titles: last.panels.map((p) => p.label),
-    recently_closed_stack_size: recentlyClosedReasoningPanels.length,
-    refill_enabled: true,
-    min_panel_count: MIN_REASONING_PANELS,
-    close_completed: true,
-    failure_reason: "",
-  });
-  return { ok: true, reopenedTitles: last.panels.map((p) => p.label) };
-}
-
-/* High-level executor used by both the voice/text shortcut and the
-   backend action payload. Returns a small object the caller can use to
-   say something back to the user. */
-function executeCloseReasoningPanelsCommand(parsed, opts = {}) {
-  const userText = String(opts.userText || "");
-  if (!parsed || parsed.intent !== "close_reasoning_panels") {
-    return { ok: false, failureReason: parsed?.failureReason || "no_intent" };
-  }
-  const order = getReasoningPanelOrder();
-  const N = order.length;
-  if (!N) {
-    return { ok: false, failureReason: "no_panels_exist" };
-  }
-
-  let indices = [];
-  let closeScope = parsed.closeScope || "specific_indices";
-  let invalidIndices = [];
-
-  if (closeScope === "all_panels") {
-    indices = order.map((p) => p.visualIndex);
-  } else if (closeScope === "other_panels") {
-    const active = order.find((p) => p.isActive);
-    if (!active) {
-      indices = order.map((p) => p.visualIndex);
-    } else {
-      indices = order.filter((p) => !p.isActive).map((p) => p.visualIndex);
-    }
-  } else if (closeScope === "current_panel") {
-    const active = order.find((p) => p.isActive);
-    indices = active ? [active.visualIndex] : [order[0].visualIndex];
-  } else if (closeScope === "by_title") {
-    const hits = findReasoningPanelIndicesByTitleQuery(parsed.titleQuery);
-    if (!hits.length) {
-      return { ok: false, failureReason: "no_title_match", titleQuery: parsed.titleQuery };
-    }
-    if (hits.length > 1) {
-      /* PART 4: ambiguous title — ask clarification. */
-      return {
-        ok: false,
-        failureReason: "ambiguous_title",
-        titleQuery: parsed.titleQuery,
-        matchedVisualIndices: hits,
-        matchedTitles: hits.map((vi) => order[vi - 1]?.label).filter(Boolean),
-      };
-    }
-    indices = hits;
-  } else {
-    /* specific_indices, range_first_n, range_last_n, range — parser already
-       expanded these to absolute 1-based indices. */
-    indices = Array.isArray(parsed.indices) ? parsed.indices.slice() : [];
-    invalidIndices = indices.filter((n) => n < 1 || n > N);
-    if (invalidIndices.length && !indices.some((n) => n >= 1 && n <= N)) {
-      /* PART 10: all out of range — explicit refuse, do not guess. */
-      return {
-        ok: false,
-        failureReason: "all_indices_out_of_range",
-        invalidIndices,
-        totalBefore: N,
-        closeScope,
-      };
-    }
-  }
-
-  /* PART 10: filter to in-range and dedupe; we keep going on partial overlap
-     ("close first five panels" when only 3 exist → close 1,2,3). */
-  indices = [...new Set(indices.filter((n) => n >= 1 && n <= N))];
-  if (!indices.length) {
-    return { ok: false, failureReason: "no_valid_indices", invalidIndices, totalBefore: N };
-  }
-
-  const result = closeReasoningPanelsByVisualIndices(indices, {
-    reason: opts.reason || "voice_or_text_command",
-    closeScope,
-    refillToMinimum: parsed.refillToMinimum !== false,
-    userText,
-    rawIndexPhrase: parsed.rawIndexPhrase || "",
-    cleanedCommandText: String(parsed.rawCommandText || ""),
-    allCloseSpans: Array.isArray(parsed.allCloseSpans) ? parsed.allCloseSpans : [],
-    suppressedCloseSpans: Array.isArray(parsed.suppressedCloseSpans) ? parsed.suppressedCloseSpans : [],
-    selectedClosePhrase: parsed.selectedSpan?.phrase || "",
-  });
-  const final = {
-    ...result,
-    closeScope,
-    invalidIndices,
-    totalBefore: N,
-  };
-  /* PART 2: centralize confirmation generation. ANY caller that wants a
-     user-visible confirmation MUST use exec.confirmation — neither the
-     bubble layer nor the voice layer should produce its own phrasing. */
-  final.confirmation = buildCloseReasoningPanelsVoiceReply(final, parsed);
-  return final;
-}
-
-/* _REASONING_CLOSE_COUNT_WORD_OUT, _countWordOrNumber,
- * buildCloseReasoningPanelsVoiceReply, isReasoningCloseVoiceSource,
- * logReasoningCloseConfirmationUiDebug,
- * renderReasoningCloseAssistantConfirmation
- * → moved to workmode/panels.js (Stage 8, 2026-05-27). */
-
-/* Try to handle a voice/text command client-side. Returns true when handled. */
-function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
-  if (!text) return false;
-  /* [typed_close_panel_route / voice_close_panel_route] PART 3+4+9: log
-     entry to the shortcut for every typed/voice attempt, including the
-     gate state so we can see WHY a close didn't fire (e.g. not in Work
-     Mode, intent not detected, parse returned a different scope). Tag
-     is voice-vs-typed via opts.isVoice. */
-  const _gateWorkMode = (() => { try { return Boolean(isVeraWorkModeOn()); } catch (_) { return null; } })();
-  const _gateModePrefix = (() => { try { return appModePrefix(); } catch (_) { return null; } })();
-  if (!_gateWorkMode || _gateModePrefix !== "vera") {
-    try {
-      console.info(
-        ((opts && opts.isVoice) ? "[voice_close_panel_route] " : "[typed_close_panel_route] ") +
-        JSON.stringify({
-          text_preview: String(text).slice(0, 80),
-          source: opts.reason || "client_shortcut",
-          gate_work_mode_on: _gateWorkMode,
-          gate_mode_prefix: _gateModePrefix,
-          gate_passed: false,
-          reason_skipped: "not_in_vera_work_mode",
-        })
-      );
-    } catch (_) {}
-    return false;
-  }
-  const order = getReasoningPanelOrder();
-  const parsed = parseCloseReasoningPanelsCommand(text, order.length);
-  const source = opts.reason || "client_shortcut";
-  try {
-    console.info(
-      (opts && opts.isVoice ? "[voice_close_panel_route] " : "[typed_close_panel_route] ") +
-      JSON.stringify({
-        text_preview: String(text).slice(0, 80),
-        source,
-        gate_passed: true,
-        intent_detected: parsed?.intent || null,
-        action_name: parsed?.intent === "close_reasoning_panels" ? "reasoning.close_panel"
-                    : parsed?.intent === "reopen_last_reasoning_panel" ? "reasoning.reopen_last_panel"
-                    : null,
-        parsed_close_scope: parsed?.closeScope || null,
-        parsed_indices: parsed?.indices || [],
-        panel_count_before: order.length,
-        action_handler_found: typeof executeCloseReasoningPanelsCommand === "function",
-      })
-    );
-  } catch (_) {}
-
-  if (parsed.intent === "reopen_last_reasoning_panel") {
-    if (_hasActiveReasoningCloseLock()) {
-      logReasoningClosePolishDebug({
-        stage: "shortcut_dedup_skip_reopen",
-        reason: "lock_active",
-        source: opts.reason || "client_shortcut",
-        prev_lock: _peekReasoningCloseLock(),
-        latest_user_text: String(text || "").slice(0, 200),
-      });
-      return true;
-    }
-    const lifecycle = finalizeReasoningCloseVoiceUserTurn(text, {
-      ...opts,
-      source,
-      path: "reopen-reasoning-panel-user",
-    });
-    const r = reopenLastClosedReasoningPanel({ userText: text });
-    if (r.ok) {
-      const title = r.reopenedTitles?.[0] || "that panel";
-      const reply = `Reopened ${title}.`;
-      _setReasoningCloseLock({ scope: "reopen_last", indices: null, confirmation: reply, source });
-      renderReasoningCloseAssistantConfirmation(reply, {
-        path: "reopen-reasoning-panel",
-        source,
-        isVoice: opts.isVoice,
-        stage: "shortcut_reopen_success",
-        closeActionCompleted: true,
-        lifecycle,
-        resumeListeningAfter: true,
-      });
-      return true;
-    }
-    if (r.failureReason === "stack_empty") {
-      const reply = "I don't have a recently closed panel to reopen.";
-      renderReasoningCloseAssistantConfirmation(reply, {
-        path: "reopen-reasoning-panel-empty",
-        source,
-        isVoice: opts.isVoice,
-        stage: "shortcut_reopen_empty",
-        closeActionCompleted: false,
-        lifecycle,
-        resumeListeningAfter: true,
-      });
-      return true;
-    }
-    return false;
-  }
-
-  if (parsed.intent !== "close_reasoning_panels") return false;
-
-  /* PART 2: per-turn lock. If we already handled a close action in the
-     same user turn (from an earlier ASR interrupt finalize, e.g.), do not
-     execute again and do not double-bubble. We DO claim the shortcut as
-     handled so the /infer round-trip doesn't pile on another execution. */
-  if (_hasActiveReasoningCloseLock()) {
-    logReasoningCloseConfirmationUiDebug({
-      stage: "shortcut_dedup_skip_close",
-      close_panel_intent_detected: true,
-      close_action_completed: true,
-      confirmation_text: String(_peekReasoningCloseLock()?.confirmation || ""),
-      confirmation_render_path: "assistant_bubble",
-      confirmation_tts_enqueued: false,
-      duplicate_confirmation_suppressed: true,
-      action_result_consumed_by_normal_reply_pipeline: true,
-      source: opts.reason || "client_shortcut",
-    });
-    logReasoningClosePolishDebug({
-      stage: "shortcut_dedup_skip_close",
-      reason: "lock_active",
-      source: opts.reason || "client_shortcut",
-      prev_lock: _peekReasoningCloseLock(),
-      latest_user_text: String(text || "").slice(0, 200),
-      parsed_close_scope: parsed.closeScope,
-      parsed_indices: parsed.indices || [],
-    });
-    return true;
-  }
-
-  /* Log the parse decision regardless of execute outcome. */
-  logReasoningCloseDebug({
-    latest_user_text: String(text || "").slice(0, 200),
-    close_reasoning_panel_intent_detected: true,
-    parsed_range_type: parsed.parsedRangeType,
-    close_scope: parsed.closeScope,
-    parsed_indices: parsed.indices || [],
-    raw_panel_index_phrase: parsed.rawIndexPhrase,
-    panel_count_before: order.length,
-    stage: "client_shortcut_parsed",
-    cleaned_command_text: String(parsed.rawCommandText || "").slice(0, 200),
-    selected_close_phrase: parsed.selectedSpan?.phrase || "",
-    suppressed_close_phrases: Array.isArray(parsed.suppressedCloseSpans) ? parsed.suppressedCloseSpans.map((s) => s.phrase) : [],
-  });
-
-  const lifecycle = finalizeReasoningCloseVoiceUserTurn(text, {
-    ...opts,
-    source,
-    path: "close-reasoning-panel-user",
-  });
-
-  const exec = executeCloseReasoningPanelsCommand(parsed, {
-    userText: text,
-    reason: source,
-  });
-  logReasoningCloseVoiceLifecycle({
-    stage: "action",
-    lifecycle_id: lifecycle.lifecycleId || "",
-    action_name: "reasoning.close_panel",
-    close_action_completed: Boolean(exec?.ok),
-    target_panel_ids: Array.isArray(exec?.closedPanels)
-      ? exec.closedPanels.map((p) => p?.id || p?.panel_id || p?.label || "").filter(Boolean)
-      : (parsed.indices || []),
-    panels_after: getReasoningPanelOrder().map((p) => p?.label || p?.id || "").filter(Boolean),
-    source,
-  });
-  /* PART 2: use the single centralized confirmation. */
-  const reply = exec?.confirmation || buildCloseReasoningPanelsVoiceReply(exec, parsed);
-  _setReasoningCloseLock({
-    scope: parsed.closeScope,
-    indices: parsed.indices || null,
-    confirmation: reply,
-    source,
-  });
-  renderReasoningCloseAssistantConfirmation(reply, {
-    path: "close-reasoning-panel",
-    source,
-    isVoice: opts.isVoice,
-    stage: "shortcut_close_confirmation",
-    closeActionCompleted: Boolean(exec?.ok),
-    lifecycle,
-    resumeListeningAfter: true,
-  });
-  return true;
-}
-
-try {
-  window.parseCloseReasoningPanelsCommand = parseCloseReasoningPanelsCommand;
-  window.executeCloseReasoningPanelsCommand = executeCloseReasoningPanelsCommand;
-  window.closeReasoningPanelsByVisualIndices = closeReasoningPanelsByVisualIndices;
-  window.reopenLastClosedReasoningPanel = reopenLastClosedReasoningPanel;
-  window.findReasoningPanelIndicesByTitleQuery = findReasoningPanelIndicesByTitleQuery;
-  window.getReasoningPanelOrder = getReasoningPanelOrder;
-  window.maybeHandleCloseReasoningPanelShortcut = maybeHandleCloseReasoningPanelShortcut;
-} catch (_) {}
-
+/* REASONING_CLOSE_ORDINAL_WORDS, REASONING_CLOSE_COUNT_WORDS,
+ * _hasReasoningCloseSubject, _explicitlyNonReasoningCloseSubject,
+ * _parseReasoningCloseRange, _parseReasoningCloseIndices,
+ * _REASONING_CLOSE_NOISE_TAIL_RES, _REASONING_CLOSE_NOISE_PREFIX_RES,
+ * _cleanCommandTextForClose, _scoreCloseScopeRank, _extractAllCloseSpans,
+ * _pickStrongestCloseSpan, parseCloseReasoningPanelsCommand,
+ * findReasoningPanelIndicesByTitleQuery, reopenLastClosedReasoningPanel,
+ * executeCloseReasoningPanelsCommand, maybeHandleCloseReasoningPanelShortcut
+ * -> moved to workmode/panels.js (Stage 11, 2026-05-30). Voice-turn
+ * lifecycle helpers (finalizeReasoningCloseVoiceUserTurn,
+ * finishReasoningCloseVoiceTurnAfterAssistant, etc.) and the live
+ * call-sites (maybeHandleCloseReasoningPanelShortcut(...)) in this
+ * file continue to resolve those names as bare identifiers through the
+ * shared classic-script global lexical environment at call time. */
 function wireReasoningTabStrip() {
   wireReasoningMarkdownCodeCopy();
   const tabsEl = document.getElementById("vera-reasoning-tabs");
@@ -9404,11 +6728,24 @@ function wireReasoningTabStrip() {
          whether the close completed. Tag with panel id+title at click time
          so we can correlate with close_core_called downstream. */
       const _tabIdxClicked = Number(closeBtn.dataset.tabIndex);
+      const _laneIdClicked = String(closeBtn.dataset.laneId || "").trim();
+      const _panelDomIdClicked = String(closeBtn.dataset.panelDomId || "").trim();
       const _orderAtClick = (() => { try { return getReasoningPanelOrder(); } catch (_) { return []; } })();
-      const _targetAtClick = _orderAtClick.find((p) => p.tabIndex === _tabIdxClicked) || null;
+      const _targetAtClick =
+        (_laneIdClicked ? _orderAtClick.find((p) => p.laneId === _laneIdClicked) : null) ||
+        _orderAtClick.find((p) => p.tabIndex === _tabIdxClicked) ||
+        null;
       try {
         console.info("[reasoning_tab_close_clicked] " + JSON.stringify({
+          raw_text: "",
+          input_source: "ui_click",
+          closePanelIntentDetected: true,
+          finalRoute: "local_app_action",
+          reasoningRouteSkipped: true,
+          actionHandlerFound: typeof closeReasoningTabByLaneId === "function" || typeof closeReasoningTab === "function",
           tab_index: _tabIdxClicked,
+          clicked_lane_id: _laneIdClicked,
+          clicked_panel_dom_id: _panelDomIdClicked,
           panel_id: _targetAtClick?.laneId || null,
           panel_title: _targetAtClick?.label || null,
           visual_index: _targetAtClick?.visualIndex || null,
@@ -9422,7 +6759,11 @@ function wireReasoningTabStrip() {
         } catch (_) {}
         return;
       }
-      closeReasoningTab(_tabIdxClicked);
+      if (_laneIdClicked && typeof closeReasoningTabByLaneId === "function") {
+        closeReasoningTabByLaneId(_laneIdClicked, { reason: "ui_close_button" });
+      } else {
+        closeReasoningTab(_tabIdxClicked);
+      }
       return;
     }
     const tab = e.target.closest("button.vera-reasoning-tab");
@@ -9532,6 +6873,9 @@ function setWorkModeLeftPaneLayout(layout) {
   if (layout !== "split" && layout !== "music-full" && layout !== "checklist-full") layout = "split";
   left.dataset.wmLeftLayout = layout;
   safeSetLocalStorage(WORK_LEFT_PANES_LAYOUT_KEY, layout);
+  if (typeof syncLocalVeraPrefsToSupabase === "function") {
+    void syncLocalVeraPrefsToSupabase("work_left_panes_layout");
+  }
 }
 
 function applyWorkModeLeftPaneLayoutFromStorage() {
@@ -10285,9 +7629,21 @@ let workModeTypedQueueDraining = false;
 
 function syncWorkModeReasoningCancelButton() {
   const btn = document.getElementById("vera-reasoning-cancel");
-  if (!btn) return;
-  const activeIdx = getActiveReasoningLaneIndex();
-  btn.hidden = activeIdx == null || !workModeReasoningAbortControllers.has(Number(activeIdx));
+  if (btn) {
+    const activeIdx = getActiveReasoningLaneIndex();
+    btn.hidden = activeIdx == null || !workModeReasoningAbortControllers.has(Number(activeIdx));
+  }
+  /* 2026-06-01 — the cancel-button sync is the single chokepoint that
+     gets called after every reasoning-lane busy-state toggle
+     (acquire/release/queue drain). Piggy-back the empty-placeholder
+     visibility recompute here so the "No reasoning in this panel yet."
+     hint disappears immediately when a panel starts generating, and
+     correctly reappears only on panels that are both empty and idle. */
+  try {
+    if (typeof recomputeReasoningPanelEmptyHints === "function") {
+      recomputeReasoningPanelEmptyHints();
+    }
+  } catch (_) {}
 }
 
 function getActiveReasoningLaneIndex() {
@@ -10585,298 +7941,19 @@ function shouldQueueFollowUpForBusyReasoningPanel(text) {
   return true;
 }
 
-// =========================
-// Per-panel follow-up queue (visible in each reasoning panel)
-// =========================
-// Map<laneIdx (number), Array<{ id, text, opts, createdAt, panelLabel }>>.
-// Distinct from the global `workModeTypedTurnQueue` and the lane wait queue:
-// this queue is *visible* inside the targeted panel so the user can review,
-// edit, or delete their follow-ups before the panel starts running them.
-const workModeReasoningPanelFollowUpQueue = new Map();
-const REASONING_PANEL_QUEUE_MAX = 6;
-
-function getReasoningPanelFollowUpQueueForIdx(laneIdx) {
-  const idx = Number(laneIdx);
-  if (!Number.isFinite(idx)) return [];
-  let q = workModeReasoningPanelFollowUpQueue.get(idx);
-  if (!Array.isArray(q)) {
-    q = [];
-    workModeReasoningPanelFollowUpQueue.set(idx, q);
-  }
-  return q;
-}
-
-function newReasoningPanelQueueItemId() {
-  return `wmq-${Date.now().toString(36)}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
-}
-
-function getReasoningPanelElementByLaneIdx(laneIdx) {
-  return document.querySelector(
-    `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${Number(laneIdx)}"]`
-  );
-}
-
-function renderReasoningPanelFollowUpQueueUi(laneIdx) {
-  const panel = getReasoningPanelElementByLaneIdx(laneIdx);
-  if (!(panel instanceof HTMLElement)) return;
-  const queue = getReasoningPanelFollowUpQueueForIdx(laneIdx);
-  let host = panel.querySelector(":scope > .vera-reasoning-queue-host");
-  if (!queue.length) {
-    if (host) host.remove();
-    return;
-  }
-  if (!host) {
-    host = document.createElement("div");
-    host.className = "vera-reasoning-queue-host";
-    host.setAttribute("aria-live", "polite");
-    panel.insertBefore(host, panel.firstChild);
-  }
-  const heading = document.createElement("div");
-  heading.className = "vera-reasoning-queue-heading";
-  heading.textContent = `Queued (${queue.length})`;
-  const list = document.createElement("ol");
-  list.className = "vera-reasoning-queue-list";
-  queue.forEach((item) => {
-    const li = document.createElement("li");
-    li.className = "vera-reasoning-queue-item";
-    li.dataset.queueItemId = String(item.id || "");
-
-    const textWrap = document.createElement("div");
-    textWrap.className = "vera-reasoning-queue-item-text";
-    textWrap.textContent = String(item.text || "");
-
-    const actions = document.createElement("div");
-    actions.className = "vera-reasoning-queue-item-actions";
-
-    const editBtn = document.createElement("button");
-    editBtn.type = "button";
-    editBtn.className = "vera-reasoning-queue-btn vera-reasoning-queue-btn--edit";
-    editBtn.textContent = "edit";
-    editBtn.title = "Edit this queued follow-up";
-    editBtn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      beginEditReasoningPanelQueueItem(laneIdx, item.id);
-    });
-
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "vera-reasoning-queue-btn vera-reasoning-queue-btn--delete";
-    delBtn.textContent = "delete";
-    delBtn.title = "Remove this queued follow-up";
-    delBtn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      deleteReasoningPanelQueueItem(laneIdx, item.id);
-    });
-
-    actions.appendChild(editBtn);
-    actions.appendChild(delBtn);
-    li.appendChild(textWrap);
-    li.appendChild(actions);
-    list.appendChild(li);
-  });
-  host.replaceChildren(heading, list);
-}
-
-function enqueueReasoningPanelFollowUp(laneIdx, text, opts = {}) {
-  const idx = Number(laneIdx);
-  if (!Number.isFinite(idx)) return null;
-  const trimmed = String(text || "").trim();
-  if (!trimmed) return null;
-  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
-  if (queue.length >= REASONING_PANEL_QUEUE_MAX) {
-    try {
-      console.warn("[QUEUE_DEBUG][enqueue_rejected]", {
-        panel_id: idx,
-        reason: "panel_queue_max",
-        queue_length: queue.length,
-        max: REASONING_PANEL_QUEUE_MAX
-      });
-    } catch (_) {}
-    return null;
-  }
-  const panel = getReasoningPanelElementByLaneIdx(idx);
-  const panelLabel =
-    (panel instanceof HTMLElement && getReasoningTabTopicLabel(panel)) ||
-    getWorkModeReasoningLaneLabel(idx) ||
-    `Panel ${idx + 1}`;
-  const item = {
-    id: newReasoningPanelQueueItemId(),
-    text: trimmed,
-    opts: { ...(opts || {}) },
-    createdAt: Date.now(),
-    panelLabel
-  };
-  queue.push(item);
-  renderReasoningPanelFollowUpQueueUi(idx);
-  try {
-    console.info("[QUEUE_DEBUG][enqueue]", {
-      panel_id: idx,
-      panel_title: panelLabel,
-      queued_text: trimmed.slice(0, 160),
-      queue_length_after: queue.length
-    });
-  } catch (_) {}
-  return item;
-}
-
-function deleteReasoningPanelQueueItem(laneIdx, itemId) {
-  const idx = Number(laneIdx);
-  if (!Number.isFinite(idx)) return false;
-  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
-  const beforeLen = queue.length;
-  const next = queue.filter((it) => it.id !== itemId);
-  if (next.length === beforeLen) return false;
-  workModeReasoningPanelFollowUpQueue.set(idx, next);
-  renderReasoningPanelFollowUpQueueUi(idx);
-  try {
-    console.info("[QUEUE_DEBUG][delete]", {
-      panel_id: idx,
-      queue_item_id: itemId,
-      queue_length_after: next.length
-    });
-  } catch (_) {}
-  return true;
-}
-
-function editReasoningPanelQueueItem(laneIdx, itemId, newText) {
-  const idx = Number(laneIdx);
-  if (!Number.isFinite(idx)) return false;
-  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
-  const target = queue.find((it) => it.id === itemId);
-  if (!target) return false;
-  const nextText = String(newText || "").trim();
-  if (!nextText) {
-    deleteReasoningPanelQueueItem(idx, itemId);
-    return true;
-  }
-  const oldText = target.text;
-  if (oldText === nextText) {
-    renderReasoningPanelFollowUpQueueUi(idx);
-    return false;
-  }
-  target.text = nextText;
-  renderReasoningPanelFollowUpQueueUi(idx);
-  try {
-    console.info("[QUEUE_DEBUG][edit]", {
-      panel_id: idx,
-      queue_item_id: itemId,
-      old_text: String(oldText || "").slice(0, 160),
-      new_text: nextText.slice(0, 160)
-    });
-  } catch (_) {}
-  return true;
-}
-
-function beginEditReasoningPanelQueueItem(laneIdx, itemId) {
-  const panel = getReasoningPanelElementByLaneIdx(laneIdx);
-  if (!(panel instanceof HTMLElement)) return;
-  const li = panel.querySelector(
-    `.vera-reasoning-queue-item[data-queue-item-id="${itemId}"]`
-  );
-  if (!(li instanceof HTMLElement)) return;
-  const textEl = li.querySelector(".vera-reasoning-queue-item-text");
-  if (!(textEl instanceof HTMLElement)) return;
-  if (li.classList.contains("is-editing")) return;
-  li.classList.add("is-editing");
-  const oldText = textEl.textContent || "";
-  const input = document.createElement("textarea");
-  input.className = "vera-reasoning-queue-edit-input";
-  input.rows = 2;
-  input.value = oldText;
-  textEl.replaceWith(input);
-  input.focus();
-  input.select();
-  const finish = (commit) => {
-    if (!li.classList.contains("is-editing")) return;
-    li.classList.remove("is-editing");
-    if (commit) {
-      editReasoningPanelQueueItem(laneIdx, itemId, input.value);
-    } else {
-      renderReasoningPanelFollowUpQueueUi(laneIdx);
-    }
-  };
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && !ev.shiftKey) {
-      ev.preventDefault();
-      finish(true);
-    } else if (ev.key === "Escape") {
-      ev.preventDefault();
-      finish(false);
-    }
-  });
-  input.addEventListener("blur", () => finish(true));
-}
-
-function scheduleReasoningPanelFollowUpQueueDrain(laneIdx) {
-  const idx = Number(laneIdx);
-  if (!Number.isFinite(idx)) return;
-  window.setTimeout(() => drainReasoningPanelFollowUpQueue(idx), 0);
-}
-
-async function drainReasoningPanelFollowUpQueue(laneIdx) {
-  const idx = Number(laneIdx);
-  if (!Number.isFinite(idx)) return;
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
-  if (workModeReasoningLaneBusy.get(idx) === true) return;
-  const queue = getReasoningPanelFollowUpQueueForIdx(idx);
-  if (!queue.length) return;
-  const next = queue.shift();
-  workModeReasoningPanelFollowUpQueue.set(idx, queue);
-  renderReasoningPanelFollowUpQueueUi(idx);
-  try {
-    console.info("[QUEUE_DEBUG][dequeue_run]", {
-      panel_id: idx,
-      queue_item_id: next?.id || null,
-      text: String(next?.text || "").slice(0, 160),
-      queue_length_after: queue.length
-    });
-  } catch (_) {}
-  // Switch to the originating panel so the frozen turn context picks the
-  // right lane. The user can switch back manually after; this guarantees
-  // the queued follow-up runs in the panel where it was queued.
-  try {
-    const activeIdxNow = getActiveReasoningLaneIndex();
-    if (activeIdxNow !== idx && typeof activateReasoningTab === "function") {
-      activateReasoningTab(idx);
-    }
-  } catch (_) {}
-  try {
-    await sendVeraWorkModeTypedInferTurn(next.text, {
-      ...(next.opts || {}),
-      __fromReasoningPanelQueue: true,
-      __reasoningPanelQueueLaneIdx: idx
-    });
-  } catch (err) {
-    try {
-      console.warn("[QUEUE_DEBUG][dequeue_run_error]", {
-        panel_id: idx,
-        queue_item_id: next?.id || null,
-        error: String((err && err.message) || err || "")
-      });
-    } catch (_) {}
-  }
-}
-
-function clearReasoningPanelFollowUpQueueForIdx(laneIdx) {
-  const idx = Number(laneIdx);
-  if (!Number.isFinite(idx)) return;
-  workModeReasoningPanelFollowUpQueue.delete(idx);
-  renderReasoningPanelFollowUpQueueUi(idx);
-}
-
-window.workModeReasoningPanelQueue = {
-  enqueue: enqueueReasoningPanelFollowUp,
-  delete: deleteReasoningPanelQueueItem,
-  edit: editReasoningPanelQueueItem,
-  render: renderReasoningPanelFollowUpQueueUi,
-  drain: drainReasoningPanelFollowUpQueue,
-  clear: clearReasoningPanelFollowUpQueueForIdx,
-  list: (laneIdx) =>
-    getReasoningPanelFollowUpQueueForIdx(laneIdx).map((it) => ({ ...it }))
-};
-
+/* Per-panel follow-up queue (workModeReasoningPanelFollowUpQueue Map,
+ * REASONING_PANEL_QUEUE_MAX, getReasoningPanelFollowUpQueueForIdx,
+ * newReasoningPanelQueueItemId, getReasoningPanelElementByLaneIdx,
+ * renderReasoningPanelFollowUpQueueUi, enqueueReasoningPanelFollowUp,
+ * deleteReasoningPanelQueueItem, editReasoningPanelQueueItem,
+ * beginEditReasoningPanelQueueItem, scheduleReasoningPanelFollowUpQueueDrain,
+ * drainReasoningPanelFollowUpQueue, clearReasoningPanelFollowUpQueueForIdx,
+ * and the window.workModeReasoningPanelQueue debug export)
+ * -> moved to workmode/panels.js (Stage 12, 2026-05-31). Call sites in
+ * this file (releaseWorkModeReasoningLane, the typed-input handler, and
+ * the lane-busy-queue helpers) continue to resolve those names as bare
+ * identifiers through the shared classic-script global lexical
+ * environment at call time. */
 function workModeTypedQueueItemHasPayload(item) {
   const txt = String(item?.text ?? "").trim();
   const files = Array.isArray(item?.opts?.reasoningAttachments)
@@ -11555,6 +8632,29 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
             stream_lane_id: streamLaneId || null,
             current_active_dom_lane_id: getActiveDomReasoningLaneId() || null
           });
+          try {
+            const renderPanel = mdEl.closest(".vera-reasoning-tab-panel");
+            const renderPanelId = renderPanel instanceof HTMLElement
+              ? String(renderPanel.dataset.laneId || "").trim()
+              : "";
+            const activePanelId = getActiveDomReasoningLaneId() || null;
+            console.info("[ui_render_panel]", {
+              turn_id: turnContext?.turn_id || null,
+              stream_lane_id: streamLaneId || null,
+              render_panel_id: renderPanelId || null,
+              current_active_dom_lane_id: activePanelId,
+              matches_stream_lane: Boolean(renderPanelId && streamLaneId && renderPanelId === streamLaneId),
+            });
+            if (renderPanelId && streamLaneId && renderPanelId !== streamLaneId) {
+              console.warn("[panel_target_mismatch]", {
+                stage: "reasoning_chunk_append",
+                expected_panel_id: streamLaneId,
+                ui_render_panel_id: renderPanelId,
+                current_active_dom_lane_id: activePanelId,
+                turn_id: turnContext?.turn_id || null,
+              });
+            }
+          } catch (_) {}
           markdownAcc += String(o.text);
           mdEl.dataset.markdownAcc = markdownAcc;
           renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
@@ -11696,10 +8796,344 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
   return q;
 }
 
+/* ============================================================================
+ * 2026-05-29 reasoning-gate helpers (Voice UI vs reasoning panel).
+ *
+ * The frontend gate in maybePrepareWorkModeReasoning historically said "yes"
+ * to the reasoning panel for any utterance containing "explain" or any
+ * domain noun, AND deferred to the backend LLM classifier when the heuristic
+ * was silent. That over-routed simple definitional questions like
+ *   "can you tell me what tennis is?"
+ *   "what is tennis?"
+ *   "explain tennis"
+ * into the panel.
+ *
+ * These helpers are the ordered deterministic short-circuits the gate runs
+ * BEFORE /work_mode/classify and BEFORE the local heuristic, mirroring the
+ * backend CHAT_REASONING.classify_route_reasoning rewrite:
+ *
+ *   1. isExplicitReasoningPanelReference  → force panel (wins over everything)
+ *   2. isBriefExplanationModifier         → force Voice UI
+ *   3. isSimpleDefinitionQuestion         → force Voice UI
+ *   4. (legacy heuristicReasoning, now tightened — see explainReasoningAsk)
+ *
+ * Each helper is a pure regex check. None of them call the network. The
+ * resolver used for "explain that in the panel" type pronouns is
+ * resolveReasoningPanelTopicFromContext, which falls back to
+ * workModeLastSubstantiveUserText (already maintained per-turn).
+ * ========================================================================== */
+
+const _REASONING_PANEL_BRIEF_MODIFIER_RE =
+  /\b(?:brief(?:ly)?|short(?:ly)?|quick(?:ly)?|in\s+short|in\s+a\s+sentence|in\s+one\s+sentence|one[-\s]*liner|one\s*sentence|tl;?dr|tldr|give\s+me\s+the\s+(?:short|brief|quick)\s+(?:version|answer)|summari[sz]e\s+(?:briefly|in\s+one\s+sentence)|in\s+a\s+(?:few|couple\s+of)\s+(?:words|sentences))\b/i;
+
+const _REASONING_PANEL_SIMPLE_DEF_RES = [
+  // what is X / what's X / whats X
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?(?:tell\s+me\s+)?what(?:'s|s|\s+is|\s+are|\s+was|\s+were)\s+(.+?)\s*[?.!]*\s*$/i,
+  // who is X / who was X
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?(?:tell\s+me\s+)?who(?:'s|s|\s+is|\s+are|\s+was|\s+were)\s+(.+?)\s*[?.!]*\s*$/i,
+  // what does X mean / what's the meaning of X
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?what\s+does\s+(.+?)\s+mean\s*[?.!]*\s*$/i,
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?what(?:'s|s|\s+is)\s+the\s+meaning\s+of\s+(.+?)\s*[?.!]*\s*$/i,
+  // tell me what X is / can you tell me what X is
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?tell\s+me\s+what\s+(.+?)\s+(?:is|are|was|were|means?)\s*[?.!]*\s*$/i,
+  // tell me who X is
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?tell\s+me\s+who\s+(.+?)\s+(?:is|are|was|were)\s*[?.!]*\s*$/i,
+  // define X / define the term X
+  /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?define\s+(?:the\s+(?:term|word)\s+)?(.+?)\s*[?.!]*\s*$/i
+];
+
+const _REASONING_PANEL_PUT_RE =
+  /\b(?:put|place|write|answer|show|drop|paste)\s+(?:(this|that|it|them)|the\s+answer|the\s+explanation|an?\s+explanation\s+of\s+(.+?))\s+(?:in|into|onto|on)\s+(?:the\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?/i;
+
+const _REASONING_PANEL_IN_RE =
+  /\b(?:in|into|using|on|via|inside|within)\s+(?:(?:the|this|that|a)\s+)?(?:(?:current|active|same|previous|reasoning|work\s*mode|workmode)\s+)*(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?\b/i;
+
+const _REASONING_PANEL_IMPERATIVE_RE =
+  /\b(?:use|open|launch|spin\s*up|fire\s*up)\s+(?:up\s+)?(?:(?:a|another|the|one\s+more|some)\s+)?(?:(?:new|extra|additional|empty|fresh|another)\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|work\s*mode|workmode)\b/i;
+
+const _REASONING_PANEL_PRONOUN_RE =
+  /\b(?:that|this|it)\b/i;
+
+const _REASONING_PANEL_ORD_MAP = {
+  first: 1, second: 2, third: 3, fourth: 4,
+  fifth: 5, sixth: 6, seventh: 7, eighth: 8
+};
+
+const _REASONING_PANEL_BROAD_TOPIC_RE_LIST = [
+  ["history", /\b(?:vietnam\s+war|world\s+war(?:\s+(?:i|ii|1|2|one|two))?|wwi+|cold\s+war|civil\s+war|french\s+revolution|american\s+revolution|industrial\s+revolution|russian\s+revolution|cuban\s+(?:missile\s+)?crisis|holocaust|crusades|reformation|renaissance|enlightenment|colonialism|imperialism|treaty\s+of\s+\w+|fall\s+of\s+\w+|rise\s+of\s+\w+|war\s+of\s+\w+)\b/i],
+  ["quant", /\b(?:black[-\s]*scholes|binomial(?:\s+(?:lattice|tree|model))?|monte[-\s]*carlo|calculus|linear\s+algebra|differential\s+equation|partial\s+differential\s+equation|ode|pde|fourier|laplace|bayes(?:ian|'?s)\s+(?:theorem|rule)?|central\s+limit\s+theorem|hypothesis\s+test|regression|probability\s+(?:problem|distribution|theory)|theorem|proof|derivation|algorithm(?:s|ic)?|complexity\s+class|dynamic\s+programming|graph\s+theory|capital\s+asset\s+pricing\s+model|capm|portfolio\s+optimization|efficient\s+frontier)\b/i],
+  ["science", /\b(?:climate\s+change|global\s+warming|greenhouse\s+effect|theory\s+of\s+relativity|general\s+relativity|special\s+relativity|quantum\s+(?:mechanics|computing|field\s+theory|entanglement)|string\s+theory|big\s+bang|evolution(?:ary\s+theory)?|natural\s+selection|dna\s+replication|protein\s+folding|krebs\s+cycle|cellular\s+respiration|photosynthesis|mitosis|meiosis|nervous\s+system|immune\s+system|cardiovascular\s+system|plate\s+tectonics|ecosystem)\b/i],
+  ["economics", /\b(?:economic\s+(?:recession|depression|crisis|cycle|policy)|great\s+depression|2008\s+financial\s+crisis|stagflation|inflation\s+(?:dynamics|mechanism|causes)|monetary\s+policy|fiscal\s+policy|supply[-\s]*side|keynesian\s+economics|comparative\s+advantage|game\s+theory|nash\s+equilibrium|market\s+failure|externalit(?:y|ies))\b/i]
+];
+
+/* 2026-06-13 — narrow Work Mode false-positive guard (mirrors
+   CHAT_REASONING._detect_conversational_check). Obvious short greetings /
+   acknowledgments / presence-or-hearing checks answer in the Voice UI and
+   must never open a reasoning panel. Conservative by design: the ENTIRE
+   normalized utterance must be whitelisted conversational chunks, with no
+   explicit panel/work-mode wording, and short — so real "can you …" requests
+   ("can you solve this?", "can you start a 10 minute timer?") never match. */
+const _CONVERSATIONAL_EXPLICIT_TRIGGER_RE =
+  /\b(?:reasoning\s+(?:panel|space|tab|page)|work\s*mode|workmode|panel\s*#?\s*\d+|new\s+panel|in\s+(?:the\s+)?panel|in\s+(?:the\s+)?reasoning|think\s+through|plan\s+in\s+the\s+panel|use\s+work\s+mode)\b/i;
+
+const _CONVERSATIONAL_MAX_WORDS = 8;
+
+/* Ordered longest-first so multi-word phrases consume before single tokens. */
+const _CONVERSATIONAL_PHRASES = [
+  "can you hear me now",
+  "can you hear me",
+  "could you hear me",
+  "do you hear me",
+  "can you read me",
+  "could you read me",
+  "are you still there",
+  "are you there",
+  "are you here",
+  "you still there",
+  "you there",
+  "still there",
+  "you with me",
+  "thank you so much",
+  "thank you",
+  "thank u",
+  "hello there",
+  "hi there",
+  "hey there",
+  "mic check",
+  "sound check",
+  "check check",
+  "sounds good",
+  "got it",
+  "all good",
+  "whats up",
+  "what up",
+  "sup",
+  "hello",
+  "hullo",
+  "hi",
+  "hey",
+  "hiya",
+  "heya",
+  "yo",
+  "testing",
+  "test",
+  "thanks",
+  "thx",
+  "ty",
+  "okay",
+  "ok",
+  "cool",
+  "alright",
+  "gotcha"
+];
+
+function normalizeConversationalCheck(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/['\u2019]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function detectWorkModeConversationalCheck(text) {
+  const s = normalizeConversationalCheck(text);
+  if (!s) return false;
+  if (_CONVERSATIONAL_EXPLICIT_TRIGGER_RE.test(s)) return false;
+  if (s.split(" ").length > _CONVERSATIONAL_MAX_WORDS) return false;
+  let remaining = s;
+  let consumedAny = false;
+  while (remaining) {
+    let matched = false;
+    for (const phrase of _CONVERSATIONAL_PHRASES) {
+      if (remaining === phrase || remaining.startsWith(phrase + " ")) {
+        remaining = remaining.slice(phrase.length).trim();
+        matched = true;
+        consumedAny = true;
+        break;
+      }
+    }
+    if (!matched) return false;
+  }
+  return consumedAny;
+}
+
+function isBriefExplanationModifier(text) {
+  const s = String(text || "").trim().toLowerCase();
+  if (!s) return false;
+  return _REASONING_PANEL_BRIEF_MODIFIER_RE.test(s);
+}
+
+function isSimpleDefinitionQuestion(text) {
+  const s = String(text || "").trim();
+  if (!s || s.length > 160) return { matched: false, topic: null };
+  for (const pat of _REASONING_PANEL_SIMPLE_DEF_RES) {
+    const m = s.match(pat);
+    if (m) {
+      const topic = (m[1] || "").trim().replace(/\s*[?.!,;:]+$/g, "").trim();
+      return { matched: true, topic: topic || null };
+    }
+  }
+  return { matched: false, topic: null };
+}
+
+function detectBroadComplexTopicFrontend(text) {
+  const s = String(text || "").trim().toLowerCase();
+  if (!s) return null;
+  for (const [family, pat] of _REASONING_PANEL_BROAD_TOPIC_RE_LIST) {
+    if (pat.test(s)) return family;
+  }
+  return null;
+}
+
+/**
+ * Detect explicit "in the panel" / "use work mode" wording.
+ *
+ * Returns:
+ *   { matched: bool, topic: string|null, targetPanel: number|null,
+ *     wasPronoun: bool, pronoun: string|null }
+ *
+ *   wasPronoun=true when the put-form used "this/that/it" — caller must
+ *   resolve to workModeLastSubstantiveUserText (or ask for clarification).
+ */
+function isExplicitReasoningPanelReference(text) {
+  const empty = { matched: false, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
+  const s = String(text || "").trim();
+  if (!s) return empty;
+  const mPut = s.match(_REASONING_PANEL_PUT_RE);
+  if (mPut) {
+    const pronoun = (mPut[1] || "").trim().toLowerCase() || null;
+    const explicitTopic = (mPut[2] || "").trim() || null;
+    const num = mPut[3] ? parseInt(mPut[3], 10) : null;
+    const ord = (mPut[4] || "").toLowerCase();
+    const targetPanel = Number.isFinite(num)
+      ? num
+      : (_REASONING_PANEL_ORD_MAP[ord] != null ? _REASONING_PANEL_ORD_MAP[ord] : null);
+    return {
+      matched: true,
+      topic: explicitTopic,
+      targetPanel,
+      wasPronoun: Boolean(pronoun),
+      pronoun
+    };
+  }
+  const mIn = s.match(_REASONING_PANEL_IN_RE);
+  if (mIn) {
+    const num = mIn[1] ? parseInt(mIn[1], 10) : null;
+    const ord = (mIn[2] || "").toLowerCase();
+    const targetPanel = Number.isFinite(num)
+      ? num
+      : (_REASONING_PANEL_ORD_MAP[ord] != null ? _REASONING_PANEL_ORD_MAP[ord] : null);
+    /* Only treat "this/that/it" as a pronoun TOPIC reference when it occurs
+       OUTSIDE the matched panel-destination phrase. Otherwise "explain
+       tennis in this panel" would mistake the destination determiner
+       "this" for a missing topic and bail to Voice UI even though the
+       topic ("tennis") is right there in the utterance. */
+    const idx = mIn.index ?? 0;
+    const outsidePanelPhrase = (s.slice(0, idx) + " " + s.slice(idx + mIn[0].length)).trim();
+    const hasPronoun = _REASONING_PANEL_PRONOUN_RE.test(outsidePanelPhrase);
+    return {
+      matched: true,
+      topic: null,
+      targetPanel,
+      wasPronoun: hasPronoun,
+      pronoun: hasPronoun ? (outsidePanelPhrase.match(/\b(that|this|it)\b/i) || [])[1] || null : null
+    };
+  }
+  if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
+    return { matched: true, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
+  }
+  return empty;
+}
+
+/**
+ * Given an explicit-panel utterance whose topic is the pronoun "that|this|it",
+ * resolve to the previous substantive user request (per-spec fallback). Returns
+ * the resolved string or "" if nothing usable is on record.
+ */
+function resolveReasoningPanelTopicFromContext() {
+  const t = String(workModeLastSubstantiveUserText || "").trim();
+  return t;
+}
+
 /**
  * True when the user is only asking to switch reasoning tabs (mirrors `app.py` `_explicit_work_mode_panel_navigation`).
  * Used to skip `maybePrepareWorkModeReasoning` so navigation does not also spawn a reasoning stream.
  */
+/**
+ * 2026-05-29 spec PART 4 — compound-action-families detector.
+ *
+ * Returns ``{ isCompound, families, reason }`` so the voice preflight
+ * path and the reasoning gate can defer to the backend deterministic
+ * planner when a transcript references more than one action family.
+ *
+ * Heuristic (cheap, regex-only — mirrors the families the backend
+ * ``actions/multi_action_planner.py`` knows about):
+ *
+ *   panel        : "go to/open/close/navigate ... panel|tab|page"
+ *   reasoning    : "explain|describe|tell me about|summari[sz]e|analy[sz]e|
+ *                  solve|prove|derive|write|draft|outline|compare|teach me|
+ *                  walk me through|break down"
+ *   music        : "play|pause|resume|skip|next/previous track|turn up/down
+ *                  the music|the volume|lo-fi|spotify|playlist"
+ *   timer        : "timer for ..." / "set a timer" / "cancel the timer"
+ *   checklist    : "(add|remove|cross off|check off) ... checklist|plan|list"
+ *
+ * The detector requires AT LEAST 2 DISTINCT families to call something
+ * compound. A bare "explain X in panel 2" still counts as compound
+ * (panel + reasoning) — that's intentional, because the backend planner
+ * handles "in panel N" propagation cleanly and the local reasoning gate
+ * would otherwise open a panel without inheriting the explicit target.
+ *
+ * Conservative cases that do NOT count as compound on purpose:
+ *   - "what is the capital of france and the population of germany?"
+ *     (no action verbs; reasoning only — count = 1)
+ *   - "play feather by sabrina carpenter and frgile by laufey"
+ *     (single family; let existing music handler take it)
+ */
+const _WMC_PANEL_FAMILY_RE =
+  /\b(?:go(?:\s+back)?\s+to|jump\s+to|switch\s+to|change\s+to|open|close|hide|dismiss|create|make|add|new|navigate\s+to|use|show|select)\s+(?:a\s+|the\s+|my\s+|all\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i;
+/* 2026-06-01 — added "help me plan|draft|outline|brainstorm" and the
+   bare ``plan <my|an|the|out>`` reasoning verb so compound utterances
+   like "Open panel 2 and help me plan my essay there" register the
+   reasoning family and reach the backend planner (instead of
+   collapsing to panel-only navigation). The ``plan`` branch is gated
+   by a determiner/possessive token so "follow the plan" / "the plan"
+   noun usages don't pollute the family detector. */
+const _WMC_REASONING_FAMILY_RE =
+  /\b(?:explain|describe|tell\s+me\s+about|summari[sz]e|analy[sz]e|solve|prove|derive|write|draft|compose|outline|compare|teach\s+me|walk\s+me\s+through|break\s+down|step[-\s]*by[-\s]*step|in\s+detail|deep\s*dive|thorough\s+(?:overview|explanation|analysis)|help\s+me\s+(?:plan|draft|outline|brainstorm|write|solve|understand|with)|plan\s+(?:out\s+)?(?:my|an?|the|this|that)\b)/i;
+const _WMC_MUSIC_FAMILY_RE =
+  /\b(?:play|pause|stop|resume|mute|unmute|unpause|skip(?:\s+(?:to\s+the\s+)?(?:next|previous|forward|back))?|next\s+(?:song|track)|previous\s+(?:song|track))\b|\b(?:turn|raise|lower|crank)\s+(?:up\s+|down\s+)?(?:the\s+)?(?:music|volume)\b/i;
+const _WMC_TIMER_FAMILY_RE =
+  /\b(?:set|start|begin)\s+(?:a\s+|the\s+|another\s+)?timer\b|\btimer\s+for\b|\bcancel\s+(?:the\s+|that\s+|my\s+)?timer\b|\berase\s+(?:the\s+|that\s+|my\s+)?timer\b/i;
+const _WMC_CHECKLIST_FAMILY_RE =
+  /\b(?:add|put|remove|delete|cross\s+off|check\s+off|complete|mark)\b[^.?!]{0,40}\b(?:checklist|plan|todo|to[-\s]?do|list)\b|\b(?:checklist|plan|to[-\s]?do(?:\s+list)?)\b[^.?!]{0,40}\b(?:add|remove|delete|complete|mark)\b|\bcross\s+off\s+the\s+(?:first|second|third|fourth|fifth|last)\b/i;
+
+function detectCompoundActionFamilies(text) {
+  const s = String(text || "").trim();
+  if (!s) return { isCompound: false, families: [], reason: "empty" };
+  const families = [];
+  if (_WMC_PANEL_FAMILY_RE.test(s)) families.push("panel");
+  if (_WMC_REASONING_FAMILY_RE.test(s)) families.push("reasoning");
+  if (_WMC_MUSIC_FAMILY_RE.test(s)) families.push("music");
+  if (_WMC_TIMER_FAMILY_RE.test(s)) families.push("timer");
+  if (_WMC_CHECKLIST_FAMILY_RE.test(s)) families.push("checklist");
+  /* Also count implicit "in panel N" as a panel family — covers
+     "explain X in panel 2" which the backend planner rewrites into
+     panel.navigate + reasoning.request. */
+  if (!families.includes("panel") && /\bin\s+(?:the\s+)?panel\s+\d+\b/i.test(s)) {
+    families.push("panel");
+  }
+  const isCompound = families.length >= 2;
+  const reason = isCompound
+    ? `compound_${families.join("_")}`
+    : (families.length === 1 ? `single_family_${families[0]}` : "no_action_families");
+  return { isCompound, families, reason };
+}
+
+try { window.detectCompoundActionFamilies = detectCompoundActionFamilies; } catch (_) {}
+
+
 function isExplicitWorkModePanelNavigationIntent(text) {
   const s = String(text ?? "").trim();
   if (!s) return false;
@@ -11936,6 +9370,18 @@ function logReasoningRouteDebug(payload) {
     );
   } catch (_) {}
 }
+
+/* window.debugReasoningGate (DevTools-only dry-run probe of the
+ * deterministic reasoning-gate short-circuits) -> moved to
+ * debug/reasoningGate.js (Patch B-2 option b, 2026-06-01).
+ * debug/reasoningGate.js loads AFTER app.js per index.html, so the
+ * file calls the live-routing helpers that remain here
+ * (isExplicitReasoningPanelReference, isBriefExplanationModifier,
+ * isSimpleDefinitionQuestion, detectBroadComplexTopicFrontend,
+ * detectCompoundActionFamilies, plus globals API_URL and
+ * workModeLastSubstantiveUserText) through the shared classic-
+ * script global lexical environment at call time. The probe is
+ * never invoked by live routing, only by manual DevTools calls. */
 
 function isLikelyWorkModePlanningIntent(text) {
   const raw = String(text ?? "").trim();
@@ -12511,6 +9957,302 @@ function logLaneMainContextResolve(laneId, meta = {}) {
   } catch (_) {}
 }
 
+/** Voice UI → Reasoning Panel context handoff (Phase 1, 2026-06-15). */
+const VOICE_TO_PANEL_MAX_TURN_PAIRS = 3;
+const VOICE_TO_PANEL_MAX_BLOCK_CHARS = 4000;
+const VOICE_TO_PANEL_TOPIC_CONTINUITY_FLOOR = 0.12;
+
+function detectVoiceToPanelDeictic(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  return /\b(?:that|this|it|these|those|earlier|previous|prior|before|what we discussed|what we talked about|continue from|continue with|why that worked|why it worked|why this worked|the same|last time|from earlier)\b/i.test(
+    s
+  );
+}
+
+/** Deictic Voice UI → panel writing/help handoff (e.g. "help me write that in the reasoning space"). */
+function detectVoiceToPanelDeicticWritingHandoff(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  if (!detectVoiceToPanelDeictic(s)) return false;
+  const hasCreationVerb =
+    /\b(?:write|draft|compose|prepare|explain|describe|outline|help\s+me\s+(?:write|draft|compose|prepare|explain|with)|(?:turn|convert|make)\s+(?:that|this|it)\s+into|create)\b/i.test(
+      s
+    );
+  const hasWorkspaceTarget =
+    /\b(?:reasoning\s+(?:space|panel|tab|page)|(?:reasoning\s+)?panel(?:\s+\d+)?|panel\s+\d+|reasoning\s+space|workspace|work\s*mode)\b/i.test(
+      s
+    ) ||
+    /\b(?:in|into|to)\s+(?:the\s+)?(?:reasoning\s+(?:space|panel|tab|page)|panel(?:\s+\d+)?)\b/i.test(s);
+  return Boolean(hasCreationVerb && hasWorkspaceTarget);
+}
+
+function summarizeVoiceTopicAnchorForPanel(text, maxLen = 280) {
+  const t = String(text || "").trim();
+  if (!t) return "";
+  const first = (t.split(/(?<=[.!?])\s+/)[0] || t).trim();
+  const pick = first.length >= 24 ? first : t;
+  return pick.length > maxLen ? `${pick.slice(0, maxLen).trim()}…` : pick;
+}
+
+function _stripDeicticHandoffLeadFromClause(clause) {
+  let s = String(clause || "").trim();
+  if (!s) return "";
+  s = s.replace(/^(?:please\s+)?(?:can|could|would|will)\s+you\s+/i, "").trim();
+  s = s.replace(
+    /\b(?:help\s+me\s+)?(?:write|draft|compose|prepare|explain|describe|outline)\s+(?:that|this|it)\s+(?:in|into|to)\s+(?:the\s+)?(?:reasoning\s+(?:space|panel|tab|page)|panel(?:\s*#?\s*\d+)?|reasoning\s+space|workspace)(?:\s+(?:first|second|third|fourth|fifth|sixth|seventh|eighth|\d+))?\s*[?.!]?\s*/i,
+    ""
+  );
+  s = s.replace(
+    /\b(?:open|use)\s+(?:the\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel(?:\s*#?\s*\d+)?)\s+and\s+(?:help\s+me\s+)?(?:write|draft|compose|prepare|explain|describe|outline)\s+(?:that|this|it)\s+/i,
+    ""
+  );
+  s = s.replace(
+    /\b(?:turn|convert|make)\s+(?:that|this|it)\s+into\b[^?.!]*?(?:in|into|to)\s+(?:the\s+)?(?:reasoning\s+(?:space|panel|tab|page)|panel(?:\s*#?\s*\d+)?|workspace)\s*[?.!]?\s*/i,
+    ""
+  );
+  return s.trim().replace(/^[?.!,\s:;]+|[?.!,\s:;]+$/g, "").trim();
+}
+
+function extractSupplementalDetailsFromDeicticHandoff(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  const clauses = raw.split(/\?\s+|\.\s+(?=[A-Za-z"'(])/).map((c) => c.trim()).filter(Boolean);
+  if (clauses.length >= 2) {
+    for (let i = 0; i < clauses.length; i++) {
+      if (detectVoiceToPanelDeicticWritingHandoff(clauses[i])) {
+        const rest = clauses.slice(i + 1).join(". ").trim();
+        if (rest) return rest;
+      }
+    }
+  }
+  const stripped = _stripDeicticHandoffLeadFromClause(raw);
+  if (stripped && stripped !== raw && !detectVoiceToPanelDeicticWritingHandoff(stripped)) {
+    return stripped;
+  }
+  return "";
+}
+
+function composeDeicticVoiceToPanelReasoningTask(opts = {}) {
+  const original = String(opts.userText || opts.originalUserText || "").trim();
+  if (!detectVoiceToPanelDeicticWritingHandoff(original)) return null;
+  const topicAnchor = String(opts.topicAnchor || workModeLastSubstantiveUserText || "").trim();
+  const resolvedReferent = String(opts.resolvedReferent || topicAnchor || "").trim();
+  if (!resolvedReferent) return null;
+
+  const referentSummary = summarizeVoiceTopicAnchorForPanel(resolvedReferent);
+  const newDetails = extractSupplementalDetailsFromDeicticHandoff(original);
+  const actionVerb = /\bdraft\b/i.test(original)
+    ? "draft"
+    : /\bcompose\b/i.test(original)
+      ? "compose"
+      : /\b(?:turn|convert|make)\s+(?:that|this|it)\s+into\b/i.test(original)
+        ? "turn into the requested form for"
+        : /\bexplain\b/i.test(original)
+          ? "explain"
+          : /\bdescribe\b/i.test(original)
+            ? "describe"
+            : "write";
+
+  let composedTask = `Using the prior Voice UI context, help the user ${actionVerb} the referenced item: ${referentSummary}.`;
+  if (newDetails) {
+    composedTask += ` Also incorporate these new details from the current message: ${newDetails}.`;
+  }
+  composedTask +=
+    " Produce the full deliverable in the reasoning panel; do not focus only on supplemental details when they accompany a deictic writing request.";
+
+  return {
+    composedTask,
+    resolvedReferent: referentSummary,
+    newDetails: newDetails || null,
+    originalUserText: original
+  };
+}
+
+function detectVoiceToPanelActionReference(text) {
+  const s = String(text || "").trim().toLowerCase();
+  if (!s) return false;
+  return (
+    /\bwhy(?:\s+did|\s+does|\s+that|\s+it|\s+this)?\s+(?:that|it|this)\s+work/i.test(s) ||
+    /\bwhy\s+(?:that|it|this)\s+(?:worked|failed|succeeded|happened)\b/i.test(s) ||
+    /\b(?:explain|describe)\s+(?:why|how)\s+(?:that|it|this|the)\s+(?:worked|failed|route|routing)\b/i.test(s) ||
+    /\b(?:recent|last)\s+(?:action|command|request|play|pause|route|routing)\b/i.test(s)
+  );
+}
+
+function detectPanelLocalFollowUp(text, hasLaneSubstance) {
+  if (!hasLaneSubstance) return false;
+  const low = String(text || "").toLowerCase();
+  return (
+    /\b(?:section|paragraph|part|step|heading|bullet|line)\s+\d+\b/i.test(low) ||
+    /\b(?:make|keep|shorten|tighten|expand|revise|rewrite|edit|polish|fix)\s+(?:this|the)\s+(?:draft|outline|plan|section|paragraph|answer|solution)\b/i.test(
+      low
+    ) ||
+    /\b(?:above|in the panel|this draft|this outline|the outline|the draft)\b/i.test(low)
+  );
+}
+
+function parseVoiceExcerptToTurnPairs(excerpt, maxPairs) {
+  const lines = String(excerpt || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const pairs = [];
+  let cur = null;
+  for (const line of lines) {
+    const um = line.match(/^User:\s*(.+)$/i);
+    const am = line.match(/^Assistant:\s*(.+)$/i);
+    if (um) {
+      if (cur) pairs.push(cur);
+      cur = { role: "user", content: um[1].trim() };
+    } else if (am) {
+      if (!cur) cur = { role: "user", content: "" };
+      pairs.push({ ...cur, assistant: am[1].trim() });
+      cur = null;
+    }
+  }
+  if (cur && cur.content) pairs.push({ role: "user", content: cur.content, assistant: "" });
+  const normalized = [];
+  for (const p of pairs.slice(-Math.max(1, maxPairs))) {
+    const row = { role: "user", content: String(p.content || "").slice(0, 800) };
+    if (p.assistant) normalized.push(row, { role: "assistant", content: String(p.assistant).slice(0, 800) });
+    else normalized.push(row);
+  }
+  return normalized.slice(-Math.max(2, maxPairs * 2));
+}
+
+function collectRecentVoiceTurnPairs(maxPairs = VOICE_TO_PANEL_MAX_TURN_PAIRS) {
+  const excerpt = collectWorkModeVoiceExcerptForContext(2800, maxPairs * 2 + 2);
+  return parseVoiceExcerptToTurnPairs(excerpt, maxPairs);
+}
+
+function shouldIncludeVoiceContextForPanel(opts = {}) {
+  const task = String(opts.cleanedPanelTask || opts.userText || "").trim();
+  const topicAnchor = String(opts.topicAnchor || workModeLastSubstantiveUserText || "").trim();
+  const mainExcerpt = String(opts.mainExcerpt || "").trim();
+  const visible = String(opts.visible || "").trim();
+  const laneBody = mainExcerpt || visible;
+  const hasLaneSubstance =
+    laneBody.length >= 120 || workModeVisibleLaneHasCompletedSolution(laneBody);
+
+  const deictic = detectVoiceToPanelDeictic(task);
+  const actionRef = detectVoiceToPanelActionReference(task);
+  const panelLocal = detectPanelLocalFollowUp(task, hasLaneSubstance);
+  const isNewEmptyLane = !hasLaneSubstance;
+  const voiceTurns = collectRecentVoiceTurnPairs(1);
+  const hasRecentVoice = voiceTurns.length > 0 || topicAnchor.length >= 6;
+
+  const topicContinuity =
+    Boolean(topicAnchor) &&
+    (topicSimilarityScore(task, topicAnchor) >= VOICE_TO_PANEL_TOPIC_CONTINUITY_FLOOR ||
+      topicCoverageScore(task, topicAnchor) >= 0.18 ||
+      topicCoverageScore(topicAnchor, task) >= 0.18);
+
+  const reasons = [];
+
+  if (panelLocal && !deictic && !actionRef) {
+    return { include: false, reasons: ["panel_local_follow_up"], deictic, actionRef, topicContinuity };
+  }
+
+  if (deictic) reasons.push("deictic_reference");
+  if (actionRef) reasons.push("recent_action_reference");
+  if (isNewEmptyLane && hasRecentVoice) reasons.push("new_panel_from_voice");
+  if (topicContinuity && hasRecentVoice) reasons.push("topic_continuity");
+
+  if (isNewEmptyLane && hasRecentVoice && !deictic && !actionRef && !topicContinuity && topicAnchor) {
+    const sim = topicSimilarityScore(task, topicAnchor);
+    if (sim < 0.08 && detectNewDeliverableIntent(task).detected) {
+      return { include: false, reasons: ["unrelated_new_topic"], deictic, actionRef, topicContinuity };
+    }
+  }
+
+  if (hasLaneSubstance && !deictic && !actionRef && !topicContinuity) {
+    return { include: false, reasons: ["lane_has_substance"], deictic, actionRef, topicContinuity };
+  }
+
+  if (isNewEmptyLane && hasRecentVoice && reasons.length === 0) {
+    reasons.push("new_empty_lane");
+  }
+
+  const include = reasons.length > 0 && hasRecentVoice;
+  return { include, reasons, deictic, actionRef, topicContinuity };
+}
+
+function buildVoiceToPanelContextPacket(opts = {}) {
+  const cleanedPanelTask = String(opts.cleanedPanelTask || opts.userText || "").trim();
+  const originalUserText = String(opts.originalUserText || cleanedPanelTask || "").trim();
+  const topicAnchor = String(opts.topicAnchor || workModeLastSubstantiveUserText || "").trim();
+  const resolvedReferent = String(opts.resolvedReferent || "").trim() || null;
+  const mainExcerpt = String(opts.mainExcerpt || "").trim();
+  const visible = String(opts.visible || "").trim();
+
+  const policy = shouldIncludeVoiceContextForPanel({
+    cleanedPanelTask,
+    userText: cleanedPanelTask,
+    topicAnchor,
+    mainExcerpt,
+    visible,
+    isNewPanelFromVoice: Boolean(opts.isNewPanelFromVoice || opts.isNewPanelExplicit)
+  });
+
+  if (!policy.include) {
+    return { include: false, policy, packet: null };
+  }
+
+  const recentVoiceTurns = collectRecentVoiceTurnPairs(VOICE_TO_PANEL_MAX_TURN_PAIRS);
+  const packet = {
+    source: "voice_ui",
+    version: 1,
+    original_user_text: originalUserText,
+    cleaned_panel_task: cleanedPanelTask,
+    topic_anchor: topicAnchor || null,
+    resolved_referent: resolvedReferent,
+    recent_voice_turns: recentVoiceTurns,
+    inclusion_reasons: policy.reasons,
+    deictic_detected: Boolean(policy.deictic),
+    turn_id: opts.turnId || null
+  };
+  return { include: true, policy, packet };
+}
+
+function renderVoiceToPanelContextBlock(packet) {
+  if (!packet || !packet.include || !packet.packet) return "";
+  const p = packet.packet;
+  const lines = [
+    "RELEVANT_PRIOR_VOICE_UI_CONTEXT",
+    "This is session background from Voice UI. Use it only when the current task refers to earlier discussion, actions, or deictic phrases. Do not treat it as prior panel work unless the user asks to move/continue it in the panel.",
+    ""
+  ];
+  if (p.resolved_referent) {
+    lines.push(`Resolved referent: ${p.resolved_referent}`);
+  } else if (p.topic_anchor) {
+    lines.push(`Topic anchor: ${p.topic_anchor}`);
+  }
+  if (p.original_user_text && p.original_user_text !== p.cleaned_panel_task) {
+    lines.push(`Original user utterance: ${p.original_user_text}`);
+  }
+  if (p.cleaned_panel_task) {
+    lines.push(`Current reasoning task: ${p.cleaned_panel_task}`);
+  }
+  const turns = Array.isArray(p.recent_voice_turns) ? p.recent_voice_turns : [];
+  if (turns.length) {
+    lines.push("", "Recent Voice UI turns:");
+    for (const t of turns) {
+      const role = t.role === "assistant" ? "Assistant" : "User";
+      const content = String(t.content || "").trim();
+      if (content) lines.push(`${role}: ${content}`);
+    }
+  }
+  if (Array.isArray(p.inclusion_reasons) && p.inclusion_reasons.length) {
+    lines.push("", `Included because: ${p.inclusion_reasons.join(", ")}`);
+  }
+  let block = lines.join("\n").trim();
+  if (block.length > VOICE_TO_PANEL_MAX_BLOCK_CHARS) {
+    block = `${block.slice(0, VOICE_TO_PANEL_MAX_BLOCK_CHARS)}\n…`;
+  }
+  return block;
+}
+
 /**
  * Resync registry from DOM, build lane context for reasoning_stream, log before model call.
  */
@@ -12536,7 +10278,20 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
   const laneTitle =
     turnContext?.turn_lane_title || handoff?.title || handoff?.lane_title || getWorkModeLaneTitle(laneId) || "";
 
+  const voiceToPanelBuilt = buildVoiceToPanelContextPacket({
+    ...(opts.voiceToPanelContextOpts || {}),
+    cleanedPanelTask: userText,
+    userText,
+    mainExcerpt,
+    visible,
+    turnId: turnContext?.turn_id || null
+  });
+  const voiceBlock = renderVoiceToPanelContextBlock(voiceToPanelBuilt);
+
   const parts = [];
+  if (voiceBlock) {
+    parts.push(voiceBlock);
+  }
   if (mainExcerpt) {
     parts.push(
       "ACTIVE_LANE_PRIOR_CONTEXT (authoritative — visible reasoning panel for this frozen lane; " +
@@ -12600,7 +10355,9 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     model_user_text: userText.slice(0, 500),
     will_ask_for_missing_info_allowed: willAsk,
     request_has_code_intent: requestHasCodeIntent,
-    lane_client_context_len: laneClientContextCapped.length
+    lane_client_context_len: laneClientContextCapped.length,
+    voice_to_panel_included: Boolean(voiceToPanelBuilt?.include),
+    voice_to_panel_reasons: voiceToPanelBuilt?.policy?.reasons || []
   };
 
   if (!opts.skipLog) {
@@ -12622,6 +10379,7 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     mainExcerpt,
     laneClientContext: laneClientContextCapped,
     modelUserText: userText,
+    voiceToPanelContext: voiceToPanelBuilt?.include ? voiceToPanelBuilt.packet : null,
     debug: debugRow,
     willAskForMissingInfo: willAsk
   };
@@ -13586,7 +11344,8 @@ function buildWorkModeLaneClientMergeBlockForUpload(laneId, userText = "", uploa
     turnContext: uploadOpts.turnContext || null,
     requestHasCodeIntent: uploadOpts.requestHasCodeIntent,
     skipLog: true,
-    currentAttachmentMeta: uploadOpts.currentAttachmentMeta || []
+    currentAttachmentMeta: uploadOpts.currentAttachmentMeta || [],
+    voiceToPanelContextOpts: uploadOpts.voiceToPanelContextOpts || null
   });
   return prep.laneClientContext || "";
 }
@@ -15952,6 +13711,9 @@ function ensureStage2VoiceBubble(prep, effectiveText, replyBack = null) {
   if (prep?.stage2VoiceBubble instanceof HTMLElement && prep.stage2VoiceBubble.isConnected) {
     prep.stage2VoiceBubble.textContent = t;
     if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
+    veraFeedbackMarkFinalFromBubble(prep.stage2VoiceBubble, {
+      turn_id: prep?.turnContext?.turn_id || ""
+    }, null);
     persistVeraChatState();
     return prep.stage2VoiceBubble;
   }
@@ -15959,6 +13721,9 @@ function ensureStage2VoiceBubble(prep, effectiveText, replyBack = null) {
   if (replyBack) opts = mergeReplyBackIntoBubbleMeta(opts, replyBack);
   const bubble = addBubble(t, "vera", opts);
   if (prep) prep.stage2VoiceBubble = bubble;
+  veraFeedbackMarkFinalFromBubble(bubble, {
+    turn_id: prep?.turnContext?.turn_id || ""
+  }, null);
   if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
   persistVeraChatState();
   return bubble;
@@ -15978,6 +13743,10 @@ function logStage2TtsChoice(prep, generated, choice) {
 
 function shouldUseWorkModeTurnTtsQueue(ttsTurn) {
   return isVeraWorkModeOn() && appModePrefix() === "vera" && Boolean(ttsTurn?.turn_id);
+}
+
+function isWorkModeReasoningStage2TtsItem(item) {
+  return Boolean(item?.stage === 2 && item?.prep?.voiceTwoStage?.reasoningRouted);
 }
 
 function enqueueWorkModeTurnTts(item) {
@@ -16008,7 +13777,8 @@ function enqueueWorkModeTurnTts(item) {
 
 async function executeWorkModeTtsQueueItem(item) {
   let policy = null;
-  if (item.stage === 2) {
+  const stage2ReasoningAudio = isWorkModeReasoningStage2TtsItem(item);
+  if (stage2ReasoningAudio) {
     policy = evaluateWorkModeStage2Tts(item);
     if (policy.drop_reason && policy.drop_reason !== "text_only_due_to_code_or_math") {
       logTtsDropStale(item, policy.drop_reason);
@@ -16017,7 +13787,7 @@ async function executeWorkModeTtsQueueItem(item) {
     }
   }
 
-  if (item.stage === 2 && policy?.action === "text_only") {
+  if (stage2ReasoningAudio && policy?.action === "text_only") {
     try {
       if (typeof item.onDrop === "function") await item.onDrop();
     } catch (e) {
@@ -16026,7 +13796,7 @@ async function executeWorkModeTtsQueueItem(item) {
     return;
   }
 
-  if (item.stage === 2 && policy?.action === "text_only_with_supplement") {
+  if (stage2ReasoningAudio && policy?.action === "text_only_with_supplement") {
     try {
       if (typeof item.onDrop === "function") await item.onDrop();
     } catch (e) {
@@ -16094,7 +13864,7 @@ async function playWorkModeTtsOnlyPhrase(text, abortSignal) {
   const s = String(text || "").trim();
   if (!s || !isVeraWorkModeOn()) return;
   if (isWorkModeMuteEnabled() || inputMuted) return;
-  const res = await fetch(`${API_URL}/text`, {
+  const res = await authFetch(`${API_URL}/text`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -16220,6 +13990,311 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
        guarantees we never spin up a panel for "1 + 1". */
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
+
+  /* ------------------------------------------------------------------------
+   * 2026-05-29 reasoning-gate deterministic short-circuits.
+   *
+   * Priority (matches CHAT_REASONING.classify_route_reasoning):
+   *   1. Explicit panel/reasoning wording          → reasoning_panel (force)
+   *   2. Brief/quick/short/tl;dr modifier          → voice_ui (force)
+   *   3. Simple definition / who-is / what-is      → voice_ui (force)
+   *
+   * Each short-circuit emits [REQUEST_SHAPE_ROUTE_DEBUG] with the new
+   * reasoning_gate_* fields so the route is auditable from the console.
+   * ---------------------------------------------------------------------- */
+  /* 2026-06-12 — caller-supplied force route. The backend planner's
+     reasoning.request open_and_stream dispatcher re-submits the cleaned
+     content task as a recursive typed turn with
+     ``__reasoningGateForceRoute="reasoning_panel"`` whenever the user gave
+     an explicit panel destination ("explain tennis in panel 1 / in a new
+     panel"). Priority rule: an explicit panel destination OVERRIDES the
+     simple-chat shortcut, so when this flag is set we must NOT let the
+     brief/simple-definition/compound short-circuits divert the answer to
+     Voice UI, and routeReasoning is forced true below. */
+  const callerForcedReasoning =
+    Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel");
+  const _priorTopicForResolve = String(workModeLastSubstantiveUserText || "").trim();
+  const _explicitPanelRef = isExplicitReasoningPanelReference(trimmed);
+  const _conversationalCheck = detectWorkModeConversationalCheck(trimmed);
+  const _briefModifier = isBriefExplanationModifier(trimmed);
+  const _simpleDefinition = isSimpleDefinitionQuestion(trimmed);
+  if (_explicitPanelRef.matched) {
+    /* Resolve "this/that/it" topic to the previous substantive user request
+       when the explicit-panel phrasing was pronoun-only. If no prior topic
+       is on record, fall back to Voice UI so we don't open an empty panel —
+       the backend ack/clarification text can ask "what should I explain?". */
+    let resolvedTopic = _explicitPanelRef.topic || null;
+    let prior_topic_used = false;
+    if (!resolvedTopic && _explicitPanelRef.wasPronoun) {
+      const fromContext = resolveReasoningPanelTopicFromContext();
+      if (fromContext) {
+        resolvedTopic = fromContext;
+        prior_topic_used = true;
+      } else {
+        /* No prior topic to attach — bail to Voice UI; backend chat path
+           will produce a clarifying reply. */
+        logReasoningRouteDebug({
+          raw_text: String(trimmed || "").slice(0, 240),
+          reasoning_gate_called: true,
+          reasoning_gate_result: "voice_ui",
+          reasoning_gate_reason: "explicit_panel_pronoun_without_prior_topic",
+          explicit_panel_reference: true,
+          simple_definition_detected: false,
+          brief_explanation_detected: false,
+          broad_complex_topic_detected: false,
+          complex_task_detected: false,
+          active_work_mode: true,
+          prior_topic_used: false,
+          resolved_topic: null,
+          route_source: "frontend_explicit_panel_pronoun_unresolved",
+          final_action_type: "voice_ui_clarification",
+          final_panel_target: null,
+          final_route: "chat",
+          final_route_reasoning: false,
+          backend_classify_route: null,
+          backend_category: null,
+          backend_confidence: null,
+          heuristic_reasoning: false,
+          personal_statement_veto: false,
+          venting_signals: [],
+          venting_score: 0,
+          explicit_artifact_intent: false,
+          artifact_signals: [],
+          force_active_lane: false,
+          task_follow_up_continuing: false,
+          planning_intent: false,
+          reason: "explicit_panel_pronoun_without_prior_topic",
+          math_router_enabled: MATH_ROUTER_ENABLED,
+          arithmetic_fast_path_match: false
+        });
+        return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+      }
+    }
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "reasoning_panel",
+      reasoning_gate_reason: "explicit_panel_reference",
+      explicit_panel_reference: true,
+      simple_definition_detected: Boolean(_simpleDefinition.matched),
+      brief_explanation_detected: Boolean(_briefModifier),
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used,
+      resolved_topic: resolvedTopic || null,
+      route_source: "frontend_explicit_panel_override",
+      final_panel_target: _explicitPanelRef.targetPanel ?? null,
+      final_route: "reasoning",
+      final_route_reasoning: true,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: true,
+      artifact_signals: ["explicit_panel_reference"],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: "explicit_panel_reference",
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    /* Fall through to the existing reasoning prep below — we set a sentinel
+       so the legacy classifier call + heuristic + veto block is skipped, but
+       the existing lane acquisition / NDJSON prep still runs unchanged. */
+    opts.__reasoningGateForceRoute = "reasoning_panel";
+    opts.__reasoningGateReason = "explicit_panel_reference";
+    opts.__reasoningGateResolvedTopic = resolvedTopic || null;
+    opts.__reasoningGateTargetPanel = _explicitPanelRef.targetPanel ?? null;
+  } else if (_conversationalCheck && !callerForcedReasoning) {
+    /* 2026-06-13 — narrow conversational / check-in guard. Runs AFTER the
+       explicit-panel branch so explicit Work Mode requests always win.
+       Obvious greetings / acks / presence-or-hearing checks answer in the
+       Voice UI; they never open or stream into a reasoning panel. */
+    try {
+      console.info("[workmode_conversational_short_circuit]", {
+        original_text: String(trimmed || "").slice(0, 240),
+        normalized_text: normalizeConversationalCheck(trimmed).slice(0, 240),
+        route: "voice_ui",
+        reason: "conversational_check"
+      });
+    } catch (_) {}
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "voice_ui",
+      reasoning_gate_reason: "conversational_check",
+      explicit_panel_reference: false,
+      conversational_check_detected: true,
+      simple_definition_detected: false,
+      brief_explanation_detected: false,
+      broad_complex_topic_detected: false,
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: null,
+      route_source: "frontend_conversational_short_circuit",
+      final_panel_target: null,
+      final_route: "chat",
+      final_route_reasoning: false,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: false,
+      artifact_signals: [],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: "conversational_check",
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  } else if (_briefModifier && !callerForcedReasoning) {
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "voice_ui",
+      reasoning_gate_reason: "brief_explanation",
+      explicit_panel_reference: false,
+      simple_definition_detected: Boolean(_simpleDefinition.matched),
+      brief_explanation_detected: true,
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: null,
+      route_source: "frontend_brief_modifier_override",
+      final_panel_target: null,
+      final_route: "chat",
+      final_route_reasoning: false,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: false,
+      artifact_signals: [],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: "brief_explanation",
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  } else if (_simpleDefinition.matched && !callerForcedReasoning) {
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "voice_ui",
+      reasoning_gate_reason: "simple_definition",
+      explicit_panel_reference: false,
+      simple_definition_detected: true,
+      brief_explanation_detected: false,
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: _simpleDefinition.topic || null,
+      route_source: "frontend_simple_definition_override",
+      final_panel_target: null,
+      final_route: "chat",
+      final_route_reasoning: false,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: false,
+      artifact_signals: [],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: "simple_definition",
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
+
+  /* 2026-05-29 spec PART 5 — compound-command defer.
+   *
+   * If the transcript references multiple action families (panel +
+   * reasoning + music, panel + reasoning, music + reasoning, etc.), do
+   * NOT open `/work_mode/reasoning_stream` from this gate with the full
+   * unsegmented transcript. Instead, return no-route so the turn flows
+   * straight to /infer, where the backend deterministic planner segments
+   * the transcript and emits one `work_mode_reasoning open_and_stream`
+   * payload per planned `reasoning.request` action — each carrying ONLY
+   * the cleaned reasoning span.
+   *
+   * Without this defer the reasoning model would receive prompts like
+   * "Can you go to panel 2, explain the Vietnam War and play the lo-fi
+   * mix?" and waste compute trying to "explain" the panel/music tokens
+   * — exactly the failing case the spec calls out.
+   */
+  const _compound = detectCompoundActionFamilies(trimmed);
+  if (_compound.isCompound && !callerForcedReasoning) {
+    logReasoningRouteDebug({
+      raw_text: String(trimmed || "").slice(0, 240),
+      reasoning_gate_called: true,
+      reasoning_gate_result: "voice_ui",
+      reasoning_gate_reason: "compound_defer_to_backend_planner",
+      explicit_panel_reference: false,
+      simple_definition_detected: false,
+      brief_explanation_detected: false,
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: false,
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: null,
+      route_source: "frontend_compound_defer_to_backend",
+      final_panel_target: null,
+      final_route: "chat",
+      final_route_reasoning: false,
+      backend_classify_route: null,
+      backend_category: null,
+      backend_confidence: null,
+      heuristic_reasoning: false,
+      personal_statement_veto: false,
+      venting_signals: [],
+      venting_score: 0,
+      explicit_artifact_intent: false,
+      artifact_signals: [],
+      force_active_lane: false,
+      task_follow_up_continuing: false,
+      planning_intent: false,
+      reason: _compound.reason,
+      compound_action_families_detected: _compound.families,
+      math_router_enabled: MATH_ROUTER_ENABLED,
+      arithmetic_fast_path_match: false
+    });
+    try {
+      console.info("[reasoning_gate_deferred_to_compound_planner]", {
+        raw_transcript: String(trimmed || "").slice(0, 240),
+        compound_action_families_detected: _compound.families,
+        clean_reasoning_span_if_available: null, // planner produces the span server-side
+      });
+    } catch (_) {}
+    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
+
   /* Snapshot before this turn mutates it — used so /classify thread anchor is the *prior* user line, not the current one. */
   const priorThreadAnchor = String(workModeLastSubstantiveUserText || "").trim();
   const forceActiveLaneReasoningContent =
@@ -16245,14 +14320,42 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     (hasUpload
       ? "[Uploaded attachment(s)] — use the attached file(s) as the problem context."
       : "");
+  const priorVoiceTopic = String(
+    opts.__voiceToPanelResolvedReferent ||
+      opts.__reasoningGateResolvedTopic ||
+      priorThreadAnchor ||
+      ""
+  ).trim();
+  const deicticCompose = composeDeicticVoiceToPanelReasoningTask({
+    userText: effectiveUserText,
+    originalUserText: rawTrimmed,
+    resolvedReferent: priorVoiceTopic,
+    topicAnchor: priorThreadAnchor
+  });
+  const streamUserRequestForReasoning = deicticCompose?.composedTask || effectiveUserText;
+  if (deicticCompose) {
+    try {
+      console.info("[voice_to_panel_deictic_compose]", {
+        original_preview: String(rawTrimmed || "").slice(0, 160),
+        resolved_referent: deicticCompose.resolvedReferent,
+        new_details: deicticCompose.newDetails,
+        composed_preview: String(deicticCompose.composedTask || "").slice(0, 240)
+      });
+    } catch (_) {}
+  }
   const textForReasoningStream = planningIntent
-    ? `${workModePlanningTimeInjectionPrefix()}${effectiveUserText}\n\n${WORK_MODE_PLANNING_REASONING_INSTRUCTION_SUFFIX}`
-    : effectiveUserText;
+    ? `${workModePlanningTimeInjectionPrefix()}${streamUserRequestForReasoning}\n\n${WORK_MODE_PLANNING_REASONING_INSTRUCTION_SUFFIX}`
+    : streamUserRequestForReasoning;
 
   let classifyRoute = false;
   let continuePriorLane = false;
   let classifyCategory = null;
   let classifyConfidence = null;
+  let classifyBackendRoute = null;
+  let classifyBackendReason = null;
+  let classifyBackendResolvedTopic = null;
+  let classifyBackendTargetPanel = null;
+  let classifyBackendSource = null;
   try {
     const classifyBody = { session_id: getSessionId(), text: effectiveUserText };
     const classifyLaneGuess =
@@ -16281,6 +14384,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       classifyCategory = typeof cj.category === "string" ? cj.category : null;
       const confRaw = cj.confidence;
       if (typeof confRaw === "number" && Number.isFinite(confRaw)) classifyConfidence = confRaw;
+      /* 2026-05-29: capture the richer gate shape so downstream logs and
+         the heuristic veto can use it. Fields are best-effort — older
+         backends only return prompt_reasoning/category/confidence. */
+      if (typeof cj.route === "string") classifyBackendRoute = cj.route;
+      if (typeof cj.reason === "string") classifyBackendReason = cj.reason;
+      if (cj.resolved_topic && typeof cj.resolved_topic === "string") {
+        classifyBackendResolvedTopic = cj.resolved_topic;
+      }
+      if (cj.target_panel != null) {
+        const tp = parseInt(cj.target_panel, 10);
+        if (Number.isFinite(tp)) classifyBackendTargetPanel = tp;
+      }
+      if (typeof cj.source === "string") classifyBackendSource = cj.source;
     }
   } catch {
     /* ignore */
@@ -16319,10 +14435,25 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         /\b(function|class|import|const|let|var|def|return)\b/.test(t) ||
         /[{}();]{2,}/.test(t);
       const wordCount = (t.match(/\S+/g) || []).length;
-      const explainReasoningAsk =
-        /\bexplain\b/.test(t) &&
+      /* 2026-05-29: tighten `explainReasoningAsk`. Bare `explain X` is NO
+         LONGER enough on its own. We require at least one complexity signal:
+           - explicit panel wording (handled by isExplicitReasoningPanelReference)
+           - broad/complex topic noun
+           - detailed / step-by-step / deep-dive wording
+           - artifact verb (solve/write/analyze/code/file/table/plan)
+         Without any of these, "explain tennis" falls through to the LLM
+         classifier which is now prompted to default to Voice UI. */
+      const isExplainStem = /\b(?:explain(?:s|ed|ing)?|explanation(?:s)?|explanatory)\b/.test(t);
+      const explainSafetyAllowed =
         wordCount >= 3 &&
         !/^\s*explain\s+(?:yourself|vera|this\s+app)\b/i.test(String(trimmed || "").trim());
+      const explainComplexityBroad = Boolean(detectBroadComplexTopicFrontend(trimmed));
+      const explainComplexityDetailed = /\b(in\s+detail|detailed(?:ly)?|step[-\s]*by[-\s]*step|deep[-\s]*dive|deep\s+dive|thorough(?:ly)?|long[-\s]*form|long\s+form|full\s+breakdown|breakdown|exhaustive(?:ly)?|comprehensive(?:ly)?|from\s+scratch)\b/i.test(t);
+      const explainComplexityArtifact = /\b(solve|prove|derive|simulate|debug|refactor|compute|calculate|evaluate|analy[sz]e|outline|summari[sz]e|compare|review|draft|compose|polish|rewrite|write\s+(?:a|an|the|me|us|my|some|this|that))\b/i.test(t);
+      const explainReasoningAsk =
+        isExplainStem &&
+        explainSafetyAllowed &&
+        (explainComplexityBroad || explainComplexityDetailed || explainComplexityArtifact);
       return (
         (conceptWords.test(t) && domainWords.test(t)) ||
         domainWords.test(t) ||
@@ -16384,14 +14515,42 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       effectiveClassifyRoute = false;
     }
 
-    routeReasoning =
-      (effectiveClassifyRoute || heuristicReasoning || forceActiveLaneReasoningContent) &&
-      !taskFollowUpContinuing;
+    /* 2026-06-12 — explicit panel destination overrides simple-chat.
+       When the gate has a force-route sentinel (set either by the
+       explicit-panel-reference branch above, or supplied by the recursive
+       open_and_stream reasoning.request dispatcher), route to the reasoning
+       panel unconditionally — bypassing the classifier/heuristic result and
+       the personal-statement / news / follow-up vetoes. */
+    const gateForcedReasoning =
+      Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel");
+    routeReasoning = gateForcedReasoning
+      ? true
+      : ((effectiveClassifyRoute || heuristicReasoning || forceActiveLaneReasoningContent) &&
+         !taskFollowUpContinuing);
+
+    if (gateForcedReasoning && !(effectiveClassifyRoute || heuristicReasoning)) {
+      try {
+        console.warn("[routing_override]", {
+          reason: "explicit_panel_destination_overrides_simple_chat",
+          gate_reason: (opts && opts.__reasoningGateReason) || "explicit_panel_destination",
+          would_have_routed: "voice_ui",
+          forced_route: "reasoning_panel",
+          target_panel_index_1based:
+            opts && Number.isFinite(Number(opts.__reasoningGateTargetPanel))
+              ? Number(opts.__reasoningGateTargetPanel)
+              : null,
+          prompt_preview: String(trimmed || "").slice(0, 160),
+        });
+      } catch (_) {}
+    }
 
     let finalRoute = "chat";
     if (routeReasoning) finalRoute = "reasoning";
 
-    if (personalAdviceVeto) {
+    if (gateForcedReasoning) {
+      _routeDebugReason =
+        (opts && opts.__reasoningGateReason) || "forced_reasoning_panel";
+    } else if (personalAdviceVeto) {
       _routeDebugReason = "personal_statement_veto";
     } else if (_routeDebugNewsLookupVeto) {
       _routeDebugReason = "news_lookup_veto";
@@ -16429,6 +14588,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       backend_classify_route: Boolean(classifyRoute),
       backend_category: classifyCategory,
       backend_confidence: classifyConfidence,
+      backend_route: classifyBackendRoute,
+      backend_reason: classifyBackendReason,
+      backend_resolved_topic: classifyBackendResolvedTopic,
+      backend_target_panel: classifyBackendTargetPanel,
+      backend_source: classifyBackendSource,
       heuristic_reasoning: _routeDebugHeuristicReasoning,
       personal_statement_veto: _routeDebugPersonalAdviceVeto,
       news_lookup_veto: _routeDebugNewsLookupVeto,
@@ -16443,6 +14607,23 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       final_route: finalRouteForLog,
       final_route_reasoning: Boolean(routeReasoning),
       reason: _routeDebugReason,
+      /* 2026-05-29 — unified reasoning_gate_* fields for parity with the
+         backend [reasoning_gate] log. The frontend short-circuits emit
+         these on their own; this branch fills them in for the
+         post-classifier path so every turn carries the same shape. */
+      reasoning_gate_called: true,
+      reasoning_gate_result: routeReasoning ? "reasoning_panel" : "voice_ui",
+      reasoning_gate_reason: classifyBackendReason || _routeDebugReason,
+      explicit_panel_reference: false,
+      simple_definition_detected: false,
+      brief_explanation_detected: false,
+      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+      complex_task_detected: Boolean(_routeDebugArtifactIntent.hasIntent),
+      active_work_mode: true,
+      prior_topic_used: false,
+      resolved_topic: classifyBackendResolvedTopic || null,
+      route_source: classifyBackendSource || (routeReasoning ? "frontend_heuristic_or_backend_llm" : "frontend_no_route"),
+      final_panel_target: classifyBackendTargetPanel ?? null,
       math_router_enabled: MATH_ROUTER_ENABLED,
       arithmetic_fast_path_match: false
     });
@@ -16520,17 +14701,48 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   };
 
   workModeReasoningConfirmPending = null;
+  /* 2026-06-01 — explicit-panel target takes priority over the frozen-turn
+     lane and the active-tab fallback. ``opts.__reasoningGateTargetPanel``
+     is set upstream by the explicit panel-reference detector (e.g. when
+     the user says "in panel 2") and used to live as a flag-only field
+     that never influenced lane selection. The priority order is now:
+       1. explicit panel target ("in panel 2")
+       2. frozen submission lane (multi-turn / compound dispatch)
+       3. force-active-lane (continuation requests)
+       4. selectLaneForWorkModeReasoningTurn fallback (topic bucket /
+          recently-opened / active panel)
+     Visual panel index is 1-based ("panel 2" → idxs[1]); when the target
+     panel does not exist we fall through to the existing priority chain
+     so the planner doesn't deadlock on a missing tab. */
+  let explicitTargetLaneIdx = null;
+  try {
+    const targetPanel1Based = Number(opts && opts.__reasoningGateTargetPanel);
+    if (Number.isFinite(targetPanel1Based) && targetPanel1Based >= 1) {
+      const idxs = (typeof getReasoningPanelIndices === "function")
+        ? getReasoningPanelIndices()
+        : [];
+      const candidate = Array.isArray(idxs) ? idxs[targetPanel1Based - 1] : undefined;
+      if (Number.isFinite(candidate)) {
+        explicitTargetLaneIdx = Number(candidate);
+      }
+    }
+  } catch (_) {}
   const frozenIdx = frozenTurnLaneIndex(turnContext);
-  const reasoningUserFocusLaneIdx = frozenIdx != null ? frozenIdx : getActiveReasoningLaneIndex();
+  const reasoningUserFocusLaneIdx =
+    explicitTargetLaneIdx != null
+      ? explicitTargetLaneIdx
+      : (frozenIdx != null ? frozenIdx : getActiveReasoningLaneIndex());
   const reasoningUploadState = hasUpload ? { failed: false } : null;
   const laneIdx =
-    frozenIdx != null
-      ? await acquireWorkModeReasoningLaneForIndex(frozenIdx)
-      : forceActiveLaneReasoningContent
-        ? await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0)
-        : await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
-            continuePriorLane: continueLaneForThisTurn
-          });
+    explicitTargetLaneIdx != null
+      ? await acquireWorkModeReasoningLaneForIndex(explicitTargetLaneIdx)
+      : frozenIdx != null
+        ? await acquireWorkModeReasoningLaneForIndex(frozenIdx)
+        : forceActiveLaneReasoningContent
+          ? await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0)
+          : await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
+              continuePriorLane: continueLaneForThisTurn
+            });
   /* PART 3+7 (2026-05-28): consume the recently-opened bias flag once
      a reasoning turn lands, and emit [reasoning_destination_resolved]
      so the console shows resolution provenance for every reasoning
@@ -16543,6 +14755,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     path: "maybePrepareWorkModeReasoning",
   });
   const reasoningLaneId = turnContext?.turn_lane_id || getWorkModeReasoningLaneId(laneIdx);
+  try {
+    console.info("[reasoning_stream_panel]", {
+      prompt_preview: String(effectiveUserText || "").slice(0, 160),
+      target_panel_index_1based: explicitTargetLaneIdx != null ? Number(opts.__reasoningGateTargetPanel) : null,
+      target_lane_idx: laneIdx,
+      target_panel_id: reasoningLaneId || null,
+      explicit_target_lane_idx: explicitTargetLaneIdx,
+      frozen_lane_taken: frozenIdx != null,
+      source: "maybePrepareWorkModeReasoning",
+    });
+  } catch (_) {}
   if (turnContext && reasoningLaneId !== turnContext.turn_lane_id) {
     workModeTurnLaneGuard(turnContext, reasoningLaneId, "reasoning_route_lane_mismatch");
   }
@@ -16553,7 +14776,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     continueLaneForThisTurn
   );
   if (!isGenericExampleFollowUpText(effectiveUserText)) {
-    laneTopicSeedByIdx[laneIdx] = effectiveUserText;
+    laneTopicSeedByIdx[laneIdx] = deicticCompose?.resolvedReferent || effectiveUserText;
     workModeLastSubstantiveLaneIdx = laneIdx;
     workModeLastSubstantiveUserText = rawTrimmed || effectiveUserText;
   }
@@ -16582,7 +14805,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         has_files: Boolean(hasUpload)
       });
     } catch (_) {}
-    const streamUserRequest = effectiveUserText;
+    const streamUserRequest = streamUserRequestForReasoning;
     const currentAttachmentMeta = attachmentList.map((f) => ({
       name: f.name,
       mime_type: f.type || guessMimeFromWorkModeFileName(f.name)
@@ -16601,7 +14824,20 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       turnContext,
       requestHasCodeIntent,
       planningIntent,
-      currentAttachmentMeta
+      currentAttachmentMeta,
+      voiceToPanelContextOpts: {
+        originalUserText: String(opts.__voiceToPanelOriginalText || rawTrimmed || trimmed || "").trim(),
+        cleanedPanelTask: streamUserRequest,
+        resolvedReferent:
+          String(
+            deicticCompose?.resolvedReferent ||
+              opts.__voiceToPanelResolvedReferent ||
+              opts.__reasoningGateResolvedTopic ||
+              ""
+          ).trim() || null,
+        isNewPanelExplicit: Boolean(opts.__voiceToPanelNewPanel),
+        isNewPanelFromVoice: Boolean(opts.__voiceToPanelNewPanel)
+      }
     });
 
     workModeReasoningLaneBusy.set(laneIdx, true);
@@ -16738,10 +14974,26 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           turnContext,
           requestHasCodeIntent,
           currentAttachmentMeta,
-          attachments: attachmentList
+          attachments: attachmentList,
+          voiceToPanelContextOpts: {
+            originalUserText: String(opts.__voiceToPanelOriginalText || rawTrimmed || trimmed || "").trim(),
+            cleanedPanelTask: streamUserRequest,
+            resolvedReferent:
+              String(
+                deicticCompose?.resolvedReferent ||
+                  opts.__voiceToPanelResolvedReferent ||
+                  opts.__reasoningGateResolvedTopic ||
+                  ""
+              ).trim() || null,
+            isNewPanelExplicit: Boolean(opts.__voiceToPanelNewPanel),
+            isNewPanelFromVoice: Boolean(opts.__voiceToPanelNewPanel)
+          }
         });
         if (laneMerge) fd.append("work_mode_lane_client_context", laneMerge);
-        sr = await fetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
+        if (modelPrep.voiceToPanelContext) {
+          fd.append("voice_to_panel_context", JSON.stringify(modelPrep.voiceToPanelContext));
+        }
+        sr = await authFetch(`${API_URL}/work_mode/reasoning_stream_upload`, {
           method: "POST",
           body: fd,
           signal: laneAbortController.signal
@@ -16780,14 +15032,15 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           return "reasoning-upload-failed";
         }
       } else {
-        sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+        sr = await authFetch(`${API_URL}/work_mode/reasoning_stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             session_id: getSessionId(),
             text: streamReasoningText,
             lane_id: laneId,
-            work_mode_lane_client_context: modelPrep.laneClientContext || ""
+            work_mode_lane_client_context: modelPrep.laneClientContext || "",
+            voice_to_panel_context: modelPrep.voiceToPanelContext || null
           }),
           signal: laneAbortController.signal
         });
@@ -17145,7 +15398,12 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
     laneId: streamLaneId,
     userText: streamUserRequest,
     turnContext,
-    requestHasCodeIntent
+    requestHasCodeIntent,
+    voiceToPanelContextOpts: {
+      originalUserText: streamUserRequest,
+      cleanedPanelTask: streamUserRequest,
+      resolvedReferent: null
+    }
   });
   const laneLabel = getWorkModeReasoningLaneLabel(laneIdx);
   const laneId = streamLaneId;
@@ -17232,7 +15490,8 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         session_id: getSessionId(),
         text,
         lane_id: laneId,
-        work_mode_lane_client_context: modelPrep.laneClientContext || ""
+        work_mode_lane_client_context: modelPrep.laneClientContext || "",
+        voice_to_panel_context: modelPrep.voiceToPanelContext || null
       }),
       signal: laneAbortController.signal
     });
@@ -18373,7 +16632,17 @@ function shouldPlayMusicThisInvocation(payload, op) {
 function workModeReasoningDedupeKey(payload) {
   if (!payload || payload.panel_type !== "work_mode_reasoning") return "";
   const op = String(payload.op || "");
-  if (op === "open_new") return `open_new:${Math.max(1, Number(payload.count) || 1)}`;
+  if (op === "open_new") {
+    const requestId = String(payload.panel_open_request_id || payload.new_panel_request_id || "").trim();
+    return requestId
+      ? `open_new:${requestId}`
+      : `open_new:${Math.max(1, Number(payload.count) || 1)}`;
+  }
+  if (op === "open_and_stream") {
+    const requestId = String(payload.new_panel_request_id || payload.panel_open_request_id || "").trim();
+    const prompt = String(payload.prompt || "").trim().toLowerCase().slice(0, 120);
+    return requestId ? `open_and_stream:${requestId}:${prompt}` : "";
+  }
   if (op === "activate" && payload.panel_index != null) {
     return `activate:${Number(payload.panel_index)}`;
   }
@@ -18445,7 +16714,725 @@ function shouldApplyWorkModeReasoningInvocation(payload) {
   return true;
 }
 
+/**
+ * Source-state tracker. Single source of truth for which music backend is
+ * currently audible vs. paused-on-purpose vs. suspended-because-the-other-
+ * source-took-over. The model matches the spec from 2026-05-29:
+ *
+ *   activeMusicSource   "builtin" | "spotify" | "none"
+ *   builtinState        "playing" | "paused_by_user" | "suspended_for_spotify" | "stopped"
+ *   spotifyState        "playing" | "paused_by_user" | "suspended_for_builtin" | "stopped"
+ *
+ * Crucial invariant: pause/stop for ONE source NEVER auto-resumes the
+ * other. Suspended state is preserved across switches so an explicit
+ * "play lo-fi" / "resume Spotify" can restore the prior position when
+ * the user asks for it.
+ */
+function veraMusicSourceState() {
+  if (!window.__veraMusicSourceState) {
+    window.__veraMusicSourceState = {
+      active: "none",
+      builtin: {
+        state: "stopped",
+        currentTime: 0,
+        playlistId: "",
+        soundId: "",
+        // Display fields kept independent of the live audio element so the
+        // built-in tab can re-render its last known item even when Spotify
+        // is the currently audible source.
+        title: "",
+        subtitle: "",
+        cover_url: "",
+        paused: true,
+        position_ms: 0,
+        duration_ms: 0,
+        updatedAt: 0
+      },
+      spotify: {
+        state: "stopped",
+        uri: "",
+        title: "",
+        artist: "",
+        playlist_id: "",
+        playlist_name: "",
+        cover_url: "",
+        paused: true,
+        position_ms: 0,
+        duration_ms: 0,
+        updatedAt: 0
+      }
+    };
+  }
+  const st = window.__veraMusicSourceState;
+  // Backfill new fields on existing state objects so older sessions don't
+  // miss the display sub-fields after a code update.
+  if (st.builtin && st.builtin.title === undefined) {
+    Object.assign(st.builtin, {
+      title: "", subtitle: "", cover_url: "", paused: true,
+      position_ms: 0, duration_ms: 0, updatedAt: 0
+    });
+  }
+  if (st.spotify && st.spotify.cover_url === undefined) {
+    Object.assign(st.spotify, {
+      cover_url: "", paused: true, position_ms: 0, duration_ms: 0, updatedAt: 0
+    });
+  }
+  return st;
+}
+
+/**
+ * Update one source's UI display snapshot without touching the other.
+ *
+ * The music panel needs to remember what each tab was last showing
+ * independently of which source is currently audible, so e.g. switching
+ * to the Spotify tab after lo-fi was playing still shows the previous
+ * Spotify track instead of "Nothing playing".
+ *
+ * Call this from whichever path actually changed the source's state —
+ * builtin sync from the audio element, Spotify state from the Web SDK
+ * or from a play call. Safe to call with partial updates.
+ */
+function captureMusicPanelDisplay(source, partial) {
+  if (!partial || typeof partial !== "object") return;
+  const st = veraMusicSourceState();
+  let target = null;
+  if (source === "builtin") target = st.builtin;
+  else if (source === "spotify") target = st.spotify;
+  if (!target) return;
+  for (const key of Object.keys(partial)) {
+    if (partial[key] === undefined) continue;
+    target[key] = partial[key];
+  }
+  target.updatedAt = Date.now();
+}
+
+function veraMusicPanelDisplayHasData(source) {
+  const st = veraMusicSourceState();
+  const snap = source === "builtin" ? st.builtin : (source === "spotify" ? st.spotify : null);
+  if (!snap) return false;
+  return Boolean((snap.title || "").trim()) || Number(snap.updatedAt || 0) > 0;
+}
+
+function _captureBuiltinSnapshot() {
+  const prefix = (typeof appModePrefix === "function") ? appModePrefix() : "vera";
+  const free = document.getElementById(`${prefix}-free-music-audio`);
+  const pb = window.__veraFreeMusicPlayback || {};
+  return {
+    currentTime: Number(free?.currentTime || 0),
+    playlistId: String(pb.playlistId || ""),
+    soundId: String(pb.soundId || ""),
+    isPlaying: Boolean(free && !free.paused && Number(free.currentTime) > 0)
+  };
+}
+
+function _captureSpotifySnapshot() {
+  const last = window.__veraSpotifyLast || {};
+  let isPlaying = false;
+  try {
+    const ns = (typeof spotifyEnsureNowState === "function") ? spotifyEnsureNowState() : null;
+    if (ns) isPlaying = Boolean(ns.active) && !Boolean(ns.paused);
+  } catch (_) {}
+  return {
+    uri: String(last.preview_url ? "" : (last.uri || "")) || "",
+    title: String(last.title || ""),
+    artist: String(last.artist || ""),
+    playlist_id: String(window.__veraSpotifyActivePlaylistId || ""),
+    playlist_name: String(window.__veraSpotifyActivePlaylistName || ""),
+    isPlaying
+  };
+}
+
+function musicSourceMarkPlaying(source, meta = {}) {
+  const st = veraMusicSourceState();
+  const newSource = String(source || "").toLowerCase();
+  const activeBefore = st.active;
+  const builtinStateBefore = st.builtin.state;
+  const spotifyStateBefore = st.spotify.state;
+  if (newSource === "builtin") {
+    const priorBuiltinState = st.builtin.state;
+    const priorBuiltinCurrentTime = Number(st.builtin.currentTime || 0);
+    // Suspend Spotify if it was the active audible source — preserve its
+    // metadata so an explicit "resume Spotify" can return to it.
+    if (st.active === "spotify" && st.spotify.state === "playing") {
+      st.spotify.state = "suspended_for_builtin";
+    }
+    st.active = "builtin";
+    st.builtin.state = "playing";
+    if (meta.playlistId !== undefined) st.builtin.playlistId = String(meta.playlistId || "");
+    if (meta.soundId !== undefined) st.builtin.soundId = String(meta.soundId || "");
+    if (meta.title !== undefined) st.builtin.title = String(meta.title || "");
+    if (meta.subtitle !== undefined) st.builtin.subtitle = String(meta.subtitle || "");
+    if (meta.currentTime !== undefined) {
+      st.builtin.currentTime = Number(meta.currentTime || 0);
+    } else if (priorBuiltinState === "suspended_for_spotify") {
+      st.builtin.currentTime = priorBuiltinCurrentTime;
+    } else {
+      st.builtin.currentTime = 0;
+    }
+    st.builtin.paused = false;
+    st.builtin.updatedAt = Date.now();
+  } else if (newSource === "spotify") {
+    if (st.active === "builtin" && st.builtin.state === "playing") {
+      // Snapshot the current audio position before suspending so explicit
+      // "play lo-fi" later can resume from the same spot when possible.
+      const snap = _captureBuiltinSnapshot();
+      st.builtin.state = "suspended_for_spotify";
+      st.builtin.currentTime = snap.currentTime;
+      st.builtin.paused = true;
+    }
+    st.active = "spotify";
+    st.spotify.state = "playing";
+    if (meta.uri !== undefined) st.spotify.uri = String(meta.uri || "");
+    if (meta.title !== undefined) st.spotify.title = String(meta.title || "");
+    if (meta.artist !== undefined) st.spotify.artist = String(meta.artist || "");
+    if (meta.playlist_id !== undefined) st.spotify.playlist_id = String(meta.playlist_id || "");
+    if (meta.playlist_name !== undefined) st.spotify.playlist_name = String(meta.playlist_name || "");
+    if (meta.playlist_id) window.__veraSpotifyActivePlaylistId = String(meta.playlist_id || "");
+    if (meta.playlist_name) window.__veraSpotifyActivePlaylistName = String(meta.playlist_name || "");
+    st.spotify.paused = false;
+    st.spotify.updatedAt = Date.now();
+  }
+  console.info("[music_source_state]", {
+    transition: `${newSource}_play`,
+    playback_source_changed: activeBefore !== st.active,
+    playback_source_change_reason: meta.reason || "explicit_play",
+    active_playback_source_before: activeBefore,
+    active_playback_source_after: st.active,
+    builtin_state_before: builtinStateBefore,
+    builtin_state_after: st.builtin.state,
+    builtin_title: st.builtin.title || "",
+    builtin_current_time_preserved: st.builtin.state === "suspended_for_spotify"
+      ? Number(st.builtin.currentTime || 0)
+      : null,
+    spotify_state_before: spotifyStateBefore,
+    spotify_state_after: st.spotify.state,
+    spotify_title: st.spotify.title || "",
+    spotify_artist: st.spotify.artist || "",
+    spotify_uri: st.spotify.uri || ""
+  });
+}
+
+function musicSourceMarkPausedByUser() {
+  // Generic "pause music" — pause whichever source is currently active and
+  // mark it paused_by_user. Do NOT touch the suspended-source state: that
+  // way "pause music" after a builtin→spotify switch stops audio without
+  // accidentally resurrecting built-in lo-fi.
+  const st = veraMusicSourceState();
+  const prev = st.active;
+  const builtinStateBefore = st.builtin.state;
+  const spotifyStateBefore = st.spotify.state;
+  if (prev === "builtin" && st.builtin.state === "playing") {
+    st.builtin.state = "paused_by_user";
+    st.builtin.paused = true;
+  }
+  if (prev === "spotify" && st.spotify.state === "playing") {
+    st.spotify.state = "paused_by_user";
+    st.spotify.paused = true;
+  }
+  st.active = "none";
+  console.info("[music_source_state]", {
+    transition: "pause_by_user",
+    playback_source_changed: prev !== "none",
+    playback_source_change_reason: "user_pause",
+    active_playback_source_before: prev,
+    active_playback_source_after: st.active,
+    builtin_state_before: builtinStateBefore,
+    builtin_state_after: st.builtin.state,
+    builtin_title: st.builtin.title || "",
+    spotify_state_before: spotifyStateBefore,
+    spotify_state_after: st.spotify.state,
+    spotify_title: st.spotify.title || "",
+    spotify_artist: st.spotify.artist || "",
+    spotify_paused_without_builtin_resume: prev === "spotify",
+    blocked_auto_resume_reason:
+      prev === "spotify" && st.builtin.state === "suspended_for_spotify"
+        ? "spotify_paused_keep_builtin_suspended"
+        : prev === "builtin" && st.spotify.state === "suspended_for_builtin"
+          ? "builtin_paused_keep_spotify_suspended"
+          : null
+  });
+}
+
+/**
+ * Stop whichever music source is currently audible before starting a new
+ * one. Built-in `<audio>` elements and Spotify Web Playback can each be
+ * playing independently — if a "play" payload arrives while another
+ * source is active, the new track must take over instead of layering.
+ *
+ * source describes the NEW playback we're about to start:
+ *   "builtin" → free-music audio element (lo-fi, rain, noise, etc.)
+ *   "spotify" → Spotify track / album / playlist via VeraSpotify
+ *   "unknown" → caller doesn't know yet; pause everything
+ *
+ * Always safe to call: never raises, never starts new playback, only
+ * pauses what's already running.
+ */
+function stopCurrentMusicPlaybackBeforeNewPlay(source) {
+  const newSource = String(source || "unknown").toLowerCase();
+  const prefix = (typeof appModePrefix === "function") ? appModePrefix() : "vera";
+  const free = document.getElementById(`${prefix}-free-music-audio`);
+  const st = veraMusicSourceState();
+  const activeBefore = st.active;
+  const builtinStateBefore = st.builtin.state;
+  const spotifyStateBefore = st.spotify.state;
+  const builtinWasPlaying = Boolean(free && !free.paused && free.currentTime > 0);
+  let spotifyWasPlaying = false;
+  try {
+    const ns = (typeof spotifyEnsureNowState === "function") ? spotifyEnsureNowState() : null;
+    if (ns && Boolean(ns.active) && !Boolean(ns.paused)) {
+      spotifyWasPlaying = true;
+    }
+  } catch (_) { /* getter may not exist on older builds */ }
+
+  // Snapshot currentTime of built-in audio BEFORE we pause it so the
+  // suspended-state preserves "where we were" for a later explicit
+  // resume ("play lo-fi" after switching to Spotify and back).
+  const builtinSnap = _captureBuiltinSnapshot();
+
+  console.info("[music_dispatch]", {
+    stop_current_music_before_new_play_called: true,
+    new_source: newSource,
+    builtin_music_was_playing: builtinWasPlaying,
+    spotify_was_playing: spotifyWasPlaying,
+    active_music_source_before: activeBefore,
+    builtin_state_before: builtinStateBefore,
+    spotify_state_before: spotifyStateBefore,
+    builtin_current_time_preserved: builtinSnap.currentTime
+  });
+
+  let builtinStopped = false;
+  let spotifyStopped = false;
+  try {
+    if (free && !free.paused) {
+      free.pause();
+      builtinStopped = true;
+      if (typeof freeMusicSyncNowFromAudio === "function") freeMusicSyncNowFromAudio(prefix);
+      if (typeof spotifySyncPlayButtonUi === "function") spotifySyncPlayButtonUi(prefix);
+      // If we're switching to Spotify, mark built-in suspended (state may
+      // be restored by an explicit "play lo-fi"). Switching to built-in
+      // again with a fresh play is a no-op as the new play resets state.
+      if (newSource === "spotify") {
+        st.builtin.state = "suspended_for_spotify";
+        st.builtin.currentTime = builtinSnap.currentTime;
+        st.builtin.playlistId = builtinSnap.playlistId;
+        st.builtin.soundId = builtinSnap.soundId;
+      }
+    }
+  } catch (err) {
+    console.warn("[music_dispatch] builtin_pause_failed", err);
+  }
+  try {
+    const pause = window.VeraSpotify && window.VeraSpotify.pausePlayback;
+    if (typeof pause === "function" && (spotifyWasPlaying || newSource === "builtin")) {
+      // Pause Spotify whenever we're switching TO built-in. When switching
+      // between Spotify tracks (play_track / play_album) Spotify itself
+      // replaces the current track on the next play call, so an explicit
+      // pause is only required when crossing the source boundary.
+      void pause();
+      spotifyStopped = true;
+      if (newSource === "builtin" && spotifyWasPlaying) {
+        st.spotify.state = "suspended_for_builtin";
+      }
+    }
+  } catch (err) {
+    console.warn("[music_dispatch] spotify_pause_failed", err);
+  }
+  console.info("[music_dispatch]", {
+    new_source: newSource,
+    builtin_music_stopped: builtinStopped,
+    spotify_playback_stopped: spotifyStopped,
+    active_music_source_after: st.active,
+    builtin_state_after: st.builtin.state,
+    spotify_state_after: st.spotify.state,
+    builtin_suspended_for_spotify: st.builtin.state === "suspended_for_spotify",
+    spotify_suspended_for_builtin: st.spotify.state === "suspended_for_builtin",
+    builtin_auto_resume_blocked: true,
+    spotify_auto_resume_blocked: true
+  });
+}
+
+const VERA_NDJSON_PAYLOAD_DEDUPE_TTL_MS = 30000;
+
+function veraNdjsonPayloadDedupeStore() {
+  if (!window.__veraNdjsonPayloadDedupe || !(window.__veraNdjsonPayloadDedupe instanceof Map)) {
+    window.__veraNdjsonPayloadDedupe = new Map();
+  }
+  return window.__veraNdjsonPayloadDedupe;
+}
+
+function makeNdjsonPayloadDedupeKey(event, payload, index) {
+  const req =
+    event?.request_id ||
+    event?.client_request_id ||
+    event?.requestId ||
+    event?.session_id ||
+    "no_request";
+  const type = payload?.panel_type || payload?.type || "unknown_payload";
+  const op = payload?.op || payload?.action || payload?.action_name || "no_op";
+  return `${req}:${Number(index) || 0}:${type}:${op}`;
+}
+
+function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown") {
+  const plural = Array.isArray(event?.action_payloads)
+    ? event.action_payloads.filter(Boolean)
+    : [];
+  const payloads = plural.length ? plural : (event?.action_payload ? [event.action_payload] : []);
+  const store = veraNdjsonPayloadDedupeStore();
+  const now = Date.now();
+  for (const [key, at] of store.entries()) {
+    if (now - Number(at || 0) > VERA_NDJSON_PAYLOAD_DEDUPE_TTL_MS) store.delete(key);
+  }
+
+  console.info("[ndjson_payload_apply]", {
+    ndjson_event_type: ndjsonEventType,
+    action_payloads_received_count: payloads.length,
+    used_plural_payloads: plural.length > 0,
+    action_type: event?.action_type || "",
+    request_id: event?.request_id || null
+  });
+
+  payloads.forEach((payload, idx) => {
+    if (!payload || typeof payload !== "object") return;
+    const key = makeNdjsonPayloadDedupeKey(event, payload, idx);
+    const panelType = payload.panel_type || payload.type || "";
+    const op = payload.op || "";
+    const duplicate = store.has(key);
+    console.info("[ndjson_payload_apply]", {
+      ndjson_event_type: ndjsonEventType,
+      applying_payload_index: idx,
+      applying_payload_type: panelType,
+      payload_op: op,
+      dedupe_payload_key: key,
+      skipped_duplicate_payload: duplicate,
+      music_control_received: panelType === "music_control"
+    });
+    if (duplicate) return;
+    store.set(key, now);
+    applyActionPayload({ ...event, action_payload: payload, action_payloads: null });
+  });
+}
+
+/**
+ * 2026-05-29 spec PART 3 — handle the backend planner's
+ * ``work_mode_reasoning open_and_stream`` payload.
+ *
+ * The backend ``reasoning.request`` direct dispatcher emits:
+ *   {
+ *     panel_type: "work_mode_reasoning",
+ *     op: "open_and_stream",
+ *     prompt: <clean reasoning span — no music/panel/timer/checklist tokens>,
+ *     target_panel_index_1based: <int|null>,
+ *     target_panel_index_0based: <int|null>,
+ *     target_panel_title: <string|null>,
+ *     title_hint: <string|null>,
+ *   }
+ *
+ * We:
+ *   1) Activate (or open) the target panel.
+ *   2) Submit the clean prompt as a typed Work Mode turn so the existing
+ *      reasoning-lane machinery (lane bucket, NDJSON stream, panel
+ *      rendering) takes over with NO change. The recursive turn passes
+ *      ``__skipMultiActionPlanner`` so the backend planner won't fire
+ *      again.
+ *   3) Log [reasoning_open_and_stream_payload_received] and, when the
+ *      clean prompt still contains music/panel/timer/checklist phrases,
+ *      log a [reasoning_prompt_contaminated_by_app_action] hard warning.
+ */
+function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
+  const promptClean = String(payload?.prompt || "").trim();
+  const tgt0 = Number(payload?.target_panel_index_0based);
+  let resolvedIdx0 = Number.isFinite(tgt0) ? tgt0 : null;
+  if (resolvedIdx0 == null) {
+    const tgt1 = Number(payload?.target_panel_index_1based);
+    if (Number.isFinite(tgt1) && tgt1 >= 1) resolvedIdx0 = tgt1 - 1;
+  }
+  const titleHint = String(payload?.title_hint || "").trim();
+  let target1based = Number.isFinite(Number(payload?.target_panel_index_1based))
+    ? Number(payload.target_panel_index_1based)
+    : (Number.isFinite(resolvedIdx0) ? resolvedIdx0 + 1 : null);
+  const wantsNewPanel =
+    payload?.target_panel === "new" ||
+    payload?.target_new_panel === true ||
+    String(payload?.target_panel || "").toLowerCase() === "new";
+  const newPanelRequestId = String(payload?.new_panel_request_id || payload?.panel_open_request_id || "").trim();
+  const actionPlanId = String(payload?.action_plan_id || "").trim();
+  /* 2026-06-12 — the user gave an explicit panel destination ("... in
+     panel N", "... in a new panel"). The recursive reasoning turn must be
+     FORCED into the reasoning panel even if the bare task ("explain
+     tennis") would otherwise qualify as a simple Voice-UI answer. */
+  const explicitPanelDestination = payload?.explicit_panel_destination === true;
+
+  /* Hard warning: a contaminated prompt would let the reasoning model see
+     "play lo-fi" or "go to panel 2" — which would either produce a noisy
+     explanation or silently execute the wrong thing. */
+  const contamination = [];
+  if (promptClean) {
+    const lowP = promptClean.toLowerCase();
+    if (/\bplay\s+(?:the\s+)?lo[-\s]?fi/.test(lowP)) contamination.push("play_lofi");
+    if (/\bpause\s+(?:the\s+)?music/.test(lowP)) contamination.push("pause_music");
+    if (/\bset\s+(?:a\s+)?timer/.test(lowP)) contamination.push("set_timer");
+    if (/\bchecklist\b/.test(lowP)) contamination.push("checklist");
+    if (/\bgo\s+to\s+(?:the\s+)?(?:reasoning\s+)?panel\b/.test(lowP)) contamination.push("go_to_panel");
+  }
+  if (contamination.length) {
+    try {
+      console.warn("[reasoning_prompt_contaminated_by_app_action]", {
+        reasoning_stream_prompt: promptClean.slice(0, 240),
+        contamination_markers: contamination,
+        source: "frontend_open_and_stream_dispatcher",
+      });
+    } catch (_) {}
+  }
+
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  const beforeOrder = (typeof getReasoningPanelOrder === "function") ? getReasoningPanelOrder() : [];
+  const activeBefore = beforeOrder.find((p) => p?.tabIndex != null && document.querySelector(`#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${p.tabIndex}"]`)?.classList.contains("is-active")) || null;
+  let activatedPanelLaneId = "";
+  try {
+    console.info("[active_panel_before_action]", {
+      op: "open_and_stream",
+      prompt_preview: promptClean.slice(0, 160),
+      active_panel_before: activeBefore?.laneId || null,
+      target_panel: wantsNewPanel ? "new" : target1based,
+      panel_open_request_id: newPanelRequestId || null,
+      action_plan_id: actionPlanId || null,
+    });
+  } catch (_) {}
+
+  if (wantsNewPanel && typeof getValidRecentlyOpenedReasoningPanel === "function") {
+    let recent = null;
+    try { recent = getValidRecentlyOpenedReasoningPanel(); } catch (_) { recent = null; }
+    const recentRequestId = String(recent?.requestId || "").trim();
+    const requestMatches =
+      Boolean(recent) &&
+      (!newPanelRequestId || !recentRequestId || recentRequestId === newPanelRequestId);
+    if (requestMatches) {
+      resolvedIdx0 = Number(recent.tabIndex);
+      activatedPanelLaneId = String(recent.laneId || "");
+      const currentOrderForRecent = (typeof getReasoningPanelOrder === "function") ? getReasoningPanelOrder() : [];
+      const recentInOrder = Array.isArray(currentOrderForRecent)
+        ? currentOrderForRecent.find((p) =>
+            String(p?.laneId || "").trim() === activatedPanelLaneId ||
+            Number(p?.tabIndex) === Number(resolvedIdx0)
+          )
+        : null;
+      target1based = Number.isFinite(Number(recentInOrder?.visualIndex))
+        ? Number(recentInOrder.visualIndex)
+        : target1based;
+      try {
+        if (typeof consumeRecentlyOpenedReasoningPanel === "function") {
+          consumeRecentlyOpenedReasoningPanel("planner_open_and_stream_new_panel_target");
+        }
+      } catch (_) {}
+      try {
+        console.info("[reasoning_target_panel]", {
+          target_panel: "new",
+          resolved_panel_id: activatedPanelLaneId || null,
+          resolved_tab_index: resolvedIdx0,
+          resolved_visual_index_1based: target1based,
+          panel_open_request_id: newPanelRequestId || null,
+          action_plan_id: actionPlanId || null,
+          source: "recently_opened_panel",
+        });
+      } catch (_) {}
+    } else {
+      try {
+        console.warn("[reasoning_target_panel]", {
+          target_panel: "new",
+          resolved_panel_id: null,
+          panel_open_request_id: newPanelRequestId || null,
+          recent_panel_request_id: recentRequestId || null,
+          action_plan_id: actionPlanId || null,
+          reason: recent ? "recent_panel_request_mismatch" : "no_recent_panel",
+        });
+      } catch (_) {}
+      try {
+        console.warn("[panel_target_missing]", {
+          target_panel: "new",
+          prompt_preview: promptClean.slice(0, 160),
+          panel_open_request_id: newPanelRequestId || null,
+          action_plan_id: actionPlanId || null,
+          recent_panel_request_id: recentRequestId || null,
+          reason: recent ? "recent_panel_request_mismatch" : "no_recent_panel",
+          source: "open_and_stream_dispatcher",
+        });
+      } catch (_) {}
+      return;
+    }
+  }
+
+  /* Activate or open the target panel. If the requested index doesn't
+     exist yet (e.g. user asked for Panel 4 but only Panel 1-2 are open),
+     create extra panels until the index is reachable. ``addReasoningTab``
+     enforces ``REASONING_TABS_MAX`` so we can't open more than the limit. */
+  if (panelsRoot && resolvedIdx0 != null) {
+    let panelEl = panelsRoot.querySelector(
+      `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
+    );
+    while (!panelEl && typeof addReasoningTab === "function") {
+      const opened = addReasoningTab({ source: "planner_reasoning_request_open_and_stream" });
+      if (!opened) break;
+      panelEl = panelsRoot.querySelector(
+        `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
+      );
+      if (!panelEl) {
+        const allPanels = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel");
+        if (allPanels.length >= 8) break;
+      }
+    }
+    if (panelEl && typeof activateReasoningTab === "function") {
+      activateReasoningTab(resolvedIdx0, {
+        commandText: promptClean,
+        requestedIndex: target1based || (resolvedIdx0 + 1),
+        resolvedFrom: "planner_reasoning_request_open_and_stream",
+      });
+      activatedPanelLaneId = String(panelEl.dataset.laneId || activatedPanelLaneId || "");
+    }
+  }
+
+  try {
+    const finalSelectedPanelId = getActiveDomReasoningLaneId() || null;
+    console.info("[final_selected_panel]", {
+      stage: "after_open_and_stream_activate",
+      prompt_preview: promptClean.slice(0, 160),
+      created_or_target_panel_id: activatedPanelLaneId || null,
+      final_selected_panel_id: finalSelectedPanelId,
+      target_panel_index_1based: target1based,
+      target_panel_index_0based: resolvedIdx0,
+      panel_open_request_id: newPanelRequestId || null,
+      action_plan_id: actionPlanId || null,
+    });
+    if (activatedPanelLaneId && finalSelectedPanelId && activatedPanelLaneId !== finalSelectedPanelId) {
+      console.warn("[panel_target_mismatch]", {
+        stage: "after_open_and_stream_activate",
+        expected_panel_id: activatedPanelLaneId,
+        actual_selected_panel_id: finalSelectedPanelId,
+        panel_open_request_id: newPanelRequestId || null,
+        action_plan_id: actionPlanId || null,
+      });
+    }
+  } catch (_) {}
+
+  try {
+    console.info("[reasoning_open_and_stream_payload_received]", {
+      prompt_preview: promptClean.slice(0, 160),
+      title_hint: titleHint,
+      target_panel_index_1based: target1based,
+      target_panel_index_0based: resolvedIdx0,
+      target_panel_title: payload?.target_panel_title || null,
+      target_panel: wantsNewPanel ? "new" : null,
+      panel_open_request_id: newPanelRequestId || null,
+      action_plan_id: actionPlanId || null,
+      active_panel_before: activeBefore?.laneId || null,
+      active_panel_after_activate: activatedPanelLaneId || (activeBefore?.laneId || null),
+      contamination_markers: contamination,
+    });
+  } catch (_) {}
+
+  if (!promptClean) return;
+
+  /* Submit the clean prompt as a typed Work Mode turn — fire-and-forget.
+     The recursive turn:
+       - sees a single-action utterance ("explain the Vietnam War"), so
+         the backend planner gate stays cold,
+       - triggers the existing reasoning gate (broad_complex_topic or
+         explicit_artifact) which calls /work_mode/reasoning_stream with
+         the cleaned span only,
+       - lands the streamed answer in the active reasoning panel (which
+         we just activated, when a target was supplied). */
+  if (typeof sendVeraWorkModeTypedInferTurn === "function") {
+    try {
+      if (explicitPanelDestination) {
+        try {
+          console.info("[routing_override]", {
+            reason: "explicit_panel_destination_forces_reasoning_panel",
+            content_task: promptClean.slice(0, 160),
+            target_panel_index_1based: Number.isFinite(target1based) ? target1based : null,
+            target_panel: wantsNewPanel ? "new" : (target1based ?? "active"),
+            panel_open_request_id: newPanelRequestId || null,
+            action_plan_id: actionPlanId || null,
+          });
+        } catch (_) {}
+      }
+      void sendVeraWorkModeTypedInferTurn(promptClean, {
+        path: "wm-multi-action:reasoning.request.open_and_stream",
+        __skipMultiActionPlanner: true,
+        /* Explicit panel destination overrides the simple-chat shortcut:
+           force the recursive turn's reasoning gate to route to the panel. */
+        __reasoningGateForceRoute: explicitPanelDestination ? "reasoning_panel" : undefined,
+        __reasoningGateReason: explicitPanelDestination ? "explicit_panel_destination" : undefined,
+        /* 2026-06-01 — thread the explicit target panel into the recursive
+           turn so the reasoning prep's lane acquisition cannot drift onto
+           a different panel between the activate-tab call above and the
+           recursive ``maybePrepareWorkModeReasoning`` run. The cleaned
+           prompt has had the "in panel N" suffix stripped, so without
+           this hint we would lose the planner's target signal and the
+           lane would fall back to ``getActiveReasoningLaneIndex()``. */
+        __reasoningGateTargetPanel: Number.isFinite(target1based) ? target1based : null,
+        __voiceToPanelOriginalText: String(
+          payload?.original_user_text || data?.transcript || data?.user_text || ""
+        ).trim(),
+        __voiceToPanelResolvedReferent:
+          detectVoiceToPanelDeictic(promptClean) || detectVoiceToPanelActionReference(promptClean)
+            ? resolveReasoningPanelTopicFromContext() || null
+            : null,
+        __voiceToPanelNewPanel: Boolean(wantsNewPanel)
+      });
+      try {
+        console.info("[reasoning_stream_called]", {
+          reasoning_stream_called: true,
+          reasoning_stream_prompt: promptClean.slice(0, 240),
+          reasoning_target_panel: target1based,
+          reasoning_target_panel_id: activatedPanelLaneId || null,
+          active_panel_after: activatedPanelLaneId || (activeBefore?.laneId || null),
+          panel_open_request_id: newPanelRequestId || null,
+          action_plan_id: actionPlanId || null,
+          source: "open_and_stream_dispatcher",
+        });
+        console.info("[reasoning_stream_panel]", {
+          prompt_preview: promptClean.slice(0, 160),
+          target_panel_index_1based: target1based,
+          target_panel_id: activatedPanelLaneId || null,
+          panel_open_request_id: newPanelRequestId || null,
+          action_plan_id: actionPlanId || null,
+          source: "open_and_stream_dispatcher",
+        });
+      } catch (_) {}
+    } catch (e) {
+      try {
+        console.warn("[reasoning_open_and_stream_dispatch_error]", {
+          error: String(e?.message || e || "").slice(0, 200),
+        });
+      } catch (_) {}
+    }
+  }
+}
+
+
 function applyActionPayload(data) {
+  // 2026-05-29 — multi-action planner pass-through.
+  // When the backend executed a typed compound command, every action's
+  // ui_payload arrives in data.action_payloads in execution order. We
+  // apply each one through this same function (recursive single-payload
+  // dispatch) so every existing per-panel branch below keeps working
+  // unchanged. We deliberately also apply data.action_payload at the end
+  // when it's the FIRST payload (it duplicates data.action_payloads[0]
+  // when both are present — skip in that case to avoid double-render).
+  const planned = Array.isArray(data?.action_payloads) ? data.action_payloads.filter(Boolean) : [];
+  if (planned.length > 1) {
+    const seen = new WeakSet();
+    planned.forEach((p, idx) => {
+      if (!p || typeof p !== "object") return;
+      if (seen.has(p)) return;
+      seen.add(p);
+      try {
+        applyActionPayload({ ...data, action_payload: p, action_payloads: null });
+      } catch (err) {
+        console.warn("[planner] action_payloads dispatch failed", { idx, err });
+      }
+    });
+    return;
+  }
   const payload = data?.action_payload;
   const lockToMusicPanel =
     isVeraWorkModeOn() && appModePrefix() === "vera";
@@ -18454,7 +17441,9 @@ function applyActionPayload(data) {
     lockToMusicPanel &&
     (payload?.panel_type === "media_tabs" ||
       payload?.panel_type === "news_results" ||
-      payload?.panel_type === "finance_chart")
+      payload?.panel_type === "finance_chart" ||
+      payload?.panel_type === "product_results_panel" ||
+      payload?.panel_type === "location_map_panel")
   ) {
     const sidePaneEl = uiEl("side-pane");
     if (sidePaneEl) {
@@ -18511,6 +17500,16 @@ function applyActionPayload(data) {
     return;
   }
 
+  if (payload?.panel_type === "product_results_panel") {
+    requestAnimationFrame(() => renderProductResultsPanel(payload));
+    return;
+  }
+
+  if (payload?.panel_type === "location_map_panel") {
+    requestAnimationFrame(() => renderLocationMapPanel(payload));
+    return;
+  }
+
   if (payload?.panel_type === "checklist_control") {
     try {
       markWorkChecklistLocalMutation();
@@ -18535,11 +17534,68 @@ function applyActionPayload(data) {
     const op = payload.op || "";
     if (op === "open_new") {
       const count = Math.max(1, Math.min(REASONING_TABS_MAX, Number(payload.count) || 1));
+      const panelOpenRequestId = String(payload.panel_open_request_id || payload.new_panel_request_id || "").trim();
+      const actionPlanId = String(payload.action_plan_id || "").trim();
+      let activeBeforeOpen = null;
+      try {
+        const beforeOrder = typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+        activeBeforeOpen = beforeOrder.find((p) => p?.isActive)?.laneId || null;
+        console.info("[panel_action_start]", {
+          op: "open_new",
+          count,
+          active_panel_before: activeBeforeOpen,
+          panel_open_request_id: panelOpenRequestId || null,
+          action_plan_id: actionPlanId || null,
+          source: "frontend_open_new_applier",
+        });
+      } catch (_) {}
+      if (panelOpenRequestId) {
+        if (!window.__veraPanelOpenRequestIds || !(window.__veraPanelOpenRequestIds instanceof Map)) {
+          window.__veraPanelOpenRequestIds = new Map();
+        }
+        const prev = window.__veraPanelOpenRequestIds.get(panelOpenRequestId);
+        if (prev && performance.now() - Number(prev.at || 0) < 30000) {
+          try {
+            console.warn("[duplicate_panel_open_blocked]", {
+              panel_open_request_id: panelOpenRequestId,
+              previous_lane_id: prev.laneId || null,
+              previous_tab_index: prev.tabIndex ?? null,
+              action_plan_id: actionPlanId || null,
+              source: "frontend_open_new_guard",
+            });
+          } catch (_) {}
+          return;
+        }
+      }
       /* PART 5+6 (2026-05-28): tag each open with the backend-payload
          source so the recently-opened flag is set with provenance the
          dest-resolver log can show. */
       for (let i = 0; i < count; i += 1) {
-        addReasoningTab({ source: "backend_open_panel_action" });
+        const opened = addReasoningTab({
+          source: "backend_open_panel_action",
+          requestId: panelOpenRequestId,
+        });
+        if (panelOpenRequestId && opened) {
+          try {
+            window.__veraPanelOpenRequestIds.set(panelOpenRequestId, {
+              at: performance.now(),
+              laneId: opened.laneId || "",
+              tabIndex: opened.tabIndex,
+            });
+          } catch (_) {}
+        }
+        try {
+          console.info("[panel_action_result]", {
+            op: "open_new",
+            opened_panel_id: opened?.laneId || null,
+            opened_tab_index: opened?.tabIndex ?? null,
+            active_panel_before: activeBeforeOpen,
+            active_panel_after: opened?.laneId || null,
+            panel_open_request_id: panelOpenRequestId || null,
+            action_plan_id: actionPlanId || null,
+            source: "frontend_open_new_applier",
+          });
+        } catch (_) {}
       }
       return;
     }
@@ -18695,12 +17751,30 @@ function applyActionPayload(data) {
       }
       return;
     }
+    if (op === "open_and_stream") {
+      /* 2026-05-29 spec PART 3 — open + stream a CLEAN reasoning prompt
+         into a target panel. Driven by the backend planner's
+         reasoning.request direct dispatcher; the prompt arrives
+         already-stripped of music/panel/timer/checklist phrases. We
+         reuse the existing Work Mode reasoning lane machinery rather
+         than open a brand-new surface. */
+      applyWorkModeReasoningOpenAndStreamPayload(payload, data);
+      return;
+    }
     return;
   }
 
   if (payload?.panel_type === "music_control") {
     const prefix = appModePrefix();
     const op = payload.op || "open_panel";
+    console.info("[music_control_payload]", {
+      music_control_received: true,
+      op,
+      playlist_id: payload.playlist_id || "",
+      sound_id: payload.sound_id || "",
+      source_event_type: data?.type || "",
+      request_id: data?.request_id || null
+    });
     if (op === "close_panel") {
       hideSidePanel();
       return;
@@ -18736,6 +17810,10 @@ function applyActionPayload(data) {
         freeMusicSyncNowFromAudio(prefix);
         spotifySyncPlayButtonUi(prefix);
       }
+      // Mark whichever source was active as paused_by_user and ensure
+      // we never auto-resume the OTHER source (spec rule 6: a pause for
+      // one source must not resurrect another).
+      musicSourceMarkPausedByUser();
       return;
     }
     if (op === "resume") {
@@ -18784,24 +17862,237 @@ function applyActionPayload(data) {
       document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
     }
     if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
+      const sourceStateBeforeBuiltinPlay = veraMusicSourceState();
+      const preservedBuiltinTime =
+        sourceStateBeforeBuiltinPlay.builtin.state === "suspended_for_spotify"
+          ? Number(sourceStateBeforeBuiltinPlay.builtin.currentTime || 0)
+          : 0;
+      stopCurrentMusicPlaybackBeforeNewPlay("builtin");
+      musicSourceMarkPlaying("builtin", {
+        playlistId: payload.playlist_id || "",
+        soundId: payload.sound_id || "",
+        currentTime: preservedBuiltinTime
+      });
       void (async () => {
         const pfx = appModePrefix();
-        await runBuiltinVoicePlayback(pfx, {
-          playlistId: payload.playlist_id,
-          soundId: payload.sound_id
+        console.info("[music_control_payload]", {
+          music_play_op: "play_builtin",
+          play_builtin_called: true,
+          playback_backend: "builtin_audio",
+          playlist_id: payload.playlist_id || "",
+          sound_id: payload.sound_id || "",
+          request_id: data?.request_id || null
         });
+        try {
+          await runBuiltinVoicePlayback(pfx, {
+            playlistId: payload.playlist_id,
+            soundId: payload.sound_id
+          });
+          if (preservedBuiltinTime > 0) {
+            const free = document.getElementById(`${pfx}-free-music-audio`);
+            if (free && Number.isFinite(free.duration) && preservedBuiltinTime < free.duration) {
+              try {
+                free.currentTime = preservedBuiltinTime;
+                freeMusicSyncNowFromAudio(pfx);
+                console.info("[music_source_state]", {
+                  builtin_resume_from_preserved_time: true,
+                  builtin_current_time_preserved: preservedBuiltinTime,
+                  active_music_source_after: "builtin"
+                });
+              } catch (_) {
+                /* keep playback going even if seeking fails */
+              }
+            }
+          }
+          console.info("[music_control_payload]", {
+            music_play_op: "play_builtin",
+            playback_started: true,
+            playback_backend: "builtin_audio",
+            playlist_id: payload.playlist_id || "",
+            sound_id: payload.sound_id || "",
+            request_id: data?.request_id || null
+          });
+        } catch (err) {
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_builtin",
+            playback_error: String(err && err.message || err || "unknown"),
+            playback_backend: "builtin_audio",
+            request_id: data?.request_id || null
+          });
+        }
       })();
     } else if (op === "play_track" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
+      stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+      musicSourceMarkPlaying("spotify", {
+        uri: payload.uri,
+        title: payload.title || "",
+        artist: payload.artist || ""
+      });
       const play = window.VeraSpotify?.playTrack;
+      console.info("[music_control_payload]", {
+        music_play_op: "play_track",
+        playback_backend: "spotify",
+        spotify_playtrack_available: typeof play === "function",
+        title: payload.title || "",
+        artist: payload.artist || "",
+        requested_spotify_uri: String(payload.uri || ""),
+        spotify_play_called_with_uri: Boolean(payload.uri),
+        blocked_resume_for_new_track: true,
+        request_id: data?.request_id || null
+      });
       if (typeof play === "function") {
-        void play(String(payload.uri), {
+        void Promise.resolve(play(String(payload.uri), {
           title: payload.title || "",
           artist: payload.artist || "",
           preview_url: payload.preview_url || "",
           open_url: payload.open_url || ""
+        })).then(() => {
+          console.info("[music_control_payload]", {
+            music_play_op: "play_track",
+            playback_started: true,
+            playback_backend: "spotify",
+            request_id: data?.request_id || null
+          });
+        }).catch((err) => {
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_track",
+            playback_error: String(err && err.message || err || "unknown"),
+            playback_backend: "spotify",
+            request_id: data?.request_id || null
+          });
         });
       }
+    } else if (op === "play_playlist_scoped" && shouldPlayMusicThisInvocation(payload, op)) {
+      // New op for "play X in my playlist" — search WITHIN the user's
+      // active Spotify playlist (set by their last interaction with a
+      // playlist context) instead of doing a global Spotify search.
+      // If no playlist context is known we surface a clear "which
+      // playlist" message in the spotify-track-artist line.
+      const rawQuery = String(payload.query || "").trim();
+      const playlistId = String(payload.playlist_id || window.__veraSpotifyActivePlaylistId || "").trim();
+      const playlistName = String(payload.playlist_name || window.__veraSpotifyActivePlaylistName || "").trim();
+      console.info("[music_control_payload]", {
+        music_play_op: "play_playlist_scoped",
+        playback_backend: "spotify",
+        playlist_scope_query: rawQuery,
+        selected_playlist_id: playlistId,
+        selected_playlist_name: playlistName,
+        current_playlist_context_available: Boolean(playlistId),
+        generic_track_search_blocked: true,
+        request_id: data?.request_id || null
+      });
+      const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+      if (!playlistId) {
+        if (artistEl) artistEl.textContent = "Which playlist should I search?";
+        console.info("[music_control_payload]", {
+          music_play_op: "play_playlist_scoped",
+          clarification_asked: true,
+          request_id: data?.request_id || null
+        });
+        return;
+      }
+      stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+      void (async () => {
+        const getTracks = window.VeraSpotify?.getPlaylistTracks;
+        if (typeof getTracks !== "function") {
+          if (artistEl) artistEl.textContent = "Playlist search is not available right now.";
+          return;
+        }
+        let tracks = [];
+        try {
+          tracks = await getTracks(playlistId);
+        } catch (err) {
+          if (artistEl) artistEl.textContent = "Couldn't load that playlist's tracks.";
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_playlist_scoped",
+            playback_error: String(err && err.message || err || "unknown"),
+            request_id: data?.request_id || null
+          });
+          return;
+        }
+        const needle = rawQuery.toLowerCase();
+        // Light fuzzy match: exact title substring beats artist substring,
+        // and we require at least one needle token (length >= 3) to appear
+        // in the title to call it a confident match. Without this guard
+        // the planner would pick a random track for short queries.
+        const tokens = needle.split(/\s+/).filter((t) => t && t.length >= 3);
+        let best = null;
+        let bestScore = 0;
+        for (const t of (tracks || [])) {
+          const title = String(t.name || t.title || "").toLowerCase();
+          const artistLine = (Array.isArray(t.artists)
+            ? t.artists.map((a) => a?.name || "").join(", ")
+            : String(t.artist || "")).toLowerCase();
+          let score = 0;
+          if (title === needle) score = 1.0;
+          else if (title.includes(needle)) score = 0.9;
+          else if (tokens.length && tokens.every((tok) => title.includes(tok))) score = 0.75;
+          else if (artistLine.includes(needle)) score = 0.5;
+          if (score > bestScore) {
+            bestScore = score;
+            best = t;
+          }
+        }
+        const confident = best && bestScore >= 0.75;
+        console.info("[music_control_payload]", {
+          music_play_op: "play_playlist_scoped",
+          playlist_match_title: best ? (best.name || best.title || "") : "",
+          playlist_match_confidence: bestScore,
+          playlist_track_played: Boolean(confident),
+          playlist_track_not_found: !confident,
+          request_id: data?.request_id || null
+        });
+        if (!confident) {
+          if (artistEl) artistEl.textContent = `I couldn't find "${rawQuery}" in ${playlistName || "that playlist"}.`;
+          return;
+        }
+        const uri = String(best.uri || "");
+        if (!uri) {
+          if (artistEl) artistEl.textContent = `Found "${best.name || best.title}" but couldn't play it.`;
+          return;
+        }
+        const title = String(best.name || best.title || "");
+        const artistStr = Array.isArray(best.artists)
+          ? best.artists.map((a) => a?.name || "").filter(Boolean).join(", ")
+          : String(best.artist || "");
+        musicSourceMarkPlaying("spotify", {
+          uri,
+          title,
+          artist: artistStr,
+          playlist_id: playlistId,
+          playlist_name: playlistName
+        });
+        const playFn = window.VeraSpotify?.playTrack;
+        if (typeof playFn !== "function") {
+          if (artistEl) artistEl.textContent = "Spotify playback is not available.";
+          return;
+        }
+        try {
+          await playFn(uri, { title, artist: artistStr });
+          console.info("[music_control_payload]", {
+            music_play_op: "play_playlist_scoped",
+            playback_started: true,
+            playback_backend: "spotify",
+            spotify_play_called_with_uri: true,
+            requested_spotify_uri: uri,
+            new_spotify_track: `${title} — ${artistStr}`,
+            request_id: data?.request_id || null
+          });
+        } catch (err) {
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_playlist_scoped",
+            playback_error: String(err && err.message || err || "unknown"),
+            request_id: data?.request_id || null
+          });
+        }
+      })();
     } else if (op === "play_album" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
+      stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+      musicSourceMarkPlaying("spotify", {
+        uri: payload.uri,
+        title: payload.title || "",
+        artist: payload.artist || ""
+      });
       const playCtx = window.VeraSpotify?.playPlaylist;
       if (typeof playCtx === "function") {
         void (async () => {
@@ -18839,6 +18130,17 @@ function applyActionPayload(data) {
           const prefix = appModePrefix();
           const built = matchBuiltinPlaylistOrSoundNameForClient(rawName);
           if (built) {
+            stopCurrentMusicPlaybackBeforeNewPlay("builtin");
+            musicSourceMarkPlaying("builtin", {
+              playlistId: built.playlistId || "",
+              soundId: built.soundId || ""
+            });
+            console.info("[music_control_payload]", {
+              music_play_op: "play_playlist_by_name",
+              playback_backend: "builtin_audio",
+              playlist_name: rawName,
+              request_id: data?.request_id || null
+            });
             await runBuiltinVoicePlayback(prefix, built);
             return;
           }
@@ -18859,9 +18161,32 @@ function applyActionPayload(data) {
           }
           if (!hit?.uri) {
             if (artistEl) artistEl.textContent = `No playlist in your library matched "${rawName}".`;
+            console.info("[music_control_payload]", {
+              music_play_op: "play_playlist_by_name",
+              playlist_match_title: "",
+              playlist_track_not_found: true,
+              generic_track_search_blocked: true,
+              request_id: data?.request_id || null
+            });
             return;
           }
           const disp = hit.name || rawName;
+          stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+          musicSourceMarkPlaying("spotify", {
+            uri: hit.uri,
+            playlist_id: String(hit.id || hit.uri || ""),
+            playlist_name: disp
+          });
+          console.info("[music_control_payload]", {
+            music_play_op: "play_playlist_by_name",
+            playback_backend: "spotify",
+            requested_spotify_query: rawName,
+            requested_spotify_uri: hit.uri,
+            spotify_playlist_play_called_with_uri: true,
+            blocked_resume_for_new_play_request: true,
+            generic_track_search_blocked: true,
+            request_id: data?.request_id || null
+          });
           await playCtx(hit.uri, {
             playlist_name: disp,
             context_subtitle: `"${disp}" in my playlist`
@@ -18897,7 +18222,8 @@ function applyAssistantReplyAndPanels(data) {
   // before the actual assistant bubble appears so the user only sees the
   // final answer (no double-bubble flash).
   cancelPendingNewsStatusBubble("assistant_reply_applied");
-  addBubble(data.reply, "vera");
+  const bubble = addBubble(data.reply, "vera");
+  veraFeedbackMarkFinalFromBubble(bubble, data, null);
 }
 
 function createNdjsonStreamingReplyState(initialReplyBack = null, opts = {}) {
@@ -18988,6 +18314,7 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   if (state.bubble?.isConnected) {
     state.bubble.textContent = done.reply;
     state.stage2EffectiveLocked = true;
+    veraFeedbackMarkFinalFromBubble(state.bubble, merged, null);
     persistVeraChatState();
     return;
   }
@@ -19004,6 +18331,7 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   }
   state.bubble = addBubble(done.reply, "vera", finOpts);
   state.stage2EffectiveLocked = true;
+  veraFeedbackMarkFinalFromBubble(state.bubble, merged, null);
   persistVeraChatState();
 }
 
@@ -19474,20 +18802,14 @@ function computeZCR(buf) {
   return crossings / buf.length;
 }
 
-/** RMS + ZCR voiced band — used so background noise alone does not stall end-of-speech. */
-function listeningFrameIsSpeechLike(buf, rms) {
-  const zcr = computeZCR(buf);
-  if (IS_MOBILE) {
-    /* Phone mics (Bluetooth, handset, AGC off) are often quieter and ZCR sits outside desktop bands. */
-    const th = VOLUME_THRESHOLD * 0.55;
-    if (rms <= th) return false;
-    const zLo = LISTEN_END_ZCR_MIN * 0.55;
-    const zHi = Math.min(0.28, LISTEN_END_ZCR_MAX * 1.35);
-    return zcr >= zLo && zcr <= zHi;
-  }
-  if (rms <= VOLUME_THRESHOLD) return false;
-  return zcr >= LISTEN_END_ZCR_MIN && zcr <= LISTEN_END_ZCR_MAX;
-}
+/* listeningFrameIsSpeechLike (RMS + ZCR voiced-band gate) -> moved to
+ * voice/asr.js (Stage 22 / Patch A-11, 2026-05-31). voice/asr.js loads
+ * before app.js per index.html, so the function is reachable as a bare
+ * identifier from both the main VAD loop (detectSpeech, also moved) and
+ * the interrupt VAD loop (detectInterruptSpeechEnd at L18024, NOT
+ * moved) through the shared classic-script global lexical environment
+ * at call time. Thresholds (VOLUME_THRESHOLD, LISTEN_END_ZCR_MIN/MAX,
+ * IS_MOBILE) remain declared in app.js and are read cross-file. */
 
 /** Per-threshold flags for interrupt (RMS/ZCR/crest); all must pass for a frame to count as speech-like. */
 function computeHeuristicInterruptChecks(rms, zcr, crest) {
@@ -20133,42 +19455,16 @@ function resolveAudioUrls(data) {
  *  global lexical environment.
  * ========================================================================= */
 
-function isAssistantTtsPlaying() {
-  const outAudio = getAudioEl();
-  const htmlAudioPlaying = outAudio && !outAudio.paused;
-  const webAudioMainTtsPlaying =
-    activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
-  return Boolean(htmlAudioPlaying || webAudioMainTtsPlaying);
-}
-
-let activePipelineAbort = null;
-let queuedAssistantTtsPlayback = Promise.resolve();
-
-function attachPipelineAbortSignal() {
-  activePipelineAbort?.abort();
-  activePipelineAbort = new AbortController();
-  return activePipelineAbort.signal;
-}
-
-function enqueueAssistantTtsPlayback(task) {
-  const run = queuedAssistantTtsPlayback
-    .catch(() => {})
-    .then(async () => {
-      await waitUntilAssistantTtsIdle();
-      await task();
-      await waitUntilAssistantTtsIdle();
-    });
-  queuedAssistantTtsPlayback = run.catch(() => {});
-  return run;
-}
-
-async function waitUntilAssistantTtsIdle(maxWaitMs = 60000) {
-  const start = performance.now();
-  while (isAssistantTtsPlaying()) {
-    if (performance.now() - start > maxWaitMs) break;
-    await new Promise((resolve) => window.setTimeout(resolve, 40));
-  }
-}
+/* MAIN-TTS PIPELINE BOOKKEEPING (isAssistantTtsPlaying,
+ * activePipelineAbort, queuedAssistantTtsPlayback,
+ * attachPipelineAbortSignal, enqueueAssistantTtsPlayback,
+ * waitUntilAssistantTtsIdle) -> moved to voice/ttsQueue.js
+ * (Stage 21 / Patch A-7, 2026-05-31). voice/ttsQueue.js loads before
+ * app.js per index.html, so the moved function declarations and the
+ * two top-level `let` bindings are visible to every later classic
+ * script through the shared global lexical environment at call time.
+ * Stage 5 (the file that created voice/ttsQueue.js) explicitly listed
+ * these as future-move candidates in its header comment. */
 
 async function waitForAssistantPlaybackEnd(onFinishHook) {
   let done = false;
@@ -20713,6 +20009,29 @@ async function resolveBmoTtsSegmentFaceModesForPlayback(data, urlCount) {
 
 /** Single <audio> for one file; Web Audio queue when multiple sentence chunks. */
 async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {}) {
+  const cleanupAfterFailedTtsPlay = (reason, extra = {}) => {
+    try {
+      console.warn("[tts_play_failed_cleanup_done]", {
+        reason,
+        tts_segment_count: data?.tts_segment_count ?? null,
+        audio_url_present: Boolean(data?.audio_url),
+        audio_urls_count: Array.isArray(data?.audio_urls) ? data.audio_urls.length : 0,
+        audio_file_exists: null,
+        ...extra
+      });
+    } catch (_) {}
+    mainTtsPlaybackActive = false;
+    try { activeMainTtsBufferSources.length = 0; } catch (_) {}
+    try {
+      const a = getAudioEl();
+      if (a) {
+        a.pause();
+        a.removeAttribute("src");
+        a.load?.();
+      }
+    } catch (_) {}
+    if (typeof onPlayEnd === "function") onPlayEnd();
+  };
   if (appModePrefix() === "vera" && isVeraWorkModeOn() && isWorkModeMuteEnabled()) {
     logVeraSettings("tts_play_suppressed_workmode_mute", { mode: "playTtsFromApi" });
     mainTtsPlaybackActive = false;
@@ -20732,7 +20051,31 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
     return;
   }
   const urls = resolveAudioUrls(data);
-  if (!urls.length) return;
+  try {
+    console.info("[tts_state_before_play]", {
+      tts_segment_count: data?.tts_segment_count ?? null,
+      audio_url_present: Boolean(data?.audio_url),
+      audio_urls_count: urls.length,
+      mainTtsPlaybackActive,
+      activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+      waveState,
+      requestInFlight,
+      processing,
+      workModeTtsQueueLength: Array.isArray(workModeTtsQueue) ? workModeTtsQueue.length : null,
+      workModeTtsDrainActive: Boolean(workModeTtsDrainRunning),
+      currentWorkModeTtsItem: workModeTtsCurrentlyPlaying || null
+    });
+  } catch (_) {}
+  if (!urls.length) {
+    try {
+      if (typeof onPlayStart === "function") onPlayStart();
+    } catch (_) {}
+    cleanupAfterFailedTtsPlay("no_audio_urls", {
+      audio_play_error: "no_audio_urls",
+      audio_error_code: null
+    });
+    return;
+  }
 
   let segmentFaceModes = null;
   if (document.body.classList.contains("bmo-open")) {
@@ -20753,7 +20096,13 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
 
   if (urls.length === 1) {
     const el = getAudioEl();
-    if (!el) return;
+    if (!el) {
+      cleanupAfterFailedTtsPlay("missing_audio_element", {
+        audio_play_error: "missing_audio_element",
+        audio_error_code: null
+      });
+      return;
+    }
     el.src = `${API_URL}${urls[0]}`;
     await ensureMainAudioTtsGraph();
     el.addEventListener(
@@ -20776,12 +20125,41 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
       "ended",
       () => {
         mainTtsPlaybackActive = false;
+        try {
+          console.info("[tts_state_after_done]", {
+            mainTtsPlaybackActive,
+            activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+            waveState,
+            requestInFlight,
+            processing
+          });
+        } catch (_) {}
         if (onPlayEnd) onPlayEnd();
+        try {
+          console.info("[tts_state_after_finally]", {
+            mainTtsPlaybackActive,
+            activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+            waveState,
+            requestInFlight,
+            processing,
+            workModeTtsQueueLength: Array.isArray(workModeTtsQueue) ? workModeTtsQueue.length : null,
+            workModeTtsDrainActive: Boolean(workModeTtsDrainRunning),
+            currentWorkModeTtsItem: workModeTtsCurrentlyPlaying || null
+          });
+        } catch (_) {}
       },
       { once: true }
     );
     const onSingleAudioError = (ev) => {
       try { el.removeEventListener("error", onSingleAudioError); } catch (_) {}
+      try {
+        console.warn("[audio_play_error]", {
+          audio_fetch_status: null,
+          audio_play_error: String(ev?.message || ev || "audio_element_error"),
+          audio_error_code: el.error?.code ?? null,
+          src: el.src
+        });
+      } catch (_) {}
       logVeraCapabilityFailure("tts", "audio_element_error", {
         src: el.src,
         error_code: el.error?.code
@@ -20798,23 +20176,74 @@ async function playTtsFromApi(data, { onPlayStart, onPlayEnd, ephemeralAck } = {
         "tts_failure",
         VERA_SAFETY_LIMITS.messages.ttsFailure
       );
-      if (onPlayEnd) onPlayEnd();
+      cleanupAfterFailedTtsPlay("audio_element_error", {
+        audio_play_error: String(ev?.message || ev || "audio_element_error"),
+        audio_error_code: el.error?.code ?? null,
+        src: el.src
+      });
     };
     el.addEventListener("error", onSingleAudioError, { once: true });
     try {
+      console.info("[audio_play_attempt]", { url: urls[0], mode: "html_audio" });
       await el.play();
+      console.info("[audio_play_success]", { url: urls[0], mode: "html_audio" });
     } catch (err) {
       onSingleAudioError(err);
     }
     return;
   }
 
-  await playTtsUrlSequenceGapless(API_URL, urls, {
-    onFirstStart: runPlayStart,
-    onLastEnd: onPlayEnd,
-    sessionToken,
-    segmentFaceModes
-  });
+  try {
+    console.info("[audio_play_attempt]", { urls, mode: "web_audio_gapless" });
+    await playTtsUrlSequenceGapless(API_URL, urls, {
+      onFirstStart: () => {
+        console.info("[audio_play_success]", { first_url: urls[0], mode: "web_audio_gapless" });
+        runPlayStart();
+      },
+      onLastEnd: () => {
+        try {
+          console.info("[tts_state_after_done]", {
+            mainTtsPlaybackActive,
+            activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+            waveState,
+            requestInFlight,
+            processing
+          });
+        } catch (_) {}
+        if (onPlayEnd) onPlayEnd();
+      },
+      sessionToken,
+      segmentFaceModes
+    });
+  } catch (e) {
+    try {
+      console.warn("[tts_state_after_play_error]", {
+        error: String(e?.message || e || ""),
+        mainTtsPlaybackActive,
+        activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+        waveState,
+        requestInFlight,
+        processing
+      });
+    } catch (_) {}
+    cleanupAfterFailedTtsPlay("web_audio_gapless_error", {
+      audio_play_error: String(e?.message || e || ""),
+      audio_error_code: null
+    });
+  } finally {
+    try {
+      console.info("[tts_state_after_finally]", {
+        mainTtsPlaybackActive,
+        activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+        waveState,
+        requestInFlight,
+        processing,
+        workModeTtsQueueLength: Array.isArray(workModeTtsQueue) ? workModeTtsQueue.length : null,
+        workModeTtsDrainActive: Boolean(workModeTtsDrainRunning),
+        currentWorkModeTtsItem: workModeTtsCurrentlyPlaying || null
+      });
+    } catch (_) {}
+  }
 }
 
 /* createTtsUrlQueue → moved to voice/ttsQueue.js (Stage 5, 2026-05-27). */
@@ -21268,64 +20697,20 @@ document.getElementById("bmo-audio")?.addEventListener("ended", () => {
 });
 
 /* =========================
-   SPEECH DETECTION
+   SPEECH DETECTION -> moved to voice/asr.js
+   (Stage 22 / Patch A-11, 2026-05-31)
 ========================= */
-
-function detectSpeech() {
-  if (!mediaRecorder || mediaRecorder.state !== "recording") return;
-  if (inputMuted) {
-    suppressNextUtterance = true;
-    try {
-      mediaRecorder.stop();
-    } catch {}
-    showMutedStatusIfIdle();
-    return;
-  }
-
-  const buf = new Float32Array(analyser.fftSize);
-  analyser.getFloatTimeDomainData(buf);
-
-  let sum = 0;
-  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
-  const rms = Math.sqrt(sum / buf.length);
-
-  const now = performance.now();
-
-  if (listeningFrameIsSpeechLike(buf, rms)) {
-    if (!hasSpoken) {
-      armVoiceMaxDurationTimer("vad_speech_frame");
-    }
-    hasSpoken = true;
-    lastVoiceTime = now;
-  }
-
-  if (
-    hasSpoken &&
-    now - lastVoiceTime > SILENCE_MS + TRAILING_MS &&
-    (getAudioEl()?.paused ?? true) // 🔑 only stop when not speaking
-  ) {
-    beginVoiceUxTurn();
-    mediaRecorder.stop();
-    return;
-  }
-
-  rafId = requestAnimationFrame(detectSpeech);
-}
-
-function clearSpeechWaitTimerAndDetectRaf() {
-  if (speechWaitTimeoutId != null) {
-    clearTimeout(speechWaitTimeoutId);
-    speechWaitTimeoutId = null;
-  }
-  if (rafId != null) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
-  /* Voice-duration cap is bound to an active recording session. When the
-     session is torn down (silence stop, abort, pipeline reset, PTT switch,
-     etc.) the timer must not survive into the next utterance. */
-  clearVoiceMaxDurationTimer();
-}
+/* function detectSpeech() (main VAD loop) and
+ * function clearSpeechWaitTimerAndDetectRaf() (RAF/no-speech timer
+ * teardown) are now declared in voice/asr.js. The functions still
+ * read and mutate top-level let bindings declared in this file
+ * (mediaRecorder, analyser, hasSpoken, lastVoiceTime, rafId,
+ * speechWaitTimeoutId, inputMuted, suppressNextUtterance) and call
+ * bare identifiers defined here (getAudioEl, beginVoiceUxTurn,
+ * showMutedStatusIfIdle) -- all resolved at call time through the
+ * shared classic-script global lexical environment, the same pattern
+ * Stage 7 / Stage 15 / Stage 17 already rely on for the rest of the
+ * ASR layer. Thresholds (SILENCE_MS, TRAILING_MS) remain here. */
 
 /**
  * End continuous capture without uploading (e.g. switching to PTT). Clears the no-speech
@@ -21673,7 +21058,24 @@ async function finalizeMainBrowserTranscript(text) {
     return;
   }
 
-  if (
+  /* 2026-05-29 spec PART 4 — voice preflight defer for compound commands.
+     The legacy frontend planWorkModeMultiAction misclassifies compound
+     transcripts like "go to panel 2, explain X and play lo-fi" (first
+     verb wins → panel.select swallows the explain text). Skip it for
+     anything that touches 2+ action families and let the backend
+     deterministic planner own the turn. */
+  const _wmCompoundMainAsr = detectCompoundActionFamilies(trimmed);
+  if (_wmCompoundMainAsr.isCompound) {
+    try {
+      console.info("[frontend_legacy_planner_skipped_for_compound]", {
+        path: "main-browser-asr",
+        is_voice: true,
+        raw_transcript: String(trimmed || "").slice(0, 240),
+        compound_action_families_detected: _wmCompoundMainAsr.families,
+        deferred_to_backend_planner: true,
+      });
+    } catch (_) {}
+  } else if (
     await maybeRunWorkModeMultiActionPlanner(trimmed, {
       path: "main-browser-asr",
       isVoice: true
@@ -21761,6 +21163,9 @@ async function finalizeMainBrowserTranscript(text) {
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
   formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
+  // 2026-05-29 — multi-action planner: voice/mic path stays SHADOW only.
+  formData.append("input_source", "continuous");
+  formData.append("typed", "0");
   formData.append("asr_mode", asrMode);
   formData.append("asr_finalization_mode", finalization.mode);
   formData.append("asr_finalization_reason", String(finalization.reason || ""));
@@ -22499,6 +21904,9 @@ async function finalizeInterruptBrowserTranscript(text) {
   formData.append("client", appModePrefix());
   formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
   formData.append("mode", "interrupt");
+  // 2026-05-29 — multi-action planner: interruptions stay SHADOW only.
+  formData.append("input_source", "interruption");
+  formData.append("typed", "0");
   /* PART 14 — hybrid barge-in: when the user opted into Hybrid and the
      pre-armed recorder captured this utterance, send the audio + browser
      transcript + request_whisper_verify=1 so the server picks the best
@@ -22839,7 +22247,16 @@ async function runInferMainPipeline(formData, opts = {}) {
     try { formData.set("client_request_id", _inferClientRequestId); } catch (_) {
       try { formData.append("client_request_id", _inferClientRequestId); } catch (_) {}
     }
-    const res = await fetch(`${API_URL}/infer`, {
+    if (inferUserText) {
+      try {
+        window.veraUsageOnMessageSent?.({
+          source: String(opts.usageSource || opts.path || "voice").slice(0, 32),
+          requestId: _inferClientRequestId,
+          inputChars: inferUserText.length,
+        });
+      } catch (_) {}
+    }
+    const res = await authFetch(`${API_URL}/infer`, {
       method: "POST",
       headers: {
         "X-Vera-Request-Id": _inferClientRequestId,
@@ -22991,6 +22408,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                     { ...done, reply: effectiveReply },
                     streamReplyState
                   );
+                  applyNdjsonActionPayloadEvent({ ...done, reply: effectiveReply }, "done");
                   if (isWmStage2Voice && effectiveReply) {
                     const bubble = ensureStage2VoiceBubble(
                       inferPrep,
@@ -23010,7 +22428,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                   interruptPrearmTtsId = interruptTtsId;
                   if (micStream?.active) startInterruptCapture();
                   void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
-                  applyActionPayload(ndjsonMeta);
+                  applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
                   setStatus(
                     listeningMode === "ptt" ? "Speaking" : "Speaking… (Interruptible)",
                     "speaking"
@@ -23167,7 +22585,7 @@ async function runInferInterruptPipeline(formData) {
   try {
     logVoicePipe("POST /infer starting (interrupt, upload in flight)");
     const inferFetchStart = performance.now();
-    const res = await fetch(`${API_URL}/infer`, {
+    const res = await authFetch(`${API_URL}/infer`, {
       method: "POST",
       body: formData,
       signal: attachPipelineAbortSignal()
@@ -23239,11 +22657,12 @@ async function runInferInterruptPipeline(formData) {
             onDone: (done) => {
               logInferLatency(done, "interrupt", inferTtfbMs);
               finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+              applyNdjsonActionPayloadEvent(done, "done");
             },
             onPlayStart: () => {
               logVoiceFirstAudio("main-reply");
               logVoiceMainReplyAudio();
-              applyActionPayload(ndjsonMeta);
+              applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
               waveState = "speaking";
               audioStartedAt = performance.now();
               resetVadFastStopState("voice_tts_start_action");
@@ -23413,7 +22832,7 @@ async function handleUtterance() {
       preForm.append("transcribe_only", "1");
 
       const preFetchStart = performance.now();
-      const preRes = await fetch(`${API_URL}/infer`, {
+      const preRes = await authFetch(`${API_URL}/infer`, {
         method: "POST",
         body: preForm,
         signal: pipelineSig
@@ -23522,7 +22941,24 @@ async function handleUtterance() {
         return;
       }
 
-      if (
+      /* 2026-05-29 spec PART 4 — voice preflight defer for compound commands.
+         Same rationale as main-browser-asr above: the legacy frontend planner
+         can't cleanly segment "panel + reasoning + music" utterances. Skip
+         it and let the backend deterministic planner own the turn (the
+         second-stage /infer below will reach the planner via the
+         compound-voice extension in app.py's planner_gate). */
+      const _wmCompoundPreflight = detectCompoundActionFamilies(trimmed);
+      if (_wmCompoundPreflight.isCompound) {
+        try {
+          console.info("[frontend_legacy_planner_skipped_for_compound]", {
+            path: "server-asr-preflight",
+            is_voice: true,
+            raw_transcript: String(trimmed || "").slice(0, 240),
+            compound_action_families_detected: _wmCompoundPreflight.families,
+            deferred_to_backend_planner: true,
+          });
+        } catch (_) {}
+      } else if (
         await maybeRunWorkModeMultiActionPlanner(trimmed, {
           path: "server-asr-preflight",
           isVoice: true
@@ -23556,6 +22992,9 @@ async function handleUtterance() {
       formData2.append("client", appModePrefix());
       formData2.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
       formData2.append("stream_tts", shouldStreamTts() ? "1" : "0");
+      // 2026-05-29 — multi-action planner: voice followup stays SHADOW only.
+      formData2.append("input_source", listeningMode === "ptt" ? "ptt" : "voice");
+      formData2.append("typed", "0");
       if (listeningMode === "ptt") {
         formData2.append("mode", "ptt");
       }
@@ -23658,706 +23097,27 @@ async function handleUtterance() {
   await runInferMainPipeline(formData);
 }
 
-/* =========================
-   WORK MODE MULTI-ACTION PLANNER
-   ----------------------------------------------------------------------
-   Spec: compound commands like "go to panel 2 and explain the Vietnam
-   War" used to lose the second action because the panel-navigation
-   route in the backend action router would match first and return,
-   dropping the reasoning generation. The planner runs BEFORE the
-   existing Work Mode single-action shortcuts and the backend /infer
-   router so it can split a compound request into ordered actions and
-   dispatch each one through the existing handlers.
-
-   Scope is intentionally narrow:
-     - Only fires inside Work Mode (sendVeraWorkModeTypedInferTurn).
-     - Only fires when planUserCommand returns isMultiAction:true.
-     - Recursive calls from the executor pass __skipMultiActionPlanner
-       so a segment never re-enters the planner.
-
-   Design choices:
-     - Pure regex / heuristic split (no LLM): preserves latency budget
-       and avoids a new network hop for what is fundamentally a
-       client-side dispatch problem.
-     - The executor reuses existing single-action handlers
-       (activateReasoningTab, addReasoningTab, sendVeraWorkModeTypedInferTurn
-       with planner bypass). It does NOT re-implement checklist /
-       music / news / reasoning routes — each segment goes through the
-       existing pipeline so behaviour stays consistent.
-     - Per PART 4 ordering rules, target/navigation actions
-       (panel.select/open/close, news.open_panel) run before content
-       actions (reasoning.generate, news.search), and dependsOn is
-       added from the content action to the latest target action.
-========================= */
-
-const WORK_MODE_PLANNER_ORDINAL_TO_NUM = {
-  first: 1,
-  second: 2,
-  third: 3,
-  fourth: 4,
-  fifth: 5,
-  sixth: 6,
-  seventh: 7,
-  eighth: 8,
-};
-
-const WORK_MODE_PLANNER_ORDINAL_KEYS = Object.keys(WORK_MODE_PLANNER_ORDINAL_TO_NUM).join("|");
-
-/* Connector regex used to split a compound command into ordered segments.
-   Conservative on purpose — bare commas are NOT treated as connectors
-   unless a second-segment verb is present (see _wmpSplitOnConnectors). */
-const WORK_MODE_PLANNER_CONNECTOR_RE = new RegExp(
-  "\\s*\\b(?:and(?:\\s+then)?|then|after(?:\\s+that)?|also|while\\s+you'?re\\s+at\\s+it|plus|next)\\b\\s*",
-  "i"
-);
-
-const WORK_MODE_PLANNER_CONNECTOR_GLOBAL_RE = new RegExp(
-  WORK_MODE_PLANNER_CONNECTOR_RE.source,
-  "gi"
-);
-
-/* "in panel 2" / "in the reasoning panel 2" / "in the second panel" — the
-   implicit target preposition that turns a single segment like
-   "explain the Vietnam War in panel 2" into a multi-action plan. */
-const WORK_MODE_PLANNER_IN_PANEL_RE = new RegExp(
-  "\\bin\\s+(?:the\\s+)?(?:reasoning\\s+)?(?:panel|space|tab|page)\\s*#?\\s*(\\d+|" +
-    WORK_MODE_PLANNER_ORDINAL_KEYS +
-    ")\\b",
-  "i"
-);
-
-const WORK_MODE_PLANNER_IN_ORDINAL_PANEL_RE = new RegExp(
-  "\\bin\\s+(?:the\\s+)?(" +
-    WORK_MODE_PLANNER_ORDINAL_KEYS +
-    ")\\s+(?:reasoning\\s+)?(?:panel|space|tab|page)\\b",
-  "i"
-);
-
-const WORK_MODE_PLANNER_PANEL_NUMBER_RE = new RegExp(
-  "\\b(?:reasoning\\s+)?(?:panel|space|tab|page)\\s*#?\\s*(\\d+|" +
-    WORK_MODE_PLANNER_ORDINAL_KEYS +
-    ")\\b",
-  "i"
-);
-
-const WORK_MODE_PLANNER_ORDINAL_PANEL_RE = new RegExp(
-  "\\b(" +
-    WORK_MODE_PLANNER_ORDINAL_KEYS +
-    ")\\s+(?:reasoning\\s+)?(?:panel|space|tab|page)\\b",
-  "i"
-);
-
-function _wmpResolveOrdinalOrNum(token) {
-  const s = String(token || "").toLowerCase().trim();
-  if (!s) return null;
-  if (/^\d+$/.test(s)) return Number(s);
-  return WORK_MODE_PLANNER_ORDINAL_TO_NUM[s] || null;
-}
-
-/** Returns 1-based panel index parsed from "panel 2" / "second panel" / "panel #3". */
-function _wmpExtractPanelTarget(text) {
-  const s = String(text || "");
-  let m = s.match(WORK_MODE_PLANNER_PANEL_NUMBER_RE);
-  if (m) {
-    const n = _wmpResolveOrdinalOrNum(m[1]);
-    if (n) return n;
-  }
-  m = s.match(WORK_MODE_PLANNER_ORDINAL_PANEL_RE);
-  if (m) {
-    const n = _wmpResolveOrdinalOrNum(m[1]);
-    if (n) return n;
-  }
-  return null;
-}
-
-/** Remove the trailing "in panel 2" / "in the second panel" phrase so the residual
- *  text becomes a clean content prompt for reasoning.generate. */
-function _wmpStripImplicitTargetPhrase(text) {
-  return String(text || "")
-    .replace(WORK_MODE_PLANNER_IN_PANEL_RE, "")
-    .replace(WORK_MODE_PLANNER_IN_ORDINAL_PANEL_RE, "")
-    .replace(/\s{2,}/g, " ")
-    .replace(/\s+([?.!,;:])/g, "$1")
-    .replace(/^[\s'".,;:!?]+|[\s'".,;:!?]+$/g, "")
-    .trim();
-}
-
-/** Strip leading politeness ("can you", "could you", "would you", "please")
- *  so the verb classifier can see the actual command word. Mirrors the
- *  same pattern app.py uses for its router shortcuts. */
-function _wmpStripLeadingPoliteness(text) {
-  let s = String(text || "").trim();
-  if (!s) return "";
-  /* Run twice — handles "please can you" or "would you please". */
-  for (let i = 0; i < 2; i++) {
-    s = s
-      .replace(/^\s*(?:please|kindly)\b[\s,]+/i, "")
-      .replace(/^\s*(?:can|could|would|will)\s+you\b[\s,]+/i, "")
-      .replace(/^\s*(?:hey\s+vera|hey|ok|okay|alright)\b[\s,]+/i, "");
-  }
-  return s.trim();
-}
-
-/** Classify a single segment into a PlannedAction.type using verb prefixes.
- *  Returns "unknown" / "general.reply" for non-actionable segments so the
- *  caller can decide whether to abort multi-action planning. */
-function _wmpDetectActionType(segment) {
-  const raw = String(segment || "").trim();
-  if (!raw) return "unknown";
-  const s = _wmpStripLeadingPoliteness(raw);
-  if (!s) return "unknown";
-  const t = s.toLowerCase();
-
-  if (
-    /^(?:go\s+(?:back\s+)?to|jump\s+to|switch\s+to|change\s+to|show|select|use)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(s) ||
-    /^(?:go\s+(?:back\s+)?to|jump\s+to|switch\s+to|change\s+to|show|select|use)\s+(?:the\s+|a\s+|my\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(s)
-  ) {
-    return "panel.select";
-  }
-  if (/^(?:open|create|make|add|new)\s+(?:a\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(s)) {
-    return "panel.open";
-  }
-  if (
-    /^(?:close|hide|dismiss|get\s+rid\s+of)\s+(?:the\s+|a\s+|my\s+|all\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|current|active|last|this)?\s*(?:reasoning\s+)?(?:panel|space|tab|page)s?\b/i.test(s)
-  ) {
-    return "panel.close";
-  }
-  if (/^(?:open|show|bring\s+up|pull\s+up)\s+(?:the\s+)?news\s+(?:panel|tab|page|results)\b/i.test(s)) {
-    return "news.open_panel";
-  }
-  if (/^(?:search|look\s+up|find|google)\s+(?:for\s+)?(?:news\s+(?:about|on|for)\s+)?/i.test(s)) {
-    return "news.search";
-  }
-  if (/^(?:pause|stop|mute)\s+(?:the\s+)?music\b/i.test(s)) {
-    return "music.pause";
-  }
-  if (/^(?:play|resume|start|unpause)\s+(?:the\s+|some\s+)?music\b/i.test(s)) {
-    return "music.play";
-  }
-  if (/^add\s+.+?\s+(?:to\s+(?:the\s+|my\s+)?)?(?:checklist|plan|todo|to-do|to\s+do|list)\b/i.test(s)) {
-    return "checklist.add";
-  }
-  if (/^(?:remove|delete|cross\s+off|check\s+off)\s+/i.test(s) && /\b(?:checklist|plan|todo|to-do|to\s+do|list|item|task|first|second|third|fourth|fifth)\b/i.test(t)) {
-    return "checklist.remove";
-  }
-  if (/^(?:sync|update|push|refresh)\s+(?:the\s+|my\s+)?(?:plan|checklist|reasoning\s+plan)\b/i.test(s)) {
-    return "checklist.sync";
-  }
-  if (/^(?:put|move|drop)\s+(?:that|this|it|the\s+(?:answer|last|latest|previous))\s+(?:in|into|to)\s+/i.test(s)) {
-    return "reasoning.move_latest_voice_answer";
-  }
-  if (
-    /^(?:explain|describe|tell\s+me\s+about|summari[sz]e|write|draft|compose|outline|analy[sz]e|compare|derive|prove|walk\s+me\s+through|break\s+down|teach\s+me)\b/i.test(s)
-  ) {
-    return "reasoning.generate";
-  }
-  return "general.reply";
-}
-
-/** Conservative connector split. Splits on " and "/" then "/etc., but only
- *  when the resulting right-hand side starts with a recognized action verb
- *  — avoids slicing "the cat and the dog" into two segments. */
-function _wmpSplitOnConnectors(text) {
-  const s = String(text || "").trim();
-  if (!s) return [];
-  const parts = [];
-  let cursor = 0;
-  WORK_MODE_PLANNER_CONNECTOR_GLOBAL_RE.lastIndex = 0;
-  let match;
-  while ((match = WORK_MODE_PLANNER_CONNECTOR_GLOBAL_RE.exec(s)) != null) {
-    const before = s.slice(cursor, match.index).trim();
-    const after = s.slice(match.index + match[0].length).trim();
-    if (!before || !after) continue;
-    /* Only treat this connector as a real split if the right-hand side
-       starts with a recognizable Work Mode action verb. Otherwise leave
-       it joined so phrasings like "the rise and fall of Rome" do not
-       fragment unrelated noun phrases. */
-    const rhsType = _wmpDetectActionType(after);
-    if (rhsType === "unknown") continue;
-    parts.push(before);
-    cursor = match.index + match[0].length;
-  }
-  const tail = s.slice(cursor).trim();
-  if (tail) parts.push(tail);
-  if (!parts.length) return [s];
-  return parts.map((p) => p.replace(/^[\s'".,;:!?]+|[\s'".,;:!?]+$/g, "").trim()).filter(Boolean);
-}
-
-/** Apply PART 4 ordering rules. Stable: target/navigation actions go first,
- *  then content actions; within each bucket text order is preserved. */
-function _wmpOrderActionsByDependency(actions) {
-  const TARGET_FIRST = new Set([
-    "panel.close",
-    "panel.open",
-    "panel.select",
-    "news.open_panel",
-  ]);
-  const CONTENT = new Set([
-    "reasoning.generate",
-    "reasoning.move_latest_voice_answer",
-    "news.search",
-    "general.reply",
-  ]);
-
-  const targets = [];
-  const content = [];
-  const other = [];
-  for (const a of actions) {
-    if (TARGET_FIRST.has(a.type)) targets.push(a);
-    else if (CONTENT.has(a.type)) content.push(a);
-    else other.push(a);
-  }
-
-  /* Within target bucket: close before select before open. This handles
-     "close panel 1 and open a new one" cleanly. */
-  const targetOrder = (t) =>
-    t === "panel.close" ? 0 : t === "panel.select" ? 1 : t === "panel.open" ? 2 : 3;
-  targets.sort((a, b) => {
-    const da = targetOrder(a.type);
-    const db = targetOrder(b.type);
-    if (da !== db) return da - db;
-    return 0; // stable
-  });
-
-  const ordered = [...targets, ...content, ...other];
-
-  /* Add dependsOn from content actions to the LAST target action so the
-     executor can stop content if navigation fails. Independent app
-     actions (checklist+music) get no dependsOn — they execute in
-     text order without blocking each other. */
-  if (targets.length && content.length) {
-    const lastTargetId = targets[targets.length - 1].id;
-    for (const c of content) {
-      if (!Array.isArray(c.dependsOn)) c.dependsOn = [];
-      if (!c.dependsOn.includes(lastTargetId)) c.dependsOn.push(lastTargetId);
-    }
-  }
-
-  return ordered;
-}
-
-/** PART 10: risk classification for an action type. */
-function _wmpRiskLevelForType(actionType) {
-  if (actionType === "panel.close" || actionType === "checklist.remove") return "medium";
-  return "low";
-}
-
-/**
- * planUserCommand({ text, context }) — see PART 2/3 of the spec.
- *
- * Returns null when the request is single-action (or empty) so the
- * caller can fall through to the existing single-action router.
- * Returns a plan object otherwise.
- */
-function planWorkModeMultiAction(text, context = {}) {
-  const raw = String(text || "").trim();
-  if (!raw) return null;
-
-  const segments = _wmpSplitOnConnectors(raw);
-
-  /* Build a flat action list from segments. Each segment can produce
-     one action, or two when it carries an implicit panel target
-     ("explain X in panel 2" -> panel.select + reasoning.generate). */
-  const built = [];
-  let counter = 1;
-  for (const seg of segments) {
-    if (!seg) continue;
-    const implicitTarget = _wmpExtractPanelTarget(seg);
-    const baseType = _wmpDetectActionType(seg);
-    if (
-      implicitTarget != null &&
-      baseType === "reasoning.generate" &&
-      /\bin\s+/i.test(seg)
-    ) {
-      built.push({
-        id: `a${counter++}`,
-        type: "panel.select",
-        target: { panelIndex: implicitTarget },
-        segmentText: `go to panel ${implicitTarget}`,
-        riskLevel: _wmpRiskLevelForType("panel.select"),
-      });
-      const promptText = _wmpStripImplicitTargetPhrase(seg) || seg;
-      built.push({
-        id: `a${counter++}`,
-        type: "reasoning.generate",
-        payload: { prompt: promptText },
-        segmentText: promptText,
-        riskLevel: _wmpRiskLevelForType("reasoning.generate"),
-      });
-    } else {
-      built.push({
-        id: `a${counter++}`,
-        type: baseType,
-        target: implicitTarget != null ? { panelIndex: implicitTarget } : undefined,
-        segmentText: seg,
-        riskLevel: _wmpRiskLevelForType(baseType),
-      });
-    }
-  }
-
-  /* If every segment we built is "general.reply" / "unknown", this is not
-     really a multi-action request — bail and let the normal router handle
-     the original text as a single intent. */
-  const actionable = built.filter(
-    (a) => a.type !== "general.reply" && a.type !== "unknown"
-  );
-  if (actionable.length < 2) return null;
-
-  const ordered = _wmpOrderActionsByDependency(built);
-
-  /* Drop trailing "general.reply" tails — they're typically noise from a
-     comma or trailing pleasantry. Keep them if they're the only content. */
-  const finalActions = ordered.filter(
-    (a) => a.type !== "general.reply" && a.type !== "unknown"
-  );
-  if (finalActions.length < 2) return null;
-
-  const triggerReason =
-    segments.length === 1 ? "implicit_target_panel" : "explicit_connector";
-
-  return {
-    isMultiAction: true,
-    confidence: triggerReason === "implicit_target_panel" ? 0.9 : 0.85,
-    triggerReason,
-    executionMode: "sequential",
-    actions: finalActions,
-    userFacingSummary: null, // executor builds the final confirmation
-  };
-}
-
-/** Gate per PART 1 — Work Mode only, recursive bypass aware. */
-function shouldUseWorkModeMultiActionPlanner(text, opts = {}) {
-  if (opts && opts.__skipMultiActionPlanner === true) return false;
-  if (typeof isVeraWorkModeOn !== "function" || !isVeraWorkModeOn()) return false;
-  if (typeof appModePrefix !== "function" || appModePrefix() !== "vera") return false;
-  /* Future extension: when called from normal-mode chat with explicit
-     Work Mode references (PART 11), we'd return true and surface a
-     prompt to enable Work Mode. Out of scope for this pass. */
-  return true;
-}
-
-/** Structured log helper. Stable schema for grep + future analyzers. */
-function logWorkModeMultiActionPlannerDecision(payload) {
-  try {
-    console.info("[wm_multi_action_planner]", {
-      tag: payload?.tag || "plan_decision",
-      ts: new Date().toISOString(),
-      ...payload,
-    });
-  } catch (_) {}
-}
-
-async function maybeRunWorkModeMultiActionPlanner(text, opts = {}) {
-  const trimmed = String(text || "").trim();
-  if (!shouldUseWorkModeMultiActionPlanner(trimmed, opts)) return false;
-
-  const path = opts.path || opts.source || "work-mode";
-  let plan = null;
-  try {
-    plan = planWorkModeMultiAction(trimmed, { source: path, isVoice: Boolean(opts.isVoice) });
-  } catch (e) {
-    try {
-      console.warn("[wm_multi_action_planner]", {
-        tag: "planner_exception",
-        error: String(e?.message || e || "").slice(0, 200),
-        text_preview: String(trimmed || "").slice(0, 120),
-        path,
-        is_voice: Boolean(opts.isVoice),
-      });
-    } catch (_) {}
-    plan = null;
-  }
-
-  logWorkModeMultiActionPlannerDecision({
-    tag: "plan_decision",
-    latest_user_text: String(trimmed || "").slice(0, 200),
-    work_mode_active: true,
-    work_mode_multi_action_planner_allowed: true,
-    work_mode_scope_reason: "active_work_mode",
-    multi_action_candidate: Boolean(plan && plan.isMultiAction),
-    planner_used: Boolean(plan && Array.isArray(plan.actions) && plan.actions.length > 1),
-    planner_confidence: plan?.confidence ?? null,
-    actions_detected: Array.isArray(plan?.actions) ? plan.actions.map((a) => a.type) : [],
-    action_order: Array.isArray(plan?.actions) ? plan.actions.map((a) => a.type) : [],
-    dependency_edges: Array.isArray(plan?.actions)
-      ? plan.actions.flatMap((a) =>
-          Array.isArray(a.dependsOn) ? a.dependsOn.map((d) => [d, a.id]) : []
-        )
-      : [],
-    single_router_bypassed: Boolean(
-      plan && Array.isArray(plan.actions) && plan.actions.length > 1
-    ),
-    trigger_reason: plan?.triggerReason || null,
-    path,
-    is_voice: Boolean(opts.isVoice),
-  });
-
-  if (!plan || !Array.isArray(plan.actions) || plan.actions.length <= 1) return false;
-
-  /* Preserve the original full-command bubble BEFORE the executor runs.
-   * For voice turns, `finalizeMainBrowserTranscript` (and friends) have
-   * already mounted a live partial bubble showing the full original text.
-   * We tag that row if it still matches; otherwise create a fresh bubble.
-   * The hold flag prevents each sub-action's cleaned segment text from
-   * overwriting the bubble via `commitServerUserTranscriptBubble`. */
-  const originalFullUserText = trimmed;
-  const cleanedExecutionTexts = _wmCleanedExecutionTextsFromPlan(plan);
-  let bubbleAlreadyMatched = false;
-  try {
-    const latestBubbleText = _readLatestUserBubbleText();
-    if (
-      latestBubbleText
-      && _wmNormalizeForSegmentMatch(latestBubbleText) === _wmNormalizeForSegmentMatch(originalFullUserText)
-    ) {
-      bubbleAlreadyMatched = true;
-      try {
-        const conv = document.getElementById("conversation")
-          || document.getElementById("bmo-conversation");
-        const rows = conv?.querySelectorAll(".message-row.user");
-        if (rows && rows.length) {
-          const row = rows[rows.length - 1];
-          if (row instanceof HTMLElement) {
-            row.dataset.veraWorkModePreservedOriginal = "1";
-            const b = row.querySelector(".bubble");
-            if (b instanceof HTMLElement) {
-              try { b.dataset.originalFullUserText = originalFullUserText; } catch (_) {}
-            }
-          }
-        }
-      } catch (_) {}
-    }
-  } catch (_) {}
-  if (!bubbleAlreadyMatched) {
-    try {
-      ensureChatStartedLayout();
-      const b = addBubble(originalFullUserText, "user", {
-        path: `wm-multi-action-original-${opts.isVoice ? "voice" : "typed"}`,
-      });
-      if (b) {
-        const row = b.closest(".message-row");
-        if (row instanceof HTMLElement) row.dataset.veraWorkModePreservedOriginal = "1";
-        try { b.dataset.originalFullUserText = originalFullUserText; } catch (_) {}
-      }
-    } catch (_) {}
-  }
-  _wmMarkOriginalUserBubbleRendered(
-    originalFullUserText,
-    cleanedExecutionTexts,
-    `wm-multi-action-pre-execute:${opts.isVoice ? "voice" : "typed"}`
-  );
-
-  try {
-    logWorkModeCommandDisplayText({
-      originalFullUserText,
-      cleanedExecutionText: cleanedExecutionTexts.join(" | ") || null,
-      renderedUserBubbleText: _readLatestUserBubbleText(),
-      duplicateUserBubbleSuppressed: false,
-      usedCleanedTextAsInternalPromptOnly: true,
-      commandLooksMultiAction: true,
-      source: `wm-multi-action-pre-execute:${opts.isVoice ? "voice" : "typed"}`,
-    });
-  } catch (_) {}
-
-  _wmHoldOriginalUserBubble(originalFullUserText);
-  try {
-    await executeWorkModeActionPlan(plan, { source: path, isVoice: Boolean(opts.isVoice) });
-    return true;
-  } catch (e) {
-    console.warn("[wm_multi_action_planner]", {
-      tag: "execution_exception",
-      error: String(e?.message || e || "").slice(0, 200),
-      path,
-      is_voice: Boolean(opts.isVoice),
-    });
-    return true;
-  } finally {
-    _wmReleaseOriginalUserBubbleHold();
-  }
-}
-
-/**
- * executeActionPlan(plan, context) — see PART 7.
- *
- * Runs actions sequentially. For panel.select / panel.open we call
- * existing in-process handlers directly (no bubble). For every other
- * action type we re-enter sendVeraWorkModeTypedInferTurn with
- * __skipMultiActionPlanner so the existing shortcuts and /infer route
- * handle the segment exactly the way they would for a single command.
- */
-async function executeWorkModeActionPlan(plan, context = {}) {
-  if (!plan || !Array.isArray(plan.actions) || plan.actions.length < 1) {
-    return { ok: false, results: [], reason: "empty_plan" };
-  }
-
-  logWorkModeMultiActionPlannerDecision({
-    tag: "execution_started",
-    action_count: plan.actions.length,
-    actions: plan.actions.map((a) => a.type),
-    trigger_reason: plan.triggerReason || null,
-    confidence: plan.confidence ?? null,
-  });
-
-  const results = [];
-  const lookupResult = (id) => results.find((r) => r.id === id);
-
-  for (const action of plan.actions) {
-    /* Dependency check (PART 4 F + PART 7). */
-    if (Array.isArray(action.dependsOn) && action.dependsOn.length) {
-      const failedDep = action.dependsOn.find((depId) => {
-        const dep = lookupResult(depId);
-        return dep && dep.ok === false;
-      });
-      if (failedDep) {
-        const skipResult = {
-          id: action.id,
-          type: action.type,
-          ok: false,
-          skipped_due_to_dependency: true,
-          error: `dep_failed:${failedDep}`,
-        };
-        results.push(skipResult);
-        logWorkModeMultiActionPlannerDecision({
-          tag: "action_result",
-          action_id: action.id,
-          action_type: action.type,
-          ok: false,
-          skipped_due_to_dependency: true,
-          dep_failed: failedDep,
-        });
-        continue;
-      }
-    }
-
-    let ok = false;
-    let error = null;
-    const extra = {};
-
-    try {
-      switch (action.type) {
-        case "panel.select": {
-          const oneBased = Number(action?.target?.panelIndex);
-          if (!Number.isFinite(oneBased) || oneBased < 1) {
-            error = "invalid_panel_index";
-            break;
-          }
-          const idx = oneBased - 1;
-          const panelEl = document.querySelector(
-            `#vera-reasoning-tab-panels .vera-reasoning-tab-panel[data-tab-index="${idx}"]`
-          );
-          if (!panelEl) {
-            error = "panel_not_found_or_closed";
-            break;
-          }
-          if (typeof activateReasoningTab !== "function") {
-            error = "activateReasoningTab_unavailable";
-            break;
-          }
-          activateReasoningTab(idx, {
-            commandText: action.segmentText || "",
-            requestedIndex: oneBased,
-            resolvedFrom: "wm_multi_action_planner",
-          });
-          extra.target_panel_id =
-            panelEl.dataset.laneId || `panel_${oneBased}`;
-          extra.reasoning_generation_started = false;
-          ok = true;
-          break;
-        }
-
-        case "panel.open": {
-          if (typeof addReasoningTab !== "function") {
-            error = "addReasoningTab_unavailable";
-            break;
-          }
-          /* PART 5+6 (2026-05-28): pass the voice/typed source so the
-             new panel is tracked as "recently opened" and any next
-             reasoning request biases to it. */
-          addReasoningTab({ source: "multi_action_planner_open_command" });
-          ok = true;
-          break;
-        }
-
-        case "reasoning.generate": {
-          /* Reasoning generation MUST go through the normal Work Mode
-             infer pipeline so the active panel context (just selected
-             by an earlier action.select) is honored. */
-          const promptText =
-            String(action?.payload?.prompt || action.segmentText || "").trim();
-          if (!promptText) {
-            error = "empty_reasoning_prompt";
-            break;
-          }
-          try {
-            await sendVeraWorkModeTypedInferTurn(promptText, {
-              path: `wm-multi-action:reasoning.generate`,
-              __skipMultiActionPlanner: true,
-            });
-            extra.dispatched_via = "sendVeraWorkModeTypedInferTurn";
-            extra.reasoning_generation_started = true;
-            ok = true;
-          } catch (e) {
-            error = String(e?.message || e || "dispatch_error").slice(0, 200);
-          }
-          break;
-        }
-
-        case "panel.close":
-        case "checklist.add":
-        case "checklist.remove":
-        case "checklist.sync":
-        case "music.pause":
-        case "music.play":
-        case "news.open_panel":
-        case "news.search":
-        case "reasoning.move_latest_voice_answer":
-        default: {
-          /* All remaining action types are forwarded through the normal
-             Work Mode entry. Each will hit its corresponding existing
-             frontend shortcut (close panel, sync plan, move-latest)
-             or fall through to backend /infer (checklist mutations,
-             music control, news ops). The planner bypass flag prevents
-             re-entry. */
-          try {
-            await sendVeraWorkModeTypedInferTurn(action.segmentText || "", {
-              path: `wm-multi-action:${action.type}`,
-              __skipMultiActionPlanner: true,
-            });
-            extra.dispatched_via = "sendVeraWorkModeTypedInferTurn";
-            ok = true;
-          } catch (e) {
-            error = String(e?.message || e || "dispatch_error").slice(0, 200);
-          }
-          break;
-        }
-      }
-    } catch (e) {
-      error = String(e?.message || e || "executor_exception").slice(0, 200);
-    }
-
-    const result = { id: action.id, type: action.type, ok, error, ...extra };
-    results.push(result);
-    logWorkModeMultiActionPlannerDecision({
-      tag: "action_result",
-      action_id: action.id,
-      action_type: action.type,
-      ok,
-      error,
-      ...extra,
-    });
-  }
-
-  logWorkModeMultiActionPlannerDecision({
-    tag: "execution_complete",
-    results_summary: results.map((r) => ({
-      id: r.id,
-      type: r.type,
-      ok: r.ok,
-      skipped: Boolean(r.skipped_due_to_dependency),
-    })),
-  });
-
-  return { ok: results.every((r) => r.ok), results };
-}
+/* WORK MODE MULTI-ACTION PLANNER (legacy frontend planner: banner +
+ * 9 constants + 9 helpers + planWorkModeMultiAction +
+ * shouldUseWorkModeMultiActionPlanner +
+ * logWorkModeMultiActionPlannerDecision +
+ * maybeRunWorkModeMultiActionPlanner + executeWorkModeActionPlan)
+ * -> moved to workmode/multiActionPlanner.js (Patch B-5, 2026-06-01).
+ * workmode/multiActionPlanner.js loads BEFORE app.js per index.html
+ * (specifically: after workmode/checklist.js and before
+ * news/newsRouter.js), so every bare-identifier call site in app.js
+ * -- including the inline GATE block inside
+ * sendVeraWorkModeTypedInferTurn at the start of the TEXT INPUT
+ * PIPELINE section just below, and the maybeRunWorkModeMultiActionPlanner
+ * call sites in the typed/voice paths -- resolves through the shared
+ * classic-script global lexical environment at call time. The UI
+ * helpers the planner consumes (_wmCleanedExecutionTextsFromPlan,
+ * _wmHoldOriginalUserBubble, _wmReleaseOriginalUserBubbleHold,
+ * _wmMarkOriginalUserBubbleRendered, _wmNormalizeForSegmentMatch,
+ * _readLatestUserBubbleText, logWorkModeCommandDisplayText, addBubble,
+ * ensureChatStartedLayout) remain in app.js. Patch B-5 is relocation
+ * only -- planner behavior, gate decision, recursive dispatch, debug
+ * logs, and backend planner integration are unchanged. */
 
 /* =========================
    TEXT INPUT PIPELINE
@@ -24415,16 +23175,47 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     setStatus("Ready", "idle");
   }
 
+  /* Local UI actions must be claimed before the Work Mode multi-action
+     planner, reasoning classifier, or /infer fallback. A bare "close panel"
+     is not a reasoning request; if we let it fall through, the user can see
+     the generic "Reasoning is temporarily unavailable" bubble. */
+  if (!fromQueue && !fromPanelQueue &&
+      maybeHandleCloseReasoningPanelShortcut(trimmed, {
+        reason: path || "work-typed-preflight",
+        isVoice: Boolean(opts?.isVoice)
+      })) {
+    return;
+  }
+
   /* =========================
-     WORK MODE MULTI-ACTION PLANNER GATE (Stage A — typed/voice entry)
+     WORK MODE MULTI-ACTION PLANNER GATE (legacy frontend planner)
      ----------------------------------------------------------------------
-     Runs BEFORE the existing single-action shortcuts so compound requests
-     like "go to panel 2 and explain the Vietnam War" get both actions
-     dispatched. If the planner decides this is a single-action request
-     (or planner is skipped per __skipMultiActionPlanner), we fall through
-     to the normal pipeline below unchanged.
+     2026-05-29 structural route fix:
+     typed Work Mode commands now defer compound app-action planning to
+     the backend /infer planner. The older frontend planner is intentionally
+     bypassed here because it can partially recognize app actions (for
+     example checklist.remove) while missing arbitrary music.play payloads,
+     which prevents the backend from returning one aggregated multi_action
+     response. Recursive segment dispatches still pass
+     __skipMultiActionPlanner and fall through to the normal single-action
+     pipeline below.
   ========================= */
-  if (shouldUseWorkModeMultiActionPlanner(trimmed, opts)) {
+  const deferTypedCompoundPlanningToBackend =
+    !(opts && opts.__skipMultiActionPlanner === true);
+  if (deferTypedCompoundPlanningToBackend) {
+    logWorkModeMultiActionPlannerDecision({
+      tag: "frontend_planner_deferred_to_backend",
+      latest_user_text: String(trimmed || "").slice(0, 200),
+      work_mode_active:
+        typeof isVeraWorkModeOn === "function" ? isVeraWorkModeOn() : null,
+      work_mode_multi_action_planner_allowed: false,
+      work_mode_scope_reason: "typed_backend_planner_source_of_truth",
+      planner_used: false,
+      backend_input_source: "keyboard",
+      backend_typed: true,
+      path: path || null,
+    });
+  } else if (shouldUseWorkModeMultiActionPlanner(trimmed, opts)) {
     let plan = null;
     try {
       plan = planWorkModeMultiAction(trimmed, { source: path });
@@ -24704,6 +23495,18 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     source: workModeInferTurnSourceFromPath(path, hasUpload),
     hasFiles: hasUpload
   });
+  // 2026-05-29 — multi-action planner gate (typed-only).
+  // The Voice UI input box submits via /infer, so the backend's planner
+  // execution gate needs an explicit signal that this turn was typed.
+  // workModeInferTurnSourceFromPath() already classifies path strings
+  // containing "browser-asr" / "voice" / "ptt" / "asr" as "voice", so
+  // keyboard submits naturally fall through as "keyboard". When the
+  // user actually uploads a file, source="upload" — we still report
+  // input_source=keyboard so the planner can run on the typed prompt
+  // accompanying the upload.
+  const _veraInputSource = (turnContext && turnContext.source) === "voice" ? "voice" : "keyboard";
+  formData.append("input_source", _veraInputSource);
+  formData.append("typed", _veraInputSource === "keyboard" ? "1" : "0");
   appendWorkModeSubmissionLaneToFormData(formData, turnContext?.turn_lane_id);
 
   logFinalTranscriptSentToLlm(path, trimmed || transcriptLine);
@@ -24738,9 +23541,25 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   } catch (_) {}
 
   /* Reasoning: parallel across panels (lane chains); voice `/infer`: one chain, does not wait on other lanes' reasoning. */
+  /* 2026-06-01 — forward ``opts.__reasoningGateTargetPanel`` from the
+     recursive open_and_stream submit so the explicit panel target the
+     backend planner resolved survives the cleaned-prompt re-dispatch.
+     Without this hop the reasoning lane would fall back to the active
+     tab and could land on the wrong panel under high concurrency. */
+  const _forwardedTargetPanel = Number.isFinite(Number(opts && opts.__reasoningGateTargetPanel))
+    ? Number(opts.__reasoningGateTargetPanel)
+    : null;
+  /* 2026-06-12 — forward the explicit-panel-destination force-route flag so
+     the reasoning gate routes a simple content task ("explain tennis") into
+     the panel when the user named a panel destination. */
+  const _forwardedForceRoute =
+    opts && opts.__reasoningGateForceRoute === "reasoning_panel" ? "reasoning_panel" : undefined;
   const reasoningPrepP = maybePrepareWorkModeReasoning(formData, trimmed || transcriptLine, undefined, {
     attachments: pendingFiles,
-    turnContext
+    turnContext,
+    __reasoningGateTargetPanel: _forwardedTargetPanel,
+    __reasoningGateForceRoute: _forwardedForceRoute,
+    __reasoningGateReason: opts && opts.__reasoningGateReason ? opts.__reasoningGateReason : undefined
   });
 
   const enqueued = enqueueWorkModeTypedVoiceInfer(async () => {
@@ -24769,6 +23588,47 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
           });
           resumeAfterAssistantReplyPlayback();
           return;
+        }
+        /* 2026-06-12 investigation guard — a reasoning.request that arrived via
+           the backend planner's open_and_stream payload (with a resolved/forwarded
+           target panel) must land in the reasoning panel body, NOT the Voice UI
+           chat transcript. If we reach this branch the recursive turn FAILED to
+           re-qualify as reasoning (reasoningRouted === false), so the model answer
+           is about to be appended to Voice UI instead of the panel. Log only —
+           no behavior change — so a live repro surfaces the mismatch in console. */
+        const _wasReasoningRequestOpenAndStream =
+          typeof opts?.path === "string" &&
+          opts.path.indexOf("reasoning.request.open_and_stream") !== -1;
+        if (_wasReasoningRequestOpenAndStream) {
+          try {
+            console.warn("[reasoning_destination_mismatch]", {
+              reason: "reasoning_request_with_target_panel_routed_to_voice_ui",
+              action_type: "reasoning.request",
+              origin_path: opts.path,
+              target_panel_index_1based: _forwardedTargetPanel,
+              reasoning_routed: false,
+              append_destination: "voice_ui_chat",
+              expected_destination: "reasoning_panel_body",
+              prompt_preview: String(trimmed || "").slice(0, 160),
+            });
+          } catch (_) {}
+          /* Bug-level warning: an explicit panel destination was supplied
+             (force-route requested) yet the answer is still about to land
+             in Voice UI. This means the gate force-route failed and the
+             priority rule was violated. */
+          if (opts.__reasoningGateForceRoute === "reasoning_panel") {
+            try {
+              console.error("[panel_destination_routed_to_chat_bug]", {
+                explicit_panel_destination: true,
+                action_type: "reasoning.request",
+                origin_path: opts.path,
+                target_panel_index_1based: _forwardedTargetPanel,
+                append_destination: "voice_ui_chat",
+                expected_destination: "reasoning_panel_body",
+                prompt_preview: String(trimmed || "").slice(0, 160),
+              });
+            } catch (_) {}
+          }
         }
         const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prepWrap, { signal: inferSig });
         if (prepFail === "reasoning-upload-failed") {
@@ -24959,6 +23819,16 @@ async function sendTextMessage() {
       logNewsRouterRouteFrontend(text, _veraTurnRouteClassification);
     }
   } catch (_) {}
+  // 2026-05-28 PART 1 — emit the info-tool router classification too. The
+  // backend is the authoritative router; this is purely instrumentation so
+  // the browser console shows our intended dispatch side by side with the
+  // backend's matching [info_tool_route] line.
+  try {
+    if (typeof classifyInfoTool === "function" && typeof logInfoToolRouteFrontend === "function") {
+      const _infoToolClassification = classifyInfoTool(text);
+      logInfoToolRouteFrontend(text, _infoToolClassification);
+    }
+  } catch (_) {}
   // Show "Searching news…" immediately for likely Serper-backed requests.
   // Cancelled when a real reply arrives via applyAssistantReplyAndPanels /
   // applyNdjsonStreamingReplySoFar / finalizeNdjsonStreamingReply, and
@@ -24971,6 +23841,13 @@ async function sendTextMessage() {
        pair frontend logs with backend [REQ start]/[REQ end] lines. Server
        still generates its own (returned in `request_id` on the response). */
     const _textClientRequestId = recordVeraRequestId("text", newVeraRequestId());
+    try {
+      window.veraUsageOnMessageSent?.({
+        source: "text",
+        requestId: _textClientRequestId,
+        inputChars: text.length,
+      });
+    } catch (_) {}
     logTurnTextIntegrity({
       source: "typed",
       raw_asr_text: null,
@@ -24980,7 +23857,7 @@ async function sendTextMessage() {
       request_id: _textClientRequestId,
       path: "typed-text",
     });
-    const res = await fetch(`${API_URL}/text`, {
+    const res = await authFetch(`${API_URL}/text`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -25037,11 +23914,12 @@ async function sendTextMessage() {
             onDone: (done) => {
               logInferLatency(done, "text", textTtfbMs);
               finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+              applyNdjsonActionPayloadEvent(done, "done");
             },
             onPlayStart: () => {
               logTextFirstAudio("main-reply");
               logTextMainReplyAudio();
-              applyActionPayload(ndjsonMeta);
+              applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
               waveState = "speaking";
               audioStartedAt = performance.now();
               resetVadFastStopState("text_tts_start_action");
@@ -25211,6 +24089,9 @@ async function onPttClick() {
     formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
     formData.append("mode", "ptt");
     formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
+    // 2026-05-29 — multi-action planner: PTT stays SHADOW only.
+    formData.append("input_source", "ptt");
+    formData.append("typed", "0");
     const turnContext = createWorkModeFrozenTurnContext({ userText: text, source: "voice" });
     appendWorkModeSubmissionLaneToFormData(formData, turnContext?.turn_lane_id);
     logVoiceTranscript("final", text, { path: "ptt-browser-asr" });
@@ -25380,96 +24261,17 @@ if (sendFeedbackBtn) {
 
 window.resetVoiceUiToIdle = cancelVoicePipelineAndResetState;
 
-/* =========================
-   HIDDEN USER SIGN-IN (long-press VERA logo 2s)
-========================= */
-
-/**
- * Base URL for FastAPI user routes (sign-in, /api/user/active).
- * GitHub Pages / static hosts cannot serve POST /api — must use API_URL (Worker → tunnel → app.py).
- * Order: explicit override → localhost uvicorn → meta → file → API_URL for all other https origins.
- */
-function localBackendBase() {
-  if (typeof window !== "undefined" && window.VERA_LOCAL_BACKEND_ORIGIN) {
-    return String(window.VERA_LOCAL_BACKEND_ORIGIN).replace(/\/$/, "");
-  }
-  const o = typeof window !== "undefined" ? window.location?.origin : "";
-  if (o && o !== "null" && !o.startsWith("file:")) {
-    const isLocal =
-      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o) ||
-      /^https?:\/\/\[::1\](:\d+)?$/i.test(o);
-    if (isLocal) return o.replace(/\/$/, "");
-  }
-  const m = document.querySelector('meta[name="vera-local-backend-origin"]');
-  const meta = m?.content?.trim();
-  if (meta) return meta.replace(/\/$/, "");
-  if (!o || o === "null" || o.startsWith("file:")) {
-    return "http://127.0.0.1:8000";
-  }
-  const remote = String(API_URL).replace(/\/$/, "");
-  return remote || "https://vera-api.vera-api-ned.workers.dev";
-}
-
-function authApiBase() {
-  return localBackendBase();
-}
-
-/** Absolute URL for user auth; never same-origin relative /api/... on GitHub Pages. */
-function authApiUrl(path) {
-  const p = path.startsWith("/") ? path : `/${path}`;
-  let base = localBackendBase();
-  if (!base || !String(base).trim()) {
-    base = String(API_URL).replace(/\/$/, "") || "https://vera-api.vera-api-ned.workers.dev";
-  }
-  const root = String(base).replace(/\/$/, "");
-  return new URL(p, `${root}/`).href;
-}
-
-function setVeraActiveUserLabel(usernameOrNull) {
-  const el = document.getElementById("vera-active-user-label");
-  if (!el) return;
-  if (usernameOrNull == null || usernameOrNull === "") {
-    el.textContent = "";
-    el.setAttribute("hidden", "");
-    return;
-  }
-  el.textContent = `user: ${usernameOrNull}`;
-  el.removeAttribute("hidden");
-}
-
-async function refreshVeraActiveUserLabel() {
-  const tabUser = sessionStorage.getItem(VERA_TAB_ACTIVE_USER_KEY) || "";
-  if (!tabUser) {
-    setVeraActiveUserLabel(null);
-    try {
-      /* PART 7: scoped sign-out so we don't clobber other devices that are
-         signed in as different users. */
-      await fetch(authApiUrl("/api/user/sign-out"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: getSessionId() }),
-      });
-    } catch {}
-    return;
-  }
-  try {
-    /* PART 7: include session_id so the backend returns THIS session's
-       active user, not whatever was last set process-wide. */
-    const res = await fetch(
-      authApiUrl(`/api/user/active?session_id=${encodeURIComponent(getSessionId())}`),
-      { method: "GET" }
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setVeraActiveUserLabel(null);
-      return;
-    }
-    const activeName = data.username != null && data.username !== "" ? String(data.username) : tabUser;
-    setVeraActiveUserLabel(activeName || null);
-  } catch {
-    setVeraActiveUserLabel(tabUser || null);
-  }
-}
+/* HIDDEN USER SIGN-IN (long-press VERA logo 2s) -> moved to
+ * users/signinUi.js (Patch B-4, 2026-06-01). users/signinUi.js loads
+ * BEFORE app.js per index.html (specifically: after utils/logging.js
+ * and before voice/asr.js), so the moved function declarations
+ *   - localBackendBase, authApiBase, authApiUrl,
+ *   - setVeraActiveUserLabel, refreshVeraActiveUserLabel
+ * are visible to app.js, workmode/panels.js (uses localBackendBase),
+ * workmode/checklist.js (uses authApiUrl), and the bootstrap
+ * invocations near the end of app.js. const VERA_TAB_ACTIVE_USER_KEY
+ * remains here (L6170) -- the moved helpers read it via the shared
+ * classic-script global lexical environment at call time. */
 
 /** Dev-only cost-log UI: localhost, ?costdebug=1, or localStorage vera_cost_log_debug=1 */
 function isVeraCostLogDevUiEnabled() {
@@ -25745,6 +24547,9 @@ function wireVeraSettingsPanel() {
     setTextGuideRotatorEnabled(draftTextGuideRotator);
     setWorkModeMuteEnabled(draftWorkModeMute);
     setPlanningDeadlineTimerEnabled(draftPlanningDeadlineTimer);
+    if (typeof syncLocalVeraPrefsToSupabase === "function") {
+      void syncLocalVeraPrefsToSupabase("settings_panel_save");
+    }
     close();
   });
 
@@ -25792,154 +24597,29 @@ function wireVeraSettingsPanel() {
   hydrate();
 }
 
-function wireVeraUserSignInHoldAndModal() {
-  const holdMs = 2000;
-  /* Long-press sign-in only in VERA app (#return-home-vera), not on landing nav-home */
-  const logos = [document.getElementById("return-home-vera")].filter(Boolean);
-
-  const revealSignInButtons = () => {
-    document.getElementById("vera-user-sign-in")?.removeAttribute("hidden");
-  };
-
-  logos.forEach((el) => {
-    let timer = null;
-    let longPress = false;
-    let holding = false;
-    let rafId = null;
-    let holdStart = 0;
-
-    const tick = () => {
-      if (!holding) return;
-      const elapsed = performance.now() - holdStart;
-      const pct = Math.min(100, (elapsed / holdMs) * 100);
-      el.style.setProperty("--vera-hold-pct", `${pct}%`);
-      if (holding && elapsed < holdMs) {
-        rafId = requestAnimationFrame(tick);
-      }
-    };
-
-    const endHoldTracking = () => {
-      holding = false;
-      if (rafId != null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-      el.style.setProperty("--vera-hold-pct", "0%");
-    };
-
-    el.addEventListener("pointerdown", () => {
-      longPress = false;
-      holding = true;
-      holdStart = performance.now();
-      timer = window.setTimeout(() => {
-        longPress = true;
-        revealSignInButtons();
-        el.style.setProperty("--vera-hold-pct", "100%");
-        holding = false;
-        if (rafId != null) {
-          cancelAnimationFrame(rafId);
-          rafId = null;
-        }
-      }, holdMs);
-      rafId = requestAnimationFrame(tick);
-    });
-
-    const cancelTimerAndFill = () => {
-      if (timer != null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      endHoldTracking();
-    };
-
-    el.addEventListener("pointerup", cancelTimerAndFill);
-    el.addEventListener("pointerleave", cancelTimerAndFill);
-    el.addEventListener("pointercancel", cancelTimerAndFill);
-    el.addEventListener(
-      "click",
-      (e) => {
-        if (longPress) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          longPress = false;
-        }
-      },
-      true
-    );
-  });
-
-  const modal = document.getElementById("vera-user-sign-in-modal");
-  const errEl = document.getElementById("vera-sign-in-error");
-
-  const showErr = (msg) => {
-    if (!errEl) return;
-    errEl.textContent = msg || "";
-    errEl.hidden = !msg;
-  };
-
-  const openModal = () => {
-    showErr("");
-    modal?.removeAttribute("hidden");
-  };
-
-  const closeModal = () => {
-    modal?.setAttribute("hidden", "");
-    showErr("");
-  };
-
-  document.getElementById("vera-user-sign-in")?.addEventListener("click", openModal);
-  document.getElementById("vera-sign-in-cancel")?.addEventListener("click", closeModal);
-  modal?.addEventListener("click", (e) => {
-    if (e.target === modal) closeModal();
-  });
-
-  document.getElementById("vera-sign-in-submit")?.addEventListener("click", async () => {
-    const userEl = document.getElementById("vera-sign-in-username");
-    const passEl = document.getElementById("vera-sign-in-password");
-    const user = userEl?.value?.trim() ?? "";
-    const pass = passEl?.value?.trim() ?? "";
-    showErr("");
-    try {
-      const res = await fetch(authApiUrl("/api/user/sign-in"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        /* PART 7: pass session_id so the backend can scope the active user
-           PER SESSION instead of overwriting the process-global field. Two
-           devices signing in as different users will each have their own
-           checklist / known-facts isolation. */
-        body: JSON.stringify({ username: user, password: pass, session_id: getSessionId() })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const d = data.detail;
-        if (Array.isArray(d) && d.length > 0 && d[0]?.msg) {
-          showErr(String(d[0].msg));
-          return;
-        }
-        showErr(typeof d === "string" ? d : "Wrong password or username.");
-        return;
-      }
-      const name = data.username != null && data.username !== "" ? String(data.username) : null;
-      if (name) sessionStorage.setItem(VERA_TAB_ACTIVE_USER_KEY, name);
-      setVeraActiveUserLabel(name);
-      /* Start a fresh VERA session on successful user sign-in. */
-      if (typeof window.resetVeraSessionAndUi === "function") {
-        window.resetVeraSessionAndUi();
-      }
-      await hydrateWorkChecklistFromServer(true);
-      closeModal();
-      if (passEl) passEl.value = "";
-    } catch {
-      showErr(
-        "Could not reach the auth server. If you use GitHub Pages, deploy the latest app.js (cache-busted) so sign-in uses the VERA API URL, or set window.VERA_LOCAL_BACKEND_ORIGIN."
-      );
-    }
-  });
-}
+/* function wireVeraUserSignInHoldAndModal() (long-press logo handler
+ * + hidden sign-in modal open/close/submit) -> moved to
+ * users/signinUi.js (Patch B-4, 2026-06-01). The bootstrap invocation
+ * `wireVeraUserSignInHoldAndModal();` below remains in app.js to
+ * preserve the original ordering with respect to wireVeraSettingsPanel()
+ * and refreshVeraActiveUserLabel(); the bare-identifier resolves
+ * against the moved declaration through the shared classic-script
+ * global lexical environment at call time (users/signinUi.js loaded
+ * earlier). The wire function body still references VERA_TAB_ACTIVE_
+ * USER_KEY (const in app.js L6170), getSessionId (utils/ids.js),
+ * hydrateWorkChecklistFromServer (workmode/checklist.js), and
+ * window.resetVeraSessionAndUi (set in app.js L189) -- all of which
+ * resolve at modal-submit call time, long after every classic
+ * <script> has finished parsing. */
 
 wireVeraUserSignInHoldAndModal();
 wireVeraSettingsPanel();
-refreshVeraActiveUserLabel();
+if (typeof wireSupabaseAccountUi === "function") wireSupabaseAccountUi();
+if (typeof initSupabaseAuth === "function") {
+  initSupabaseAuth().finally(() => refreshVeraActiveUserLabel());
+} else {
+  refreshVeraActiveUserLabel();
+}
 
 (function stripSpotifyOAuthQueryParams() {
   try {
@@ -26146,6 +24826,7 @@ window.VeraSpotify = {
     const preview = meta?.preview_url;
     const openUrl = String(meta?.open_url || spotifyUriToOpenUrl(uri) || "").trim();
     window.__veraSpotifyLast = {
+      uri: uri || "",
       preview_url: preview || "",
       open_url: openUrl,
       title: meta?.title || "",
@@ -26156,6 +24837,15 @@ window.VeraSpotify = {
       artist: meta?.artist || "",
       paused: false,
       active: true
+    });
+    captureMusicPanelDisplay("spotify", {
+      uri: String(uri || ""),
+      title: String(meta?.title || ""),
+      artist: String(meta?.artist || ""),
+      cover_url: "",
+      paused: false,
+      position_ms: 0,
+      duration_ms: 0
     });
     const titleEl = document.getElementById(`${prefix}-spotify-track-title`);
     const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
@@ -26262,6 +24952,8 @@ window.VeraSpotify = {
     const base = localBackendBase();
     const contextUri = String(playlistUri || "").trim();
     if (!contextUri) return;
+    window.__veraSpotifyActivePlaylistId = contextUri;
+    window.__veraSpotifyActivePlaylistName = String(meta?.playlist_name || "Playlist");
     spotifyClearPendingSdkTrack();
 
     const st = await fetch(`${base}/api/spotify/connection-status`, {
@@ -26315,6 +25007,17 @@ window.VeraSpotify = {
       artist: meta?.context_subtitle || defaultSub,
       paused: false,
       active: true
+    });
+    captureMusicPanelDisplay("spotify", {
+      uri: contextUri,
+      title: String(meta?.playlist_name || "Playlist"),
+      artist: String(meta?.context_subtitle || defaultSub),
+      playlist_id: contextUri,
+      playlist_name: String(meta?.playlist_name || "Playlist"),
+      cover_url: "",
+      paused: false,
+      position_ms: 0,
+      duration_ms: 0
     });
     spotifyApplyNowStateToPanel(prefix);
     void spotifyRefreshWebPlaybackStateToUi(prefix);

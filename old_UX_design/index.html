@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>VERA AI</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <div class="app idle" id="app">
+
+    <h1>Talk to VERA</h1>
+
+    <!-- 🎙️ Mic (centered) -->
+    <div class="mic-container">
+      <button id="record" aria-label="Record">🎙️</button>
+    </div>
+
+    <!-- Status -->
+    <div id="server-status" class="status offline">🔴 VERA Offline</div>
+    <div id="status" class="status idle">Idle</div>
+
+    <!-- Hours -->
+    <div class="hours">
+      ⏰ VERA is usually available from <b>6:00 PM to 12:00 PM</b>
+    </div>
+
+    <!-- Conversation (single-turn for now) -->
+    <div class="conversation">
+      <p><b>You:</b> <span id="transcript"></span></p>
+      <p><b>VERA:</b> <span id="reply"></span></p>
+    </div>
+
+    <!-- Audio playback -->
+    <audio id="audio" controls></audio>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

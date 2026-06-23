@@ -1,0 +1,42 @@
+{
+  "status": "admin",
+  "password": "21032004",
+  "user_profile": {
+    "name": "Nam",
+    "skills": [
+      "tennis",
+      "soccer",
+      "playing piano and clarinet"
+    ],
+    "interests": [
+      "Attack on Titan",
+      "jazz music"
+    ],
+    "habits": [
+      "sleeping",
+      "taking naps",
+      "gaming with friends",
+      "working out at the gym"
+    ],
+    "life_context": [
+      "student"
+    ],
+    "social_traits": [
+      "friends often joke that he flakes on plans because he naps",
+      "known for loving naps"
+    ]
+  },
+  "_vera_state": {
+    "work_mode": {
+      "checklist_items": [
+        {
+          "id": "1778401380369-q0l4nt",
+          "text": "",
+          "done": false,
+          "parent_id": null
+        }
+      ],
+      "completed_collapsed": false
+    }
+  }
+}

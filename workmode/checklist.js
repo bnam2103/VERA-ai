@@ -138,6 +138,7 @@
  *                              insertWorkChecklistEmptyOngoingAfter,
  *                              loadWorkChecklistItems,
  *                              persistWorkChecklistToggle,
+ *                              persistWorkChecklistToggleWithSubtree,
  *                              persistWorkChecklistUpdateText,
  *                              persistWorkChecklistRemove
  *    non-cancelable commit     NON_CANCELABLE_AFTER_COMMIT_ACTIONS,
@@ -193,6 +194,8 @@
 
 const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
 const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
+const WORK_CHECKLIST_PLACEHOLDER_LABEL = "List item";
+const WORK_CHECKLIST_UI_PLACEHOLDER_ID = "__vera_wm_checklist_placeholder__";
 let workChecklistSyncTimer = null;
 let workChecklistHydrationPromise = null;
 let workChecklistLocalMutationVersion = 0;
@@ -202,11 +205,82 @@ function markWorkChecklistLocalMutation() {
   workChecklistLocalMutationVersion += 1;
 }
 
+function normalizeChecklistRowText(text) {
+  return String(text || "").replace(/\r/g, " ").replace(/\n/g, " ").trim();
+}
+
+function isChecklistPlaceholderLabel(text) {
+  return normalizeChecklistRowText(text).toLowerCase() === WORK_CHECKLIST_PLACEHOLDER_LABEL.toLowerCase();
+}
+
+function isChecklistPlaceholderItem(item) {
+  if (!item || typeof item.text !== "string") return true;
+  const text = normalizeChecklistRowText(item.text);
+  if (!text) return true;
+  if (!Boolean(item.done) && isChecklistPlaceholderLabel(text)) return true;
+  return false;
+}
+
+function stripChecklistPlaceholdersForPersist(items) {
+  if (!Array.isArray(items)) return [];
+  return items.filter(
+    (row) =>
+      row &&
+      typeof row.text === "string" &&
+      String(row.id || "") !== WORK_CHECKLIST_UI_PLACEHOLDER_ID &&
+      !isChecklistPlaceholderItem(row)
+  );
+}
+
+function _persistChecklistItemsToStorage(items) {
+  const stripped = stripChecklistPlaceholdersForPersist(items);
+  markWorkChecklistLocalMutation();
+  localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+  queueWorkChecklistSyncToServer();
+  return stripped;
+}
+
+function sanitizeChecklistStorageInPlace() {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    if (!raw) return false;
+    const items = JSON.parse(raw);
+    if (!Array.isArray(items)) return false;
+    const stripped = stripChecklistPlaceholdersForPersist(items);
+    if (JSON.stringify(stripped) === JSON.stringify(items)) return false;
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+    queueWorkChecklistSyncToServer();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function commitWorkChecklistFromPlaceholderText(text) {
+  const normalized = normalizeChecklistRowText(text);
+  if (!normalized || isChecklistPlaceholderLabel(normalized)) return false;
+  const items = readChecklistItemsFromStorage();
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  items.push({ id, text: normalized, done: false, parent_id: null });
+  _persistChecklistItemsToStorage(items);
+  return true;
+}
+
+function focusWorkChecklistUiPlaceholder() {
+  const inp = document.querySelector(
+    `#vera-wm-checklist-ongoing li[data-id="${WORK_CHECKLIST_UI_PLACEHOLDER_ID}"] .vera-wm-checklist-task-input`
+  );
+  if (inp instanceof HTMLInputElement) {
+    inp.focus();
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+  }
+}
+
 function readChecklistItemsFromStorage() {
   try {
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return stripChecklistPlaceholdersForPersist(Array.isArray(parsed) ? parsed : []);
   } catch {
     return [];
   }
@@ -225,9 +299,10 @@ async function syncWorkChecklistToServerNow() {
   if (workChecklistSyncInFlight) return workChecklistSyncInFlight;
   workChecklistSyncInFlight = (async () => {
     try {
+      /* Session/voice-planner checklist (per tab session_id). Not account durable storage. */
       const items = readChecklistItemsFromStorage();
       const completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
-      await fetch(authApiUrl("/api/work-mode/checklist"), {
+      const sessionPut = authFetch(authApiUrl("/api/work-mode/checklist"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -235,7 +310,12 @@ async function syncWorkChecklistToServerNow() {
           items,
           completed_collapsed: completedCollapsed
         })
-      });
+      }).catch(() => {});
+      const supabasePut =
+        typeof syncWorkChecklistToSupabaseNow === "function"
+          ? syncWorkChecklistToSupabaseNow()
+          : Promise.resolve();
+      await Promise.allSettled([sessionPut, supabasePut]);
     } catch (_) {
       /* ignore */
     } finally {
@@ -257,18 +337,31 @@ async function flushWorkChecklistSyncBeforeCommand() {
 }
 
 async function hydrateWorkChecklistFromServer(force = false) {
+  if (
+    !force &&
+    typeof isSupabaseUserAuthenticated === "function" &&
+    isSupabaseUserAuthenticated()
+  ) {
+    return;
+  }
   if (!force && workChecklistHydrationPromise) return workChecklistHydrationPromise;
   const startVersion = workChecklistLocalMutationVersion;
   workChecklistHydrationPromise = (async () => {
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `${authApiUrl("/api/work-mode/checklist")}?session_id=${encodeURIComponent(getSessionId())}`,
         { method: "GET" }
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(data.items)) return;
       if (!force && startVersion !== workChecklistLocalMutationVersion) return;
-      localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(data.items));
+      if (data.items.length === 0) {
+        const local = readChecklistItemsFromStorage();
+        const hasStoredContent = local.some((item) => !isChecklistPlaceholderItem(item));
+        if (hasStoredContent) return;
+      }
+      const hydrated = stripChecklistPlaceholdersForPersist(data.items);
+      localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(hydrated));
       if (typeof data.completed_collapsed === "boolean") {
         localStorage.setItem(
           WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
@@ -698,9 +791,7 @@ function readChecklistItemsFromStorageSafe() {
 
 function writeChecklistItemsToStorageSafe(items) {
   try {
-    markWorkChecklistLocalMutation();
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
     return true;
   } catch {
     return false;
@@ -771,17 +862,21 @@ function persistWorkChecklistOrderFromDom() {
   const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
   const completedUl = document.getElementById("vera-wm-checklist-completed");
   if (!ongoingUl || !completedUl) return;
-  const ongoingIds = [...ongoingUl.querySelectorAll(":scope > li")].map((el) => el.dataset.id).filter(Boolean);
+  const ongoingIds = [...ongoingUl.querySelectorAll(":scope > li")]
+    .map((el) => el.dataset.id)
+    .filter((id) => id && id !== WORK_CHECKLIST_UI_PLACEHOLDER_ID);
   const completedIds = [...completedUl.querySelectorAll(":scope > li")].map((el) => el.dataset.id).filter(Boolean);
   try {
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     const map = new Map(items.map((x) => [String(x.id), x]));
-    const next = [...ongoingIds, ...completedIds].map((id) => map.get(id)).filter(Boolean);
-    if (next.length !== items.length) return;
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(next));
-    queueWorkChecklistSyncToServer();
+    const persisted = stripChecklistPlaceholdersForPersist(items);
+    const next = stripChecklistPlaceholdersForPersist(
+      [...ongoingIds, ...completedIds].map((id) => map.get(id)).filter(Boolean)
+    );
+    if (next.length !== persisted.length) return;
+    _persistChecklistItemsToStorage(next);
   } catch (_) {}
 }
 
@@ -846,99 +941,119 @@ function ensureWorkChecklistListDnD() {
  * stays the trailing “new item” slot, not a stray row above completed tasks.
  */
 function normalizeWorkChecklistLeadingPlaceholderInStorage() {
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items) || items.length < 2) return false;
-    const first = items[0];
-    if (!first || typeof first.text !== "string" || Boolean(first.done)) return false;
-    if (String(first.text).trim() !== "") return false;
-    if (!items.slice(1).some((x) => x && Boolean(x.done))) return false;
-    const [head, ...rest] = items;
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify([...rest, head]));
-    queueWorkChecklistSyncToServer();
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return sanitizeChecklistStorageInPlace();
 }
 
-/** Drops empty ongoing rows except the bottom-most one (storage order among !done items). */
+/** Drops empty / placeholder ongoing rows from persisted storage. */
 function pruneInteriorEmptyOngoingItems() {
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
-    const valid = (x) => x && typeof x.text === "string";
-    const ongoingIndices = [];
-    for (let i = 0; i < items.length; i += 1) {
-      if (valid(items[i]) && !Boolean(items[i].done)) ongoingIndices.push(i);
-    }
-    if (ongoingIndices.length <= 1) return false;
-    const toRemove = [];
-    for (let j = 0; j < ongoingIndices.length - 1; j += 1) {
-      const i = ongoingIndices[j];
-      if (String(items[i].text).trim() === "") toRemove.push(i);
-    }
-    if (toRemove.length === 0) return false;
-    toRemove.sort((a, b) => b - a);
-    for (const i of toRemove) items.splice(i, 1);
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return sanitizeChecklistStorageInPlace();
 }
 
-/** Ensures the last ongoing row is always an empty slot for new text (no separate “+” row). */
+/** UI-only trailing row is appended in loadWorkChecklistItems; storage stays real-items-only. */
 function ensureWorkChecklistTrailingEmptyOngoing() {
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
-    const valid = (x) => x && typeof x.text === "string";
-    let lastOngoingIndex = -1;
-    for (let i = 0; i < items.length; i += 1) {
-      if (valid(items[i]) && !Boolean(items[i].done)) lastOngoingIndex = i;
-    }
-    const lastOngoing = lastOngoingIndex >= 0 ? items[lastOngoingIndex] : null;
-    const needNew =
-      lastOngoingIndex < 0 || !lastOngoing || String(lastOngoing.text).trim() !== "";
-    if (!needNew) return false;
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    /* When there are no ongoing rows yet, append at list end — never splice(0,0) or the empty slot sits above completed items in storage order. */
-    if (lastOngoingIndex < 0) {
-      items.push({ id, text: "", done: false, parent_id: null });
-    } else {
-      items.splice(lastOngoingIndex + 1, 0, { id, text: "", done: false, parent_id: null });
-    }
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return sanitizeChecklistStorageInPlace();
 }
 
-/** Insert a new empty ongoing row immediately after the given ongoing item (by storage order). */
+/** @deprecated Mid-list empties are no longer persisted; Enter focuses the trailing placeholder. */
 function insertWorkChecklistEmptyOngoingAfter(afterId) {
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
-    const idx = items.findIndex((x) => x && String(x.id) === String(afterId));
-    if (idx < 0) return null;
-    const row = items[idx];
-    if (!row || typeof row.text !== "string" || Boolean(row.done)) return null;
-    const nid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    items.splice(idx + 1, 0, { id: nid, text: "", done: false, parent_id: null });
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
-    return nid;
-  } catch (_) {
-    return null;
-  }
+  void afterId;
+  focusWorkChecklistUiPlaceholder();
+  return WORK_CHECKLIST_UI_PLACEHOLDER_ID;
+}
+
+function appendWorkChecklistUiPlaceholderRow(ongoingUl) {
+  if (!ongoingUl) return;
+  ongoingUl.querySelector(`:scope > li[data-id="${WORK_CHECKLIST_UI_PLACEHOLDER_ID}"]`)?.remove();
+
+  const id = WORK_CHECKLIST_UI_PLACEHOLDER_ID;
+  const li = document.createElement("li");
+  li.className = "vera-wm-checklist-li vera-wm-checklist-li--placeholder";
+  li.dataset.id = id;
+  li.style.setProperty("--checklist-depth", "0");
+  li.draggable = false;
+
+  const handle = createWorkChecklistDragHandle();
+  handle.draggable = false;
+  handle.setAttribute("aria-hidden", "true");
+  handle.style.visibility = "hidden";
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "vera-wm-checklist-cb";
+  cb.checked = false;
+  cb.disabled = true;
+  cb.tabIndex = -1;
+  cb.setAttribute("aria-hidden", "true");
+
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.className = "vera-wm-checklist-task-input";
+  inp.placeholder = WORK_CHECKLIST_PLACEHOLDER_LABEL;
+  inp.value = "";
+  inp.maxLength = 200;
+  inp.autocomplete = "off";
+  inp.draggable = false;
+
+  const actions = document.createElement("div");
+  actions.className = "vera-wm-checklist-li-actions";
+  const btnDel = document.createElement("button");
+  btnDel.type = "button";
+  btnDel.className = "vera-wm-checklist-action vera-wm-checklist-action-del";
+  btnDel.textContent = "✕";
+  btnDel.setAttribute("aria-label", "Clear new item");
+  btnDel.title = "Clear";
+  btnDel.addEventListener("click", () => {
+    inp.value = "";
+    inp.focus();
+  });
+  actions.appendChild(btnDel);
+
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      const inputs = [...ongoingUl.querySelectorAll(".vera-wm-checklist-task-input")];
+      const rowIdx = inputs.indexOf(inp);
+      if (rowIdx < 0) return;
+      const len = inp.value.length;
+      const sel0 = inp.selectionStart ?? 0;
+      const sel1 = inp.selectionEnd ?? 0;
+      if (e.key === "ArrowDown") {
+        if (sel0 !== len || sel1 !== len) return;
+        return;
+      }
+      if (sel0 !== 0 || sel1 !== 0) return;
+      const prev = inputs[rowIdx - 1];
+      if (prev instanceof HTMLInputElement) {
+        e.preventDefault();
+        prev.focus();
+        const pl = prev.value.length;
+        prev.setSelectionRange(pl, pl);
+      }
+      return;
+    }
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    if (commitWorkChecklistFromPlaceholderText(inp.value)) {
+      inp.value = "";
+      loadWorkChecklistItems();
+      focusWorkChecklistUiPlaceholder();
+    }
+  });
+
+  inp.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      if (!li.isConnected) return;
+      if (commitWorkChecklistFromPlaceholderText(inp.value)) {
+        inp.value = "";
+        loadWorkChecklistItems();
+      }
+    }, 0);
+  });
+
+  li.appendChild(handle);
+  li.appendChild(cb);
+  li.appendChild(inp);
+  li.appendChild(actions);
+  ongoingUl.appendChild(li);
 }
 
 function loadWorkChecklistItems() {
@@ -946,21 +1061,8 @@ function loadWorkChecklistItems() {
   const completedUl = document.getElementById("vera-wm-checklist-completed");
   if (!ongoingUl || !completedUl) return;
   ensureWorkChecklistListDnD();
-  normalizeWorkChecklistLeadingPlaceholderInStorage();
-  /* Do not call pruneInteriorEmptyOngoingItems on load — it would remove intentional mid-list empties from Enter. */
-  let guard = 0;
-  while (ensureWorkChecklistTrailingEmptyOngoing()) {
-    guard += 1;
-    if (guard > 10) break;
-  }
-  let items = [];
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    if (raw) items = JSON.parse(raw);
-    if (!Array.isArray(items)) items = [];
-  } catch {
-    items = [];
-  }
+  sanitizeChecklistStorageInPlace();
+  let items = readChecklistItemsFromStorage();
   const idMap = new Map(items.map((x) => [String(x?.id || ""), x]));
   const depthCache = new Map();
   const getDepth = (id) => {
@@ -986,6 +1088,8 @@ function loadWorkChecklistItems() {
   completedUl.replaceChildren();
   items.forEach((it) => {
     if (!it || typeof it.text !== "string") return;
+    if (isChecklistPlaceholderItem(it)) return;
+    if (String(it.id || "") === WORK_CHECKLIST_UI_PLACEHOLDER_ID) return;
     const id = String(it.id || "");
     const li = document.createElement("li");
     li.className = "vera-wm-checklist-li";
@@ -1054,6 +1158,13 @@ function loadWorkChecklistItems() {
         typeof window.matchMedia === "function" &&
         window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+      /* 2026-06-01 — manual checkbox cascade. When the user clicks the
+         checkbox for a TOP-LEVEL item, the whole subtree (parent + every
+         sub-item) must toggle in lockstep so a partially-checked group is
+         never visually orphaned in the opposite list. Sub-item clicks stay
+         single-row so the user can still check off individual substeps.
+         Voice/text "mark first item complete" continues to flow through
+         the backend executor's cascade and is unaffected by this change. */
       if (wantDone && !it.done) {
         const textInp = li.querySelector(".vera-wm-checklist-task-input");
         const t = textInp instanceof HTMLInputElement ? textInp.value : it.text;
@@ -1064,7 +1175,7 @@ function loadWorkChecklistItems() {
         if (textInp instanceof HTMLInputElement) persistWorkChecklistUpdateText(id, textInp.value);
 
         if (reduceMotion) {
-          persistWorkChecklistToggle(id, true);
+          persistWorkChecklistToggleWithSubtree(id, true);
           loadWorkChecklistItems();
           return;
         }
@@ -1076,7 +1187,7 @@ function loadWorkChecklistItems() {
           finished = true;
           window.clearTimeout(fallbackTimer);
           li.removeEventListener("transitionend", onTransitionEnd);
-          persistWorkChecklistToggle(id, true);
+          persistWorkChecklistToggleWithSubtree(id, true);
           loadWorkChecklistItems();
           queueWorkChecklistRowEnterAnimation("vera-wm-checklist-completed", id);
         };
@@ -1092,7 +1203,7 @@ function loadWorkChecklistItems() {
 
       if (!wantDone && it.done) {
         if (reduceMotion) {
-          persistWorkChecklistToggle(id, false);
+          persistWorkChecklistToggleWithSubtree(id, false);
           loadWorkChecklistItems();
           return;
         }
@@ -1104,7 +1215,7 @@ function loadWorkChecklistItems() {
           finished = true;
           window.clearTimeout(fallbackTimer);
           li.removeEventListener("transitionend", onTransitionEnd);
-          persistWorkChecklistToggle(id, false);
+          persistWorkChecklistToggleWithSubtree(id, false);
           loadWorkChecklistItems();
           queueWorkChecklistRowEnterAnimation("vera-wm-checklist-ongoing", id);
         };
@@ -1118,7 +1229,7 @@ function loadWorkChecklistItems() {
         return;
       }
 
-      persistWorkChecklistToggle(id, wantDone);
+      persistWorkChecklistToggleWithSubtree(id, wantDone);
       loadWorkChecklistItems();
     });
 
@@ -1172,18 +1283,8 @@ function loadWorkChecklistItems() {
         if (e.key !== "Enter" || e.shiftKey) return;
         e.preventDefault();
         persistWorkChecklistUpdateText(id, inp.value);
-        const newId = insertWorkChecklistEmptyOngoingAfter(id);
         loadWorkChecklistItems();
-        window.requestAnimationFrame(() => {
-          window.requestAnimationFrame(() => {
-            const ul = document.getElementById("vera-wm-checklist-ongoing");
-            const sel = newId
-              ? `li[data-id="${newId}"] .vera-wm-checklist-task-input`
-              : "li:last-child .vera-wm-checklist-task-input";
-            const nextInp = ul?.querySelector(sel);
-            if (nextInp instanceof HTMLInputElement) nextInp.focus();
-          });
-        });
+        focusWorkChecklistUiPlaceholder();
       });
       inp.addEventListener("blur", () => {
         window.setTimeout(() => {
@@ -1193,21 +1294,8 @@ function loadWorkChecklistItems() {
             return;
           }
           persistWorkChecklistUpdateText(id, inp.value);
-          /* replaceChildren (e.g. after Enter) detaches this row; blur still fires — do not treat as “abandon middle empty”. */
           if (!li.isConnected) return;
-          const ul = document.getElementById("vera-wm-checklist-ongoing");
-          const siblings = ul ? [...ul.querySelectorAll(":scope > li")] : [];
-          const rowIdx = siblings.indexOf(li);
-          if (rowIdx < 0) return;
-          const isLastOngoing = rowIdx === siblings.length - 1;
-          let removedMiddle = false;
-          if (!inp.value.trim() && !isLastOngoing) {
-            persistWorkChecklistRemove(id);
-            removedMiddle = true;
-          }
-          /* Do not prune all interior empties on every blur — that removed a new Enter row when focus moved to another item. */
-          const ensured = ensureWorkChecklistTrailingEmptyOngoing();
-          if (removedMiddle || ensured) loadWorkChecklistItems();
+          loadWorkChecklistItems();
         }, 0);
       });
       li.appendChild(handle);
@@ -1217,6 +1305,8 @@ function loadWorkChecklistItems() {
     }
     (it.done ? completedUl : ongoingUl).appendChild(li);
   });
+
+  appendWorkChecklistUiPlaceholderRow(ongoingUl);
 
   const pane = document.getElementById("vera-wm-checklist-pane");
   const completedSection = document.getElementById("vera-wm-checklist-completed-section");
@@ -1251,30 +1341,93 @@ function persistWorkChecklistToggle(id, done) {
     items = items.map((x) =>
       String(x.id) === id ? { ...x, done: Boolean(done) } : x
     );
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
+  } catch (_) {}
+}
+
+/**
+ * Cascade variant of ``persistWorkChecklistToggle`` for manual checkbox
+ * clicks in the UI.
+ *
+ * Behavior (2026-06-01 patch):
+ *   - If the clicked item is a TOP-LEVEL row (no ``parent_id``), toggle the
+ *     parent AND every descendant under it. This matches the user's mental
+ *     model that "Apply to internships" includes its substeps; checking the
+ *     parent should not leave the substeps in a half-checked state.
+ *   - If the clicked item is a SUB-ITEM, toggle only that row — substeps
+ *     are still independently checkable so the user can mark one step done
+ *     without consuming the whole group.
+ *
+ * Sub-items are gathered by walking the ``parent_id`` graph (BFS) so deeper
+ * grandchildren (today the depth cap is 1, but the data model allows more)
+ * would also cascade correctly if the indent rules ever loosen. The bare
+ * ``persistWorkChecklistToggle`` is deliberately left untouched so external
+ * callers (server sync, voice/text action executor, debug tools) continue
+ * to operate on a single row — the voice/text "remove/complete the first
+ * item" path already cascades inside ``apply_checklist_action`` on the
+ * backend, so cascading here only changes the UI checkbox click path.
+ */
+function persistWorkChecklistToggleWithSubtree(id, done) {
+  try {
+    const sid = String(id || "");
+    if (!sid) return;
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    let items = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(items)) items = [];
+
+    const target = items.find((x) => String(x?.id || "") === sid);
+    const wantDone = Boolean(done);
+
+    // Default: toggle just the clicked row. For a top-level parent we
+    // also gather every descendant under it; sub-items stay single-row.
+    const idsToToggle = new Set([sid]);
+    const isTopLevel = !target || !target.parent_id;
+    if (isTopLevel) {
+      const queue = [sid];
+      let guard = 0;
+      while (queue.length && guard < 5000) {
+        guard += 1;
+        const cur = queue.shift();
+        for (const it of items) {
+          const childId = String(it?.id || "");
+          if (!childId || idsToToggle.has(childId)) continue;
+          if (String(it?.parent_id || "") === cur) {
+            idsToToggle.add(childId);
+            queue.push(childId);
+          }
+        }
+      }
+    }
+
+    items = items.map((x) =>
+      idsToToggle.has(String(x?.id || "")) ? { ...x, done: wantDone } : x
+    );
+    _persistChecklistItemsToStorage(items);
   } catch (_) {}
 }
 
 function persistWorkChecklistUpdateText(id, text) {
   try {
+    if (String(id) === WORK_CHECKLIST_UI_PLACEHOLDER_ID) {
+      if (commitWorkChecklistFromPlaceholderText(text)) loadWorkChecklistItems();
+      return;
+    }
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     items = items.map((x) => (String(x.id) === id ? { ...x, text: String(text) } : x));
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
   } catch (_) {}
 }
 
 function persistWorkChecklistRemove(id) {
   try {
+    if (String(id) === WORK_CHECKLIST_UI_PLACEHOLDER_ID) return;
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     items = items.filter((x) => String(x.id) !== id);
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
   } catch (_) {}
 }
 
@@ -2125,9 +2278,7 @@ function applyWorkChecklistSyncPreview() {
     return false;
   }
   try {
-    markWorkChecklistLocalMutation();
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
     loadWorkChecklistItems();
     hideWorkChecklistSyncPreview();
     workChecklistSyncConsumedPlanVersion = workChecklistSyncPlanVersion;
@@ -2180,9 +2331,7 @@ function eraseEntireWorkChecklist() {
   );
   if (!ok) return;
   try {
-    markWorkChecklistLocalMutation();
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify([]));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage([]);
     hideWorkChecklistSyncPreview();
     loadWorkChecklistItems();
     flashWorkChecklistPlanHint("Checklist cleared.");
@@ -2484,6 +2633,311 @@ function getChecklistDebugState() {
   };
 }
 
+/* =========================
+   SUPABASE ACCOUNT CHECKLIST SYNC (Phase 4b + 4c hardening)
+   Canonical copy — also mirrored in users/checklistSupabaseSync.js for smoke tests.
+
+   API split:
+     /api/work-mode/checklist — session-scoped; voice planner compatibility.
+     /api/checklist           — Supabase account persistence (durable source of truth when logged in).
+========================= */
+
+console.info("[checklist_supabase_sync_loaded]");
+
+const WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY = "vera_wm_checklist_supabase_unsynced_v1";
+const WORK_CHECKLIST_SB_RETRY_INTERVAL_MS = 45000;
+let _checklistSbHydratePromise = null;
+let _checklistSbSaveInFlight = null;
+let _checklistSbRetryInFlight = false;
+let _checklistSbRetryTimer = null;
+let _checklistSbSyncStatus = "synced";
+
+function _checklistSbIsLoggedIn() {
+  return (
+    typeof isSupabaseUserAuthenticated === "function" &&
+    isSupabaseUserAuthenticated()
+  );
+}
+
+async function _checklistSbAwaitAuthToken(maxWaitMs = 4000) {
+  if (typeof getSupabaseAccessToken !== "function") return null;
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const token = await getSupabaseAccessToken();
+    if (token) return token;
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+  return null;
+}
+
+function _readLocalChecklistBundleForSupabase() {
+  return {
+    items: readChecklistItemsFromStorage(),
+    completed_collapsed: localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1",
+  };
+}
+
+function _checklistSbCanRetry() {
+  if (!_checklistSbIsLoggedIn()) return false;
+  if (!_checklistSbIsOnline()) return false;
+  if (!isWorkChecklistSupabaseUnsynced()) return false;
+  return true;
+}
+
+async function retryChecklistSupabaseSyncIfUnsynced(reason) {
+  if (!_checklistSbCanRetry()) return false;
+  if (_checklistSbRetryInFlight || _checklistSbSaveInFlight) return false;
+
+  _checklistSbRetryInFlight = true;
+  _setChecklistSupabaseSyncStatus("retrying");
+  const debug = _checklistSbSyncDebugCounts();
+  console.info("[checklist_retry]", {
+    reason: reason || "unknown",
+    ...debug,
+  });
+
+  try {
+    const ok = await syncWorkChecklistToSupabaseNow();
+    if (ok) {
+      _setChecklistSupabaseSyncStatus("synced");
+      console.info("[checklist_retry]", {
+        reason: reason || "unknown",
+        outcome: "success",
+        ..._checklistSbSyncDebugCounts(),
+      });
+    } else {
+      _setChecklistSupabaseSyncStatus("failed");
+      console.info("[checklist_retry]", {
+        reason: reason || "unknown",
+        outcome: "failed",
+        ..._checklistSbSyncDebugCounts(),
+      });
+    }
+    return ok;
+  } finally {
+    _checklistSbRetryInFlight = false;
+  }
+}
+
+function wireChecklistSupabaseRetryListeners() {
+  if (typeof window === "undefined" || window.__veraChecklistSbRetryWired) return;
+  window.__veraChecklistSbRetryWired = true;
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    void retryChecklistSupabaseSyncIfUnsynced("visibility");
+  });
+
+  window.addEventListener("online", () => {
+    void retryChecklistSupabaseSyncIfUnsynced("online");
+  });
+
+  if (_checklistSbRetryTimer) window.clearInterval(_checklistSbRetryTimer);
+  _checklistSbRetryTimer = window.setInterval(() => {
+    void retryChecklistSupabaseSyncIfUnsynced("interval");
+  }, WORK_CHECKLIST_SB_RETRY_INTERVAL_MS);
+}
+
+function _checklistSbAuthPresent() {
+  return Boolean(
+    typeof getSupabaseAccessToken === "function" && _checklistSbIsLoggedIn()
+  );
+}
+
+function _checklistSbIsOnline() {
+  return typeof navigator === "undefined" || navigator.onLine !== false;
+}
+
+function _checklistSbSyncDebugCounts() {
+  const bundle = _readLocalChecklistBundleForSupabase();
+  return {
+    local_count: bundle.items.length,
+    unsynced: isWorkChecklistSupabaseUnsynced(),
+    auth_present: _checklistSbAuthPresent(),
+    status: _checklistSbSyncStatus,
+  };
+}
+
+function _setChecklistSupabaseSyncStatus(status) {
+  _checklistSbSyncStatus = status;
+  const el = document.getElementById("vera-checklist-sync-status");
+  if (!(el instanceof HTMLElement)) return;
+  if (!_checklistSbIsLoggedIn()) {
+    el.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  const labels = {
+    synced: "Checklist: synced to account",
+    unsynced: "Checklist: not synced — will retry",
+    retrying: "Checklist: syncing…",
+    failed: "Checklist: sync failed — will retry",
+  };
+  const text = labels[status] || labels.unsynced;
+  el.textContent = text;
+  el.hidden = false;
+  el.dataset.syncState = status;
+}
+
+function _markChecklistSupabaseUnsynced(unsynced) {
+  try {
+    if (unsynced) localStorage.setItem(WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY, "1");
+    else localStorage.removeItem(WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY);
+  } catch (_) {}
+  _setChecklistSupabaseSyncStatus(unsynced ? "unsynced" : "synced");
+}
+
+function isWorkChecklistSupabaseUnsynced() {
+  try {
+    return localStorage.getItem(WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function _applyChecklistBundleToLocalForSupabase(items, completed_collapsed) {
+  const rows = stripChecklistPlaceholdersForPersist(Array.isArray(items) ? items : []);
+  console.info("[checklist_apply_local]", { item_count: rows.length });
+  try {
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(rows));
+    if (typeof completed_collapsed === "boolean") {
+      localStorage.setItem(
+        WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
+        completed_collapsed ? "1" : "0"
+      );
+    }
+  } catch (_) {
+    return false;
+  }
+  loadWorkChecklistItems();
+  applyWorkChecklistCompletedCollapseFromStorage();
+  return true;
+}
+
+async function syncWorkChecklistToSupabaseNow() {
+  if (!_checklistSbIsLoggedIn()) return false;
+  if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
+
+  const token = await _checklistSbAwaitAuthToken();
+  if (!token) {
+    console.warn("[VERA][CHECKLIST] supabase PUT skipped — no auth token");
+    _markChecklistSupabaseUnsynced(true);
+    return false;
+  }
+
+  const bundle = _readLocalChecklistBundleForSupabase();
+  const run = async () => {
+    try {
+      const res = await authFetch(authApiUrl("/api/checklist"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(bundle),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.warn("[VERA][CHECKLIST] supabase PUT failed", data);
+        _markChecklistSupabaseUnsynced(true);
+        return false;
+      }
+      console.info("[checklist_put]", {
+        item_count: bundle.items.length,
+        saved_count: data.items_count,
+        unsynced: false,
+        auth_present: true,
+      });
+      _markChecklistSupabaseUnsynced(false);
+      return true;
+    } catch (err) {
+      console.warn("[VERA][CHECKLIST] supabase PUT error", err);
+      _markChecklistSupabaseUnsynced(true);
+      return false;
+    }
+  };
+
+  if (_checklistSbSaveInFlight) {
+    _checklistSbSaveInFlight = _checklistSbSaveInFlight.then(run, run);
+  } else {
+    _checklistSbSaveInFlight = run();
+  }
+  try {
+    return await _checklistSbSaveInFlight;
+  } finally {
+    _checklistSbSaveInFlight = null;
+  }
+}
+
+async function hydrateChecklistMergeOnLogin() {
+  if (!_checklistSbIsLoggedIn()) return false;
+  if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
+  if (_checklistSbHydratePromise) return _checklistSbHydratePromise;
+
+  _checklistSbHydratePromise = (async () => {
+    try {
+      const token = await _checklistSbAwaitAuthToken();
+      if (!token) {
+        console.warn("[VERA][CHECKLIST] merge hydrate skipped — no auth token");
+        return false;
+      }
+
+      const local = _readLocalChecklistBundleForSupabase();
+      console.info("[checklist_hydrate]", {
+        phase: "request",
+        local_count: local.items.length,
+      });
+
+      const res = await authFetch(authApiUrl("/api/checklist/merge"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(local),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.warn("[VERA][CHECKLIST] merge hydrate failed", data);
+        return false;
+      }
+
+      const appliedCount = Array.isArray(data.items) ? data.items.length : 0;
+      console.info("[checklist_hydrate]", {
+        phase: "response",
+        local_count: local.items.length,
+        remote_count: Number(data.remote_count) || 0,
+        applied_count: appliedCount,
+        unsynced: false,
+        auth_present: true,
+      });
+
+      if (Array.isArray(data.items)) {
+        _applyChecklistBundleToLocalForSupabase(data.items, data.completed_collapsed);
+      }
+      _markChecklistSupabaseUnsynced(false);
+      queueWorkChecklistSyncToServer();
+      return true;
+    } catch (err) {
+      console.warn("[VERA][CHECKLIST] merge hydrate error", err);
+      return false;
+    } finally {
+      _checklistSbHydratePromise = null;
+    }
+  })();
+
+  return _checklistSbHydratePromise;
+}
+
+wireChecklistSupabaseRetryListeners();
+
 try {
   window.getChecklistDebugState = getChecklistDebugState;
+  window.syncWorkChecklistToSupabaseNow = syncWorkChecklistToSupabaseNow;
+  window.hydrateChecklistMergeOnLogin = hydrateChecklistMergeOnLogin;
+  window.retryChecklistSupabaseSyncIfUnsynced = retryChecklistSupabaseSyncIfUnsynced;
+  window.isWorkChecklistSupabaseUnsynced = isWorkChecklistSupabaseUnsynced;
+  window.wireChecklistSupabaseRetryListeners = wireChecklistSupabaseRetryListeners;
+  if (isWorkChecklistSupabaseUnsynced()) {
+    _setChecklistSupabaseSyncStatus("unsynced");
+  }
+  console.info("[checklist_supabase_sync_ready]", {
+    hydrate: typeof window.hydrateChecklistMergeOnLogin,
+    put: typeof window.syncWorkChecklistToSupabaseNow,
+    retry: typeof window.retryChecklistSupabaseSyncIfUnsynced,
+  });
 } catch (_) {}

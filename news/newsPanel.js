@@ -303,11 +303,27 @@ function renderMediaTabsPanel(payload) {
     delete sidePaneEl.dataset.sidePaneKind;
     document.body.classList.add("news-panel-open");
 
+    // 2026-05-30: panel title is now sport-aware. The backend stamps
+    // `result_kind` on sports/tournament payloads so we render "Sports Results"
+    // or "Tournament Results" instead of the legacy "News Results"/"Search Results".
+    const _resultKind = String(payload?.result_kind || "").toLowerCase();
+    let _panelTitle = payload?.title;
+    if (!_panelTitle) {
+      if (_resultKind === "tournament") _panelTitle = "Tournament Results";
+      else if (_resultKind === "sports") _panelTitle = "Sports Results";
+      else _panelTitle = "News Results";
+    }
+    let _panelSubtitle = payload?.query;
+    if (!_panelSubtitle) {
+      if (_resultKind === "tournament") _panelSubtitle = "Tournament status";
+      else if (_resultKind === "sports") _panelSubtitle = "Latest result";
+      else _panelSubtitle = "Top headlines";
+    }
     sidePaneEl.innerHTML = `
     <div class="side-pane-header">
       <div class="side-pane-heading">
-        <h3 class="side-pane-title">${escapeHtml(payload?.title || "News Results")}</h3>
-        <div class="side-pane-subtitle">${escapeHtml(payload?.query || "Top headlines")}</div>
+        <h3 class="side-pane-title">${escapeHtml(_panelTitle)}</h3>
+        <div class="side-pane-subtitle">${escapeHtml(_panelSubtitle)}</div>
       </div>
       <div class="side-pane-controls">
         <div class="side-pane-tabs" role="tablist" aria-label="Search result tabs">
@@ -352,6 +368,337 @@ function renderMediaTabsPanel(payload) {
     : mount;
   runFlowModeSidePaneContentCrossfade(sidePaneEl, _veraDbgWrappedMount);
 }
+
+/* =========================
+   2026-05-28 — product & location panel renderers (additive).
+   Same `side-pane-*` markup family as renderMediaTabsPanel so the existing
+   close button, Work Mode lock predicate, and crossfade work unchanged.
+========================= */
+
+/* 2026-05-28 — panel stale-payload guard.
+ * Backend stamps request_id + created_at_ms + query on every product/location
+ * panel payload. If an older payload arrives after a newer render (slow
+ * network / duplicate NDJSON finalize), we discard it so "best webcam" cards
+ * never linger when the user already asked for "best mic". */
+const _veraPanelRenderState = {
+  product: { lastRequestId: "", lastQuery: "", lastCreatedAtMs: 0 },
+  location: { lastRequestId: "", lastQuery: "", lastCreatedAtMs: 0 },
+};
+
+function veraPanelPayloadIsStale(payload, kind) {
+  if (!payload || !kind) return false;
+  const st = _veraPanelRenderState[kind];
+  if (!st) return false;
+  const rid = String(payload.request_id || "").trim();
+  const query = String(payload.query || "").trim();
+  const at = Number(payload.created_at_ms || 0);
+  if (at > 0 && st.lastCreatedAtMs > 0 && at < st.lastCreatedAtMs) {
+    console.info("[panel_stale]", {
+      kind,
+      stale_panel_payload_discarded: true,
+      reason: "older_created_at_ms",
+      panel_payload_request_id: rid,
+      panel_query: query,
+      user_query: query,
+    });
+    return true;
+  }
+  if (
+    rid &&
+    rid !== "req_unknown" &&
+    st.lastRequestId === rid &&
+    query === st.lastQuery &&
+    at > 0 &&
+    at <= st.lastCreatedAtMs
+  ) {
+    console.info("[panel_stale]", {
+      kind,
+      stale_panel_payload_discarded: true,
+      reason: "duplicate_request_id_and_query",
+      panel_payload_request_id: rid,
+      panel_query: query,
+    });
+    return true;
+  }
+  return false;
+}
+
+function veraMarkPanelPayloadRendered(payload, kind) {
+  const st = _veraPanelRenderState[kind];
+  if (!st || !payload) return;
+  const rid = String(payload.request_id || "").trim();
+  const query = String(payload.query || "").trim();
+  const at = Number(payload.created_at_ms || 0);
+  st.lastRequestId = rid;
+  st.lastQuery = query;
+  if (at > 0) {
+    st.lastCreatedAtMs = Math.max(st.lastCreatedAtMs, at);
+  }
+}
+
+/* 2026-05-28 — product card layout normalization.
+ * - Hard-cap the visible rank to 3 (backend already trims, but defend
+ *   against payload drift during streaming).
+ * - Always render a fixed-ratio image container so a tall mic photo and a
+ *   wide webcam photo line up in the same grid row. Image uses
+ *   object-fit: contain (CSS) so logos / cropped shots aren't squashed.
+ * - Show a placeholder square when the Serper card has no imageUrl
+ *   instead of letting the card collapse.
+ * - Stamp a rank badge ("Best overall" / "Best value" / "Alternative")
+ *   from `payload.rank_labels` or `item.rank_label`; falls back to the
+ *   index if neither is present. */
+const PRODUCT_RANK_BADGE_FALLBACK = ["Best overall", "Best value", "Alternative"];
+const PRODUCT_VISIBLE_LIMIT = 3;
+
+function renderProductResultListMarkup(products, payloadHints) {
+  if (!Array.isArray(products) || !products.length) {
+    return `<div class="side-pane-empty">No product results came back from the search.</div>`;
+  }
+  const rankLabels = Array.isArray(payloadHints?.rank_labels)
+    ? payloadHints.rank_labels
+    : PRODUCT_RANK_BADGE_FALLBACK;
+  const visible = products.slice(0, PRODUCT_VISIBLE_LIMIT);
+  return `
+    <div class="news-result-list product-result-list">
+      ${visible.map((item, index) => {
+        const img = (item.image_url || "").trim();
+        const price = (item.price || "").trim();
+        const rating = (item.rating || "").trim();
+        const source = (item.source || "Unknown source").trim();
+        const summary = (item.summary || "").trim();
+        const url = (item.url || "").trim();
+        const rankLabel = (item.rank_label || rankLabels[index] || `#${index + 1}`).trim();
+        const rankClass = `product-rank-badge product-rank-${index + 1}`;
+        return `
+          <article class="news-result-card product-result-card">
+            <div class="${rankClass}">${escapeHtml(rankLabel)}</div>
+            <div class="product-image-wrap">
+              ${img ? `
+                <img
+                  class="product-image"
+                  src="${escapeHtml(img)}"
+                  alt="${escapeHtml(item.title || "Product image")}"
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'product-image-placeholder',textContent:'No image'}))"
+                />
+              ` : `
+                <div class="product-image-placeholder">No image</div>
+              `}
+            </div>
+            <h4 class="news-result-title product-result-title">${escapeHtml(item.title || "Product")}</h4>
+            <div class="product-result-meta-row">
+              ${price ? `<span class="product-result-price">${escapeHtml(price)}</span>` : ""}
+              ${rating ? `<span class="product-result-rating">★ ${escapeHtml(rating)}</span>` : ""}
+            </div>
+            ${summary ? `<p class="news-result-snippet">${escapeHtml(summary)}</p>` : ""}
+            <div class="news-result-meta">
+              <span>${escapeHtml(source)}</span>
+            </div>
+            ${url ? `<a class="news-result-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open product</a>` : ""}
+          </article>
+        `;
+      }).join("")}
+      ${
+        products.length > PRODUCT_VISIBLE_LIMIT || (payloadHints?.extras_count || 0) > 0
+          ? `<div class="product-result-extras-note">
+               ${escapeHtml(
+                 String(
+                   Math.max(
+                     products.length - PRODUCT_VISIBLE_LIMIT,
+                     Number(payloadHints?.extras_count || 0),
+                   )
+                 )
+               )} more results not shown
+             </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function renderProductResultsPanel(payload) {
+  const sidePaneEl = uiEl("side-pane");
+  if (!sidePaneEl) return;
+  if (veraPanelPayloadIsStale(payload, "product")) return;
+
+  const mount = () => {
+    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+
+    const products = Array.isArray(payload?.canonical_products)
+      ? payload.canonical_products
+      : Array.isArray(payload?.products)
+        ? payload.products
+        : [];
+
+    sidePaneEl.hidden = false;
+    delete sidePaneEl.dataset.sidePaneKind;
+    document.body.classList.add("news-panel-open");
+
+    sidePaneEl.innerHTML = `
+    <div class="side-pane-header">
+      <div class="side-pane-heading">
+        <h3 class="side-pane-title">${escapeHtml(payload?.title || "Shopping Results")}</h3>
+        <div class="side-pane-subtitle">${escapeHtml(payload?.query || "")}</div>
+      </div>
+      <div class="side-pane-controls">
+        <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
+      </div>
+    </div>
+    <div class="side-pane-tab-panel active" data-tab-panel="products">
+      ${renderProductResultListMarkup(products, payload)}
+    </div>
+  `;
+
+    sidePaneEl.scrollTop = 0;
+    veraMarkPanelPayloadRendered(payload, "product");
+
+    requestAnimationFrame(() => {
+      sidePaneEl.classList.add("visible");
+    });
+  };
+
+  runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
+}
+
+/* 2026-05-28 — location/map panel layout.
+ * - Always render a top "map placeholder" strip (real Leaflet/Mapbox swap
+ *   is a follow-up; spec explicitly says "show place cards now and leave a
+ *   map placeholder").
+ * - If `payload.map_pins` carries coordinates, render lightweight numbered
+ *   pin chips inside the placeholder so the user can tell how many places
+ *   were geocoded vs. address-only.
+ * - Each place card mirrors the spec fields (name, address, rating,
+ *   open state, category, source, link, directions). */
+function renderLocationMapPlaceholderMarkup(payload) {
+  const pins = Array.isArray(payload?.map_pins) ? payload.map_pins : [];
+  const placeCount = Number(payload?.place_count || (payload?.places?.length ?? 0));
+  const summary = pins.length
+    ? `${pins.length} place${pins.length === 1 ? "" : "s"} pinned · ${placeCount} result${placeCount === 1 ? "" : "s"}`
+    : placeCount
+      ? `${placeCount} result${placeCount === 1 ? "" : "s"} (no coordinates yet — addresses below)`
+      : `No places to show yet.`;
+  const pinChips = pins.slice(0, 12).map((pin, i) => `
+    <span class="location-map-pin" title="${escapeHtml(pin?.name || "")}${pin?.address ? ' — ' + escapeHtml(pin.address) : ""}">
+      <span class="location-map-pin-index">${i + 1}</span>
+      ${escapeHtml((pin?.name || "Pin").slice(0, 32))}
+    </span>
+  `).join("");
+  return `
+    <div class="location-map-placeholder" data-map-pins="${pins.length}">
+      <div class="location-map-placeholder-label">Map preview</div>
+      <div class="location-map-placeholder-summary">${escapeHtml(summary)}</div>
+      ${pinChips ? `<div class="location-map-pin-list">${pinChips}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderLocationPlaceListMarkup(places) {
+  if (!Array.isArray(places) || !places.length) {
+    return `<div class="side-pane-empty">No places came back from the search.</div>`;
+  }
+  return `
+    <div class="news-result-list location-result-list">
+      ${places.map((item, index) => {
+        const name = (item.name || "").trim();
+        const address = (item.address || "").trim();
+        const rating = (item.rating || "").trim();
+        const openState = (item.open_state || "").trim();
+        const category = (item.category || "").trim();
+        const source = (item.source || "Unknown source").trim();
+        const url = (item.url || "").trim();
+        const directions = (item.directions_url || "").trim();
+        const hasCoords =
+          typeof item.latitude === "number" && typeof item.longitude === "number";
+        return `
+          <article class="news-result-card location-result-card">
+            <h4 class="news-result-title">
+              <span class="location-result-pin">${index + 1}</span>
+              ${escapeHtml(name)}
+            </h4>
+            ${category ? `<div class="location-result-category">${escapeHtml(category)}</div>` : ""}
+            ${address ? `<div class="location-result-address">${escapeHtml(address)}</div>` : ""}
+            <div class="location-result-meta-row">
+              ${rating ? `<span class="location-result-rating">★ ${escapeHtml(rating)}</span>` : ""}
+              ${openState ? `<span class="location-result-open">${escapeHtml(openState)}</span>` : ""}
+              ${hasCoords ? `<span class="location-result-geocoded">Geocoded</span>` : ""}
+            </div>
+            <div class="news-result-meta">
+              <span>${escapeHtml(source)}</span>
+            </div>
+            <div class="location-result-links">
+              ${url ? `<a class="news-result-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open</a>` : ""}
+              ${
+                directions
+                  ? `<a class="news-result-link" href="${escapeHtml(directions)}" target="_blank" rel="noopener noreferrer">Directions</a>`
+                  : address
+                    ? `<a class="news-result-link" href="${escapeHtml('https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(name + ' ' + address))}" target="_blank" rel="noopener noreferrer">Directions</a>`
+                    : ""
+              }
+            </div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderLocationMapPanel(payload) {
+  const sidePaneEl = uiEl("side-pane");
+  if (!sidePaneEl) return;
+  if (veraPanelPayloadIsStale(payload, "location")) return;
+
+  const mount = () => {
+    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+
+    const places = Array.isArray(payload?.canonical_places)
+      ? payload.canonical_places
+      : Array.isArray(payload?.places)
+        ? payload.places
+        : [];
+    const subtitle = (payload?.location || payload?.query || "").trim();
+
+    sidePaneEl.hidden = false;
+    delete sidePaneEl.dataset.sidePaneKind;
+    document.body.classList.add("news-panel-open");
+
+    sidePaneEl.innerHTML = `
+    <div class="side-pane-header">
+      <div class="side-pane-heading">
+        <h3 class="side-pane-title">${escapeHtml(payload?.title || "Places")}</h3>
+        <div class="side-pane-subtitle">${escapeHtml(subtitle)}</div>
+      </div>
+      <div class="side-pane-controls">
+        <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
+      </div>
+    </div>
+    <div class="side-pane-tab-panel active" data-tab-panel="places">
+      ${renderLocationMapPlaceholderMarkup(payload)}
+      ${renderLocationPlaceListMarkup(places)}
+    </div>
+  `;
+
+    sidePaneEl.scrollTop = 0;
+    veraMarkPanelPayloadRendered(payload, "location");
+
+    requestAnimationFrame(() => {
+      sidePaneEl.classList.add("visible");
+    });
+  };
+
+  runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
+}
+
+try {
+  window.renderProductResultsPanel = renderProductResultsPanel;
+  window.renderLocationMapPanel = renderLocationMapPanel;
+  window.renderProductResultListMarkup = renderProductResultListMarkup;
+  window.renderLocationPlaceListMarkup = renderLocationPlaceListMarkup;
+  window.renderLocationMapPlaceholderMarkup = renderLocationMapPlaceholderMarkup;
+  window.veraPanelPayloadIsStale = veraPanelPayloadIsStale;
+  window.veraMarkPanelPayloadRendered = veraMarkPanelPayloadRendered;
+  window.getVeraPanelRenderState = () => ({ ..._veraPanelRenderState });
+} catch (_) {}
 
 /* =========================
    STAGE 10 (additive): read-only debug accessor

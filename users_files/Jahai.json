@@ -1,0 +1,43 @@
+{
+  "status": "user",
+  "password": "16062006",
+  "user_profile": {
+    "name": "Jahai",
+    "skills": [
+      "tennis",
+      "piano",
+      "double bass"
+    ],
+    "interests": [
+      "Japanese language"
+    ],
+    "habits": [
+      "gaming",
+      "working out",
+      "eating"
+    ],
+    "life_context": [
+      "Singaporean",
+      "very well off",
+      "student at UC Berkeley",
+      "high academic achiever (perfect PSAT, 1580 SAT)"
+    ],
+    "social_traits": [
+      "people often think he's too chill and doesn't care much about anything",
+      "people often see him as very smart due to his strong academic performance",
+      "people often perceive him as well off"
+    ]
+  },
+  "_vera_state": {
+    "work_mode": {
+      "checklist_items": [
+        {
+          "id": "1776922402425-n74kff",
+          "text": "",
+          "done": false
+        }
+      ],
+      "completed_collapsed": false
+    }
+  }
+}

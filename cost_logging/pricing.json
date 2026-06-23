@@ -1,0 +1,98 @@
+{
+  "_note": "Edit any value to match your actual contract. Set unknown prices to null \u2014 the logger will still record raw usage and report estimated_cost_usd=null. All numbers are USD.",
+  "openai": {
+    "gpt-4o": {
+      "input_per_1m_tokens": 2.5,
+      "cached_input_per_1m_tokens": 1.25,
+      "output_per_1m_tokens": 10.0,
+      "reasoning_per_1m_tokens": null
+    },
+    "gpt-4o-mini": {
+      "input_per_1m_tokens": 0.15,
+      "cached_input_per_1m_tokens": 0.075,
+      "output_per_1m_tokens": 0.6,
+      "reasoning_per_1m_tokens": null
+    },
+    "gpt-4.1": {
+      "input_per_1m_tokens": 2.0,
+      "cached_input_per_1m_tokens": 0.5,
+      "output_per_1m_tokens": 8.0,
+      "reasoning_per_1m_tokens": null
+    },
+    "gpt-4.1-mini": {
+      "input_per_1m_tokens": 0.4,
+      "cached_input_per_1m_tokens": 0.1,
+      "output_per_1m_tokens": 1.6,
+      "reasoning_per_1m_tokens": null
+    },
+    "gpt-5.4": {
+  "input_per_1m_tokens": 2.5,
+  "cached_input_per_1m_tokens": 0.25,
+  "output_per_1m_tokens": 15.0,
+  "reasoning_per_1m_tokens": null
+},
+"gpt-5.4-mini": {
+  "input_per_1m_tokens": 0.75,
+  "cached_input_per_1m_tokens": 0.075,
+  "output_per_1m_tokens": 4.5,
+  "reasoning_per_1m_tokens": null
+},
+    "o3-mini": {
+      "input_per_1m_tokens": 1.1,
+      "cached_input_per_1m_tokens": 0.55,
+      "output_per_1m_tokens": 4.4,
+      "reasoning_per_1m_tokens": 4.4
+    },
+    "default": {
+      "input_per_1m_tokens": null,
+      "cached_input_per_1m_tokens": null,
+      "output_per_1m_tokens": null,
+      "reasoning_per_1m_tokens": null
+    }
+  },
+  "fish_audio": {
+    "default": {
+      "billing_unit": "utf8_byte",
+      "cost_per_1m_utf8_bytes": 15.0,
+      "cost_per_utf8_byte": 0.000015,
+      "cost_per_1000_utf8_bytes": 0.015
+    },
+    "s1": {
+      "billing_unit": "utf8_byte",
+      "cost_per_1m_utf8_bytes": 15.0,
+      "cost_per_utf8_byte": 0.000015,
+      "cost_per_1000_utf8_bytes": 0.015
+    },
+    "s2-pro": {
+      "billing_unit": "utf8_byte",
+      "cost_per_1m_utf8_bytes": 15.0,
+      "cost_per_utf8_byte": 0.000015,
+      "cost_per_1000_utf8_bytes": 0.015
+    }
+  },
+  "serper": {
+    "default": {
+      "cost_per_search_call": 0.001
+    },
+    "https://google.serper.dev/news": {
+      "cost_per_search_call": 0.001
+    },
+    "https://google.serper.dev/images": {
+      "cost_per_search_call": 0.001
+    },
+    "https://google.serper.dev/videos": {
+      "cost_per_search_call": 0.001
+    },
+    "https://google.serper.dev/search": {
+      "cost_per_search_call": 0.001
+    }
+  },
+  "openai_image": {
+    "gpt-image-1": {
+      "cost_per_image": 0.04
+    },
+    "default": {
+      "cost_per_image": null
+    }
+  }
+}

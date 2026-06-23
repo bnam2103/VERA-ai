@@ -1,0 +1,49 @@
+{"id": "T001", "category": "panel+music", "text": "go to panel 2 and play lo-fi", "expected_actions": ["panel.navigate", "music.play"]}
+{"id": "T002", "category": "panel+music", "text": "open a new panel and play Peak in my playlist", "expected_actions": ["panel.open", "music.play"]}
+{"id": "T003", "category": "panel+music", "text": "close panel 1 and pause the music", "expected_actions": ["panel.close", "music.pause"]}
+{"id": "T004", "category": "panel+reasoning", "text": "go to panel 2 and explain the Vietnam War", "expected_actions": ["panel.navigate", "reasoning.request"]}
+{"id": "T005", "category": "panel+reasoning", "text": "explain the Vietnam War in panel 2", "expected_actions": ["panel.navigate", "reasoning.request"]}
+{"id": "T006", "category": "music+music", "text": "turn up the music and then turn down the music", "expected_actions": ["music.volume", "music.volume"]}
+{"id": "T007", "category": "music+music", "text": "play Feather by Sabrina Carpenter and turn up the volume", "expected_actions": ["music.play", "music.volume"]}
+{"id": "T008", "category": "music+music", "text": "pause the music and then unpause the music", "expected_actions": ["music.pause", "music.resume"]}
+{"id": "T009", "category": "music+music", "text": "play next song and turn down the music", "expected_actions": ["music.next", "music.volume"]}
+{"id": "T010", "category": "music+music", "text": "play previous track and pause the music", "expected_actions": ["music.previous", "music.pause"]}
+{"id": "T011", "category": "checklist+music", "text": "add hello to the checklist and play lo-fi", "expected_actions": ["checklist.add", "music.play"]}
+{"id": "T012", "category": "checklist+music", "text": "remove the first item and play Peak in my playlist", "expected_actions": ["checklist.remove", "music.play"]}
+{"id": "T013", "category": "checklist+music", "text": "mark the first item complete and pause the music", "expected_actions": ["checklist.complete", "music.pause"]}
+{"id": "T014", "category": "timer+music", "text": "set a timer for twenty seconds and play lo-fi", "expected_actions": ["timer.set", "music.play"]}
+{"id": "T015", "category": "timer+music", "text": "set a timer for one hour and pause the music", "expected_actions": ["timer.set", "music.pause"]}
+{"id": "T016", "category": "timer+music", "text": "erase the timer and unpause the music", "expected_actions": ["timer.cancel", "music.resume"]}
+{"id": "T017", "category": "timer+panel", "text": "set a timer for one hour and go to panel 2", "expected_actions": ["timer.set", "panel.navigate"]}
+{"id": "T018", "category": "timer+panel", "text": "go to panel 2 and set a timer for one hour", "expected_actions": ["panel.navigate", "timer.set"]}
+{"id": "T019", "category": "ui+music", "text": "what time is it in Tokyo and pause the music", "expected_actions": ["voice.answer", "music.pause"]}
+{"id": "T020", "category": "ui+music", "text": "tell me the weather in Irvine and play lo-fi", "expected_actions": ["weather_or_voice.answer", "music.play"]}
+{"id": "T021", "category": "panel+reasoning+music", "text": "go to panel 2, explain the Vietnam War, and play lo-fi", "expected_actions": ["panel.navigate", "reasoning.request", "music.play"]}
+{"id": "T022", "category": "music+panel+reasoning", "text": "play lo-fi, go to panel 3, and explain the squeeze theorem", "expected_actions": ["music.play", "panel.navigate", "reasoning.request"]}
+{"id": "T023", "category": "checklist+music+volume", "text": "add hello to the checklist, play Peak in my playlist, and turn down the music", "expected_actions": ["checklist.add", "music.play", "music.volume"]}
+{"id": "T024", "category": "checklist+timer+music", "text": "remove the first item, set a timer for twenty seconds, and play lo-fi", "expected_actions": ["checklist.remove", "timer.set", "music.play"]}
+{"id": "T025", "category": "checklist+music+panel", "text": "mark the first item complete, unpause the music, and go to panel 2", "expected_actions": ["checklist.complete", "music.resume", "panel.navigate"]}
+{"id": "T026", "category": "timer+panel+reasoning", "text": "set a timer for one hour, go to panel 2, and explain the Vietnam War", "expected_actions": ["timer.set", "panel.navigate", "reasoning.request"]}
+{"id": "T027", "category": "panel+reasoning+music", "text": "open a new panel, explain Black-Scholes delta, and play Feather by Sabrina Carpenter", "expected_actions": ["panel.open", "reasoning.request", "music.play"]}
+{"id": "T028", "category": "music+timer+panel", "text": "pause the music, erase the timer, and close panel 1", "expected_actions": ["music.pause", "timer.cancel", "panel.close"]}
+{"id": "T029", "category": "music+volume+checklist", "text": "play next song, turn up the music, and add music test to the checklist", "expected_actions": ["music.next", "music.volume", "checklist.add"]}
+{"id": "T030", "category": "ui+music+panel", "text": "what time is it in Tokyo, play lo-fi, and go to panel 2", "expected_actions": ["voice.answer", "music.play", "panel.navigate"]}
+{"id": "T031", "category": "4_action", "text": "go to panel 2, explain the Vietnam War, play lo-fi, and add review history to the checklist", "expected_actions": ["panel.navigate", "reasoning.request", "music.play", "checklist.add"]}
+{"id": "T032", "category": "4_action", "text": "open a new panel, explain Black-Scholes delta, set a timer for twenty minutes, and play Peak in my playlist", "expected_actions": ["panel.open", "reasoning.request", "timer.set", "music.play"]}
+{"id": "T033", "category": "4_action", "text": "add milk and eggs to the checklist, play Feather by Sabrina Carpenter, turn up the music, and go to panel 3", "expected_actions": ["checklist.add", "music.play", "music.volume", "panel.navigate"]}
+{"id": "T034", "category": "4_action", "text": "remove the first item, mark the next item complete, play lo-fi, and set a timer for ten seconds", "expected_actions": ["checklist.remove", "checklist.complete", "music.play", "timer.set"]}
+{"id": "T035", "category": "4_action", "text": "pause the music, erase the timer, close panel 1, and explain the Vietnam War in panel 2", "expected_actions": ["music.pause", "timer.cancel", "panel.close", "panel.navigate", "reasoning.request"]}
+{"id": "T036", "category": "4_action", "text": "play Peak in my playlist, turn down the music, add music test to the checklist, and open a new panel", "expected_actions": ["music.play", "music.volume", "checklist.add", "panel.open"]}
+{"id": "T037", "category": "4_action", "text": "what time is it in Tokyo, set a timer for twenty seconds, play lo-fi, and go to panel 2", "expected_actions": ["voice.answer", "timer.set", "music.play", "panel.navigate"]}
+{"id": "T038", "category": "reasoning_contamination", "text": "Can you go to panel 2, explain the Vietnam War and play the lo-fi mix?", "expected_actions": ["panel.navigate", "reasoning.request", "music.play"], "expected_clean_reasoning_prompt": "explain the Vietnam War"}
+{"id": "T039", "category": "reasoning_contamination", "text": "Explain the Vietnam War in panel 2 and play lo-fi", "expected_actions": ["panel.navigate", "reasoning.request", "music.play"], "expected_clean_reasoning_prompt": "Explain the Vietnam War"}
+{"id": "T040", "category": "reasoning_contamination", "text": "Play lo-fi and explain the Vietnam War in panel 2", "expected_actions": ["music.play", "panel.navigate", "reasoning.request"], "expected_clean_reasoning_prompt": "explain the Vietnam War"}
+{"id": "T041", "category": "reasoning_contamination", "text": "Can you play the lo-fi mix? Also explain the Vietnam War to me.", "expected_actions": ["music.play", "reasoning.request"], "expected_clean_reasoning_prompt": "explain the Vietnam War to me"}
+{"id": "T042", "category": "reasoning_contamination", "text": "Set a timer for one hour and explain the Vietnam War in panel 2", "expected_actions": ["timer.set", "panel.navigate", "reasoning.request"], "expected_clean_reasoning_prompt": "explain the Vietnam War"}
+{"id": "T043", "category": "reasoning_gate_voice_ui", "text": "what is tennis?", "expected_route": "voice_ui"}
+{"id": "T044", "category": "reasoning_gate_voice_ui", "text": "can you tell me what tennis is?", "expected_route": "voice_ui"}
+{"id": "T045", "category": "reasoning_gate_voice_ui", "text": "explain tennis", "expected_route": "voice_ui"}
+{"id": "T046", "category": "reasoning_gate_voice_ui", "text": "briefly explain the Vietnam War", "expected_route": "voice_ui"}
+{"id": "T047", "category": "reasoning_gate_panel", "text": "explain the Vietnam War", "expected_route": "reasoning_panel"}
+{"id": "T048", "category": "reasoning_gate_panel", "text": "give me a detailed explanation of the Vietnam War", "expected_route": "reasoning_panel"}
+{"id": "T049", "category": "reasoning_gate_panel", "text": "can you explain tennis in the reasoning panel?", "expected_route": "reasoning_panel"}

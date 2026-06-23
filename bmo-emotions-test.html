@@ -1,0 +1,1482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BMO — 9 emotions SVG test</title>
+  <style>
+    :root {
+      --mint: #b8e0c8;
+      --panel: rgba(255, 255, 255, 0.55);
+      --ink: #142822;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: system-ui, Segoe UI, Roboto, sans-serif;
+      background: var(--mint);
+      color: var(--ink);
+      padding: 24px 20px 48px;
+    }
+
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin: 0 0 8px;
+    }
+
+    .hint {
+      max-width: 720px;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      color: rgba(20, 40, 30, 0.85);
+      margin-bottom: 24px;
+    }
+
+    .hint code {
+      font-size: 0.82rem;
+      background: rgba(255, 255, 255, 0.45);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+
+    .layout {
+      display: flex;
+      align-items: flex-start;
+      gap: 32px;
+      max-width: 1320px;
+      margin: 0 auto;
+    }
+
+    .layout-main {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 26px;
+      max-width: 980px;
+    }
+
+    @media (max-width: 900px) {
+      .layout {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .focus-preview {
+        position: relative;
+        top: auto;
+        width: 100%;
+        max-width: 980px;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .cell {
+      background: var(--panel);
+      border: 1px solid rgba(24, 49, 39, 0.14);
+      border-radius: 20px;
+      padding: 18px 16px 22px;
+      text-align: center;
+      box-shadow: 0 8px 24px rgba(20, 40, 30, 0.08);
+      cursor: pointer;
+      transition:
+        border-color 0.2s ease,
+        box-shadow 0.2s ease;
+    }
+
+    .cell:hover {
+      border-color: rgba(24, 49, 39, 0.28);
+      box-shadow: 0 10px 28px rgba(20, 40, 30, 0.1);
+    }
+
+    .cell.slot-selected {
+      border-color: rgba(15, 92, 58, 0.55);
+      box-shadow: 0 0 0 2px rgba(15, 92, 58, 0.25);
+    }
+
+    .cell label[contenteditable] {
+      cursor: text;
+    }
+
+    .cell header {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: rgba(24, 49, 39, 0.55);
+      margin-bottom: 10px;
+    }
+
+    .cell label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 8px;
+    }
+
+    /* Fixed stage — keep same viewBox in every SVG so later scale transitions line up */
+    .svg-stage {
+      width: min(220px, 100%);
+      max-width: 220px;
+      aspect-ratio: 1;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .svg-stage svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      overflow: visible;
+    }
+
+
+    /* Optional: preview “pop” between emotions later */
+    .svg-stage.preview-scale {
+      transition: transform 0.35s cubic-bezier(0.34, 1.2, 0.64, 1);
+    }
+
+    .svg-stage.preview-scale:hover {
+      transform: scale(1.08);
+    }
+
+    .toggle-row {
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 0.85rem;
+    }
+
+    .toggle-row input {
+      width: 18px;
+      height: 18px;
+    }
+
+    .tts-panel {
+      margin: 0 0 22px;
+      max-width: 980px;
+      background: rgba(255, 255, 255, 0.45);
+      border: 1px solid rgba(24, 49, 39, 0.14);
+      border-radius: 14px;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .tts-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .tts-row input[type="text"] {
+      flex: 1;
+      min-width: 260px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(24, 49, 39, 0.22);
+      font: inherit;
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.75);
+    }
+
+    .tts-endpoint {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(24, 49, 39, 0.2);
+      font: inherit;
+      font-size: 0.82rem;
+      color: rgba(20, 40, 30, 0.9);
+      background: rgba(255, 255, 255, 0.6);
+    }
+
+    .tts-row button {
+      border: 1px solid rgba(24, 49, 39, 0.32);
+      background: #f4fff8;
+      color: var(--ink);
+      font: inherit;
+      font-weight: 600;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+
+    .tts-row button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .tts-status {
+      margin: 0;
+      font-size: 0.82rem;
+      color: rgba(20, 40, 30, 0.72);
+      min-height: 1.2em;
+    }
+
+    .tts-segment-plan {
+      margin: 0;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.35);
+      border: 1px dashed rgba(24, 49, 39, 0.2);
+      font-size: 0.78rem;
+      line-height: 1.45;
+      color: rgba(20, 40, 30, 0.88);
+      max-height: 140px;
+      overflow: auto;
+    }
+
+    .tts-segment-plan ul {
+      margin: 0;
+      padding-left: 1.1em;
+    }
+
+    .tts-segment-plan li.happy {
+      color: #0d5c36;
+    }
+
+    .tts-segment-plan li.neutral {
+      color: #3d4f5c;
+    }
+
+    .tts-segment-plan li.sad {
+      color: #5a2d4a;
+    }
+
+    /* Large preview — “empty space” on the right */
+    .focus-preview {
+      width: min(400px, 100%);
+      flex-shrink: 0;
+      position: sticky;
+      top: 20px;
+      align-self: flex-start;
+    }
+
+    .focus-preview h2 {
+      margin: 0 0 6px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(24, 49, 39, 0.45);
+    }
+
+    .focus-preview-slot-name {
+      margin: 0 0 14px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--ink);
+      min-height: 1.3em;
+    }
+
+    .focus-preview-stage {
+      min-height: 400px;
+      border: 2px dashed rgba(24, 49, 39, 0.22);
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 28px;
+    }
+
+    .focus-preview-stage svg {
+      width: 100%;
+      max-width: 320px;
+      height: auto;
+      aspect-ratio: 1;
+      display: block;
+    }
+
+    .focus-preview-placeholder {
+      text-align: center;
+      font-size: 0.9rem;
+      color: rgba(24, 49, 39, 0.45);
+      line-height: 1.5;
+      max-width: 200px;
+    }
+  </style>
+</head>
+<body>
+  <h1>BMO — 9 emotion SVGs</h1>
+  <p class="hint">
+    Slots <strong>1–3</strong>: <em>Idle</em>, <em>Surprised</em>, <em>Happy</em>.
+    Slots <strong>4–6</strong>: <em>Sad</em> (tall-oval eyes + thin frown),
+    <em>Surprised</em> (same as slot 2), <em>Worried</em> (tall-oval eyes + detailed bean mouth).
+    Slots <strong>7–9</strong>: <em>comma</em> eyes (dip curve flowing into a big dot) with mouths from slots <strong>3 / 2 / 1</strong>.
+    Keep <code>viewBox="0 0 200 200"</code> on all nine for aligned swaps.
+    <strong>TTS test:</strong> requests use <code>tts_only</code> so BMO speaks your typed text verbatim (no chat LLM).
+    Each sentence is labeled <em>sad</em> / <em>neutral</em> / <em>happy</em> by a <strong>light LLM</strong> on the server (<code>/tts_emotion_route</code>), using your typed line as <code>user_text</code> for user-related sadness.
+    Face: <strong>sad → slots 4–6</strong>; <strong>neutral &amp; happy → slots 1–3</strong> (same waveform mouth).
+  </p>
+
+  <div class="toggle-row">
+    <label>
+      <input type="checkbox" id="enable-scale-hover" checked />
+      Hover scale preview (for testing transitions)
+    </label>
+  </div>
+  <div class="tts-panel">
+    <input
+      id="bmo-tts-endpoint"
+      class="tts-endpoint"
+      type="text"
+      placeholder="TTS endpoint (example: http://127.0.0.1:8000/text)"
+    />
+    <div class="tts-row">
+      <input
+        id="bmo-tts-input"
+        type="text"
+        placeholder="Type what BMO should say out loud (use . ? ! between sentences for separate chunks)…"
+        value="Sunshine makes me so happy! Sometimes I feel sad when it rains."
+      />
+      <button id="bmo-tts-btn" type="button">Speak with BMO TTS</button>
+    </div>
+    <p class="tts-status" id="bmo-tts-status">Ready.</p>
+    <div class="tts-segment-plan" id="bmo-tts-segment-plan" aria-live="polite"></div>
+    <!-- Playback uses Web Audio decode+BufferSource (reliable across origins); element kept for future/debug. -->
+    <audio id="bmo-tts-audio" preload="none" style="display: none" aria-hidden="true"></audio>
+  </div>
+
+  <div class="layout">
+    <div class="layout-main">
+  <div class="grid" id="emotion-grid">
+    <!-- 1 — Idle: same vector smile as index.html (.bmo-smile-path); no filled mouth -->
+    <article class="cell cell-idle">
+      <header>Slot 1</header>
+      <label contenteditable="true" spellcheck="false">Idle</label>
+      <div class="svg-stage preview-scale" data-slot="1">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="BMO idle">
+          <rect width="200" height="200" rx="16" fill="#c8e8d4" />
+          <g transform="translate(52, 58)">
+            <ellipse cx="0" cy="0" rx="11" ry="16" fill="#1d2035">
+              <animate attributeName="ry" values="16;16;0.9;16;16" dur="4s" repeatCount="indefinite" keyTimes="0;0.1;0.16;0.22;1" keySplines="0 0 1 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0 0 1 1" calcMode="spline"/>
+            </ellipse>
+          </g>
+          <g transform="translate(148, 58)">
+            <ellipse cx="0" cy="0" rx="11" ry="16" fill="#1d2035">
+              <animate attributeName="ry" values="16;16;0.9;16;16" dur="4s" repeatCount="indefinite" keyTimes="0;0.1;0.16;0.22;1" keySplines="0 0 1 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0 0 1 1" calcMode="spline"/>
+            </ellipse>
+          </g>
+          <g transform="translate(100, 138) scale(0.68) translate(-100, -138)">
+            <g transform="translate(36, 118)">
+              <path
+                d="M 11 13.5 C 44 26.5 78 25.8 117 13.6"
+                fill="none"
+                stroke="#232750"
+                stroke-width="3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </g>
+          </g>
+        </svg>
+      </div>
+    </article>
+
+    <!-- 2 — Surprised / O mouth -->
+    <article class="cell">
+      <header>Slot 2</header>
+      <label contenteditable="true" spellcheck="false">Surprised</label>
+      <div class="svg-stage preview-scale" data-slot="2">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="BMO surprised">
+          <rect width="200" height="200" rx="16" fill="#c8e8d4" />
+          <ellipse cx="52" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <ellipse cx="148" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <g transform="translate(0, -26)">
+            <g transform="translate(100, 153) scale(0.52) translate(-100, -153)">
+              <path
+                fill="#1a5f46"
+                stroke="#0a0a0a"
+                stroke-width="3.6"
+                stroke-linejoin="round"
+                d="M 100 123.5
+                   C 119.5 123.5 134 137.2 134 153.5
+                   C 134 170.5 119 182.5 100 182.5
+                   C 81 182.5 66 170.5 66 153.5
+                   C 66 137.2 80.5 123.5 100 123.5 Z"
+              />
+            </g>
+          </g>
+        </svg>
+      </div>
+    </article>
+
+    <!-- 3 — Happy / excited (open mouth: paths match index.html bmo-mouth-inner, viewBox 0 0 128 56) -->
+    <article class="cell">
+      <header>Slot 3</header>
+      <label contenteditable="true" spellcheck="false">Happy</label>
+      <div class="svg-stage preview-scale" data-slot="3">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="BMO happy">
+          <rect width="200" height="200" rx="16" fill="#c8e8d4" />
+          <!-- Eyes: tall ovals like main BMO / other slots -->
+          <ellipse cx="52" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <ellipse cx="148" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <g transform="translate(0, -12)">
+            <!-- Mouth: classic open smile + tiny bean bias (fuller lower-right) -->
+            <g transform="translate(100, 146) scale(0.82) translate(-100, -146)">
+              <g transform="translate(36, 118)">
+                <path
+                  fill="#1a5f46"
+                  stroke="#0a0a0a"
+                  stroke-width="2.45"
+                  stroke-linejoin="round"
+                  paint-order="stroke fill"
+                  d="M 20.5 21.5
+                     C 20.5 13.8 37 11.15 64 11.2
+                     C 91 11.25 107.5 13.8 107.5 21.5
+                     C 107.5 33.6 96.2 46.15 64 47.2
+                     C 32.2 46.25 20.5 33.8 20.5 21.5 Z"
+                />
+                <!-- Teeth: roof = cavity; flat bottom band (no crooked tilt) -->
+                <path
+                  fill="#f7fffb"
+                  stroke="#0a0a0a"
+                  stroke-width="1.2"
+                  stroke-linejoin="round"
+                  paint-order="fill stroke"
+                  d="M 20.5 21.5
+                     C 20.5 13.8 37 11.15 64 11.2
+                     C 91 11.25 107.5 13.8 107.5 21.5
+                     L 106.25 24.85
+                     L 21.75 25.05
+                     L 20.5 23.55
+                     L 20.5 21.5 Z"
+                />
+                <!-- Tongue: wide centered dome; base hugs inner floor (~64,47.2); no stroke -->
+                <path
+                  fill="#5fbf7e"
+                  stroke="none"
+                  d="M 53.5 46.34
+                     C 60.8 46.82 71.2 46.78 78.8 46.36
+                     Q 66.2 35.6 53.5 46.34 Z"
+                />
+              </g>
+            </g>
+          </g>
+        </svg>
+      </div>
+    </article>
+
+    <!-- 4 — Sad: same eyes/bg as slots 1–3 + thin frown -->
+    <article class="cell">
+      <header>Slot 4</header>
+      <label contenteditable="true" spellcheck="false">Sad</label>
+      <div class="svg-stage preview-scale" data-slot="4">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="BMO sad">
+          <rect width="200" height="200" rx="16" fill="#c8e8d4" />
+          <ellipse cx="52" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <ellipse cx="148" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <g transform="translate(100, 138) scale(0.68) translate(-100, -138)">
+            <g transform="translate(36, 118)">
+              <path
+                d="M 11 25.6 C 44 12.6 78 13.3 117 25.5"
+                fill="none"
+                stroke="#232750"
+                stroke-width="3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </g>
+          </g>
+        </svg>
+      </div>
+    </article>
+
+    <!-- 5 — Same as slot 2: surprised / O mouth -->
+    <article class="cell">
+      <header>Slot 5</header>
+      <label contenteditable="true" spellcheck="false">Surprised</label>
+      <div class="svg-stage preview-scale" data-slot="5">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="BMO surprised">
+          <rect width="200" height="200" rx="16" fill="#c8e8d4" />
+          <ellipse cx="52" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <ellipse cx="148" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <g transform="translate(0, -26)">
+            <g transform="translate(100, 153) scale(0.52) translate(-100, -153)">
+              <path
+                fill="#1a5f46"
+                stroke="#0a0a0a"
+                stroke-width="3.6"
+                stroke-linejoin="round"
+                d="M 100 123.5
+                   C 119.5 123.5 134 137.2 134 153.5
+                   C 134 170.5 119 182.5 100 182.5
+                   C 81 182.5 66 170.5 66 153.5
+                   C 66 137.2 80.5 123.5 100 123.5 Z"
+              />
+            </g>
+          </g>
+        </svg>
+      </div>
+    </article>
+
+    <!-- 6 — Worried: same eyes/bg as slots 1–3 + bean mouth (outline, teeth, inner, tongue) -->
+    <article class="cell">
+      <header>Slot 6</header>
+      <label contenteditable="true" spellcheck="false">Worried</label>
+      <div class="svg-stage preview-scale" data-slot="6">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="BMO worried">
+          <rect width="200" height="200" rx="16" fill="#c8e8d4" />
+          <ellipse cx="52" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <ellipse cx="148" cy="58" rx="11" ry="16" fill="#1d2035" />
+          <g transform="translate(100, 128) scale(0.57)">
+            <defs>
+              <clipPath id="bmo-slot6-mouth-clip">
+                <path
+                  d="M -48 6
+                     C -48 -14 -26 -32 0 -30
+                     C 26 -32 48 -14 48 6
+                     C 48 22 28 36 14 32
+                     Q 0 20 -14 32
+                     C -28 36 -48 22 -48 6 Z"
+                />
+              </clipPath>
+            </defs>
+            <!-- Outer green mouth (slot 1 fill color) with thicker black outline -->
+            <path
+              fill="#1a5f46"
+              stroke="#0a0a0a"
+              stroke-width="4"
+              stroke-linejoin="round"
+              paint-order="stroke fill"
+              d="M -48 6
+                 C -48 -14 -26 -32 0 -30
+                 C 26 -32 48 -14 48 6
+                 C 48 22 28 36 14 32
+                 Q 0 20 -14 32
+                 C -28 36 -48 22 -48 6 Z"
+            />
+            <g clip-path="url(#bmo-slot6-mouth-clip)">
+              <!-- Teeth: thin crescent that follows the mouth's roof, flat bottom, black outline -->
+              <path
+                fill="#f7fffb"
+                stroke="#0a0a0a"
+                stroke-width="2"
+                stroke-linejoin="round"
+                d="M -54 -14
+                   C -54 -32 -26 -42 0 -40
+                   C 26 -42 54 -32 54 -14
+                   L -54 -14
+                   Z"
+              />
+              <!-- Tongue (slot 1 color), clipped on the left, right edge near the center peak -->
+              <ellipse
+                cx="-24"
+                cy="25"
+                rx="26"
+                ry="11"
+                fill="#5fbf7e"
+                stroke="none"
+              />
+            </g>
+          </g>
+        </svg>
+      </div>
+    </article>
+
+    <!-- 7 — Comma eyes (dip curve connecting into a dot on the right); mouth = slot 1 -->
+    <article class="cell">
+      <header>Slot 7</header>
+      <label contenteditable="true" spellcheck="false">Happy (comma eyes)</label>
+      <div class="svg-stage preview-scale" data-slot="7">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="BMO happy comma eyes">
+          <rect width="200" height="200" rx="16" fill="#c8e8d4" />
+          <path
+            d="M 40 56 Q 48 67 56 56"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="3"
+            stroke-linecap="round"
+          />
+          <circle cx="59" cy="55" r="5" fill="#0a0a0a" />
+          <path
+            d="M 136 56 Q 144 67 152 56"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="3"
+            stroke-linecap="round"
+          />
+          <circle cx="155" cy="55" r="5" fill="#0a0a0a" />
+          <g transform="translate(0, -12)">
+            <g transform="translate(100, 146) scale(0.82) translate(-100, -146)">
+              <g transform="translate(36, 118)">
+                <path
+                  fill="#1a5f46"
+                  stroke="#0a0a0a"
+                  stroke-width="2.45"
+                  stroke-linejoin="round"
+                  paint-order="stroke fill"
+                  d="M 20.5 21.5
+                     C 20.5 13.8 37 11.15 64 11.2
+                     C 91 11.25 107.5 13.8 107.5 21.5
+                     C 107.5 33.6 96.2 46.15 64 47.2
+                     C 32.2 46.25 20.5 33.8 20.5 21.5 Z"
+                />
+                <path
+                  fill="#f7fffb"
+                  stroke="#0a0a0a"
+                  stroke-width="1.2"
+                  stroke-linejoin="round"
+                  paint-order="fill stroke"
+                  d="M 20.5 21.5
+                     C 20.5 13.8 37 11.15 64 11.2
+                     C 91 11.25 107.5 13.8 107.5 21.5
+                     L 106.25 24.85
+                     L 21.75 25.05
+                     L 20.5 23.55
+                     L 20.5 21.5 Z"
+                />
+                <path
+                  fill="#5fbf7e"
+                  stroke="none"
+                  d="M 53.5 46.34
+                     C 60.8 46.82 71.2 46.78 78.8 46.36
+                     Q 66.2 35.6 53.5 46.34 Z"
+                />
+              </g>
+            </g>
+          </g>
+        </svg>
+      </div>
+    </article>
+
+    <!-- 8 — Comma eyes (dip curve connecting into a dot on the right); mouth = slot 2 -->
+    <article class="cell">
+      <header>Slot 8</header>
+      <label contenteditable="true" spellcheck="false">Surprised (comma eyes)</label>
+      <div class="svg-stage preview-scale" data-slot="8">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="BMO surprised comma eyes">
+          <rect width="200" height="200" rx="16" fill="#c8e8d4" />
+          <path
+            d="M 40 56 Q 48 67 56 56"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="3"
+            stroke-linecap="round"
+          />
+          <circle cx="59" cy="55" r="5" fill="#0a0a0a" />
+          <path
+            d="M 136 56 Q 144 67 152 56"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="3"
+            stroke-linecap="round"
+          />
+          <circle cx="155" cy="55" r="5" fill="#0a0a0a" />
+          <g transform="translate(0, -26)">
+            <g transform="translate(100, 153) scale(0.52) translate(-100, -153)">
+              <path
+                fill="#1a5f46"
+                stroke="#0a0a0a"
+                stroke-width="3.6"
+                stroke-linejoin="round"
+                d="M 100 123.5
+                   C 119.5 123.5 134 137.2 134 153.5
+                   C 134 170.5 119 182.5 100 182.5
+                   C 81 182.5 66 170.5 66 153.5
+                   C 66 137.2 80.5 123.5 100 123.5 Z"
+              />
+            </g>
+          </g>
+        </svg>
+      </div>
+    </article>
+
+    <!-- 9 — Comma eyes (dip curve connecting into a dot on the right); mouth = slot 3 -->
+    <article class="cell cell-idle">
+      <header>Slot 9</header>
+      <label contenteditable="true" spellcheck="false">Idle (comma eyes)</label>
+      <div class="svg-stage preview-scale" data-slot="9">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="BMO idle comma eyes">
+          <rect width="200" height="200" rx="16" fill="#c8e8d4" />
+          <path
+            d="M 40 56 Q 48 67 56 56"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="3"
+            stroke-linecap="round"
+          />
+          <circle cx="59" cy="55" r="5" fill="#0a0a0a" />
+          <path
+            d="M 136 56 Q 144 67 152 56"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="3"
+            stroke-linecap="round"
+          />
+          <circle cx="155" cy="55" r="5" fill="#0a0a0a" />
+          <g transform="translate(100, 138) scale(0.68) translate(-100, -138)">
+            <g transform="translate(36, 118)">
+              <path
+                d="M 11 13.5 C 44 26.5 78 25.8 117 13.6"
+                fill="none"
+                stroke="#232750"
+                stroke-width="3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </g>
+          </g>
+        </svg>
+      </div>
+    </article>
+  </div>
+    </div>
+
+    <aside class="focus-preview" aria-label="Selected emotion preview">
+      <h2>Preview</h2>
+      <p class="focus-preview-slot-name" id="focus-preview-label">Click a slot</p>
+      <div class="focus-preview-stage" id="focus-preview-root">
+        <p class="focus-preview-placeholder" id="focus-preview-placeholder">
+          Click any slot to show its SVG here — extra space to judge size &amp; padding.
+        </p>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    document.getElementById("enable-scale-hover").addEventListener("change", (e) => {
+      document.querySelectorAll(".svg-stage").forEach((el) => {
+        el.classList.toggle("preview-scale", e.target.checked);
+      });
+    });
+
+    (function () {
+      const grid = document.getElementById("emotion-grid");
+      const previewRoot = document.getElementById("focus-preview-root");
+      const previewLabel = document.getElementById("focus-preview-label");
+      const endpointInput = document.getElementById("bmo-tts-endpoint");
+      const ttsInput = document.getElementById("bmo-tts-input");
+      const ttsBtn = document.getElementById("bmo-tts-btn");
+      const ttsStatus = document.getElementById("bmo-tts-status");
+      const segmentPlanEl = document.getElementById("bmo-tts-segment-plan");
+      const sessionId = `bmo-emotions-test-${Math.random().toString(36).slice(2, 10)}`;
+
+      const BMO_TTS_MOUTH_ENERGY_GAIN = 4.35;
+      const BMO_TTS_FREQ_BIN_START = 4;
+      const BMO_TTS_FREQ_BIN_END = 128;
+      const BMO_TTS_BASELINE_EMA = 0.946;
+      const BMO_TTS_EXCESS_PEAK_DECAY = 0.73;
+      const BMO_TTS_EXCESS_NEAR_PEAK_FRAC = 0.75;
+      const BMO_TTS_MIN_EXCESS_HAPPY = 0.022;
+      const BMO_TTS_SPEECH_BODY_EMA = 0.86;
+
+      let selectedCell = null;
+      let lastPreviewSlot = null;
+      let audioCtx = null;
+      let audioAnalyser = null;
+      /** When true, decoded TTS is playing through Web Audio BufferSource (not MediaElementSource). */
+      let isTtsPlaying = false;
+      let activeBufferSource = null;
+      let mouthRaf = null;
+      let mouthTime = null;
+      let mouthFreq = null;
+      let mouthBaseline = 0;
+      let mouthExcessPeak = 0;
+      let mouthSpeechBody = 0;
+      let mouthEmotion = "idle";
+      let liveMouthIdle = null;
+      let liveMouthSurprised = null;
+      let liveMouthHappy = null;
+      /** Which slot trio the live preview uses: happy → 1–3, sad → 4–6 */
+      let currentLiveMode = "happy";
+
+      /**
+       * Mirrors `split_sentences_for_tts` in TTS.py (paragraphs, then . ! ? or newlines).
+       * Keeps segment indices aligned with `audio_urls` from the server when sentence chunking is on.
+       */
+      function splitSentencesForTts(text) {
+        let t = (text || "").trim();
+        if (!t) return [];
+        t = t.replace(/\u201c/g, '"').replace(/\u201d/g, '"').replace(/\u2019/g, "'");
+        t = t.replace(/\u3002/g, ".");
+        t = t.replace(/(?<=[a-z])\.(?=[A-Z])/g, ". ");
+        const paragraphs = t.split(/\n\s*\n+/);
+        const out = [];
+        for (const para of paragraphs) {
+          const p = para.trim();
+          if (!p) continue;
+          const parts = p.split(/(?<=[.!?])\s+|\n+/);
+          for (const part of parts) {
+            const x = part.trim();
+            if (x) out.push(x);
+          }
+        }
+        return out.length ? out : [t];
+      }
+
+      const SAD_HINTS =
+        /\b(sorry|sad|sorrow|cry|tears|tearful|afraid|scared|fear|worried|worry|anxious|anxiety|depress|lonely|alone|hurt|hurts|pain|aching|hate|hatred|angry|rage|terrible|awful|horrible|worst|tragic|unfortunately|regret|guilt|ashamed|loss|lose|lost|die|death|dead|dying|kill|never\s+again|hopeless|despair|upset|disappoint|failed?|failure|breakdown|grief|mourn)\b/i;
+      const HAPPY_HINTS =
+        /\b(happy|happiness|joy|joyful|great|wonderful|awesome|amazing|love|loved|celebrat|excit|excited|fun|funny|laugh|smile|cheer|yay|best|lucky|glad|proud|relief|relieved|good\s+news|victory|won|win|beautiful|perfect)\b/i;
+
+      function normalizeMood(x) {
+        const s = String(x || "neutral").trim().toLowerCase();
+        if (s === "sad" || s === "neutral" || s === "happy") return s;
+        return "neutral";
+      }
+
+      /** Fallback when `/tts_emotion_route` is unavailable — sad vs neutral vs happy. */
+      function classifySegmentHeuristic(seg) {
+        const s = (seg || "").trim();
+        if (!s) return "neutral";
+        if (SAD_HINTS.test(s) && !HAPPY_HINTS.test(s)) return "sad";
+        if (HAPPY_HINTS.test(s) && !SAD_HINTS.test(s)) return "happy";
+        if (SAD_HINTS.test(s)) return "sad";
+        if (HAPPY_HINTS.test(s)) return "happy";
+        if (/\b(unfortunately|however,\s+i\s+am\s+afraid|i\s+am\s+sorry)\b/i.test(s)) return "sad";
+        return "neutral";
+      }
+
+      function moodToFaceMode(mood) {
+        return normalizeMood(mood) === "sad" ? "sad" : "happy";
+      }
+
+      function buildPlanRows(segmentTexts, labels) {
+        return segmentTexts.map((t, i) => {
+          const mood = normalizeMood(Array.isArray(labels) ? labels[i] : "neutral");
+          return {
+            index: i,
+            mood,
+            faceMode: moodToFaceMode(mood),
+            snippet: snippet(t, 96)
+          };
+        });
+      }
+
+      async function fetchEmotionLabelsFromServer(endpointUrl, userText, sentences) {
+        const base = new URL(endpointUrl);
+        base.pathname = "/tts_emotion_route";
+        const res = await fetch(base.toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: sessionId,
+            user_text: userText,
+            sentences
+          })
+        });
+        if (!res.ok) {
+          throw new Error(`emotion route HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        const raw = data.labels;
+        if (!Array.isArray(raw)) throw new Error("emotion route: missing labels");
+        return sentences.map((_, i) => normalizeMood(raw[i]));
+      }
+
+      function snippet(s, n) {
+        const t = (s || "").replace(/\s+/g, " ").trim();
+        if (t.length <= n) return t;
+        return `${t.slice(0, n - 1)}…`;
+      }
+
+      function renderSegmentPlan(rows) {
+        if (!segmentPlanEl) return;
+        segmentPlanEl.replaceChildren();
+        if (!rows.length) return;
+        const ul = document.createElement("ul");
+        for (const row of rows) {
+          const li = document.createElement("li");
+          const mood = row.mood || "neutral";
+          li.className = mood;
+          const face = row.faceMode || moodToFaceMode(mood);
+          const slots = face === "sad" ? "slots 4–6" : "slots 1–3";
+          li.textContent = `#${row.index + 1} ${mood.toUpperCase()} → face ${face.toUpperCase()} (${slots}) — ${row.snippet}`;
+          ul.appendChild(li);
+        }
+        segmentPlanEl.appendChild(ul);
+      }
+
+      function getDefaultEndpoint() {
+        const saved = localStorage.getItem("bmo_emotions_tts_endpoint");
+        if (saved) return saved;
+        if (window.location.protocol === "file:") return "http://127.0.0.1:8000/text";
+        return new URL("/text", window.location.origin).toString();
+      }
+
+      function getEndpointCandidates() {
+        const list = [];
+        const custom = (endpointInput.value || "").trim();
+        if (custom) list.push(new URL(custom, window.location.origin).toString());
+        list.push(new URL("/text", window.location.origin).toString());
+        list.push("http://127.0.0.1:8000/text");
+        return [...new Set(list)];
+      }
+
+      function getSlotCell(slot) {
+        return grid.querySelector(`.svg-stage[data-slot="${slot}"]`)?.closest(".cell") || null;
+      }
+
+      function computeInstant01(analyserRef, timeBuf, freqBuf) {
+        analyserRef.getByteTimeDomainData(timeBuf);
+        let rms = 0;
+        for (let i = 0; i < timeBuf.length; i++) {
+          const v = (timeBuf[i] - 128) / 128;
+          rms += v * v;
+        }
+        rms = Math.sqrt(rms / timeBuf.length);
+        const rms01 = Math.min(1, rms * BMO_TTS_MOUTH_ENERGY_GAIN);
+
+        analyserRef.getByteFrequencyData(freqBuf);
+        const i0 = Math.min(BMO_TTS_FREQ_BIN_START, freqBuf.length);
+        const i1 = Math.min(BMO_TTS_FREQ_BIN_END, freqBuf.length);
+        let peak = 0;
+        for (let i = i0; i < i1; i++) {
+          const b = freqBuf[i];
+          if (b > peak) peak = b;
+        }
+        const bandPeak = peak / 255;
+        return Math.min(1, rms01 * 0.9 + bandPeak * 0.3);
+      }
+
+      function stepEmotion(nearPeak, speechBody, instant, prev) {
+        const idleCut = 0.052;
+        const idleCutHyst = 0.062;
+        if (prev === "happy") {
+          if (speechBody < idleCut && instant < 0.06) return "idle";
+          if (!nearPeak) return "surprised";
+          return "happy";
+        }
+        if (prev === "surprised") {
+          if (speechBody < idleCut && instant < 0.055) return "idle";
+          if (nearPeak) return "happy";
+          return "surprised";
+        }
+        if (speechBody > idleCutHyst || instant > 0.085) return "surprised";
+        if (nearPeak) return "happy";
+        return "idle";
+      }
+
+      function refreshPreviewFromCell(cell) {
+        if (!cell) return;
+        const svg = cell.querySelector(".svg-stage svg");
+        if (!svg) return;
+        previewRoot.replaceChildren();
+        previewRoot.appendChild(svg.cloneNode(true));
+        const nameEl = cell.querySelector("label");
+        const header = cell.querySelector("header");
+        const name = (nameEl && nameEl.textContent.trim()) || (header && header.textContent.trim()) || "Slot";
+        previewLabel.textContent = name;
+      }
+
+      /** Slot 6 uses a fixed clipPath id; duplicate ids break when the live preview sits in the same document as the grid. */
+      function uniquifySlot6ClipPath(mouthRoot) {
+        if (!mouthRoot || !mouthRoot.querySelector) return;
+        const clip = mouthRoot.querySelector("#bmo-slot6-mouth-clip");
+        if (!clip) return;
+        const newId = `bmo-slot6-mouth-clip-live-${Math.random().toString(36).slice(2, 9)}`;
+        clip.setAttribute("id", newId);
+        mouthRoot.querySelectorAll("[clip-path]").forEach((el) => {
+          const v = el.getAttribute("clip-path");
+          if (v && v.includes("bmo-slot6-mouth-clip")) {
+            el.setAttribute("clip-path", `url(#${newId})`);
+          }
+        });
+      }
+
+      function buildLivePreview(mode) {
+        currentLiveMode = mode === "sad" ? "sad" : "happy";
+        const baseSlot = currentLiveMode === "happy" ? "1" : "4";
+        const midSlot = currentLiveMode === "happy" ? "2" : "5";
+        const peakSlot = currentLiveMode === "happy" ? "3" : "6";
+
+        const baseSvg = getSlotCell(baseSlot)?.querySelector(".svg-stage svg")?.cloneNode(true);
+        const midSvg = getSlotCell(midSlot)?.querySelector(".svg-stage svg");
+        const peakSvg = getSlotCell(peakSlot)?.querySelector(".svg-stage svg");
+        const surprisedMouth = midSvg ? midSvg.lastElementChild?.cloneNode(true) : null;
+        const happyMouth = peakSvg ? peakSvg.lastElementChild?.cloneNode(true) : null;
+        const idleMouth = baseSvg ? baseSvg.lastElementChild : null;
+        if (!baseSvg || !idleMouth || !surprisedMouth || !happyMouth) return false;
+
+        if (currentLiveMode === "sad") uniquifySlot6ClipPath(happyMouth);
+
+        idleMouth.setAttribute("data-live-mouth", "idle");
+        surprisedMouth.setAttribute("data-live-mouth", "surprised");
+        happyMouth.setAttribute("data-live-mouth", "happy");
+        surprisedMouth.style.display = "none";
+        happyMouth.style.display = "none";
+
+        baseSvg.appendChild(surprisedMouth);
+        baseSvg.appendChild(happyMouth);
+        previewRoot.replaceChildren();
+        previewRoot.appendChild(baseSvg);
+        const track = currentLiveMode === "happy" ? "happy track · slots 1–3" : "sad track · slots 4–6";
+        previewLabel.textContent = `Live TTS · ${track}`;
+
+        liveMouthIdle = idleMouth;
+        liveMouthSurprised = surprisedMouth;
+        liveMouthHappy = happyMouth;
+        lastPreviewSlot = baseSlot;
+        return true;
+      }
+
+      function setLiveEmotion(emotion) {
+        if (!liveMouthIdle || !liveMouthSurprised || !liveMouthHappy) {
+          if (!buildLivePreview(currentLiveMode || "happy")) return;
+        }
+        liveMouthIdle.style.display = emotion === "idle" ? "" : "none";
+        liveMouthSurprised.style.display = emotion === "surprised" ? "" : "none";
+        liveMouthHappy.style.display = emotion === "happy" ? "" : "none";
+        const idleLab = currentLiveMode === "happy" ? "idle (1)" : "sad (4)";
+        const surLab = currentLiveMode === "happy" ? "surprised (2)" : "surprised (5)";
+        const peakLab = currentLiveMode === "happy" ? "open (3)" : "worried (6)";
+        const label = emotion === "idle" ? idleLab : emotion === "surprised" ? surLab : peakLab;
+        const track = currentLiveMode === "happy" ? "happy 1–3" : "sad 4–6";
+        previewLabel.textContent = `Live TTS · ${track} · ${label}`;
+      }
+
+      function stopTtsPlayback() {
+        isTtsPlaying = false;
+        if (activeBufferSource) {
+          try {
+            activeBufferSource.stop(0);
+          } catch (_) {
+            /* already stopped */
+          }
+          try {
+            activeBufferSource.disconnect();
+          } catch (_) {
+            /* */
+          }
+          activeBufferSource = null;
+        }
+      }
+
+      function stopMouthAnimation() {
+        stopTtsPlayback();
+        if (mouthRaf) {
+          cancelAnimationFrame(mouthRaf);
+          mouthRaf = null;
+        }
+        mouthBaseline = 0;
+        mouthExcessPeak = 0;
+        mouthSpeechBody = 0;
+        mouthEmotion = "idle";
+        setLiveEmotion("idle");
+      }
+
+      function tickMouth() {
+        if (!audioAnalyser || !isTtsPlaying) {
+          if (mouthRaf) {
+            cancelAnimationFrame(mouthRaf);
+            mouthRaf = null;
+          }
+          if (!isTtsPlaying) {
+            mouthBaseline = 0;
+            mouthExcessPeak = 0;
+            mouthSpeechBody = 0;
+            mouthEmotion = "idle";
+            setLiveEmotion("idle");
+          }
+          return;
+        }
+        if (!mouthTime || mouthTime.length !== audioAnalyser.fftSize) {
+          mouthTime = new Uint8Array(audioAnalyser.fftSize);
+        }
+        if (!mouthFreq || mouthFreq.length !== audioAnalyser.frequencyBinCount) {
+          mouthFreq = new Uint8Array(audioAnalyser.frequencyBinCount);
+        }
+        const instant = computeInstant01(audioAnalyser, mouthTime, mouthFreq);
+        mouthBaseline = mouthBaseline * BMO_TTS_BASELINE_EMA + instant * (1 - BMO_TTS_BASELINE_EMA);
+        const excess = Math.max(0, instant - mouthBaseline);
+        mouthExcessPeak = Math.max(excess, mouthExcessPeak * BMO_TTS_EXCESS_PEAK_DECAY);
+        const nearPeak =
+          excess >= mouthExcessPeak * BMO_TTS_EXCESS_NEAR_PEAK_FRAC &&
+          excess >= BMO_TTS_MIN_EXCESS_HAPPY;
+        mouthSpeechBody = mouthSpeechBody * BMO_TTS_SPEECH_BODY_EMA + instant * (1 - BMO_TTS_SPEECH_BODY_EMA);
+        mouthEmotion = stepEmotion(nearPeak, mouthSpeechBody, instant, mouthEmotion);
+
+        if (mouthEmotion === "happy") setLiveEmotion("happy");
+        else if (mouthEmotion === "surprised") setLiveEmotion("surprised");
+        else setLiveEmotion("idle");
+
+        mouthRaf = requestAnimationFrame(tickMouth);
+      }
+
+      async function ensureAudioGraph() {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (!audioAnalyser) {
+          audioAnalyser = audioCtx.createAnalyser();
+          audioAnalyser.fftSize = 2048;
+          audioAnalyser.connect(audioCtx.destination);
+        }
+        if (audioCtx.state === "suspended") {
+          await audioCtx.resume();
+        }
+      }
+
+      async function decodeAudioArrayBuffer(arrayBuffer) {
+        const ab = arrayBuffer.slice(0);
+        try {
+          return await audioCtx.decodeAudioData(ab);
+        } catch (e) {
+          console.warn("decodeAudioData retry", e);
+          return await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+        }
+      }
+
+      async function fetchAndDecodeAudio(url) {
+        const res = await fetch(url, { mode: "cors", credentials: "omit", cache: "no-store" });
+        if (!res.ok) {
+          throw new Error(`Audio fetch failed (${res.status})`);
+        }
+        const raw = await res.arrayBuffer();
+        if (!raw || raw.byteLength < 32) {
+          throw new Error("Audio response empty");
+        }
+        return decodeAudioArrayBuffer(raw);
+      }
+
+      function playBufferUntilEnded(buffer) {
+        return new Promise((resolve, reject) => {
+          let src;
+          try {
+            src = audioCtx.createBufferSource();
+            activeBufferSource = src;
+            src.buffer = buffer;
+            src.connect(audioAnalyser);
+            src.onended = () => {
+              try {
+                src.disconnect();
+              } catch (_) {
+                /* */
+              }
+              if (activeBufferSource === src) activeBufferSource = null;
+              resolve();
+            };
+            src.start(0);
+          } catch (err) {
+            if (activeBufferSource === src) activeBufferSource = null;
+            reject(err);
+          }
+        });
+      }
+
+      function resolveAudioUrl(url, endpointUrl) {
+        if (!url) return "";
+        if (/^https?:\/\//i.test(url)) return url;
+        return new URL(url, endpointUrl).toString();
+      }
+
+      async function parseNdjsonStream(response, onLine) {
+        const reader = response.body.getReader();
+        const dec = new TextDecoder();
+        let carry = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          carry += dec.decode(value, { stream: true });
+          let nl;
+          while ((nl = carry.indexOf("\n")) >= 0) {
+            const line = carry.slice(0, nl).trim();
+            carry = carry.slice(nl + 1);
+            if (!line) continue;
+            let obj;
+            try {
+              obj = JSON.parse(line);
+            } catch {
+              continue;
+            }
+            await onLine(obj);
+          }
+        }
+        const tail = carry.trim();
+        if (tail) {
+          try {
+            await onLine(JSON.parse(tail));
+          } catch {
+            /* incomplete */
+          }
+        }
+      }
+
+      /**
+       * Prefer streaming NDJSON so we can route each sentence while TTS chunks are produced.
+       * Falls back to one-shot JSON when the server returns application/json.
+       */
+      async function fetchBmoTtsRoutedSegments(userText, hooks) {
+        const endpointCandidates = getEndpointCandidates();
+        let lastErr = null;
+        for (const endpointUrl of endpointCandidates) {
+          try {
+            const res = await fetch(endpointUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/x-ndjson, application/json"
+              },
+              body: JSON.stringify({
+                session_id: sessionId,
+                text: userText,
+                client: "bmo",
+                stream_tts: true,
+                tts_only: true
+              })
+            });
+            if (!res.ok) throw new Error(`TTS request failed (${res.status})`);
+
+            const ctype = (res.headers.get("content-type") || "").toLowerCase();
+            const isNdjson = ctype.includes("ndjson") || ctype.includes("x-ndjson");
+            if (!isNdjson && ctype.includes("application/json")) {
+              const data = await res.json();
+              const reply = data.reply || "";
+              const urls = Array.isArray(data.audio_urls) && data.audio_urls.length
+                ? data.audio_urls
+                : data.audio_url
+                  ? [data.audio_url]
+                  : [];
+              if (!urls.length) throw new Error("No audio URL in JSON response");
+              const segmentTexts = splitSentencesForTts(reply);
+              let emotionLabels;
+              try {
+                emotionLabels = await fetchEmotionLabelsFromServer(endpointUrl, userText, segmentTexts);
+              } catch (e) {
+                console.warn("emotion LLM (json path) fallback", e);
+                emotionLabels = segmentTexts.map((t) => classifySegmentHeuristic(t));
+              }
+              const segments = urls.map((u, i) => {
+                const text = segmentTexts[i] || "";
+                const mood = emotionLabels[i] || "neutral";
+                const mode = moodToFaceMode(mood);
+                return {
+                  index: i,
+                  url: resolveAudioUrl(u, endpointUrl),
+                  text,
+                  mood,
+                  mode
+                };
+              });
+              endpointInput.value = endpointUrl;
+              localStorage.setItem("bmo_emotions_tts_endpoint", endpointUrl);
+              hooks?.onPlan?.(buildPlanRows(segmentTexts, emotionLabels), reply);
+              return { endpointUrl, reply, segments };
+            }
+
+            let replyFull = "";
+            let segmentTexts = [];
+            let emotionLabels = null;
+            const chunkByIndex = new Map();
+            const decodePromises = new Map();
+
+            await parseNdjsonStream(res, async (obj) => {
+              if (obj.type === "meta") {
+                replyFull = obj.reply || "";
+                segmentTexts = splitSentencesForTts(replyFull);
+                hooks?.onMeta?.({ reply: replyFull, segmentTexts });
+                try {
+                  emotionLabels = await fetchEmotionLabelsFromServer(endpointUrl, userText, segmentTexts);
+                } catch (e) {
+                  console.warn("emotion LLM (stream meta) fallback", e);
+                  emotionLabels = segmentTexts.map((t) => classifySegmentHeuristic(t));
+                }
+                hooks?.onPlan?.(buildPlanRows(segmentTexts, emotionLabels), replyFull);
+              } else if (obj.type === "chunk" && obj.url != null) {
+                const idx =
+                  typeof obj.index === "number" && !Number.isNaN(obj.index) ? obj.index : chunkByIndex.size;
+                if (!segmentTexts.length && replyFull) segmentTexts = splitSentencesForTts(replyFull);
+                const text = segmentTexts[idx] || "";
+                const mood =
+                  emotionLabels && emotionLabels[idx] != null
+                    ? normalizeMood(emotionLabels[idx])
+                    : classifySegmentHeuristic(text);
+                const mode = moodToFaceMode(mood);
+                const url = resolveAudioUrl(obj.url, endpointUrl);
+                chunkByIndex.set(idx, { index: idx, url, text, mood, mode });
+                hooks?.onChunk?.({ index: idx, url, text, mood, mode, reply: replyFull });
+                if (!decodePromises.has(idx)) {
+                  decodePromises.set(
+                    idx,
+                    fetchAndDecodeAudio(url).catch((e) => {
+                      throw new Error(`Decode segment ${idx}: ${e.message || e}`);
+                    })
+                  );
+                }
+              } else if (obj.type === "done") {
+                replyFull = replyFull || obj.reply || "";
+                if (!segmentTexts.length) segmentTexts = splitSentencesForTts(replyFull);
+                hooks?.onDone?.(obj);
+              }
+            });
+
+            const sorted = [...chunkByIndex.values()].sort((a, b) => a.index - b.index);
+            if (!sorted.length) throw new Error("No TTS chunks in NDJSON stream");
+            const segments = sorted.map((c) => ({
+              ...c,
+              decode: decodePromises.get(c.index)
+            }));
+            const plan = segments.map((s) => ({
+              index: s.index,
+              mood: s.mood,
+              faceMode: s.mode,
+              snippet: snippet(s.text, 96)
+            }));
+            hooks?.onPlan?.(plan, replyFull);
+            endpointInput.value = endpointUrl;
+            localStorage.setItem("bmo_emotions_tts_endpoint", endpointUrl);
+            return { endpointUrl, reply: replyFull, segments };
+          } catch (err) {
+            lastErr = err;
+          }
+        }
+        throw lastErr || new Error("Could not reach any TTS endpoint.");
+      }
+
+      async function speakCustomText() {
+        const userText = (ttsInput.value || "").trim();
+        if (!userText) {
+          ttsStatus.textContent = "Type a prompt first.";
+          return;
+        }
+        ttsBtn.disabled = true;
+        segmentPlanEl.replaceChildren();
+        ttsStatus.textContent = "Talking to server (streaming TTS when available)…";
+        try {
+          await ensureAudioGraph();
+          stopTtsPlayback();
+          if (mouthRaf) {
+            cancelAnimationFrame(mouthRaf);
+            mouthRaf = null;
+          }
+          mouthBaseline = 0;
+          mouthExcessPeak = 0;
+          mouthSpeechBody = 0;
+          mouthEmotion = "idle";
+
+          const result = await fetchBmoTtsRoutedSegments(userText, {
+            onMeta: ({ segmentTexts }) => {
+              ttsStatus.textContent = `Reply split into ${segmentTexts.length} sentence(s). Routing + TTS…`;
+            },
+            onChunk: ({ index, mood, mode }) => {
+              ttsStatus.textContent = `Sentence ${index + 1}: ${mood} (face ${mode}) — decoding…`;
+            },
+            onPlan: (plan) => {
+              renderSegmentPlan(plan);
+            }
+          });
+
+          const { segments } = result;
+          if (!segments.length) throw new Error("No TTS segments");
+
+          let playedAny = false;
+          let lastPlayErr = null;
+          for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            try {
+              const buffer =
+                seg.decode != null ? await seg.decode : await fetchAndDecodeAudio(seg.url);
+              if (buffer.duration < 0.02) throw new Error("Decoded audio too short");
+
+              buildLivePreview(seg.mode);
+              mouthBaseline = 0;
+              mouthExcessPeak = 0;
+              mouthSpeechBody = 0;
+              mouthEmotion = "idle";
+              setLiveEmotion("idle");
+
+              ttsStatus.textContent = `Playing ${i + 1}/${segments.length} — ${seg.mood || "neutral"} (face ${
+                seg.mode
+              }; ${seg.mode === "happy" ? "slots 1–3" : "slots 4–6"})`;
+              isTtsPlaying = true;
+              if (!mouthRaf) mouthRaf = requestAnimationFrame(tickMouth);
+              await playBufferUntilEnded(buffer);
+              playedAny = true;
+            } catch (err) {
+              lastPlayErr = err;
+              console.warn("Segment play failed:", seg, err);
+            }
+          }
+          isTtsPlaying = false;
+          if (mouthRaf) {
+            cancelAnimationFrame(mouthRaf);
+            mouthRaf = null;
+          }
+          if (!playedAny) throw lastPlayErr || new Error("No playable audio segments");
+
+          ttsStatus.textContent = "Done.";
+          mouthBaseline = 0;
+          mouthExcessPeak = 0;
+          mouthSpeechBody = 0;
+          mouthEmotion = "idle";
+          buildLivePreview("happy");
+          setLiveEmotion("idle");
+        } catch (err) {
+          console.error(err);
+          isTtsPlaying = false;
+          if (mouthRaf) {
+            cancelAnimationFrame(mouthRaf);
+            mouthRaf = null;
+          }
+          mouthBaseline = 0;
+          mouthExcessPeak = 0;
+          mouthSpeechBody = 0;
+          mouthEmotion = "idle";
+          buildLivePreview("happy");
+          setLiveEmotion("idle");
+          ttsStatus.textContent = `Could not run TTS router: ${err.message}`;
+        } finally {
+          ttsBtn.disabled = false;
+        }
+      }
+
+      grid.addEventListener("click", (e) => {
+        /* Let the editable name stay usable without switching preview */
+        if (e.target.closest("label[contenteditable]")) return;
+
+        const cell = e.target.closest(".cell");
+        if (!cell || !grid.contains(cell)) return;
+
+        const svg = cell.querySelector(".svg-stage svg");
+        if (!svg) return;
+
+        document.querySelectorAll(".cell.slot-selected").forEach((c) => {
+          c.classList.remove("slot-selected");
+        });
+        cell.classList.add("slot-selected");
+        selectedCell = cell;
+        const activeSlot = cell.querySelector(".svg-stage")?.dataset.slot;
+        lastPreviewSlot = activeSlot || null;
+
+        refreshPreviewFromCell(cell);
+      });
+
+      ttsBtn.addEventListener("click", () => {
+        void speakCustomText();
+      });
+      ttsInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void speakCustomText();
+        }
+      });
+      endpointInput.value = getDefaultEndpoint();
+      buildLivePreview("happy");
+      setLiveEmotion("idle");
+    })();
+  </script>
+</body>
+</html>

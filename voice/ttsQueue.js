@@ -928,3 +928,116 @@ try {
     window.getTtsDebugState = getTtsDebugState;
   }
 } catch (_) {}
+
+/* =============================================================================
+ * STAGE 21 EXTRACTION (2026-05-31): MAIN-TTS PIPELINE BOOKKEEPING
+ * -----------------------------------------------------------------------------
+ * Verbatim move from app.js L18710..L18745 (36 LF-terminated source lines,
+ * re-terminated as CRLF here to match this file's native line endings).
+ *
+ * Stage 5 (2026-05-27) created this file and explicitly listed these six
+ * symbols as future-move candidates in its header docstring (the
+ * "Helpers / state intentionally LEFT in app.js" block above). Patch A-7
+ * completes that move: the residual main-TTS runtime layer now lives next
+ * to the playback / cancellation primitives it composes with.
+ *
+ * Symbols moved (function declarations hoist within this file; the two
+ * `let` bindings are placed at the top level so other classic-script
+ * modules can both read AND assign to them through the shared global
+ * lexical environment at call time -- this is the same pattern Stage 5
+ * already relies on for activeMainTtsBufferSources / mainTtsPlaybackActive):
+ *   - function isAssistantTtsPlaying    (reads activeMainTtsBufferSources +
+ *                                        mainTtsPlaybackActive + getAudioEl())
+ *   - let activePipelineAbort            (AbortController owned by current
+ *                                        request; mutated from typed barge-in,
+ *                                        voice barge-in, and the pipeline
+ *                                        finish path)
+ *   - let queuedAssistantTtsPlayback     (serialization tail; chained
+ *                                        through enqueueAssistantTtsPlayback)
+ *   - function attachPipelineAbortSignal (aborts the previous controller,
+ *                                        installs a fresh one, returns the
+ *                                        new signal)
+ *   - function enqueueAssistantTtsPlayback (single-flight TTS task queue:
+ *                                        wait-idle -> run -> wait-idle, then
+ *                                        update the tail)
+ *   - async function waitUntilAssistantTtsIdle (40 ms poll loop bounded by
+ *                                        maxWaitMs default 60_000)
+ *
+ * Intentionally LEFT in app.js per Patch A-7 scope (still in the same
+ * post-banner stub region):
+ *   - waitForAssistantPlaybackEnd        (event-based; not part of the
+ *                                        single-flight queue)
+ *   - isMainTtsOrHtmlAudioPlaying        (used by isServerPipelineBusy +
+ *                                        keyboard-barge-in path; not in
+ *                                        the residual list)
+ *   - isServerPipelineBusy               (composes requestInFlight +
+ *                                        processing + main-TTS state)
+ *   - isFlowModeKeyboardInterruptAllowed (policy gate; unrelated to
+ *                                        playback queueing)
+ *   - interruptAssistantPipelineForTypedMessage (typed-keyboard barge-in
+ *                                        orchestration; mutates
+ *                                        activePipelineAbort via shared
+ *                                        global lex env)
+ *   - cancelBrowserInterruptTtsOnly      (voice-barge-in micro-ack path)
+ *
+ * External call sites (resolved via shared classic-script global lexical
+ * environment at call time; every caller below was already cross-file
+ * before Stage 21):
+ *   - app.js: isAssistantTtsPlaying() reads in dump / debug snapshots,
+ *     barge-in gating, infer-pipeline gating, and tts gating.
+ *   - app.js: attachPipelineAbortSignal() in every /infer + /text fetch,
+ *     plus the assistant-reply orchestrator.
+ *   - app.js: activePipelineAbort.signal as the signal field for those
+ *     fetches, and activePipelineAbort?.abort() + activePipelineAbort=null
+ *     mutations from typed barge-in and pipeline reset.
+ *   - app.js: enqueueAssistantTtsPlayback() in the work-mode reasoning
+ *     stage-2 deferred playback path.
+ *   - voice/interruption.js, voice/asr.js, workmode/panels.js,
+ *     debug/voiceDebug.js: read these symbols via shared lex env.
+ *
+ * Hard-rule preservation (Patch A-7):
+ *   - Function names + signatures unchanged.
+ *   - 40 ms poll interval + 60_000 ms maxWaitMs default unchanged.
+ *   - .catch(() => {}) safety on the queue chain unchanged.
+ *   - AbortController prior-abort-then-replace semantics unchanged.
+ *   - No [UX][TTS], tts_cancel_source_trace, interrupt-delay or TTS debug
+ *     logs were removed or renamed -- those live elsewhere and are not
+ *     part of this block.
+ * ============================================================================= */
+
+function isAssistantTtsPlaying() {
+  const outAudio = getAudioEl();
+  const htmlAudioPlaying = outAudio && !outAudio.paused;
+  const webAudioMainTtsPlaying =
+    activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
+  return Boolean(htmlAudioPlaying || webAudioMainTtsPlaying);
+}
+
+let activePipelineAbort = null;
+let queuedAssistantTtsPlayback = Promise.resolve();
+
+function attachPipelineAbortSignal() {
+  activePipelineAbort?.abort();
+  activePipelineAbort = new AbortController();
+  return activePipelineAbort.signal;
+}
+
+function enqueueAssistantTtsPlayback(task) {
+  const run = queuedAssistantTtsPlayback
+    .catch(() => {})
+    .then(async () => {
+      await waitUntilAssistantTtsIdle();
+      await task();
+      await waitUntilAssistantTtsIdle();
+    });
+  queuedAssistantTtsPlayback = run.catch(() => {});
+  return run;
+}
+
+async function waitUntilAssistantTtsIdle(maxWaitMs = 60000) {
+  const start = performance.now();
+  while (isAssistantTtsPlaying()) {
+    if (performance.now() - start > maxWaitMs) break;
+    await new Promise((resolve) => window.setTimeout(resolve, 40));
+  }
+}

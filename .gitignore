@@ -1,0 +1,41 @@
+.env
+.env.*
+!.env.example
+local_vera/.env
+.vera_spotify_bearers.json
+
+# Python bytecode cache (regenerated automatically).
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Node
+node_modules/
+local_vera/node_modules/
+vera-api/node_modules/
+
+# TTS audio cache — large (multi-GB), regenerated on demand.
+tts_outputs/
+
+# Local logs (per-session cost + request summaries).
+logs/
+*.log
+
+# Per-tab chat log dumps (created by convo_tester.py and ad-hoc scripts).
+chat_log/
+
+# OS / editor
+.DS_Store
+
+# Large built-in audio assets — deploy separately on the server (see Free_music/README.md).
+Free_music/Brown Noise.mp3
+Free_music/Rain and Thunder Sound.mp3
+Free_music/White Noise.mp3
+
+# Cloudflare Worker local dev
+vera-api/.wrangler/
+vera-api/.dev.vars

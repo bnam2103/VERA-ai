@@ -1,0 +1,180 @@
+Add a reasoning-gate debug/testing endpoint so we can batch-test whether a sentence enters the reasoning space.
+
+Current problem:
+Reasoning-space routing is partly frontend and partly backend:
+- frontend app.js::maybePrepareWorkModeReasoning has deterministic short-circuits
+- backend /work_mode/classify has classifier/gate logic
+
+Calling /infer does not cleanly test “did this enter reasoning space?” because /infer may bypass the frontend reasoning gate. We need a dedicated debug path that returns the exact routing decision without opening panels or streaming reasoning.
+
+Goal:
+Add a debug endpoint or dev-only function that accepts a text string and returns the same final route decision that the real app would use:
+- voice_ui
+- reasoning_panel
+- clarification
+
+Do not start /work_mode/reasoning_stream.
+Do not mutate panels.
+Do not play audio.
+
+────────────────────────────
+PART 1 — Add backend debug endpoint
+────────────────────────────
+
+Add endpoint:
+
+POST /debug/reasoning_gate
+
+Input JSON or form data:
+{
+  "text": "...",
+  "active_work_mode": true,
+  "previous_user_text": "... optional",
+  "active_panel_index": 0 optional
+}
+
+Output:
+{
+  "text": "...",
+  "route": "voice_ui" | "reasoning_panel" | "clarification",
+  "reason": "simple_definition" | "brief_explanation" | "explicit_panel_reference" | "broad_complex_topic" | "complex_task" | "panel_followup" | "llm_negative" | "...",
+  "resolved_topic": "... or null",
+  "target_panel": 2 or null,
+  "prompt_reasoning": true/false,
+  "diagnostics": {
+    "reasoning_gate_called": true,
+    "reasoning_gate_result": "...",
+    "reasoning_gate_reason": "...",
+    "explicit_panel_reference": true/false,
+    "simple_definition_detected": true/false,
+    "brief_explanation_detected": true/false,
+    "broad_complex_topic_detected": true/false,
+    "complex_task_detected": true/false,
+    "active_work_mode": true/false,
+    "prior_topic_used": true/false,
+    "resolved_topic": "...",
+    "route_source": "backend_debug" | "backend_classifier"
+  }
+}
+
+The endpoint can call CHAT_REASONING.py::classify_route_reasoning directly, but it should also accept previous_user_text so pronoun cases can be tested.
+
+If frontend-only helpers are not available on backend, that is okay, but report that the endpoint tests backend reasoning gate only. Ideally, mirror the frontend short-circuit logic or expose a pure shared helper.
+
+────────────────────────────
+PART 2 — Add frontend console debug helper
+────────────────────────────
+
+Expose a dev helper in app.js:
+
+window.debugReasoningGate(text, opts)
+
+It should run the same logic used by maybePrepareWorkModeReasoning but in dry-run mode:
+- do not open reasoning stream
+- do not mutate panels
+- do not play TTS
+
+Return/log:
+{
+  route,
+  reason,
+  resolvedTopic,
+  targetPanel,
+  explicitPanelReference,
+  simpleDefinitionDetected,
+  briefExplanationDetected,
+  broadComplexTopicDetected,
+  complexTaskDetected,
+  priorTopicUsed
+}
+
+This lets us test the real frontend gate from DevTools:
+
+await window.debugReasoningGate("what is tennis?")
+await window.debugReasoningGate("explain the Vietnam War")
+await window.debugReasoningGate("can you explain that in the reasoning panel?", { previousUserText: "what is tennis?" })
+
+────────────────────────────
+PART 3 — Batch test support
+────────────────────────────
+
+Add a script or make sure this endpoint works with a JSONL runner.
+
+Test cases include:
+- expected_route
+- expected_reason optional
+- previous_user_text optional
+- expected_resolved_topic optional
+- expected_target_panel optional
+
+Expected behavior:
+- simple definitions → voice_ui
+- brief explanations → voice_ui
+- explicit panel references → reasoning_panel
+- broad/complex topics → reasoning_panel
+- pronoun references with prior topic → reasoning_panel with resolved topic
+- pronoun references without prior topic → clarification
+
+────────────────────────────
+PART 4 — Required test cases
+────────────────────────────
+
+Voice UI expected:
+1. what is tennis?
+2. can you tell me what tennis is?
+3. explain tennis
+4. briefly explain the Vietnam War
+5. what was the Vietnam War?
+6. can you briefly explain inflation?
+7. who is Serena Williams?
+8. what does Black-Scholes mean?
+
+Reasoning panel expected:
+1. explain the Vietnam War
+2. give me a detailed explanation of the Vietnam War
+3. explain this step by step
+4. solve this probability problem
+5. write an essay about the Vietnam War
+6. compare the causes and effects of the Vietnam War
+7. explain Black-Scholes delta in detail
+
+Explicit panel expected:
+1. can you explain tennis in the reasoning panel?
+2. put an explanation of tennis in panel 2
+3. use the reasoning space to explain tennis
+4. open a new panel and explain tennis
+5. answer this in the panel, with previous_user_text supplied
+
+Clarification expected:
+1. explain that in the panel, with no previous_user_text
+2. answer this in the reasoning panel, with no previous_user_text
+
+Mixed action/reasoning expected:
+These may be tested by multi-action planner instead of reasoning gate endpoint, but debug should expose clean reasoning decision if applicable:
+1. go to panel 2, explain the Vietnam War, and play lo-fi
+2. play lo-fi and explain the Vietnam War in panel 2
+3. set a timer for one hour and explain the Vietnam War in panel 2
+
+────────────────────────────
+PART 5 — Logs
+────────────────────────────
+
+Every real reasoning gate decision should log:
+
+[reasoning_gate_debug]
+- text
+- route
+- reason
+- resolved_topic
+- target_panel
+- explicit_panel_reference
+- simple_definition_detected
+- brief_explanation_detected
+- broad_complex_topic_detected
+- complex_task_detected
+- active_work_mode
+- prior_topic_used
+- route_source
+
+Goal:
+We should be able to run a batch file of sentences and see exactly which ones enter the reasoning space without manually watching the UI.

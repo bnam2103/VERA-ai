@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "Credit values per credit_action. Measurement-only — no enforcement.",
+    "Edit values freely; the loader falls back to DEFAULT_CREDIT_CONFIG for any",
+    "missing keys, and unknown keys are ignored. A missing file is auto-",
+    "regenerated from defaults on the next request."
+  ],
+  "state_sync": 0,
+  "local_command": 0,
+  "failed_request": 0,
+  "simple_llm_command": 1,
+  "normal_chat_short": 2,
+  "normal_chat_long": 4,
+  "checklist_generation": 3,
+  "checklist_edit_local": 0,
+  "checklist_edit_llm": 1,
+  "work_mode_reasoning_short": 5,
+  "work_mode_reasoning_long": 10,
+  "serper_search_bundle": 3,
+  "image_file_reasoning": 15,
+  "bmo_tts": 0
+}
