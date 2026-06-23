@@ -7,15 +7,26 @@
 
   const MAX_EXCERPT = 500;
   const MAX_NOTE = 500;
+  const DEFAULT_THANKS_DISMISS_MS = 3000;
+  const THANKS_FADE_MS = 320;
 
   let _pendingUserExcerpt = "";
   let _activeRow = null;
+  const _dismissTimers = new WeakMap();
 
   function truncateText(text, max) {
     const t = String(text || "").trim();
     if (!t) return "";
     if (t.length <= max) return t;
     return t.slice(0, max);
+  }
+
+  function thanksDismissMs() {
+    try {
+      const n = window.veraFeedbackThanksDismissMs;
+      if (typeof n === "number" && n >= 0) return n;
+    } catch (_) {}
+    return DEFAULT_THANKS_DISMISS_MS;
   }
 
   function feedbackAuthenticated() {
@@ -40,11 +51,21 @@
     return Boolean(convo && convo.contains(row));
   }
 
+  function clearThanksDismissTimer(bar) {
+    if (!(bar instanceof HTMLElement)) return;
+    const tid = _dismissTimers.get(bar);
+    if (tid != null) {
+      clearTimeout(tid);
+      _dismissTimers.delete(bar);
+    }
+  }
+
   /** Remove every feedback bar from the conversation (previous replies). */
   function clearActiveFeedbackBars() {
     const convo = feedbackConversationEl();
     if (!convo) return;
     convo.querySelectorAll(".vera-feedback-bar").forEach((bar) => {
+      clearThanksDismissTimer(bar);
       bar.remove();
     });
     _activeRow = null;
@@ -72,46 +93,54 @@
     );
   }
 
+  function clearNoteInput(noteInput) {
+    if (noteInput instanceof HTMLInputElement || noteInput instanceof HTMLTextAreaElement) {
+      noteInput.value = "";
+    }
+  }
+
   function closeNoteEditor(bar) {
     const { noteWrap, noteInput, upBtn, downBtn } = getBarParts(bar);
     if (!(noteWrap instanceof HTMLElement)) return;
     noteWrap.hidden = true;
     noteWrap.classList.remove("is-open");
-    if (noteInput instanceof HTMLInputElement) noteInput.value = "";
+    clearNoteInput(noteInput);
     if (upBtn instanceof HTMLButtonElement) upBtn.disabled = false;
     if (downBtn instanceof HTMLButtonElement) downBtn.disabled = false;
+  }
+
+  function scheduleThanksDismiss(bar) {
+    if (!(bar instanceof HTMLElement)) return;
+    clearThanksDismissTimer(bar);
+    const tid = setTimeout(() => {
+      _dismissTimers.delete(bar);
+      if (!bar.isConnected) return;
+      bar.classList.add("is-fading");
+      setTimeout(() => {
+        if (bar.isConnected) bar.remove();
+        if (_activeRow && !(_activeRow.querySelector?.(".vera-feedback-bar"))) {
+          _activeRow = null;
+        }
+      }, THANKS_FADE_MS);
+    }, thanksDismissMs());
+    _dismissTimers.set(bar, tid);
   }
 
   function showThanksState(bar) {
     if (!(bar instanceof HTMLElement)) return;
     closeNoteEditor(bar);
-    const { controls, thanks, upBtn, downBtn, noteSubmit } = getBarParts(bar);
+    const { controls, thanks } = getBarParts(bar);
     if (controls instanceof HTMLElement) {
       controls.hidden = true;
       controls.setAttribute("aria-hidden", "true");
     }
-    if (upBtn instanceof HTMLButtonElement) upBtn.disabled = true;
-    if (downBtn instanceof HTMLButtonElement) downBtn.disabled = true;
-    if (noteSubmit instanceof HTMLButtonElement) noteSubmit.disabled = true;
     if (thanks instanceof HTMLElement) {
       thanks.hidden = false;
       thanks.removeAttribute("aria-hidden");
     }
     bar.classList.add("is-submitted");
-  }
-
-  function finishDownSubmit(bar) {
-    if (!(bar instanceof HTMLElement)) return;
-    closeNoteEditor(bar);
-    const { controls, upBtn, downBtn, noteSubmit } = getBarParts(bar);
-    if (upBtn instanceof HTMLButtonElement) upBtn.disabled = true;
-    if (downBtn instanceof HTMLButtonElement) downBtn.disabled = true;
-    if (noteSubmit instanceof HTMLButtonElement) noteSubmit.disabled = true;
-    bar.classList.add("is-submitted");
-    if (controls instanceof HTMLElement) {
-      controls.hidden = true;
-      controls.setAttribute("aria-hidden", "true");
-    }
+    bar.classList.remove("is-fading");
+    scheduleThanksDismiss(bar);
   }
 
   function submitFeedback(row, rating, note) {
@@ -138,11 +167,7 @@
     };
 
     row.dataset.feedbackSubmitted = "1";
-    if (rating === "up") {
-      showThanksState(bar);
-    } else {
-      finishDownSubmit(bar);
-    }
+    showThanksState(bar);
 
     void authFetch(authApiUrl("/api/feedback"), {
       method: "POST",
@@ -183,9 +208,9 @@
     noteWrap.className = "vera-feedback-note-wrap";
     noteWrap.hidden = true;
 
-    const noteInput = document.createElement("input");
-    noteInput.type = "text";
+    const noteInput = document.createElement("textarea");
     noteInput.className = "vera-feedback-note";
+    noteInput.rows = 2;
     noteInput.maxLength = MAX_NOTE;
     noteInput.placeholder = "What went wrong? (optional)";
     noteInput.setAttribute("aria-label", "Optional feedback note");
@@ -208,7 +233,6 @@
       if (row.dataset.feedbackSubmitted === "1") return;
       if (isNoteEditorOpen(bar)) {
         closeNoteEditor(bar);
-        return;
       }
       submitFeedback(row, "up", null);
     });
@@ -225,7 +249,7 @@
     });
 
     noteInput.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter") {
+      if (ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
         submitFeedback(row, "down", noteInput.value);
       } else if (ev.key === "Escape") {

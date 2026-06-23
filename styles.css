@@ -7396,13 +7396,19 @@ body.bmo-open .bubble.user.interrupt-preview {
   cursor: default;
 }
 
+.vera-feedback-bar.is-fading {
+  opacity: 0;
+  transition: opacity 0.32s ease;
+  pointer-events: none;
+}
+
 .vera-feedback-note-wrap {
   display: none;
   flex: 1 1 auto;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-end;
+  gap: 6px;
   min-width: 0;
-  max-width: min(100%, 16rem);
+  max-width: min(100%, 24rem);
 }
 
 .vera-feedback-note-wrap.is-open {
@@ -7411,16 +7417,19 @@ body.bmo-open .bubble.user.interrupt-preview {
 
 .vera-feedback-note {
   flex: 1 1 auto;
-  min-width: 5rem;
+  min-width: 11rem;
   width: 0;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(8, 14, 20, 0.72);
-  color: rgba(255, 255, 255, 0.88);
+  min-height: 2.5rem;
+  max-height: 3.6rem;
+  resize: none;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(8, 14, 20, 0.78);
+  color: rgba(255, 255, 255, 0.9);
   font: inherit;
-  font-size: 0.76rem;
-  line-height: 1.25;
-  padding: 3px 7px;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  padding: 6px 9px;
 }
 
 .vera-feedback-note::placeholder {
@@ -7429,6 +7438,8 @@ body.bmo-open .bubble.user.interrupt-preview {
 
 .vera-feedback-note-submit {
   flex: 0 0 auto;
+  align-self: flex-end;
+  margin-bottom: 2px;
   border: 1px solid rgba(120, 180, 255, 0.28);
   background: rgba(32, 52, 78, 0.5);
   color: rgba(220, 232, 248, 0.9);
