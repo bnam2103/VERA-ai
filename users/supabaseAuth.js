@@ -18,6 +18,8 @@ let _supabaseInitPromise = null;
 let _lastMeSnapshot = null;
 let _settingsHydratedUserId = null;
 let _checklistHydratedUserId = null;
+let _checklistHydrateAttempts = 0;
+let _checklistHydrateRetryTimer = null;
 
 function _readMetaSupabaseConfig() {
   const urlMeta = document.querySelector('meta[name="vera-supabase-url"]');
@@ -211,11 +213,58 @@ async function refreshSupabaseMeFromBackend() {
   return _lastMeSnapshot;
 }
 
+function _resolveChecklistMergeHydrateFn() {
+  if (typeof hydrateChecklistMergeOnLogin === "function") {
+    return hydrateChecklistMergeOnLogin;
+  }
+  if (typeof window !== "undefined" && typeof window.hydrateChecklistMergeOnLogin === "function") {
+    return window.hydrateChecklistMergeOnLogin;
+  }
+  return null;
+}
+
+async function _hydrateChecklistAccountWhenReady(userId) {
+  const uid = String(userId || "").trim();
+  if (!uid || uid === _checklistHydratedUserId) return;
+
+  const hydrateFn = _resolveChecklistMergeHydrateFn();
+  if (!hydrateFn) {
+    if (_checklistHydrateAttempts === 0) {
+      console.warn(
+        "[VERA][CHECKLIST] hydrateChecklistMergeOnLogin missing — waiting for users/checklistSupabaseSync.js"
+      );
+    }
+    if (_checklistHydrateAttempts < 50) {
+      _checklistHydrateAttempts += 1;
+      if (_checklistHydrateRetryTimer) window.clearTimeout(_checklistHydrateRetryTimer);
+      _checklistHydrateRetryTimer = window.setTimeout(() => {
+        _checklistHydrateRetryTimer = null;
+        void _hydrateChecklistAccountWhenReady(uid);
+      }, 100);
+      return;
+    }
+    console.warn(
+      "[VERA][CHECKLIST] checklistSupabaseSync.js not loaded — account checklist will not sync. " +
+        "Ensure index.html includes <script src=\"users/checklistSupabaseSync.js\"> after workmode/checklist.js."
+    );
+    return;
+  }
+
+  _checklistHydrateAttempts = 0;
+  if (_checklistHydrateRetryTimer) {
+    window.clearTimeout(_checklistHydrateRetryTimer);
+    _checklistHydrateRetryTimer = null;
+  }
+  const merged = await hydrateFn();
+  if (merged) _checklistHydratedUserId = uid;
+}
+
 async function refreshSupabaseAccountLabel() {
   if (!_supabaseConfigured && !_supabaseClient) {
     return false;
   }
   const me = await refreshSupabaseMeFromBackend();
+  const uid = String(me?.user_id || "").trim();
   _setSupabaseAccountLabel(me);
   _setAccountFabLabel(me);
   _renderAccountPanel(me);
@@ -227,7 +276,6 @@ async function refreshSupabaseAccountLabel() {
     }
   }
   if (me?.authenticated && typeof hydrateVeraSettingsFromSupabase === "function") {
-    const uid = String(me.user_id || "").trim();
     if (uid && uid !== _settingsHydratedUserId) {
       _settingsHydratedUserId = uid;
       void hydrateVeraSettingsFromSupabase();
@@ -235,14 +283,15 @@ async function refreshSupabaseAccountLabel() {
   } else {
     _settingsHydratedUserId = null;
   }
-  if (me?.authenticated && typeof hydrateChecklistMergeOnLogin === "function") {
-    const uid = String(me.user_id || "").trim();
-    if (uid && uid !== _checklistHydratedUserId) {
-      const merged = await hydrateChecklistMergeOnLogin();
-      if (merged) _checklistHydratedUserId = uid;
-    }
-  } else {
+  if (me?.authenticated && uid && uid !== _checklistHydratedUserId) {
+    void _hydrateChecklistAccountWhenReady(uid);
+  } else if (!me?.authenticated) {
     _checklistHydratedUserId = null;
+    _checklistHydrateAttempts = 0;
+    if (_checklistHydrateRetryTimer) {
+      window.clearTimeout(_checklistHydrateRetryTimer);
+      _checklistHydrateRetryTimer = null;
+    }
   }
   return Boolean(me?.authenticated);
 }

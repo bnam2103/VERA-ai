@@ -2995,7 +2995,7 @@ document.addEventListener("click", () => {
      Must load AFTER signinUi.js (authApiUrl, authFetch stub) and BEFORE
      workmode/checklist.js + app.js. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="users/supabaseAuth.js?v=4"></script>
+<script src="users/supabaseAuth.js?v=5"></script>
 <!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="users/accountSettingsSync.js?v=1"></script>
@@ -3088,7 +3088,7 @@ document.addEventListener("click", () => {
 <script src="workmode/checklist.js?v=3"></script>
 <!-- users/checklistSupabaseSync.js — account checklist ↔ Supabase checklist_items.
      Must load AFTER checklist.js + supabaseAuth.js. -->
-<script src="users/checklistSupabaseSync.js?v=2"></script>
+<script src="users/checklistSupabaseSync.js?v=3"></script>
 <!-- workmode/multiActionPlanner.js must load AFTER workmode/panels.js +
      workmode/checklist.js (the executor calls activateReasoningTab /
      addReasoningTab from panels.js, and the planner segments include

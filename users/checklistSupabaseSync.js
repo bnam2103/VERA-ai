@@ -11,6 +11,8 @@
  *  Mutations: PUT /api/checklist in background via syncWorkChecklistToSupabaseNow.
  * ========================================================================= */
 
+console.info("[checklist_supabase_sync_loaded]");
+
 const LS_CHECKLIST_KEY = "vera_wm_checklist_v1";
 const LS_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
 const LS_UNSYNCED_KEY = "vera_wm_checklist_supabase_unsynced_v1";
@@ -187,10 +189,12 @@ async function hydrateChecklistMergeOnLogin() {
   return _hydratePromise;
 }
 
-try {
-  if (typeof window !== "undefined") {
-    window.syncWorkChecklistToSupabaseNow = syncWorkChecklistToSupabaseNow;
-    window.hydrateChecklistMergeOnLogin = hydrateChecklistMergeOnLogin;
-    window.isWorkChecklistSupabaseUnsynced = isWorkChecklistSupabaseUnsynced;
-  }
-} catch (_) {}
+if (typeof window !== "undefined") {
+  window.syncWorkChecklistToSupabaseNow = syncWorkChecklistToSupabaseNow;
+  window.hydrateChecklistMergeOnLogin = hydrateChecklistMergeOnLogin;
+  window.isWorkChecklistSupabaseUnsynced = isWorkChecklistSupabaseUnsynced;
+  console.info("[checklist_supabase_sync_ready]", {
+    hydrate: typeof window.hydrateChecklistMergeOnLogin,
+    put: typeof window.syncWorkChecklistToSupabaseNow,
+  });
+}
