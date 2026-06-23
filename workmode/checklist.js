@@ -263,6 +263,13 @@ async function flushWorkChecklistSyncBeforeCommand() {
 }
 
 async function hydrateWorkChecklistFromServer(force = false) {
+  if (
+    !force &&
+    typeof isSupabaseUserAuthenticated === "function" &&
+    isSupabaseUserAuthenticated()
+  ) {
+    return;
+  }
   if (!force && workChecklistHydrationPromise) return workChecklistHydrationPromise;
   const startVersion = workChecklistLocalMutationVersion;
   workChecklistHydrationPromise = (async () => {
@@ -274,6 +281,11 @@ async function hydrateWorkChecklistFromServer(force = false) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(data.items)) return;
       if (!force && startVersion !== workChecklistLocalMutationVersion) return;
+      if (data.items.length === 0) {
+        const local = readChecklistItemsFromStorage();
+        const hasStoredContent = local.some((item) => String(item?.text || "").trim());
+        if (hasStoredContent) return;
+      }
       localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(data.items));
       if (typeof data.completed_collapsed === "boolean") {
         localStorage.setItem(

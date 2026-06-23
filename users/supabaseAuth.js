@@ -238,8 +238,8 @@ async function refreshSupabaseAccountLabel() {
   if (me?.authenticated && typeof hydrateChecklistMergeOnLogin === "function") {
     const uid = String(me.user_id || "").trim();
     if (uid && uid !== _checklistHydratedUserId) {
-      _checklistHydratedUserId = uid;
-      void hydrateChecklistMergeOnLogin();
+      const merged = await hydrateChecklistMergeOnLogin();
+      if (merged) _checklistHydratedUserId = uid;
     }
   } else {
     _checklistHydratedUserId = null;
