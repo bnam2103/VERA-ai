@@ -146,6 +146,32 @@ async function authFetch(url, init) {
   return fetch(url, init);
 }
 
+/**
+ * Legacy users_files sign-in (long-press logo + SIGN IN nav). Disabled by
+ * default — Supabase Account is the normal login path (Phase 2+).
+ * Set window.VERA_ENABLE_LEGACY_SIGNIN=true or meta vera-enable-legacy-signin
+ * to re-enable for local/dev testing only.
+ */
+function isLegacySignInEnabled() {
+  if (typeof window !== "undefined") {
+    const flag = window.VERA_ENABLE_LEGACY_SIGNIN;
+    if (flag === true) return true;
+    if (String(flag || "").trim().toLowerCase() === "true") return true;
+  }
+  const meta = document.querySelector('meta[name="vera-enable-legacy-signin"]');
+  return (meta?.content || "").trim().toLowerCase() === "true";
+}
+
+function hideLegacySignInUi() {
+  document.getElementById("vera-user-sign-in")?.setAttribute("hidden", "");
+  document.getElementById("vera-user-sign-in-modal")?.setAttribute("hidden", "");
+  const errEl = document.getElementById("vera-sign-in-error");
+  if (errEl instanceof HTMLElement) {
+    errEl.textContent = "";
+    errEl.hidden = true;
+  }
+}
+
 function setVeraActiveUserLabel(usernameOrNull) {
   const el = document.getElementById("vera-active-user-label");
   if (!el) return;
@@ -197,11 +223,23 @@ async function refreshVeraActiveUserLabel() {
 }
 
 function wireVeraUserSignInHoldAndModal() {
+  hideLegacySignInUi();
+  if (!isLegacySignInEnabled()) {
+    return;
+  }
+
   const holdMs = 2000;
   /* Long-press sign-in only in VERA app (#return-home-vera), not on landing nav-home */
   const logos = [document.getElementById("return-home-vera")].filter(Boolean);
 
   const revealSignInButtons = () => {
+    if (!isLegacySignInEnabled()) return;
+    if (
+      typeof isSupabaseUserAuthenticated === "function" &&
+      isSupabaseUserAuthenticated()
+    ) {
+      return;
+    }
     document.getElementById("vera-user-sign-in")?.removeAttribute("hidden");
   };
 
@@ -282,6 +320,13 @@ function wireVeraUserSignInHoldAndModal() {
   };
 
   const openModal = () => {
+    if (!isLegacySignInEnabled()) return;
+    if (
+      typeof isSupabaseUserAuthenticated === "function" &&
+      isSupabaseUserAuthenticated()
+    ) {
+      return;
+    }
     showErr("");
     modal?.removeAttribute("hidden");
   };
@@ -340,3 +385,10 @@ function wireVeraUserSignInHoldAndModal() {
     }
   });
 }
+
+try {
+  if (typeof window !== "undefined") {
+    window.isLegacySignInEnabled = isLegacySignInEnabled;
+    window.hideLegacySignInUi = hideLegacySignInUi;
+  }
+} catch (_) {}

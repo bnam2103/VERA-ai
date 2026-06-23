@@ -217,7 +217,18 @@ async function refreshSupabaseAccountLabel() {
   _setSupabaseAccountLabel(me);
   _setAccountFabLabel(me);
   _renderAccountPanel(me);
+  if (typeof hideLegacySignInUi === "function") {
+    const legacyOn =
+      typeof isLegacySignInEnabled === "function" && isLegacySignInEnabled();
+    if (!legacyOn || me?.authenticated) {
+      hideLegacySignInUi();
+    }
+  }
   return Boolean(me?.authenticated);
+}
+
+function isSupabaseUserAuthenticated() {
+  return Boolean(_lastMeSnapshot?.authenticated);
 }
 
 function _showAccountError(msg) {
@@ -403,6 +414,7 @@ try {
     window.wireSupabaseAccountUi = wireSupabaseAccountUi;
     window.refreshSupabaseAccountLabel = refreshSupabaseAccountLabel;
     window.refreshSupabaseMemoriesList = refreshSupabaseMemoriesList;
+    window.isSupabaseUserAuthenticated = isSupabaseUserAuthenticated;
     window.authFetch = authFetchImpl;
   }
 } catch (_) {}
