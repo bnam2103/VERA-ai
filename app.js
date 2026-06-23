@@ -183,6 +183,10 @@ function resetVeraSessionAndUi() {
   window.__veraLastInferLaneDebug = null;
 
   hideSidePanel();
+
+  try {
+    window.trackUsageSessionStart?.();
+  } catch (_) {}
 }
 
 window.resetBmoSessionAndUi = resetBmoSessionAndUi;
@@ -348,6 +352,27 @@ async function veraSurfaceLlmFetchFailure({
 } = {}) {
   if (error && error.name === "AbortError") return null;
   const status = response?.status ?? 0;
+  try {
+    const usageSource =
+      feature === "text_endpoint"
+        ? "text"
+        : feature === "infer_main" || feature === "infer_interrupt"
+          ? "voice"
+          : String(feature || "unknown").slice(0, 32);
+    window.veraUsageOnAssistantReplyFailed?.({
+      source: usageSource,
+      errorCode:
+        status === 413
+          ? "input_too_long"
+          : status >= 500
+            ? "server_error"
+            : status >= 400
+              ? "api_error"
+              : "llm_fetch_failed",
+      httpStatus: status || undefined,
+      requestId: extra?.request_id || extra?.client_request_id || null,
+    });
+  } catch (_) {}
   const turnId = extra?.turn_id || extra?.user_message_id || null;
   if (status === 413) {
     let serverMsg = "";
@@ -2135,16 +2160,28 @@ function inferTranscriptFromFormData(formData) {
 function veraFeedbackMarkFinalFromBubble(bubbleEl, payload, clientRequestId) {
   if (!(bubbleEl instanceof HTMLElement)) return;
   try {
-    if (typeof window.veraFeedbackMarkFinal !== "function") return;
     const p = payload && typeof payload === "object" ? payload : {};
+    const requestId = String(
+      p.request_id ||
+        clientRequestId ||
+        (typeof VERA_LAST_REQUEST_IDS !== "undefined" &&
+          (VERA_LAST_REQUEST_IDS.text || VERA_LAST_REQUEST_IDS.infer)) ||
+        ""
+    ).trim();
+    const usageSource = String(
+      p.path || p.client || (VERA_LAST_REQUEST_IDS?.text === requestId ? "text" : "voice")
+    ).slice(0, 32);
+    window.veraUsageOnAssistantReplyDone?.(bubbleEl, {
+      requestId,
+      source: usageSource,
+      latencyMs:
+        p.latency && typeof p.latency.total_s === "number"
+          ? Math.round(p.latency.total_s * 1000)
+          : undefined,
+    });
+    if (typeof window.veraFeedbackMarkFinal !== "function") return;
     window.veraFeedbackMarkFinal(bubbleEl, {
-      requestId: String(
-        p.request_id ||
-          clientRequestId ||
-          (typeof VERA_LAST_REQUEST_IDS !== "undefined" &&
-            (VERA_LAST_REQUEST_IDS.text || VERA_LAST_REQUEST_IDS.infer)) ||
-          ""
-      ).trim(),
+      requestId,
       turnId: String(p.turn_id || p.status_turn_id || "").trim(),
       userExcerpt: "",
     });
@@ -6203,6 +6240,7 @@ const WORK_LEFT_PANES_LAYOUT_KEY = "vera_wm_left_panes_layout_v1";
 const WORK_MODE_STATE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERA_CHAT_STATE_STORAGE_KEY_PREFIX = "vera_chat_state_v1";
 let chatStateHydrating = false;
+window.veraIsChatStateHydrating = () => chatStateHydrating;
 
 /** Same id source as `getSessionId()` for VERA — must never return "" or chat restore/save keys drift apart. */
 function ensureVeraSessionIdForPersistence() {
@@ -22196,6 +22234,15 @@ async function runInferMainPipeline(formData, opts = {}) {
     try { formData.set("client_request_id", _inferClientRequestId); } catch (_) {
       try { formData.append("client_request_id", _inferClientRequestId); } catch (_) {}
     }
+    if (inferUserText) {
+      try {
+        window.veraUsageOnMessageSent?.({
+          source: String(opts.usageSource || opts.path || "voice").slice(0, 32),
+          requestId: _inferClientRequestId,
+          inputChars: inferUserText.length,
+        });
+      } catch (_) {}
+    }
     const res = await authFetch(`${API_URL}/infer`, {
       method: "POST",
       headers: {
@@ -23781,6 +23828,13 @@ async function sendTextMessage() {
        pair frontend logs with backend [REQ start]/[REQ end] lines. Server
        still generates its own (returned in `request_id` on the response). */
     const _textClientRequestId = recordVeraRequestId("text", newVeraRequestId());
+    try {
+      window.veraUsageOnMessageSent?.({
+        source: "text",
+        requestId: _textClientRequestId,
+        inputChars: text.length,
+      });
+    } catch (_) {}
     logTurnTextIntegrity({
       source: "typed",
       raw_asr_text: null,

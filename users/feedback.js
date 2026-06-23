@@ -161,6 +161,19 @@
     row.dataset.feedbackSubmitted = "1";
     showThanksState(bar);
 
+    try {
+      if (typeof trackUsageEvent === "function") {
+        trackUsageEvent(
+          "feedback_submitted",
+          {
+            feedback_rating: rating,
+            source: "main_chat",
+          },
+          { requestId: payload.request_id }
+        );
+      }
+    } catch (_) {}
+
     void authFetch(authApiUrl("/api/feedback"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
