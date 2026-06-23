@@ -6796,6 +6796,9 @@ function setWorkModeLeftPaneLayout(layout) {
   if (layout !== "split" && layout !== "music-full" && layout !== "checklist-full") layout = "split";
   left.dataset.wmLeftLayout = layout;
   safeSetLocalStorage(WORK_LEFT_PANES_LAYOUT_KEY, layout);
+  if (typeof syncLocalVeraPrefsToSupabase === "function") {
+    void syncLocalVeraPrefsToSupabase("work_left_panes_layout");
+  }
 }
 
 function applyWorkModeLeftPaneLayoutFromStorage() {
@@ -24442,6 +24445,9 @@ function wireVeraSettingsPanel() {
     setTextGuideRotatorEnabled(draftTextGuideRotator);
     setWorkModeMuteEnabled(draftWorkModeMute);
     setPlanningDeadlineTimerEnabled(draftPlanningDeadlineTimer);
+    if (typeof syncLocalVeraPrefsToSupabase === "function") {
+      void syncLocalVeraPrefsToSupabase("settings_panel_save");
+    }
     close();
   });
 

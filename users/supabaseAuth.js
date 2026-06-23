@@ -16,6 +16,7 @@ let _supabaseClient = null;
 let _supabaseConfigured = false;
 let _supabaseInitPromise = null;
 let _lastMeSnapshot = null;
+let _settingsHydratedUserId = null;
 
 function _readMetaSupabaseConfig() {
   const urlMeta = document.querySelector('meta[name="vera-supabase-url"]');
@@ -223,6 +224,15 @@ async function refreshSupabaseAccountLabel() {
     if (!legacyOn || me?.authenticated) {
       hideLegacySignInUi();
     }
+  }
+  if (me?.authenticated && typeof hydrateVeraSettingsFromSupabase === "function") {
+    const uid = String(me.user_id || "").trim();
+    if (uid && uid !== _settingsHydratedUserId) {
+      _settingsHydratedUserId = uid;
+      void hydrateVeraSettingsFromSupabase();
+    }
+  } else {
+    _settingsHydratedUserId = null;
   }
   return Boolean(me?.authenticated);
 }
