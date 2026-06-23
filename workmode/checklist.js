@@ -194,6 +194,8 @@
 
 const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
 const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
+const WORK_CHECKLIST_PLACEHOLDER_LABEL = "List item";
+const WORK_CHECKLIST_UI_PLACEHOLDER_ID = "__vera_wm_checklist_placeholder__";
 let workChecklistSyncTimer = null;
 let workChecklistHydrationPromise = null;
 let workChecklistLocalMutationVersion = 0;
@@ -203,11 +205,82 @@ function markWorkChecklistLocalMutation() {
   workChecklistLocalMutationVersion += 1;
 }
 
+function normalizeChecklistRowText(text) {
+  return String(text || "").replace(/\r/g, " ").replace(/\n/g, " ").trim();
+}
+
+function isChecklistPlaceholderLabel(text) {
+  return normalizeChecklistRowText(text).toLowerCase() === WORK_CHECKLIST_PLACEHOLDER_LABEL.toLowerCase();
+}
+
+function isChecklistPlaceholderItem(item) {
+  if (!item || typeof item.text !== "string") return true;
+  const text = normalizeChecklistRowText(item.text);
+  if (!text) return true;
+  if (!Boolean(item.done) && isChecklistPlaceholderLabel(text)) return true;
+  return false;
+}
+
+function stripChecklistPlaceholdersForPersist(items) {
+  if (!Array.isArray(items)) return [];
+  return items.filter(
+    (row) =>
+      row &&
+      typeof row.text === "string" &&
+      String(row.id || "") !== WORK_CHECKLIST_UI_PLACEHOLDER_ID &&
+      !isChecklistPlaceholderItem(row)
+  );
+}
+
+function _persistChecklistItemsToStorage(items) {
+  const stripped = stripChecklistPlaceholdersForPersist(items);
+  markWorkChecklistLocalMutation();
+  localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+  queueWorkChecklistSyncToServer();
+  return stripped;
+}
+
+function sanitizeChecklistStorageInPlace() {
+  try {
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    if (!raw) return false;
+    const items = JSON.parse(raw);
+    if (!Array.isArray(items)) return false;
+    const stripped = stripChecklistPlaceholdersForPersist(items);
+    if (JSON.stringify(stripped) === JSON.stringify(items)) return false;
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+    queueWorkChecklistSyncToServer();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function commitWorkChecklistFromPlaceholderText(text) {
+  const normalized = normalizeChecklistRowText(text);
+  if (!normalized || isChecklistPlaceholderLabel(normalized)) return false;
+  const items = readChecklistItemsFromStorage();
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  items.push({ id, text: normalized, done: false, parent_id: null });
+  _persistChecklistItemsToStorage(items);
+  return true;
+}
+
+function focusWorkChecklistUiPlaceholder() {
+  const inp = document.querySelector(
+    `#vera-wm-checklist-ongoing li[data-id="${WORK_CHECKLIST_UI_PLACEHOLDER_ID}"] .vera-wm-checklist-task-input`
+  );
+  if (inp instanceof HTMLInputElement) {
+    inp.focus();
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+  }
+}
+
 function readChecklistItemsFromStorage() {
   try {
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return stripChecklistPlaceholdersForPersist(Array.isArray(parsed) ? parsed : []);
   } catch {
     return [];
   }
@@ -283,10 +356,11 @@ async function hydrateWorkChecklistFromServer(force = false) {
       if (!force && startVersion !== workChecklistLocalMutationVersion) return;
       if (data.items.length === 0) {
         const local = readChecklistItemsFromStorage();
-        const hasStoredContent = local.some((item) => String(item?.text || "").trim());
+        const hasStoredContent = local.some((item) => !isChecklistPlaceholderItem(item));
         if (hasStoredContent) return;
       }
-      localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(data.items));
+      const hydrated = stripChecklistPlaceholdersForPersist(data.items);
+      localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(hydrated));
       if (typeof data.completed_collapsed === "boolean") {
         localStorage.setItem(
           WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
@@ -716,9 +790,7 @@ function readChecklistItemsFromStorageSafe() {
 
 function writeChecklistItemsToStorageSafe(items) {
   try {
-    markWorkChecklistLocalMutation();
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
     return true;
   } catch {
     return false;
@@ -789,17 +861,21 @@ function persistWorkChecklistOrderFromDom() {
   const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
   const completedUl = document.getElementById("vera-wm-checklist-completed");
   if (!ongoingUl || !completedUl) return;
-  const ongoingIds = [...ongoingUl.querySelectorAll(":scope > li")].map((el) => el.dataset.id).filter(Boolean);
+  const ongoingIds = [...ongoingUl.querySelectorAll(":scope > li")]
+    .map((el) => el.dataset.id)
+    .filter((id) => id && id !== WORK_CHECKLIST_UI_PLACEHOLDER_ID);
   const completedIds = [...completedUl.querySelectorAll(":scope > li")].map((el) => el.dataset.id).filter(Boolean);
   try {
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     const map = new Map(items.map((x) => [String(x.id), x]));
-    const next = [...ongoingIds, ...completedIds].map((id) => map.get(id)).filter(Boolean);
-    if (next.length !== items.length) return;
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(next));
-    queueWorkChecklistSyncToServer();
+    const persisted = stripChecklistPlaceholdersForPersist(items);
+    const next = stripChecklistPlaceholdersForPersist(
+      [...ongoingIds, ...completedIds].map((id) => map.get(id)).filter(Boolean)
+    );
+    if (next.length !== persisted.length) return;
+    _persistChecklistItemsToStorage(next);
   } catch (_) {}
 }
 
@@ -864,99 +940,119 @@ function ensureWorkChecklistListDnD() {
  * stays the trailing “new item” slot, not a stray row above completed tasks.
  */
 function normalizeWorkChecklistLeadingPlaceholderInStorage() {
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items) || items.length < 2) return false;
-    const first = items[0];
-    if (!first || typeof first.text !== "string" || Boolean(first.done)) return false;
-    if (String(first.text).trim() !== "") return false;
-    if (!items.slice(1).some((x) => x && Boolean(x.done))) return false;
-    const [head, ...rest] = items;
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify([...rest, head]));
-    queueWorkChecklistSyncToServer();
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return sanitizeChecklistStorageInPlace();
 }
 
-/** Drops empty ongoing rows except the bottom-most one (storage order among !done items). */
+/** Drops empty / placeholder ongoing rows from persisted storage. */
 function pruneInteriorEmptyOngoingItems() {
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
-    const valid = (x) => x && typeof x.text === "string";
-    const ongoingIndices = [];
-    for (let i = 0; i < items.length; i += 1) {
-      if (valid(items[i]) && !Boolean(items[i].done)) ongoingIndices.push(i);
-    }
-    if (ongoingIndices.length <= 1) return false;
-    const toRemove = [];
-    for (let j = 0; j < ongoingIndices.length - 1; j += 1) {
-      const i = ongoingIndices[j];
-      if (String(items[i].text).trim() === "") toRemove.push(i);
-    }
-    if (toRemove.length === 0) return false;
-    toRemove.sort((a, b) => b - a);
-    for (const i of toRemove) items.splice(i, 1);
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return sanitizeChecklistStorageInPlace();
 }
 
-/** Ensures the last ongoing row is always an empty slot for new text (no separate “+” row). */
+/** UI-only trailing row is appended in loadWorkChecklistItems; storage stays real-items-only. */
 function ensureWorkChecklistTrailingEmptyOngoing() {
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
-    const valid = (x) => x && typeof x.text === "string";
-    let lastOngoingIndex = -1;
-    for (let i = 0; i < items.length; i += 1) {
-      if (valid(items[i]) && !Boolean(items[i].done)) lastOngoingIndex = i;
-    }
-    const lastOngoing = lastOngoingIndex >= 0 ? items[lastOngoingIndex] : null;
-    const needNew =
-      lastOngoingIndex < 0 || !lastOngoing || String(lastOngoing.text).trim() !== "";
-    if (!needNew) return false;
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    /* When there are no ongoing rows yet, append at list end — never splice(0,0) or the empty slot sits above completed items in storage order. */
-    if (lastOngoingIndex < 0) {
-      items.push({ id, text: "", done: false, parent_id: null });
-    } else {
-      items.splice(lastOngoingIndex + 1, 0, { id, text: "", done: false, parent_id: null });
-    }
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return sanitizeChecklistStorageInPlace();
 }
 
-/** Insert a new empty ongoing row immediately after the given ongoing item (by storage order). */
+/** @deprecated Mid-list empties are no longer persisted; Enter focuses the trailing placeholder. */
 function insertWorkChecklistEmptyOngoingAfter(afterId) {
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
-    const idx = items.findIndex((x) => x && String(x.id) === String(afterId));
-    if (idx < 0) return null;
-    const row = items[idx];
-    if (!row || typeof row.text !== "string" || Boolean(row.done)) return null;
-    const nid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    items.splice(idx + 1, 0, { id: nid, text: "", done: false, parent_id: null });
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
-    return nid;
-  } catch (_) {
-    return null;
-  }
+  void afterId;
+  focusWorkChecklistUiPlaceholder();
+  return WORK_CHECKLIST_UI_PLACEHOLDER_ID;
+}
+
+function appendWorkChecklistUiPlaceholderRow(ongoingUl) {
+  if (!ongoingUl) return;
+  ongoingUl.querySelector(`:scope > li[data-id="${WORK_CHECKLIST_UI_PLACEHOLDER_ID}"]`)?.remove();
+
+  const id = WORK_CHECKLIST_UI_PLACEHOLDER_ID;
+  const li = document.createElement("li");
+  li.className = "vera-wm-checklist-li vera-wm-checklist-li--placeholder";
+  li.dataset.id = id;
+  li.style.setProperty("--checklist-depth", "0");
+  li.draggable = false;
+
+  const handle = createWorkChecklistDragHandle();
+  handle.draggable = false;
+  handle.setAttribute("aria-hidden", "true");
+  handle.style.visibility = "hidden";
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "vera-wm-checklist-cb";
+  cb.checked = false;
+  cb.disabled = true;
+  cb.tabIndex = -1;
+  cb.setAttribute("aria-hidden", "true");
+
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.className = "vera-wm-checklist-task-input";
+  inp.placeholder = WORK_CHECKLIST_PLACEHOLDER_LABEL;
+  inp.value = "";
+  inp.maxLength = 200;
+  inp.autocomplete = "off";
+  inp.draggable = false;
+
+  const actions = document.createElement("div");
+  actions.className = "vera-wm-checklist-li-actions";
+  const btnDel = document.createElement("button");
+  btnDel.type = "button";
+  btnDel.className = "vera-wm-checklist-action vera-wm-checklist-action-del";
+  btnDel.textContent = "✕";
+  btnDel.setAttribute("aria-label", "Clear new item");
+  btnDel.title = "Clear";
+  btnDel.addEventListener("click", () => {
+    inp.value = "";
+    inp.focus();
+  });
+  actions.appendChild(btnDel);
+
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      const inputs = [...ongoingUl.querySelectorAll(".vera-wm-checklist-task-input")];
+      const rowIdx = inputs.indexOf(inp);
+      if (rowIdx < 0) return;
+      const len = inp.value.length;
+      const sel0 = inp.selectionStart ?? 0;
+      const sel1 = inp.selectionEnd ?? 0;
+      if (e.key === "ArrowDown") {
+        if (sel0 !== len || sel1 !== len) return;
+        return;
+      }
+      if (sel0 !== 0 || sel1 !== 0) return;
+      const prev = inputs[rowIdx - 1];
+      if (prev instanceof HTMLInputElement) {
+        e.preventDefault();
+        prev.focus();
+        const pl = prev.value.length;
+        prev.setSelectionRange(pl, pl);
+      }
+      return;
+    }
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    if (commitWorkChecklistFromPlaceholderText(inp.value)) {
+      inp.value = "";
+      loadWorkChecklistItems();
+      focusWorkChecklistUiPlaceholder();
+    }
+  });
+
+  inp.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      if (!li.isConnected) return;
+      if (commitWorkChecklistFromPlaceholderText(inp.value)) {
+        inp.value = "";
+        loadWorkChecklistItems();
+      }
+    }, 0);
+  });
+
+  li.appendChild(handle);
+  li.appendChild(cb);
+  li.appendChild(inp);
+  li.appendChild(actions);
+  ongoingUl.appendChild(li);
 }
 
 function loadWorkChecklistItems() {
@@ -964,21 +1060,8 @@ function loadWorkChecklistItems() {
   const completedUl = document.getElementById("vera-wm-checklist-completed");
   if (!ongoingUl || !completedUl) return;
   ensureWorkChecklistListDnD();
-  normalizeWorkChecklistLeadingPlaceholderInStorage();
-  /* Do not call pruneInteriorEmptyOngoingItems on load — it would remove intentional mid-list empties from Enter. */
-  let guard = 0;
-  while (ensureWorkChecklistTrailingEmptyOngoing()) {
-    guard += 1;
-    if (guard > 10) break;
-  }
-  let items = [];
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    if (raw) items = JSON.parse(raw);
-    if (!Array.isArray(items)) items = [];
-  } catch {
-    items = [];
-  }
+  sanitizeChecklistStorageInPlace();
+  let items = readChecklistItemsFromStorage();
   const idMap = new Map(items.map((x) => [String(x?.id || ""), x]));
   const depthCache = new Map();
   const getDepth = (id) => {
@@ -1004,6 +1087,8 @@ function loadWorkChecklistItems() {
   completedUl.replaceChildren();
   items.forEach((it) => {
     if (!it || typeof it.text !== "string") return;
+    if (isChecklistPlaceholderItem(it)) return;
+    if (String(it.id || "") === WORK_CHECKLIST_UI_PLACEHOLDER_ID) return;
     const id = String(it.id || "");
     const li = document.createElement("li");
     li.className = "vera-wm-checklist-li";
@@ -1197,18 +1282,8 @@ function loadWorkChecklistItems() {
         if (e.key !== "Enter" || e.shiftKey) return;
         e.preventDefault();
         persistWorkChecklistUpdateText(id, inp.value);
-        const newId = insertWorkChecklistEmptyOngoingAfter(id);
         loadWorkChecklistItems();
-        window.requestAnimationFrame(() => {
-          window.requestAnimationFrame(() => {
-            const ul = document.getElementById("vera-wm-checklist-ongoing");
-            const sel = newId
-              ? `li[data-id="${newId}"] .vera-wm-checklist-task-input`
-              : "li:last-child .vera-wm-checklist-task-input";
-            const nextInp = ul?.querySelector(sel);
-            if (nextInp instanceof HTMLInputElement) nextInp.focus();
-          });
-        });
+        focusWorkChecklistUiPlaceholder();
       });
       inp.addEventListener("blur", () => {
         window.setTimeout(() => {
@@ -1218,21 +1293,8 @@ function loadWorkChecklistItems() {
             return;
           }
           persistWorkChecklistUpdateText(id, inp.value);
-          /* replaceChildren (e.g. after Enter) detaches this row; blur still fires — do not treat as “abandon middle empty”. */
           if (!li.isConnected) return;
-          const ul = document.getElementById("vera-wm-checklist-ongoing");
-          const siblings = ul ? [...ul.querySelectorAll(":scope > li")] : [];
-          const rowIdx = siblings.indexOf(li);
-          if (rowIdx < 0) return;
-          const isLastOngoing = rowIdx === siblings.length - 1;
-          let removedMiddle = false;
-          if (!inp.value.trim() && !isLastOngoing) {
-            persistWorkChecklistRemove(id);
-            removedMiddle = true;
-          }
-          /* Do not prune all interior empties on every blur — that removed a new Enter row when focus moved to another item. */
-          const ensured = ensureWorkChecklistTrailingEmptyOngoing();
-          if (removedMiddle || ensured) loadWorkChecklistItems();
+          loadWorkChecklistItems();
         }, 0);
       });
       li.appendChild(handle);
@@ -1242,6 +1304,8 @@ function loadWorkChecklistItems() {
     }
     (it.done ? completedUl : ongoingUl).appendChild(li);
   });
+
+  appendWorkChecklistUiPlaceholderRow(ongoingUl);
 
   const pane = document.getElementById("vera-wm-checklist-pane");
   const completedSection = document.getElementById("vera-wm-checklist-completed-section");
@@ -1276,8 +1340,7 @@ function persistWorkChecklistToggle(id, done) {
     items = items.map((x) =>
       String(x.id) === id ? { ...x, done: Boolean(done) } : x
     );
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
   } catch (_) {}
 }
 
@@ -1338,30 +1401,32 @@ function persistWorkChecklistToggleWithSubtree(id, done) {
     items = items.map((x) =>
       idsToToggle.has(String(x?.id || "")) ? { ...x, done: wantDone } : x
     );
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
   } catch (_) {}
 }
 
 function persistWorkChecklistUpdateText(id, text) {
   try {
+    if (String(id) === WORK_CHECKLIST_UI_PLACEHOLDER_ID) {
+      if (commitWorkChecklistFromPlaceholderText(text)) loadWorkChecklistItems();
+      return;
+    }
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     items = items.map((x) => (String(x.id) === id ? { ...x, text: String(text) } : x));
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
   } catch (_) {}
 }
 
 function persistWorkChecklistRemove(id) {
   try {
+    if (String(id) === WORK_CHECKLIST_UI_PLACEHOLDER_ID) return;
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     items = items.filter((x) => String(x.id) !== id);
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
   } catch (_) {}
 }
 
@@ -2212,9 +2277,7 @@ function applyWorkChecklistSyncPreview() {
     return false;
   }
   try {
-    markWorkChecklistLocalMutation();
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(items));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage(items);
     loadWorkChecklistItems();
     hideWorkChecklistSyncPreview();
     workChecklistSyncConsumedPlanVersion = workChecklistSyncPlanVersion;
@@ -2267,9 +2330,7 @@ function eraseEntireWorkChecklist() {
   );
   if (!ok) return;
   try {
-    markWorkChecklistLocalMutation();
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify([]));
-    queueWorkChecklistSyncToServer();
+    _persistChecklistItemsToStorage([]);
     hideWorkChecklistSyncPreview();
     loadWorkChecklistItems();
     flashWorkChecklistPlanHint("Checklist cleared.");
@@ -2623,7 +2684,7 @@ function isWorkChecklistSupabaseUnsynced() {
 }
 
 function _applyChecklistBundleToLocalForSupabase(items, completed_collapsed) {
-  const rows = Array.isArray(items) ? items : [];
+  const rows = stripChecklistPlaceholdersForPersist(Array.isArray(items) ? items : []);
   console.info("[checklist_apply_local]", { item_count: rows.length });
   try {
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(rows));
