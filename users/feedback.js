@@ -1,6 +1,6 @@
 /**
  * users/feedback.js — thumbs up/down on the latest main-chat Vera reply (MVP).
- * Load AFTER users/supabaseAuth.js (authFetch, isSupabaseUserAuthenticated).
+ * Load AFTER users/supabaseAuth.js (authFetch, authApiUrl, getSessionId).
  */
 (function () {
   "use strict";
@@ -27,13 +27,6 @@
       if (typeof n === "number" && n >= 0) return n;
     } catch (_) {}
     return DEFAULT_THANKS_DISMISS_MS;
-  }
-
-  function feedbackAuthenticated() {
-    return (
-      typeof isSupabaseUserAuthenticated === "function" &&
-      isSupabaseUserAuthenticated()
-    );
   }
 
   function feedbackConversationEl() {
@@ -146,7 +139,6 @@
   function submitFeedback(row, rating, note) {
     if (!(row instanceof HTMLElement)) return;
     if (row.dataset.feedbackSubmitted === "1") return;
-    if (!feedbackAuthenticated()) return;
     if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return;
     if (typeof getSessionId !== "function") return;
 
@@ -270,10 +262,6 @@
   function showFeedbackForRow(row) {
     if (!(row instanceof HTMLElement)) return;
     if (row.dataset.feedbackSubmitted === "1") return;
-    if (!feedbackAuthenticated()) {
-      clearActiveFeedbackBars();
-      return;
-    }
     clearActiveFeedbackBars();
     _activeRow = row;
     const bar = buildFeedbackBar(row);
@@ -314,8 +302,7 @@
     if (
       _activeRow &&
       _activeRow.isConnected &&
-      _activeRow.dataset.feedbackSubmitted !== "1" &&
-      feedbackAuthenticated()
+      _activeRow.dataset.feedbackSubmitted !== "1"
     ) {
       const bubble = _activeRow.querySelector(".bubble.vera");
       if (isEligibleVeraBubble(bubble)) {
