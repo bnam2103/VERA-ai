@@ -17,6 +17,7 @@ let _supabaseConfigured = false;
 let _supabaseInitPromise = null;
 let _lastMeSnapshot = null;
 let _settingsHydratedUserId = null;
+let _checklistHydratedUserId = null;
 
 function _readMetaSupabaseConfig() {
   const urlMeta = document.querySelector('meta[name="vera-supabase-url"]');
@@ -233,6 +234,15 @@ async function refreshSupabaseAccountLabel() {
     }
   } else {
     _settingsHydratedUserId = null;
+  }
+  if (me?.authenticated && typeof hydrateChecklistMergeOnLogin === "function") {
+    const uid = String(me.user_id || "").trim();
+    if (uid && uid !== _checklistHydratedUserId) {
+      _checklistHydratedUserId = uid;
+      void hydrateChecklistMergeOnLogin();
+    }
+  } else {
+    _checklistHydratedUserId = null;
   }
   return Boolean(me?.authenticated);
 }

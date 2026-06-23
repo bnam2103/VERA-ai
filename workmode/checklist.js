@@ -228,7 +228,7 @@ async function syncWorkChecklistToServerNow() {
     try {
       const items = readChecklistItemsFromStorage();
       const completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
-      await authFetch(authApiUrl("/api/work-mode/checklist"), {
+      const sessionPut = authFetch(authApiUrl("/api/work-mode/checklist"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -236,7 +236,12 @@ async function syncWorkChecklistToServerNow() {
           items,
           completed_collapsed: completedCollapsed
         })
-      });
+      }).catch(() => {});
+      const supabasePut =
+        typeof syncWorkChecklistToSupabaseNow === "function"
+          ? syncWorkChecklistToSupabaseNow()
+          : Promise.resolve();
+      await Promise.allSettled([sessionPut, supabasePut]);
     } catch (_) {
       /* ignore */
     } finally {
