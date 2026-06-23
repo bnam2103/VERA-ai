@@ -2826,6 +2826,7 @@ document.addEventListener("click", () => {
           <button type="button" id="vera-account-save-profile" class="vera-settings-save-btn">Save profile</button>
           <button type="button" id="vera-account-sign-out" class="vera-account-secondary-btn">Log out</button>
         </div>
+        <p id="vera-checklist-sync-status" class="vera-settings-hint vera-checklist-sync-status" hidden></p>
         <div id="vera-account-memories-wrap" class="vera-account-memories-wrap" hidden>
           <h4 class="vera-account-memories-heading">Saved memories</h4>
           <p class="vera-settings-hint">Things you've explicitly asked Vera to remember.</p>
@@ -2995,7 +2996,7 @@ document.addEventListener("click", () => {
      Must load AFTER signinUi.js (authApiUrl, authFetch stub) and BEFORE
      workmode/checklist.js + app.js. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="users/supabaseAuth.js?v=6"></script>
+<script src="users/supabaseAuth.js?v=7"></script>
 <!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="users/accountSettingsSync.js?v=1"></script>
@@ -3085,7 +3086,7 @@ document.addEventListener("click", () => {
      getChecklistDebugState() mirrors getReasoningPanelDebugState /
      getTtsDebugState / getInterruptionDebugState / getAsrDebugState.
      Extracted 2026-05-27, Stage 9. -->
-<script src="workmode/checklist.js?v=5"></script>
+<script src="workmode/checklist.js?v=6"></script>
 <!-- Account checklist Supabase sync is bundled in workmode/checklist.js (Phase 4b). -->
 <!-- workmode/multiActionPlanner.js must load AFTER workmode/panels.js +
      workmode/checklist.js (the executor calls activateReasoningTab /

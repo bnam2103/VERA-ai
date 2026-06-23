@@ -299,6 +299,7 @@ async function syncWorkChecklistToServerNow() {
   if (workChecklistSyncInFlight) return workChecklistSyncInFlight;
   workChecklistSyncInFlight = (async () => {
     try {
+      /* Session/voice-planner checklist (per tab session_id). Not account durable storage. */
       const items = readChecklistItemsFromStorage();
       const completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
       const sessionPut = authFetch(authApiUrl("/api/work-mode/checklist"), {
@@ -2633,15 +2634,23 @@ function getChecklistDebugState() {
 }
 
 /* =========================
-   SUPABASE ACCOUNT CHECKLIST SYNC (Phase 4b)
+   SUPABASE ACCOUNT CHECKLIST SYNC (Phase 4b + 4c hardening)
    Canonical copy — also mirrored in users/checklistSupabaseSync.js for smoke tests.
+
+   API split:
+     /api/work-mode/checklist — session-scoped; voice planner compatibility.
+     /api/checklist           — Supabase account persistence (durable source of truth when logged in).
 ========================= */
 
 console.info("[checklist_supabase_sync_loaded]");
 
 const WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY = "vera_wm_checklist_supabase_unsynced_v1";
+const WORK_CHECKLIST_SB_RETRY_INTERVAL_MS = 45000;
 let _checklistSbHydratePromise = null;
 let _checklistSbSaveInFlight = null;
+let _checklistSbRetryInFlight = false;
+let _checklistSbRetryTimer = null;
+let _checklistSbSyncStatus = "synced";
 
 function _checklistSbIsLoggedIn() {
   return (
@@ -2668,11 +2677,114 @@ function _readLocalChecklistBundleForSupabase() {
   };
 }
 
+function _checklistSbCanRetry() {
+  if (!_checklistSbIsLoggedIn()) return false;
+  if (!_checklistSbIsOnline()) return false;
+  if (!isWorkChecklistSupabaseUnsynced()) return false;
+  return true;
+}
+
+async function retryChecklistSupabaseSyncIfUnsynced(reason) {
+  if (!_checklistSbCanRetry()) return false;
+  if (_checklistSbRetryInFlight || _checklistSbSaveInFlight) return false;
+
+  _checklistSbRetryInFlight = true;
+  _setChecklistSupabaseSyncStatus("retrying");
+  const debug = _checklistSbSyncDebugCounts();
+  console.info("[checklist_retry]", {
+    reason: reason || "unknown",
+    ...debug,
+  });
+
+  try {
+    const ok = await syncWorkChecklistToSupabaseNow();
+    if (ok) {
+      _setChecklistSupabaseSyncStatus("synced");
+      console.info("[checklist_retry]", {
+        reason: reason || "unknown",
+        outcome: "success",
+        ..._checklistSbSyncDebugCounts(),
+      });
+    } else {
+      _setChecklistSupabaseSyncStatus("failed");
+      console.info("[checklist_retry]", {
+        reason: reason || "unknown",
+        outcome: "failed",
+        ..._checklistSbSyncDebugCounts(),
+      });
+    }
+    return ok;
+  } finally {
+    _checklistSbRetryInFlight = false;
+  }
+}
+
+function wireChecklistSupabaseRetryListeners() {
+  if (typeof window === "undefined" || window.__veraChecklistSbRetryWired) return;
+  window.__veraChecklistSbRetryWired = true;
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    void retryChecklistSupabaseSyncIfUnsynced("visibility");
+  });
+
+  window.addEventListener("online", () => {
+    void retryChecklistSupabaseSyncIfUnsynced("online");
+  });
+
+  if (_checklistSbRetryTimer) window.clearInterval(_checklistSbRetryTimer);
+  _checklistSbRetryTimer = window.setInterval(() => {
+    void retryChecklistSupabaseSyncIfUnsynced("interval");
+  }, WORK_CHECKLIST_SB_RETRY_INTERVAL_MS);
+}
+
+function _checklistSbAuthPresent() {
+  return Boolean(
+    typeof getSupabaseAccessToken === "function" && _checklistSbIsLoggedIn()
+  );
+}
+
+function _checklistSbIsOnline() {
+  return typeof navigator === "undefined" || navigator.onLine !== false;
+}
+
+function _checklistSbSyncDebugCounts() {
+  const bundle = _readLocalChecklistBundleForSupabase();
+  return {
+    local_count: bundle.items.length,
+    unsynced: isWorkChecklistSupabaseUnsynced(),
+    auth_present: _checklistSbAuthPresent(),
+    status: _checklistSbSyncStatus,
+  };
+}
+
+function _setChecklistSupabaseSyncStatus(status) {
+  _checklistSbSyncStatus = status;
+  const el = document.getElementById("vera-checklist-sync-status");
+  if (!(el instanceof HTMLElement)) return;
+  if (!_checklistSbIsLoggedIn()) {
+    el.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  const labels = {
+    synced: "Checklist: synced to account",
+    unsynced: "Checklist: not synced — will retry",
+    retrying: "Checklist: syncing…",
+    failed: "Checklist: sync failed — will retry",
+  };
+  const text = labels[status] || labels.unsynced;
+  el.textContent = text;
+  el.hidden = false;
+  el.dataset.syncState = status;
+}
+
 function _markChecklistSupabaseUnsynced(unsynced) {
   try {
     if (unsynced) localStorage.setItem(WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY, "1");
     else localStorage.removeItem(WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY);
   } catch (_) {}
+  _setChecklistSupabaseSyncStatus(unsynced ? "unsynced" : "synced");
 }
 
 function isWorkChecklistSupabaseUnsynced() {
@@ -2730,6 +2842,8 @@ async function syncWorkChecklistToSupabaseNow() {
       console.info("[checklist_put]", {
         item_count: bundle.items.length,
         saved_count: data.items_count,
+        unsynced: false,
+        auth_present: true,
       });
       _markChecklistSupabaseUnsynced(false);
       return true;
@@ -2788,6 +2902,8 @@ async function hydrateChecklistMergeOnLogin() {
         local_count: local.items.length,
         remote_count: Number(data.remote_count) || 0,
         applied_count: appliedCount,
+        unsynced: false,
+        auth_present: true,
       });
 
       if (Array.isArray(data.items)) {
@@ -2807,13 +2923,21 @@ async function hydrateChecklistMergeOnLogin() {
   return _checklistSbHydratePromise;
 }
 
+wireChecklistSupabaseRetryListeners();
+
 try {
   window.getChecklistDebugState = getChecklistDebugState;
   window.syncWorkChecklistToSupabaseNow = syncWorkChecklistToSupabaseNow;
   window.hydrateChecklistMergeOnLogin = hydrateChecklistMergeOnLogin;
+  window.retryChecklistSupabaseSyncIfUnsynced = retryChecklistSupabaseSyncIfUnsynced;
   window.isWorkChecklistSupabaseUnsynced = isWorkChecklistSupabaseUnsynced;
+  window.wireChecklistSupabaseRetryListeners = wireChecklistSupabaseRetryListeners;
+  if (isWorkChecklistSupabaseUnsynced()) {
+    _setChecklistSupabaseSyncStatus("unsynced");
+  }
   console.info("[checklist_supabase_sync_ready]", {
     hydrate: typeof window.hydrateChecklistMergeOnLogin,
     put: typeof window.syncWorkChecklistToSupabaseNow,
+    retry: typeof window.retryChecklistSupabaseSyncIfUnsynced,
   });
 } catch (_) {}

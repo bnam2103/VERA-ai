@@ -257,6 +257,9 @@ async function _hydrateChecklistAccountWhenReady(userId) {
   }
   const merged = await hydrateFn();
   if (merged) _checklistHydratedUserId = uid;
+  if (typeof retryChecklistSupabaseSyncIfUnsynced === "function") {
+    void retryChecklistSupabaseSyncIfUnsynced("login");
+  }
 }
 
 async function refreshSupabaseAccountLabel() {
@@ -291,6 +294,11 @@ async function refreshSupabaseAccountLabel() {
     if (_checklistHydrateRetryTimer) {
       window.clearTimeout(_checklistHydrateRetryTimer);
       _checklistHydrateRetryTimer = null;
+    }
+    const syncEl = document.getElementById("vera-checklist-sync-status");
+    if (syncEl instanceof HTMLElement) {
+      syncEl.hidden = true;
+      syncEl.textContent = "";
     }
   }
   return Boolean(me?.authenticated);
