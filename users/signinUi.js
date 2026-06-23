@@ -166,7 +166,7 @@ function hideLegacySignInUi() {
   document.getElementById("vera-user-sign-in")?.setAttribute("hidden", "");
   document.getElementById("vera-user-sign-in-modal")?.setAttribute("hidden", "");
   const errEl = document.getElementById("vera-sign-in-error");
-  if (errEl instanceof HTMLElement) {
+  if (errEl) {
     errEl.textContent = "";
     errEl.hidden = true;
   }
