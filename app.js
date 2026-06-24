@@ -9,9 +9,10 @@ try {
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v71 loaded — REASONING_CLOSE_CONFIRMATION_UI_TTS (close-panel confirmations render as normal VERA assistant bubbles and voice-originated shortcuts enqueue TTS once) + MUSIC_VOLUME_DEDUPE (turn up/down music applied once per command, not twice; volume_delta now joins skip_next/skip_previous in shouldApplyMusicTransportAction) + NEWS_CURRENT_FACT_ROUTE (yes/no fact-verification questions like 'Did Trump go to China last week?' now route to current_fact_search instead of general_chat) + MULTI_DEVICE_CONCURRENCY (per-tab session_id + ?session=new + window.veraConcurrencyDebug() + client_request_id on /infer + /text) + ASR_MODES (streaming default + whisper + hybrid; selective whisper-verify for risky commands; backcompat single->whisper, browser->streaming) + REASONING_PANEL_CLOSE + NEWS_PANEL_UI + NEWS_ROUTE_V2 + PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + CHECKLIST_INTENT_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG + MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG active. math_router_enabled=false.",
+    "%c[VERA] app.js build v72 loaded — WHISPER_INTERRUPT_CONFIRMATION_V2 (two-stage interrupt QA logs + transcript gate) + REASONING_CLOSE_CONFIRMATION_UI_TTS (close-panel confirmations render as normal VERA assistant bubbles and voice-originated shortcuts enqueue TTS once) + MUSIC_VOLUME_DEDUPE (turn up/down music applied once per command, not twice; volume_delta now joins skip_next/skip_previous in shouldApplyMusicTransportAction) + NEWS_CURRENT_FACT_ROUTE (yes/no fact-verification questions like 'Did Trump go to China last week?' now route to current_fact_search instead of general_chat) + MULTI_DEVICE_CONCURRENCY (per-tab session_id + ?session=new + window.veraConcurrencyDebug() + client_request_id on /infer + /text) + ASR_MODES (streaming default + whisper + hybrid; selective whisper-verify for risky commands; backcompat single->whisper, browser->streaming) + REASONING_PANEL_CLOSE + NEWS_PANEL_UI + NEWS_ROUTE_V2 + PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + CHECKLIST_INTENT_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG + MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG active. math_router_enabled=false.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
+  console.warn("[VERA_BUILD] whisper_interrupt_confirmation_v2_loaded");
 } catch (_) {}
 
 /* =========================
@@ -19320,8 +19321,31 @@ function computeHeuristicInterruptChecks(rms, zcr, crest) {
 
 function logWhisperInterruptQa(stage, detail, fields = {}) {
   try {
-    console.info(detail ? `[${stage}] ${detail}` : `[${stage}]`, fields);
+    console.warn(detail ? `[${stage}] ${detail}` : `[${stage}]`, {
+      timestamp: new Date().toISOString(),
+      ...fields,
+    });
   } catch (_) {}
+}
+
+function getWhisperInterruptConfirmationState() {
+  let asrMode = null;
+  let whisperCaptureNeeded = false;
+  let browserParallel = false;
+  let confirmationEnabled = false;
+  try {
+    asrMode = getVeraAsrMode();
+    whisperCaptureNeeded = whisperInterruptCaptureNeeded();
+    browserParallel =
+      browserAsrPreferred() && !isNarrowViewport() && !!interruptDetectRecognition;
+    confirmationEnabled = whisperCaptureNeeded && !browserParallel;
+  } catch (_) {}
+  return {
+    asrMode,
+    whisperCaptureNeeded,
+    browserParallel,
+    confirmationEnabled,
+  };
 }
 
 function logInterruptTriggerReason({
@@ -19973,6 +19997,11 @@ async function prearmInterruptCaptureForTts({ turnId = "", ttsId = "" } = {}) {
 }
 
 async function handleInterruptUtterance(blob) {
+  const confirmationState = getWhisperInterruptConfirmationState();
+  logWhisperInterruptQa("INTERRUPT_CANDIDATE_PIPELINE_ENTER", "handleInterruptUtterance", {
+    blobSize: blob?.size ?? null,
+    ...confirmationState,
+  });
   /* DEBUG: log upload entry so we can see whether the interrupt capture
      made it all the way to the server upload step. If we never see this
      during a failed news interruption, the recorder either never started
@@ -20046,11 +20075,13 @@ async function handleInterruptUtterance(blob) {
 }
 
 function shouldConfirmWhisperInterruptTranscript() {
-  try {
-    return whisperInterruptCaptureNeeded() && !browserAsrParallelMode;
-  } catch (_) {
-    return false;
-  }
+  return getWhisperInterruptConfirmationState().confirmationEnabled;
+}
+
+function handleWhisperInterruptTranscriptMissing(context = {}) {
+  logWhisperInterruptQa("WHISPER_INTERRUPT_TRANSCRIPT_MISSING", null, context);
+  if (!shouldConfirmWhisperInterruptTranscript()) return true;
+  return handleWhisperInterruptTranscriptConfirmation("");
 }
 
 function ignoreWhisperInterruptCandidate(rejectReason, { transcriptLen = 0, wordCount = 0 } = {}) {
@@ -20112,8 +20143,19 @@ function ignoreWhisperInterruptCandidate(rejectReason, { transcriptLen = 0, word
  * Whisper stage-2 gate. Returns true when interrupt processing should continue.
  */
 function handleWhisperInterruptTranscriptConfirmation(transcript) {
-  if (!shouldConfirmWhisperInterruptTranscript()) return true;
   const confirmation = evaluateWhisperInterruptTranscriptConfirmation(transcript);
+  if (!shouldConfirmWhisperInterruptTranscript()) {
+    logWhisperInterruptQa("WHISPER_INTERRUPT_TRANSCRIPT_RECEIVED", null, {
+      transcript_len: confirmation.transcriptLen,
+      word_count: confirmation.wordCount,
+      accepted: true,
+      rejectReason: null,
+      confirmationSkipped: true,
+      skipReason: "confirmation_not_enabled_for_asr_mode",
+      ...getWhisperInterruptConfirmationState(),
+    });
+    return true;
+  }
   logWhisperInterruptQa("WHISPER_INTERRUPT_TRANSCRIPT_RECEIVED", null, {
     transcript_len: confirmation.transcriptLen,
     word_count: confirmation.wordCount,
@@ -23358,17 +23400,17 @@ async function runInferInterruptPipeline(formData) {
   // Same early-arm policy as runInferMainPipeline so the placeholder appears
   // during the interrupt search/thinking window.
   armPendingNewsStatusBubble(_readInferFormDataTranscript(formData));
+  const confirmationState = getWhisperInterruptConfirmationState();
   try {
     const audioPart = formData?.get?.("audio");
     const audioBlobSize =
       audioPart && typeof audioPart.size === "number" ? audioPart.size : null;
-    if (shouldConfirmWhisperInterruptTranscript()) {
-      logWhisperInterruptQa("INTERRUPT_CANDIDATE_SUBMITTED_TO_WHISPER", null, {
-        blobSize: audioBlobSize,
-        endpoint: `${API_URL}/infer`,
-        mode: formData?.get?.("mode") || null,
-      });
-    }
+    logWhisperInterruptQa("INTERRUPT_CANDIDATE_SUBMITTED_TO_WHISPER", null, {
+      blobSize: audioBlobSize,
+      endpoint: `${API_URL}/infer`,
+      mode: formData?.get?.("mode") || null,
+      ...confirmationState,
+    });
     logInterruptChain("whisper_interrupt_submit", {
       blobSize: audioBlobSize,
       endpoint: `${API_URL}/infer`,
@@ -23384,10 +23426,20 @@ async function runInferInterruptPipeline(formData) {
     });
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (interrupt)");
+    const responsePath =
+      shouldStreamTts() && res.ok && isNdjsonTtsResponse(res) ? "ndjson" : "json";
+    logWhisperInterruptQa("WHISPER_INTERRUPT_RESPONSE_HEADERS", null, {
+      ok: res.ok,
+      status: res.status,
+      responsePath,
+      ttfbMs: Number(inferTtfbMs.toFixed(1)),
+      ...confirmationState,
+    });
 
     if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
       let whisperInterruptTranscriptRejected = false;
+      let whisperInterruptTranscriptSeen = false;
 
       const runStream = async () => {
         let ndjsonMeta = null;
@@ -23396,6 +23448,11 @@ async function runInferInterruptPipeline(formData) {
         try {
           await runNdjsonTtsPlayback(res, {
             onMeta: (meta) => {
+              logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
+                event_type: "meta",
+                hasTranscript: Boolean(meta?.transcript),
+                responsePath: "ndjson",
+              });
               ndjsonMeta = { ...ndjsonMeta, ...meta };
               if (
                 !streamReplyState.pendingReplyBack &&
@@ -23417,6 +23474,7 @@ async function runInferInterruptPipeline(formData) {
                 applyWorkModeTimerPayload(meta.work_mode_timer);
               }
               if (meta.transcript) {
+                whisperInterruptTranscriptSeen = true;
                 if (
                   !handleWhisperInterruptTranscriptConfirmation(meta.transcript)
                 ) {
@@ -23452,14 +23510,47 @@ async function runInferInterruptPipeline(formData) {
               }
             },
             onReplyProgress: (replySoFar) => {
+              logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
+                event_type: "reply_progress",
+                hasTranscript: false,
+                replyChars: String(replySoFar || "").length,
+                responsePath: "ndjson",
+              });
               applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
             },
             onDone: (done) => {
+              logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
+                event_type: "done",
+                hasTranscript: whisperInterruptTranscriptSeen,
+                responsePath: "ndjson",
+              });
+              if (
+                confirmationState.confirmationEnabled &&
+                !whisperInterruptTranscriptSeen &&
+                !whisperInterruptTranscriptRejected
+              ) {
+                whisperInterruptTranscriptRejected =
+                  !handleWhisperInterruptTranscriptMissing({
+                    responsePath: "ndjson",
+                    status: res.status,
+                    event_type: "done",
+                  });
+                if (whisperInterruptTranscriptRejected) {
+                  activePipelineAbort?.abort();
+                  return;
+                }
+              }
               logInferLatency(done, "interrupt", inferTtfbMs);
               finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
               applyNdjsonActionPayloadEvent(done, "done");
             },
             onPlayStart: () => {
+              logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
+                event_type: "play_start",
+                hasTranscript: whisperInterruptTranscriptSeen,
+                responsePath: "ndjson",
+              });
+              if (whisperInterruptTranscriptRejected) return;
               logVoiceFirstAudio("main-reply");
               logVoiceMainReplyAudio();
               applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
@@ -23516,7 +23607,18 @@ async function runInferInterruptPipeline(formData) {
     }
     applyClientUiAction(data.client_action);
 
-    if (!handleWhisperInterruptTranscriptConfirmation(data.transcript)) {
+    const jsonTranscript = String(data.transcript || "").trim();
+    if (confirmationState.confirmationEnabled && !jsonTranscript) {
+      if (
+        !handleWhisperInterruptTranscriptMissing({
+          responsePath: "json",
+          status: res.status,
+          event_type: "json_body",
+        })
+      ) {
+        return;
+      }
+    } else if (!handleWhisperInterruptTranscriptConfirmation(data.transcript)) {
       return;
     }
 
