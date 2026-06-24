@@ -540,6 +540,10 @@ let interruptSpeechAccumMs = 0;
 let whisperInterruptStrongFrames = 0;
 /** Valid speech-shaped frames (post noise gate); sustain starts after minimum confirmed. */
 let whisperInterruptValidFrames = 0;
+/** True when early candidate onset looked raspy/spiky (throat clear, cough onset). */
+let whisperInterruptSpikyOrRaspyStart = false;
+/** Consecutive smooth speech frames after a raspy/spiky onset. */
+let whisperInterruptSmoothFrames = 0;
 /** Perf-now timestamp: ignore further VAD triggers until this time (one-shot per TTS turn). */
 let whisperInterruptCooldownUntil = 0;
 let lastInterruptDetectTime = 0;
@@ -1301,10 +1305,37 @@ function getWhisperStrongFramesRequired() {
     : WHISPER_STRONG_FRAME_COUNT_DESKTOP;
 }
 
-function resetWhisperInterruptVadTriggerState() {
+function resetWhisperInterruptCandidateState() {
   whisperInterruptStrongFrames = 0;
   whisperInterruptValidFrames = 0;
+  whisperInterruptSpikyOrRaspyStart = false;
+  whisperInterruptSmoothFrames = 0;
+}
+
+function resetWhisperInterruptVadTriggerState() {
+  resetWhisperInterruptCandidateState();
   whisperInterruptCooldownUntil = 0;
+}
+
+function isWhisperHarshOnsetSignal(rms, zcr, crest, speechWindowMs, rejectedReason) {
+  if (rejectedReason === "raspy_short_burst" || rejectedReason === "spiky_short_burst") {
+    return true;
+  }
+  const win = Number(speechWindowMs) || 0;
+  if (win >= WHISPER_RASPY_START_WINDOW_MS) return false;
+  if (crest >= WHISPER_RASPY_START_CREST_MIN) return true;
+  if (zcr >= WHISPER_RASPY_START_ZCR_HIGH && rms >= WHISPER_INTERRUPT_RMS_MIN) {
+    return true;
+  }
+  return false;
+}
+
+function isWhisperSmoothContinuationFrame(rms, zcr, crest, validInterruptSpeechFrame) {
+  if (!validInterruptSpeechFrame) return false;
+  if (rms < WHISPER_INTERRUPT_RMS_MIN) return false;
+  if (crest > WHISPER_SMOOTH_FRAME_MAX_CREST) return false;
+  if (zcr < WHISPER_SMOOTH_ZCR_MIN || zcr > WHISPER_SMOOTH_ZCR_MAX) return false;
+  return true;
 }
 
 /**
@@ -1379,6 +1410,10 @@ function whisperVadReasonIfNotTriggering({
   strongReady,
   spikyShortBurst,
   crest,
+  spikyOrRaspyStart,
+  smoothFrameCount,
+  smoothFramesRequired,
+  smoothContinuationReady,
 }) {
   if (inputMuted) return "input_muted";
   if (listeningMode !== "continuous") return "not_continuous";
@@ -1387,6 +1422,10 @@ function whisperVadReasonIfNotTriggering({
   if (strongReady || sustainReady) return null;
   if (rejectedReason) return rejectedReason;
   if (spikyShortBurst) return "spiky_short_burst";
+  if (spikyOrRaspyStart && !smoothContinuationReady) {
+    if (smoothFrameCount === 0) return "spiky_start_waiting_for_smooth_continuation";
+    return `smooth_frames_${smoothFrameCount}_of_${smoothFramesRequired}`;
+  }
   if (validInterruptSpeechFrame && validFrameCount < WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN) {
     return `valid_frames_${validFrameCount}_of_${WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN}`;
   }
@@ -1420,6 +1459,13 @@ const WHISPER_LOW_ZCR_HUM_MAX = 0.015;
 const WHISPER_LOW_ZCR_HIGH_RMS = 0.04;
 const WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN = 3;
 const WHISPER_SPIKY_BURST_WINDOW_MS = 200;
+const WHISPER_RASPY_START_WINDOW_MS = 250;
+const WHISPER_RASPY_START_CREST_MIN = 16;
+const WHISPER_RASPY_START_ZCR_HIGH = 0.13;
+const WHISPER_SMOOTH_FRAMES_AFTER_RASPY_START = 3;
+const WHISPER_SMOOTH_FRAME_MAX_CREST = 18;
+const WHISPER_SMOOTH_ZCR_MIN = 0.025;
+const WHISPER_SMOOTH_ZCR_MAX = 0.14;
 const WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP = 180;
 const WHISPER_INTERRUPT_SUSTAIN_MS_PHONE = 120;
 const WHISPER_STRONG_FRAME_COUNT_DESKTOP = 4;
@@ -18721,6 +18767,33 @@ function detectInterrupt() {
       const effectiveSpeechLike = whisperVadPath
         ? validInterruptSpeechFrame
         : rawSpeechLike;
+      if (whisperVadPath) {
+        if (
+          isWhisperHarshOnsetSignal(
+            rms,
+            zcr,
+            crest,
+            speechWindowMsBefore,
+            rejectedReason
+          )
+        ) {
+          whisperInterruptSpikyOrRaspyStart = true;
+        }
+        if (whisperInterruptSpikyOrRaspyStart) {
+          if (
+            isWhisperSmoothContinuationFrame(
+              rms,
+              zcr,
+              crest,
+              validInterruptSpeechFrame
+            )
+          ) {
+            whisperInterruptSmoothFrames++;
+          } else {
+            whisperInterruptSmoothFrames = 0;
+          }
+        }
+      }
       const gapResetMs = whisperVadPath
         ? WHISPER_INTERRUPT_GAP_RESET_MS
         : INTERRUPT_GAP_RESET_MS;
@@ -18791,12 +18864,16 @@ function detectInterrupt() {
         interruptSpeechAccumMs = 0;
         interruptLastSpeechLikeTime = 0;
         lastInterruptSpeechLikeSnapshot = null;
-        whisperInterruptStrongFrames = 0;
-        whisperInterruptValidFrames = 0;
+        resetWhisperInterruptCandidateState();
       }
 
       const speechWindowMs = interruptSpeechStart ? now - interruptSpeechStart : 0;
       const requiredStrongFrames = whisperVadPath ? getWhisperStrongFramesRequired() : 0;
+      const smoothFramesRequired = WHISPER_SMOOTH_FRAMES_AFTER_RASPY_START;
+      const smoothContinuationReady =
+        !whisperVadPath ||
+        !whisperInterruptSpikyOrRaspyStart ||
+        whisperInterruptSmoothFrames >= smoothFramesRequired;
       const sustainArmed =
         !whisperVadPath ||
         whisperInterruptValidFrames >= WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN;
@@ -18804,7 +18881,8 @@ function detectInterrupt() {
         sustainArmed &&
         validInterruptSpeechFrame &&
         interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
-        interruptSpeechAccumMs >= sustainMs;
+        interruptSpeechAccumMs >= sustainMs &&
+        smoothContinuationReady;
       const strongCountOk =
         whisperVadPath && whisperInterruptStrongFrames >= requiredStrongFrames;
       const strongWindowOk = speechWindowMs >= WHISPER_STRONG_MIN_WINDOW_MS;
@@ -18819,7 +18897,8 @@ function detectInterrupt() {
         strongCountOk &&
         strongWindowOk &&
         validInterruptSpeechFrame &&
-        !spikyShortBurst;
+        !spikyShortBurst &&
+        smoothContinuationReady;
       const triggerReady = !cooldownActive && (sustainReady || strongReady);
 
       if (whisperVadPath) {
@@ -18845,6 +18924,10 @@ function detectInterrupt() {
           strongReady,
           spikyShortBurst,
           crest,
+          spikyOrRaspyStart: whisperInterruptSpikyOrRaspyStart,
+          smoothFrameCount: whisperInterruptSmoothFrames,
+          smoothFramesRequired,
+          smoothContinuationReady,
         });
         logInterruptChain(
           "vad_trigger_eval",
@@ -18860,6 +18943,10 @@ function detectInterrupt() {
             strongFrameCount: whisperInterruptStrongFrames,
             interruptSpeechAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
             sustainTargetMs: sustainMs,
+            spikyOrRaspyStart: whisperInterruptSpikyOrRaspyStart,
+            smoothFrameCount: whisperInterruptSmoothFrames,
+            smoothFramesRequired,
+            smoothContinuationReady,
             interruptRecording,
             ttsPlaying: true,
             asrMode: (function () {
@@ -19085,8 +19172,7 @@ function detectInterrupt() {
         interruptSpeechAccumMs = 0;
         interruptLastSpeechLikeTime = 0;
         lastInterruptSpeechLikeSnapshot = null;
-        whisperInterruptStrongFrames = 0;
-        whisperInterruptValidFrames = 0;
+        resetWhisperInterruptCandidateState();
       }
 
       if (
@@ -19106,8 +19192,7 @@ function detectInterrupt() {
     lastInterruptDetectTime = 0;
     interruptLastSpeechLikeTime = 0;
     lastInterruptSpeechLikeSnapshot = null;
-    whisperInterruptStrongFrames = 0;
-    whisperInterruptValidFrames = 0;
+    resetWhisperInterruptCandidateState();
   }
 
   requestAnimationFrame(detectInterrupt);
