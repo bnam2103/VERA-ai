@@ -2731,6 +2731,162 @@ if (typeof window !== "undefined") {
   window.__veraGetGlobalPlaybackState = getGlobalPlaybackState;
 }
 
+function isBuiltinMusicAudiblyPlaying(prefix) {
+  const p = prefix || (typeof appModePrefix === "function" ? appModePrefix() : "vera");
+  try {
+    const a = document.getElementById(`${p}-free-music-audio`);
+    return Boolean(a && a.src && !a.paused);
+  } catch (_) {
+    return false;
+  }
+}
+
+function isSpotifyMusicAudiblyPlaying() {
+  try {
+    if (window.__veraSpotifyPlaybackActive === true) return true;
+    const ns = window.__veraSpotifyNowState;
+    return Boolean(ns && ns.active === true && ns.paused === false && String(ns.title || "").trim());
+  } catch (_) {
+    return false;
+  }
+}
+
+function inferMusicTargetProviderFromPayload(payload, op) {
+  const operation = String(op || payload?.op || "");
+  if (operation === "play_builtin") return "builtin";
+  if (operation === "play_track" || operation === "play_album" || operation === "play_playlist_scoped") {
+    return "spotify";
+  }
+  if (operation === "play_playlist_by_name") {
+    const name = String(payload?.playlist_name || "").trim();
+    if (name && typeof matchBuiltinPlaylistOrSoundNameForClient === "function") {
+      if (matchBuiltinPlaylistOrSoundNameForClient(name)) return "builtin";
+    }
+    return "spotify";
+  }
+  return "spotify";
+}
+
+async function waitUntilMusicProviderExclusive(targetProvider, prefix, timeoutMs = 3000) {
+  const target = String(targetProvider || "").toLowerCase();
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeoutMs) {
+    const builtinOn = isBuiltinMusicAudiblyPlaying(prefix);
+    const spotifyOn = isSpotifyMusicAudiblyPlaying();
+    const exclusive =
+      (target === "spotify" && spotifyOn && !builtinOn) ||
+      (target === "builtin" && builtinOn && !spotifyOn) ||
+      (target === "spotify" && !builtinOn && !spotifyOn) ||
+      (target === "builtin" && !builtinOn && !spotifyOn);
+    if (exclusive) return { ok: true, elapsedMs: Math.round(performance.now() - t0), builtinOn, spotifyOn };
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return {
+    ok: false,
+    elapsedMs: Math.round(performance.now() - t0),
+    builtinOn: isBuiltinMusicAudiblyPlaying(prefix),
+    spotifyOn: isSpotifyMusicAudiblyPlaying(),
+  };
+}
+
+async function ensureSingleActiveMusicProvider(targetProvider, opts = {}) {
+  const prefix = opts.prefix || (typeof appModePrefix === "function" ? appModePrefix() : "vera");
+  const target = String(targetProvider || "").toLowerCase();
+  const st = veraMusicSourceState();
+  const oldProvider = st.active || getActivePlaybackSource(prefix) || "none";
+  const oldTrack = getGlobalPlaybackState(prefix);
+  const t0 = performance.now();
+
+  console.warn("[music_provider_exclusive_start]", {
+    oldProvider,
+    targetProvider: target,
+    oldTrack: oldTrack?.trackTitle || "",
+    oldContext: st.spotify?.playlist_name || st.builtin?.playlistId || "",
+    activeProviderBefore: oldProvider,
+  });
+
+  if (target === "spotify") {
+    if (isBuiltinMusicAudiblyPlaying(prefix) || oldProvider === "builtin") {
+      console.warn("[music_provider_stopping_old]", {
+        oldProvider: "builtin",
+        targetProvider: target,
+        oldTrack: oldTrack?.trackTitle || "",
+      });
+      try {
+        if (typeof _veraSpotifyAcquirePlayback === "function") _veraSpotifyAcquirePlayback(prefix, opts.reason || "ensure_single_spotify");
+        stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+        const free = document.getElementById(`${prefix}-free-music-audio`);
+        if (free && !free.paused) free.pause();
+        st.active = "spotify";
+        st.builtin.state = "suspended_for_spotify";
+        st.builtin.paused = true;
+      } catch (err) {
+        console.warn("[music_provider_stopping_old]", { error: String(err?.message || err) });
+      }
+      await waitUntilMusicProviderExclusive("spotify", prefix, opts.timeoutMs || 3000);
+      console.warn("[music_provider_stopped_old]", {
+        oldProvider: "builtin",
+        targetProvider: target,
+        elapsedMs: Math.round(performance.now() - t0),
+      });
+    }
+    if (isSpotifyMusicAudiblyPlaying() && opts.stopSpotifyBeforePlay) {
+      await pauseSpotifyLayersForBuiltin(prefix);
+    }
+  } else if (target === "builtin") {
+    if (isSpotifyMusicAudiblyPlaying() || oldProvider === "spotify") {
+      console.warn("[music_provider_stopping_old]", {
+        oldProvider: "spotify",
+        targetProvider: target,
+        oldTrack: oldTrack?.trackTitle || "",
+      });
+      try {
+        await pauseSpotifyLayersForBuiltin(prefix);
+        stopCurrentMusicPlaybackBeforeNewPlay("builtin");
+        st.active = "builtin";
+        if (st.spotify.state === "playing") st.spotify.state = "suspended_for_builtin";
+        st.spotify.paused = true;
+      } catch (err) {
+        console.warn("[music_provider_stopping_old]", { error: String(err?.message || err) });
+      }
+      await waitUntilMusicProviderExclusive("builtin", prefix, opts.timeoutMs || 3000);
+      console.warn("[music_provider_stopped_old]", {
+        oldProvider: "spotify",
+        targetProvider: target,
+        elapsedMs: Math.round(performance.now() - t0),
+      });
+    }
+  }
+
+  st.active = target;
+  console.warn("[music_provider_active]", {
+    targetProvider: target,
+    activeProviderAfter: st.active,
+    activeProviderBefore: oldProvider,
+    elapsedMs: Math.round(performance.now() - t0),
+  });
+  return { targetProvider: target, oldProvider, elapsedMs: Math.round(performance.now() - t0) };
+}
+
+function resolveMusicTransportProvider(prefix, seqCtx = {}) {
+  const forced = seqCtx?.activeProvider || window.__veraMusicSequenceActiveProvider;
+  if (forced === "spotify" || forced === "builtin") return forced;
+  const st = veraMusicSourceState();
+  if (st.active === "spotify" || st.active === "builtin") return st.active;
+  const live = getActivePlaybackSource(prefix);
+  if (live === "spotify" || live === "builtin") return live;
+  return getProductivityMusicSource(prefix) || "spotify";
+}
+
+if (typeof window !== "undefined") {
+  window.__veraIsBuiltinMusicAudiblyPlaying = isBuiltinMusicAudiblyPlaying;
+  window.__veraIsSpotifyMusicAudiblyPlaying = isSpotifyMusicAudiblyPlaying;
+  window.__veraInferMusicTargetProvider = inferMusicTargetProviderFromPayload;
+  window.__veraEnsureSingleActiveMusicProvider = ensureSingleActiveMusicProvider;
+  window.__veraResolveMusicTransportProvider = resolveMusicTransportProvider;
+  window.__veraWaitUntilMusicProviderExclusive = waitUntilMusicProviderExclusive;
+}
+
 function logMusicPlaybackDebug(stage, extra = {}) {
   try {
     const prefix = extra.prefix || appModePrefix?.() || "";
@@ -17633,7 +17789,7 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
 }
 
 
-async function applyMusicControlPayloadAsync(payload, data) {
+async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
   const prefix = appModePrefix();
   const op = payload.op || "open_panel";
   console.info("[music_control_payload]", {
@@ -17642,60 +17798,77 @@ async function applyMusicControlPayloadAsync(payload, data) {
     playlist_id: payload.playlist_id || "",
     sound_id: payload.sound_id || "",
     source_event_type: data?.type || "",
-    request_id: data?.request_id || null
+    request_id: data?.request_id || null,
+    sequence_active_provider: seqCtx?.activeProvider || window.__veraMusicSequenceActiveProvider || null,
   });
   if (op === "close_panel") {
     hideSidePanel();
     return;
   }
+  const transportProvider = resolveMusicTransportProvider(prefix, seqCtx);
   if (op === "skip_next") {
     if (!shouldApplyMusicTransportAction(payload, op)) return;
-    if (getProductivityMusicSource(prefix) === "builtin") {
+    console.warn("[music_transport_route]", {
+      op,
+      transportProvider,
+      uiTab: getProductivityMusicSource(prefix),
+      sequenceActiveProvider: seqCtx?.activeProvider || null,
+    });
+    if (transportProvider === "builtin") {
       await builtinMusicTransportSkipNext(prefix);
-      return;
+      return { op, transportProvider };
     }
     await invokeSpotifyTransport("skip_next", { source: "command" });
-    return;
+    return { op, transportProvider: "spotify" };
   }
   if (op === "skip_previous") {
     if (!shouldApplyMusicTransportAction(payload, op)) return;
     console.log("[MUSIC][SKIP_PREV] applyActionPayload dispatch", {
       source: data?.type || "unknown",
       has_payload: Boolean(payload),
+      transportProvider,
     });
-    if (getProductivityMusicSource(prefix) === "builtin") {
+    if (transportProvider === "builtin") {
       await builtinMusicTransportSkipPrevious(prefix);
-      return;
+      return { op, transportProvider };
     }
     await invokeSpotifyTransport("skip_previous", { source: "command" });
-    return;
+    return { op, transportProvider: "spotify" };
   }
   if (op === "pause") {
+    const activeForPause = resolveMusicTransportProvider(prefix, seqCtx);
     const free = document.getElementById(`${prefix}-free-music-audio`);
-    if (free && !free.paused) free.pause();
-    const pause = window.VeraSpotify?.pausePlayback;
-    if (typeof pause === "function") await Promise.resolve(pause());
-    if (free && getProductivityMusicSource(prefix) === "builtin") {
+    if (activeForPause === "builtin" && free && !free.paused) free.pause();
+    else if (activeForPause !== "builtin") {
+      const pause = window.VeraSpotify?.pausePlayback;
+      if (typeof pause === "function") await Promise.resolve(pause());
+    } else {
+      if (free && !free.paused) free.pause();
+      const pause = window.VeraSpotify?.pausePlayback;
+      if (typeof pause === "function") await Promise.resolve(pause());
+    }
+    if (free && activeForPause === "builtin") {
       freeMusicSyncNowFromAudio(prefix);
       spotifySyncPlayButtonUi(prefix);
     }
     musicSourceMarkPausedByUser();
-    return;
+    return { op, transportProvider: activeForPause };
   }
   if (op === "resume") {
-    if (getProductivityMusicSource(prefix) === "builtin") {
+    const activeForResume = resolveMusicTransportProvider(prefix, seqCtx);
+    if (activeForResume === "builtin") {
       const free = document.getElementById(`${prefix}-free-music-audio`);
       if (free?.src) {
         await free.play().then(() => {
           freeMusicSyncNowFromAudio(prefix);
           spotifySyncPlayButtonUi(prefix);
         });
-        return;
+        return { op, transportProvider: "builtin" };
       }
     }
     const resume = window.VeraSpotify?.resumePlayback;
     if (typeof resume === "function") await Promise.resolve(resume());
-    return;
+    return { op, transportProvider: activeForResume };
   }
   if (op === "volume_delta") {
     if (!shouldApplyMusicTransportAction(payload, op)) return;
@@ -17728,12 +17901,12 @@ async function applyMusicControlPayloadAsync(payload, data) {
     document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
   }
   if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
+    await ensureSingleActiveMusicProvider("builtin", { reason: "play_builtin" });
     const sourceStateBeforeBuiltinPlay = veraMusicSourceState();
     const preservedBuiltinTime =
       sourceStateBeforeBuiltinPlay.builtin.state === "suspended_for_spotify"
         ? Number(sourceStateBeforeBuiltinPlay.builtin.currentTime || 0)
         : 0;
-    stopCurrentMusicPlaybackBeforeNewPlay("builtin");
     musicSourceMarkPlaying("builtin", {
       playlistId: payload.playlist_id || "",
       soundId: payload.sound_id || "",
@@ -17778,10 +17951,10 @@ async function applyMusicControlPayloadAsync(payload, data) {
         request_id: data?.request_id || null
       });
     }
-    return;
+    return { op, targetProvider: "builtin" };
   }
   if (op === "play_track" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
-    stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+    await ensureSingleActiveMusicProvider("spotify", { reason: "play_track" });
     musicSourceMarkPlaying("spotify", {
       uri: payload.uri,
       title: payload.title || "",
@@ -17820,7 +17993,7 @@ async function applyMusicControlPayloadAsync(payload, data) {
         });
       }
     }
-    return;
+    return { op, targetProvider: "spotify", expectedTrack: payload.title || "" };
   }
   if (op === "play_playlist_scoped" && shouldPlayMusicThisInvocation(payload, op)) {
     const rawQuery = String(payload.query || "").trim();
@@ -17839,7 +18012,7 @@ async function applyMusicControlPayloadAsync(payload, data) {
       if (artistEl) artistEl.textContent = "Which playlist should I search?";
       return;
     }
-    stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+    await ensureSingleActiveMusicProvider("spotify", { reason: "play_playlist_scoped" });
     const getTracks = window.VeraSpotify?.getPlaylistTracks;
     if (typeof getTracks !== "function") {
       if (artistEl) artistEl.textContent = "Playlist search is not available right now.";
@@ -17919,10 +18092,10 @@ async function applyMusicControlPayloadAsync(payload, data) {
         request_id: data?.request_id || null
       });
     }
-    return;
+    return { op, targetProvider: "spotify", expectedTrack: rawQuery };
   }
   if (op === "play_album" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
-    stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+    await ensureSingleActiveMusicProvider("spotify", { reason: "play_album" });
     musicSourceMarkPlaying("spotify", {
       uri: payload.uri,
       title: payload.title || "",
@@ -17955,20 +18128,20 @@ async function applyMusicControlPayloadAsync(payload, data) {
         artistEl.textContent = "Connect Spotify to play this album in VERA.";
       }
     }
-    return;
+    return { op, targetProvider: "spotify", expectedTrack: payload.title || "" };
   }
   if (op === "play_playlist_by_name") {
     const rawName = String(payload.playlist_name || "").trim();
     if (!rawName || !shouldPlayMusicThisInvocation(payload, op)) return;
     const built = matchBuiltinPlaylistOrSoundNameForClient(rawName);
     if (built) {
-      stopCurrentMusicPlaybackBeforeNewPlay("builtin");
+      await ensureSingleActiveMusicProvider("builtin", { reason: "play_playlist_by_name_builtin" });
       musicSourceMarkPlaying("builtin", {
         playlistId: built.playlistId || "",
         soundId: built.soundId || ""
       });
       await runBuiltinVoicePlayback(prefix, built);
-      return;
+      return { op, targetProvider: "builtin", expectedTrack: rawName };
     }
     const getLists = window.VeraSpotify?.getPlaylists;
     const playCtx = window.VeraSpotify?.playPlaylist;
@@ -17990,7 +18163,7 @@ async function applyMusicControlPayloadAsync(payload, data) {
       return;
     }
     const disp = hit.name || rawName;
-    stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+    await ensureSingleActiveMusicProvider("spotify", { reason: "play_playlist_by_name_spotify" });
     musicSourceMarkPlaying("spotify", {
       uri: hit.uri,
       playlist_id: String(hit.id || hit.uri || ""),
@@ -18000,7 +18173,7 @@ async function applyMusicControlPayloadAsync(payload, data) {
       playlist_name: disp,
       context_subtitle: `"${disp}" in my playlist`
     });
-    return;
+    return { op, targetProvider: "spotify", expectedTrack: disp };
   }
 }
 
@@ -18370,7 +18543,7 @@ async function applyActionPayload(data, seqCtx = {}) {
   }
 
   if (payload?.panel_type === "music_control") {
-    return await applyMusicControlPayloadAsync(payload, data);
+    return await applyMusicControlPayloadAsync(payload, data, seqCtx);
   }
 
   /* Keep the music panel open across normal assistant replies unless a new panel payload replaces it. */
