@@ -18324,6 +18324,17 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
 
 /** Stops TTS and resets interrupt UI counters (shared by heuristic + browser barge-in). */
 function cancelBrowserInterruptTtsOnly() {
+  const a = getAudioEl();
+  const audioPausedBefore = a ? Boolean(a.paused) : null;
+  const audioEndedBefore = a ? Boolean(a.ended) : null;
+  logInterruptChain("tts_stop_attempt", {
+    hasAudioEl: Boolean(a),
+    audioPausedBefore,
+    audioEndedBefore,
+    mainTtsPlaybackActive,
+    activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+  });
+
   /* PART 1 — record entry into the shared cancel path. */
   _recordInterruptTimingPoint("t5_interruptSpeech_entered", {
     extra: { gatePath: "cancelBrowserInterruptTtsOnly" },
@@ -18339,11 +18350,16 @@ function cancelBrowserInterruptTtsOnly() {
   setStatus("Listening… (interrupted)", "recording");
   resetAudioHandlers();
   cancelMainTtsPlayback();
-  const a = getAudioEl();
   if (a) {
     a.pause();
     a.currentTime = 0;
   }
+  logInterruptChain("tts_stop_done", {
+    audioPausedAfter: a ? Boolean(a.paused) : null,
+    audioEndedAfter: a ? Boolean(a.ended) : null,
+    mainTtsPlaybackActive,
+    activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+  });
   /* PART 1 — t11: audio element paused after cancel. */
   _recordInterruptTimingPoint("t11_audio_audibly_stopped", {
     extra: { path: "cancelBrowserInterruptTtsOnly" },
@@ -18549,6 +18565,29 @@ function detectInterrupt() {
 
       const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
       const speechLike = heuristicChecks.passes;
+
+      if (whisperInterruptCaptureNeeded()) {
+        logInterruptChain(
+          "vad_during_tts",
+          {
+            rms: Number(rms.toFixed(5)),
+            zcr: Number(zcr.toFixed(4)),
+            crest: Number(crest.toFixed(2)),
+            speechLike,
+            ttsPlaying: true,
+            interruptRecording,
+            asrMode: (function () {
+              try {
+                return getVeraAsrMode();
+              } catch (_) {
+                return null;
+              }
+            })(),
+            vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+          },
+          { throttleKey: "vad_during_tts_whisper", throttleMs: 250 }
+        );
+      }
 
       /* DEBUG: throttled VAD frame log (max ~once per 250ms) so we can
          see whether detectInterrupt is firing at all while news TTS
@@ -19003,6 +19042,104 @@ function wireMobileInterruptDebugUi() {
   });
 }
 
+function getInterruptMicTrackStates() {
+  try {
+    return (micStream?.getAudioTracks?.() || []).map((t) => ({
+      readyState: t.readyState,
+      enabled: t.enabled,
+      muted: t.muted,
+    }));
+  } catch (_) {
+    return [];
+  }
+}
+
+function isMicStreamLiveForInterrupt() {
+  if (!micStream) return false;
+  try {
+    const tracks = micStream.getAudioTracks?.() || [];
+    if (!tracks.length) return Boolean(micStream.active);
+    return tracks.some((t) => t.readyState === "live");
+  } catch (_) {
+    return false;
+  }
+}
+
+async function ensureMicStreamForInterrupt() {
+  if (isMicStreamLiveForInterrupt()) {
+    if (!inputMuted) {
+      try {
+        micStream.getAudioTracks?.().forEach((t) => {
+          if (t.readyState === "live") t.enabled = true;
+        });
+      } catch (_) {}
+    }
+    return true;
+  }
+  if (micStream) {
+    try {
+      micStream.getTracks().forEach((t) => t.stop());
+    } catch (_) {}
+    micStream = null;
+  }
+  try {
+    await initMic();
+  } catch (_) {
+    return false;
+  }
+  return isMicStreamLiveForInterrupt();
+}
+
+function whisperInterruptCaptureNeeded() {
+  try {
+    if (isWhisperAsrMode()) return true;
+    if (isHybridAsrMode() && !browserAsrPreferred()) return true;
+  } catch (_) {}
+  return false;
+}
+
+async function armInterruptCaptureAtTtsStart({ ttsId = "" } = {}) {
+  const asrMode = (function () {
+    try {
+      return getVeraAsrMode();
+    } catch (_) {
+      return null;
+    }
+  })();
+
+  logInterruptChain("tts_start", {
+    asrMode,
+    listeningMode,
+    continuousListen: listeningMode === "continuous",
+    ttsPlaying: (function () {
+      try {
+        return isAssistantTtsPlaying();
+      } catch (_) {
+        return null;
+      }
+    })(),
+    micStreamExists: Boolean(micStream),
+    micStreamActive: Boolean(micStream?.active),
+    micStreamLive: isMicStreamLiveForInterrupt(),
+    interruptRecording,
+    hasInterruptRecorder: Boolean(interruptRecorder),
+  });
+
+  if (whisperInterruptCaptureNeeded() && listeningMode === "continuous" && !inputMuted) {
+    const micOk = await ensureMicStreamForInterrupt();
+    if (!micOk) {
+      logInterruptChain("start_capture_skipped", {
+        reason: "mic_stream_unavailable_after_reacquire",
+        asrMode,
+      });
+    }
+  }
+
+  logInterruptChain("start_capture_called", { asrMode });
+  startInterruptCapture();
+  void prearmInterruptCaptureForTts({ ttsId });
+}
+
 function startInterruptCapture() {
   /* DEBUG: log every call to startInterruptCapture and every early exit
      so we can confirm interruptRecording is flipped true for single-ASR
@@ -19026,11 +19163,31 @@ function startInterruptCapture() {
     ...(extra || {})
   });
 
+  const asrMode = (function () {
+    try {
+      return getVeraAsrMode();
+    } catch (_) {
+      return null;
+    }
+  })();
+
+  logInterruptChain("start_capture_state", {
+    asrMode,
+    micStreamExists: Boolean(micStream),
+    micStreamActive: Boolean(micStream?.active),
+    micStreamLive: isMicStreamLiveForInterrupt(),
+    trackStates: getInterruptMicTrackStates(),
+    interruptRecording,
+    hasInterruptRecorder: Boolean(interruptRecorder),
+    recorderState: interruptRecorder?.state ?? null,
+  });
+
   _dbgState("start_called");
 
   if (listeningMode !== "continuous") {
     interruptRecording = false;
     interruptChunks = [];
+    logInterruptChain("start_capture_skipped", { reason: "not_continuous", asrMode });
     _dbgState("start_aborted", { reason: "not_continuous" });
     return;
   }
@@ -19039,11 +19196,16 @@ function startInterruptCapture() {
     interruptChunks = [];
     stopAllBrowserSpeechRecognizers();
     showMutedStatusIfIdle();
+    logInterruptChain("start_capture_skipped", { reason: "input_muted", asrMode });
     _dbgState("start_aborted", { reason: "input_muted" });
     return;
   }
   if (browserAsrPreferred() && !isNarrowViewport()) {
     startInterruptBrowserPartialDetection();
+    logInterruptChain("start_capture_skipped", {
+      reason: "browser_asr_partial_detection_used",
+      asrMode,
+    });
     _dbgState("start_aborted", { reason: "browser_asr_partial_detection_used" });
     return;
   }
@@ -19092,13 +19254,29 @@ function startInterruptCapture() {
     };
     interruptRecorder.onstop = () => {
       _dbgState("recorder_stopped", { path: "prearm_commit" });
+      const chunksCount = interruptChunks.length;
       const blob = new Blob(interruptChunks, { type: "audio/webm" });
+      logInterruptChain("interrupt_audio_finalized", {
+        blobSize: blob.size,
+        chunksCount,
+        durationMsApprox: interruptPrearmStartedAt
+          ? Number(Math.max(0, performance.now() - interruptPrearmStartedAt).toFixed(1))
+          : null,
+        willSendToWhisper: blob.size >= MIN_AUDIO_BYTES && whisperInterruptCaptureNeeded(),
+        path: "prearm_commit",
+      });
       interruptRecorder = null;
       interruptRecording = false;
       interruptChunks = [];
       handleInterruptUtterance(blob);
     };
     interruptRecording = true;
+    logInterruptChain("start_capture_started", {
+      recorderState: interruptRecorder?.state ?? null,
+      timesliceMs: 100,
+      path: "prearm_commit",
+      asrMode,
+    });
     _dbgState("recorder_started", { path: "prearm_commit" });
     logInterruptTranscriptDebug("capture_committed", {
       included_preroll_ms: Math.min(
@@ -19113,7 +19291,7 @@ function startInterruptCapture() {
   }
 
   // ---------- START FRESH RECORDER ----------
-  if (!micStream || !micStream.active) {
+  if (!isMicStreamLiveForInterrupt()) {
     interruptRecording = false;
     interruptChunks = [];
     logInterruptTranscriptDebug("prearm", {
@@ -19122,6 +19300,11 @@ function startInterruptCapture() {
       rolling_buffer_enabled: false,
       preroll_ms: INTERRUPTION_PREROLL_MS,
       reason: "no_active_mic_stream"
+    });
+    logInterruptChain("start_capture_skipped", {
+      reason: "no_active_mic_stream",
+      asrMode,
+      trackStates: getInterruptMicTrackStates(),
     });
     _dbgState("start_aborted", { reason: "no_active_mic_stream" });
     return;
@@ -19138,7 +19321,17 @@ function startInterruptCapture() {
 
   interruptRecorder.onstop = () => {
     _dbgState("recorder_stopped", { path: "fresh_recorder" });
+    const chunksCount = interruptChunks.length;
     const blob = new Blob(interruptChunks, { type: "audio/webm" });
+    logInterruptChain("interrupt_audio_finalized", {
+      blobSize: blob.size,
+      chunksCount,
+      durationMsApprox: interruptPrearmStartedAt
+        ? Number(Math.max(0, performance.now() - interruptPrearmStartedAt).toFixed(1))
+        : null,
+      willSendToWhisper: blob.size >= MIN_AUDIO_BYTES && whisperInterruptCaptureNeeded(),
+      path: "fresh_recorder",
+    });
 
     interruptRecorder = null;
     interruptRecording = false;
@@ -19149,6 +19342,12 @@ function startInterruptCapture() {
 
   interruptRecorder.start(100);
   interruptRecording = true;
+  logInterruptChain("start_capture_started", {
+    recorderState: interruptRecorder?.state ?? null,
+    timesliceMs: 100,
+    path: "fresh_recorder",
+    asrMode,
+  });
   _dbgState("recorder_started", { path: "fresh_recorder" });
 }
 
@@ -19191,7 +19390,7 @@ async function prearmInterruptCaptureForTts({ turnId = "", ttsId = "" } = {}) {
   const micPermissionState = await getMicPermissionStateForInterrupt();
   const attempted =
     micPermissionState === "granted" ||
-    Boolean(micStream?.active) ||
+    isMicStreamLiveForInterrupt() ||
     (browserAsrPreferred() && !isNarrowViewport());
   logInterruptTranscriptDebug("tts_start", {
     turn_id: turnId || null,
@@ -19229,7 +19428,7 @@ async function prearmInterruptCaptureForTts({ turnId = "", ttsId = "" } = {}) {
     return interruptPrearmSuccess;
   }
 
-  if (!micStream || !micStream.active || typeof MediaRecorder === "undefined") {
+  if (!micStream || !isMicStreamLiveForInterrupt() || typeof MediaRecorder === "undefined") {
     logInterruptTranscriptDebug("prearm", {
       stream_active: Boolean(micStream?.active),
       media_recorder_ready: false,
@@ -19317,6 +19516,17 @@ async function handleInterruptUtterance(blob) {
     actionType: _veraCurrentTtsDebugContext?.actionType ?? null,
   });
   if (blob.size < MIN_AUDIO_BYTES) {
+    logInterruptChain("interrupt_early_return", {
+      reason: "blob_too_small",
+      asrMode: (function () {
+        try {
+          return getVeraAsrMode();
+        } catch (_) {
+          return null;
+        }
+      })(),
+      blobSize: blob.size,
+    });
     listening = true;
     return;
   }
@@ -20290,7 +20500,13 @@ async function tryPeekApplyWorkModeTimerFromNdjsonClone(res) {
 /* runNdjsonTtsPlayback → moved to voice/ttsQueue.js (Stage 5, 2026-05-27). */
 
 async function initMic() {
-  if (micStream) return;
+  if (micStream && isMicStreamLiveForInterrupt()) return;
+  if (micStream) {
+    try {
+      micStream.getTracks().forEach((t) => t.stop());
+    } catch (_) {}
+    micStream = null;
+  }
 
   const audioConstraints = isNarrowViewport()
     ? {
@@ -22147,8 +22363,7 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
           resetVadFastStopState("voice_tts_start");
           const interruptTtsId = interruptTranscriptNewTtsId();
           interruptPrearmTtsId = interruptTtsId;
-          startInterruptCapture();
-          void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
+          void armInterruptCaptureAtTtsStart({ ttsId: interruptTtsId });
           if (!(inferPrep?.stage2VoiceBubble instanceof HTMLElement && inferPrep.stage2VoiceBubble.isConnected)) {
             applyAssistantReplyAndPanels(playData);
           }
@@ -22413,8 +22628,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                   resetVadFastStopState("voice_tts_start_ndjson");
                   const interruptTtsId = interruptTranscriptNewTtsId();
                   interruptPrearmTtsId = interruptTtsId;
-                  startInterruptCapture();
-                  void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
+                  void armInterruptCaptureAtTtsStart({ ttsId: interruptTtsId });
                   applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
                   setStatus(
                     listeningMode === "ptt" ? "Speaking" : "Speaking… (Interruptible)",
@@ -22570,6 +22784,15 @@ async function runInferInterruptPipeline(formData) {
   // during the interrupt search/thinking window.
   armPendingNewsStatusBubble(_readInferFormDataTranscript(formData));
   try {
+    const audioPart = formData?.get?.("audio");
+    const audioBlobSize =
+      audioPart && typeof audioPart.size === "number" ? audioPart.size : null;
+    logInterruptChain("whisper_interrupt_submit", {
+      blobSize: audioBlobSize,
+      endpoint: `${API_URL}/infer`,
+      sessionIdPresent: Boolean(formData?.get?.("session_id")),
+      mode: formData?.get?.("mode") || null,
+    });
     logVoicePipe("POST /infer starting (interrupt, upload in flight)");
     const inferFetchStart = performance.now();
     const res = await authFetch(`${API_URL}/infer`, {

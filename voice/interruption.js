@@ -174,8 +174,22 @@ function logVeraInterruptDebug(payload, opts = {}) {
       if (nowMs - last < minMs) return;
       _veraInterruptDebugLastAt.set(opts.throttleKey, nowMs);
     }
-    console.info(`[${tag}]`, payload);
+    const ev = payload?.event;
+    if (ev) {
+      const { event: _ev, tag: _tag, ...rest } = payload;
+      console.info("[interrupt_debug]", ev, rest);
+    } else {
+      console.info(`[${tag}]`, payload);
+    }
   } catch (_) {}
+}
+
+/** Structured Whisper/interrupt chain logs (gated by VERA_DEBUG_INTERRUPT). */
+function logInterruptChain(event, fields, opts) {
+  logVeraInterruptDebug(
+    { tag: "interrupt_debug", event, ...(fields && typeof fields === "object" ? fields : {}) },
+    opts || {}
+  );
 }
 
 /* =========================
@@ -614,16 +628,44 @@ function interruptSpeech() {
     ...(extra || {})
   });
 
-  if (listeningMode !== "continuous") {
-    logVeraInterruptDebug(_dbgEntry({ outcome: "early_return", reasonIfReturn: "not_continuous" }));
-    return;
-  }
+  const asrMode = (function () {
+    try { return getVeraAsrMode(); } catch (_) { return null; }
+  })();
 
   const a = getAudioEl();
   const htmlPlaying = a && !a.paused;
   const webTtsPlaying =
     activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
-  if (!htmlPlaying && !webTtsPlaying) {
+  const ttsPlaying = Boolean(htmlPlaying || webTtsPlaying);
+
+  logInterruptChain("interrupt_speech_entry", {
+    asrMode,
+    ttsPlaying,
+    interruptRecording,
+    hasInterruptRecorder: (function () {
+      try {
+        return Boolean(interruptRecorder);
+      } catch (_) {
+        return null;
+      }
+    })(),
+    recorderState: (function () {
+      try {
+        return interruptRecorder?.state ?? null;
+      } catch (_) {
+        return null;
+      }
+    })(),
+  });
+
+  if (listeningMode !== "continuous") {
+    logInterruptChain("interrupt_early_return", { reason: "not_continuous", asrMode });
+    logVeraInterruptDebug(_dbgEntry({ outcome: "early_return", reasonIfReturn: "not_continuous" }));
+    return;
+  }
+
+  if (!ttsPlaying) {
+    logInterruptChain("interrupt_early_return", { reason: "no_tts_playing", asrMode });
     logVeraInterruptDebug(_dbgEntry({
       outcome: "early_return",
       reasonIfReturn: "no_tts_playing",
@@ -635,8 +677,15 @@ function interruptSpeech() {
 
   const useBrowserAsr = browserAsrPreferred();
   if (!interruptRecording && !useBrowserAsr) {
-    /* Capture was not armed at TTS start (mic stream edge case). Still cut
-       assistant audio so the user is not talked over; utterance may be lost. */
+    /* Whisper path: prearm may have finished after the sync TTS-start arm, or
+       the mic stream was stale — commit prearm / start recorder now. */
+    try { startInterruptCapture(); } catch (_) {}
+  }
+  if (!interruptRecording && !useBrowserAsr) {
+    logInterruptChain("interrupt_early_return", {
+      reason: "interrupt_recording_false_whisper_no_capture",
+      asrMode,
+    });
     logVeraInterruptDebug(_dbgEntry({
       outcome: "audio_only_cancel",
       reasonIfReturn: "interrupt_recording_false_single_asr",
@@ -730,6 +779,7 @@ try {
      * either, so this is purely additive. */
     window.resetVadFastStopState = resetVadFastStopState;
     window.isVeraInterruptDebugEnabled = isVeraInterruptDebugEnabled;
+    window.logInterruptChain = logInterruptChain;
   }
 } catch (_) {}
 
