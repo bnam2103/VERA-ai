@@ -19318,6 +19318,12 @@ function computeHeuristicInterruptChecks(rms, zcr, crest) {
   };
 }
 
+function logWhisperInterruptQa(stage, detail, fields = {}) {
+  try {
+    console.info(detail ? `[${stage}] ${detail}` : `[${stage}]`, fields);
+  } catch (_) {}
+}
+
 function logInterruptTriggerReason({
   gate,
   triggerKind,
@@ -19354,28 +19360,24 @@ function logInterruptTriggerReason({
   if (h.rmsBelowMax) checks.push("rms_max");
   if (h.zcrInRange) checks.push("zcr");
   if (h.crestOk) checks.push("crest");
-  console.log(
-    `[INTERRUPT] trigger — ${gate}`,
-    {
-      ...base,
-      lastSpeechLike: lastSpeechLike
-        ? {
-            rms: Number(lastSpeechLike.rms.toFixed(5)),
-            zcr: Number(lastSpeechLike.zcr.toFixed(5)),
-            crest: Number(lastSpeechLike.crest.toFixed(4)),
-            heuristicChecks: checks.join("+"),
-            flags: {
-              rmsAboveMin: h.rmsAboveMin,
-              rmsBelowMax: h.rmsBelowMax,
-              zcrInRange: h.zcrInRange,
-              crestOk: h.crestOk,
-            },
-          }
-        : null,
-    }
-  );
+  const isWhisperCandidateGate =
+    gate === "whisper_sustain" || gate === "whisper_strong_frames";
+  logWhisperInterruptQa("INTERRUPT_CANDIDATE", gate, {
+    ...base,
+    note: isWhisperCandidateGate
+      ? "VAD candidate only — awaiting Whisper transcript confirmation"
+      : "VAD candidate",
+    lastSpeechLike: lastSpeechLike
+      ? {
+          rms: Number(lastSpeechLike.rms.toFixed(5)),
+          zcr: Number(lastSpeechLike.zcr.toFixed(5)),
+          crest: Number(lastSpeechLike.crest.toFixed(4)),
+          heuristicChecks: checks.join("+"),
+        }
+      : null,
+  });
   pushMobileInterruptVadLog(
-    `[INTERRUPT] gate=${gate} accumMs=${speechAccumMs.toFixed(1)} rms=${triggerFrame.rms.toFixed(5)} zcr=${triggerFrame.zcr.toFixed(5)} crest=${triggerFrame.crest.toFixed(4)} checks=${checks.join("+")}`
+    `[INTERRUPT_CANDIDATE] ${gate} accumMs=${speechAccumMs.toFixed(1)} rms=${triggerFrame.rms.toFixed(5)} zcr=${triggerFrame.zcr.toFixed(5)} crest=${triggerFrame.crest.toFixed(4)} checks=${checks.join("+")}`
   );
 }
 
@@ -20086,19 +20088,24 @@ function ignoreWhisperInterruptCandidate(rejectReason, { transcriptLen = 0, word
     waveState = "idle";
     setStatus("Ready", "idle");
     updateMuteInputButton();
-    return;
+  } else {
+    waveState = "listening";
+    listening = true;
+    if (inputMuted) {
+      showMutedStatusIfIdle();
+    } else {
+      setStatus("Listening…", "listening");
+      window.setTimeout(() => {
+        if (!listening || processing || inputMuted) return;
+        startListening();
+      }, 80);
+    }
   }
-  waveState = "listening";
-  listening = true;
-  if (inputMuted) {
-    showMutedStatusIfIdle();
-    return;
-  }
-  setStatus("Listening…", "listening");
-  window.setTimeout(() => {
-    if (!listening || processing || inputMuted) return;
-    startListening();
-  }, 80);
+  logWhisperInterruptQa("INTERRUPT_REJECTED_CLEANUP_DONE", null, {
+    rejectReason,
+    transcript_len: transcriptLen,
+    word_count: wordCount,
+  });
 }
 
 /**
@@ -20107,6 +20114,12 @@ function ignoreWhisperInterruptCandidate(rejectReason, { transcriptLen = 0, word
 function handleWhisperInterruptTranscriptConfirmation(transcript) {
   if (!shouldConfirmWhisperInterruptTranscript()) return true;
   const confirmation = evaluateWhisperInterruptTranscriptConfirmation(transcript);
+  logWhisperInterruptQa("WHISPER_INTERRUPT_TRANSCRIPT_RECEIVED", null, {
+    transcript_len: confirmation.transcriptLen,
+    word_count: confirmation.wordCount,
+    accepted: confirmation.accepted,
+    rejectReason: confirmation.rejectReason,
+  });
   logInterruptChain("whisper_interrupt_transcript_received", {
     transcript_len: confirmation.transcriptLen,
     word_count: confirmation.wordCount,
@@ -20114,12 +20127,21 @@ function handleWhisperInterruptTranscriptConfirmation(transcript) {
     rejectReason: confirmation.rejectReason,
   });
   if (!confirmation.accepted) {
+    logWhisperInterruptQa("INTERRUPT_REJECTED", "whisper_transcript_rejected", {
+      rejectReason: confirmation.rejectReason,
+      transcript_len: confirmation.transcriptLen,
+      word_count: confirmation.wordCount,
+    });
     ignoreWhisperInterruptCandidate(confirmation.rejectReason, {
       transcriptLen: confirmation.transcriptLen,
       wordCount: confirmation.wordCount,
     });
     return false;
   }
+  logWhisperInterruptQa("INTERRUPT_CONFIRMED", "whisper_transcript_accepted", {
+    transcript_len: confirmation.transcriptLen,
+    word_count: confirmation.wordCount,
+  });
   logInterruptChain("whisper_interrupt_accepted", {
     transcript_len: confirmation.transcriptLen,
     word_count: confirmation.wordCount,
@@ -23340,6 +23362,13 @@ async function runInferInterruptPipeline(formData) {
     const audioPart = formData?.get?.("audio");
     const audioBlobSize =
       audioPart && typeof audioPart.size === "number" ? audioPart.size : null;
+    if (shouldConfirmWhisperInterruptTranscript()) {
+      logWhisperInterruptQa("INTERRUPT_CANDIDATE_SUBMITTED_TO_WHISPER", null, {
+        blobSize: audioBlobSize,
+        endpoint: `${API_URL}/infer`,
+        mode: formData?.get?.("mode") || null,
+      });
+    }
     logInterruptChain("whisper_interrupt_submit", {
       blobSize: audioBlobSize,
       endpoint: `${API_URL}/infer`,
