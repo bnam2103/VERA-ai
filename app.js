@@ -1293,6 +1293,12 @@ function getWhisperInterruptSustainMs() {
     : WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP;
 }
 
+function getWhisperStrongFramesRequired() {
+  return isNarrowViewport()
+    ? WHISPER_STRONG_FRAME_COUNT_PHONE
+    : WHISPER_STRONG_FRAME_COUNT_DESKTOP;
+}
+
 function resetWhisperInterruptVadTriggerState() {
   whisperInterruptStrongFrames = 0;
   whisperInterruptCooldownUntil = 0;
@@ -1301,9 +1307,9 @@ function resetWhisperInterruptVadTriggerState() {
 function isWhisperStrongInterruptFrame(rms, zcr, crest) {
   if (rms < WHISPER_INTERRUPT_RMS_STRONG) return false;
   if (rms >= MAX_SPEECH_RMS * 1.25) return false;
-  if (crest > INTERRUPT_MAX_CREST) return false;
+  if (crest > WHISPER_STRONG_MAX_CREST) return false;
   const zcrStrict = zcr >= INTERRUPT_ZCR_MIN && zcr <= INTERRUPT_ZCR_MAX;
-  const zcrLoose = zcr >= 0.018 && zcr <= 0.22;
+  const zcrLoose = zcr >= 0.02 && zcr <= 0.2;
   return zcrStrict || (rms >= WHISPER_INTERRUPT_RMS_STRONG && zcrLoose);
 }
 
@@ -1321,19 +1327,30 @@ function whisperVadReasonIfNotTriggering({
   sustainMs,
   strongFrames,
   requiredStrongFrames,
+  speechWindowMs,
+  requiredStrongWindowMs,
   cooldownActive,
   interruptRecording,
   sustainReady,
   strongReady,
+  antiCoughBlocked,
+  crest,
 }) {
   if (inputMuted) return "input_muted";
   if (listeningMode !== "continuous") return "not_continuous";
   if (cooldownActive) return "cooldown_active";
   if (!interruptRecording) return "interrupt_recording_false";
   if (strongReady || sustainReady) return null;
+  if (antiCoughBlocked) return "anti_cough_short_burst";
   if (!effectiveSpeechLike && !speechLike) return "not_speech_like";
   if (strongFrames > 0 && strongFrames < requiredStrongFrames) {
     return `strong_frames_${strongFrames}_of_${requiredStrongFrames}`;
+  }
+  if (
+    strongFrames >= requiredStrongFrames &&
+    speechWindowMs < requiredStrongWindowMs
+  ) {
+    return `strong_window_${Math.round(speechWindowMs)}_of_${requiredStrongWindowMs}`;
   }
   if (consecutiveSpeechFrames < requiredSpeechFrames) return "insufficient_frames";
   if (accumMs < sustainMs) {
@@ -1346,9 +1363,14 @@ function whisperVadReasonIfNotTriggering({
 const INTERRUPT_GAP_RESET_MS = 110;
 /** Whisper barge-in: shorter sustain + strong-frame fast path (user speech over TTS). */
 const WHISPER_INTERRUPT_RMS_STRONG = 0.05;
-const WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP = 80;
-const WHISPER_INTERRUPT_SUSTAIN_MS_PHONE = 60;
-const WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED = 2;
+const WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP = 120;
+const WHISPER_INTERRUPT_SUSTAIN_MS_PHONE = 80;
+const WHISPER_STRONG_FRAME_COUNT_DESKTOP = 3;
+const WHISPER_STRONG_FRAME_COUNT_PHONE = 2;
+const WHISPER_STRONG_MIN_WINDOW_MS = 80;
+/** Crest above this on a short burst is treated as cough/click, not speech. */
+const WHISPER_STRONG_MAX_CREST = 32;
+const WHISPER_SPIKY_CREST_REJECT = 28;
 const WHISPER_INTERRUPT_COOLDOWN_MS = 450;
 const WHISPER_INTERRUPT_GAP_RESET_MS = 180;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
@@ -18697,9 +18719,24 @@ function detectInterrupt() {
         effectiveSpeechLike &&
         interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
         interruptSpeechAccumMs >= sustainMs;
-      const strongReady =
+      const requiredStrongFrames = whisperVadPath ? getWhisperStrongFramesRequired() : 0;
+      const speechWindowMs = interruptSpeechStart ? now - interruptSpeechStart : 0;
+      const strongCountOk =
+        whisperVadPath && whisperInterruptStrongFrames >= requiredStrongFrames;
+      const strongWindowOk = speechWindowMs >= WHISPER_STRONG_MIN_WINDOW_MS;
+      const spikyShortBurst =
         whisperVadPath &&
-        whisperInterruptStrongFrames >= WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED;
+        crest > WHISPER_SPIKY_CREST_REJECT &&
+        speechWindowMs < WHISPER_STRONG_MIN_WINDOW_MS &&
+        interruptSpeechAccumMs < sustainMs;
+      const strongReady =
+        strongCountOk && strongWindowOk && !spikyShortBurst;
+      const antiCoughBlocked =
+        whisperVadPath &&
+        effectiveSpeechLike &&
+        !sustainReady &&
+        !strongReady &&
+        (strongCountOk && !strongWindowOk || spikyShortBurst);
       const triggerReady = !cooldownActive && (sustainReady || strongReady);
 
       if (whisperVadPath) {
@@ -18711,11 +18748,15 @@ function detectInterrupt() {
           accumMs: interruptSpeechAccumMs,
           sustainMs,
           strongFrames: whisperInterruptStrongFrames,
-          requiredStrongFrames: WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED,
+          requiredStrongFrames,
+          speechWindowMs,
+          requiredStrongWindowMs: WHISPER_STRONG_MIN_WINDOW_MS,
           cooldownActive,
           interruptRecording,
           sustainReady,
           strongReady,
+          antiCoughBlocked,
+          crest,
         });
         logInterruptChain(
           "vad_trigger_eval",
@@ -18739,7 +18780,11 @@ function detectInterrupt() {
             vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
             sustainMs,
             strongFrames: whisperInterruptStrongFrames,
-            requiredStrongFrames: WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED,
+            requiredStrongFrames,
+            speechWindowMs: Number(speechWindowMs.toFixed(1)),
+            requiredStrongWindowMs: WHISPER_STRONG_MIN_WINDOW_MS,
+            spikyShortBurst,
+            antiCoughBlocked,
             interruptCooldownActive: cooldownActive,
             alreadyInterrupted: cooldownActive,
             inputMuted,
@@ -18761,7 +18806,9 @@ function detectInterrupt() {
               consecutiveSpeechFrames: interruptSpeechFrames,
               requiredSpeechFrames: INTERRUPT_MIN_FRAMES,
               strongFrames: whisperInterruptStrongFrames,
-              requiredStrongFrames: WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED,
+              requiredStrongFrames,
+              speechWindowMs: Number(speechWindowMs.toFixed(1)),
+              requiredStrongWindowMs: WHISPER_STRONG_MIN_WINDOW_MS,
               vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
               sustainMs,
               interruptRecording,
