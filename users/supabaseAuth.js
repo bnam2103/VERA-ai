@@ -36,6 +36,10 @@ async function _loadSupabaseClientConfig() {
   try {
     const res = await fetch(authApiUrl("/api/auth/config"), { method: "GET" });
     const data = await res.json().catch(() => ({}));
+    const apiBase = String(data?.api_base_url || "").trim();
+    if (apiBase && typeof window !== "undefined") {
+      window.VERA_API_BASE_URL = apiBase.replace(/\/$/, "");
+    }
     if (res.ok && data?.configured && data.supabase_url && data.anon_key) {
       return data;
     }
