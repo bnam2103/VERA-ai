@@ -17430,7 +17430,22 @@ function makeNdjsonPayloadDedupeKey(event, payload, index) {
     "no_request";
   const type = payload?.panel_type || payload?.type || "unknown_payload";
   const op = payload?.op || payload?.action || payload?.action_name || "no_op";
-  return `${req}:${Number(index) || 0}:${type}:${op}`;
+  const planId = String(payload?.action_plan_id || "").trim() || "noplan";
+  const seqIdx = Number.isFinite(Number(payload?.planner_action_index))
+    ? Number(payload.planner_action_index)
+    : Number(index) || 0;
+  if (type === "music_control" && op) {
+    const target = String(
+      payload?.uri ||
+        payload?.playlist_name ||
+        payload?.query ||
+        payload?.playlist_id ||
+        payload?.sound_id ||
+        ""
+    ).slice(0, 120);
+    return `${req}:${planId}:${seqIdx}:${type}:${op}:${target}`;
+  }
+  return `${req}:${planId}:${seqIdx}:${type}:${op}`;
 }
 
 async function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown") {
