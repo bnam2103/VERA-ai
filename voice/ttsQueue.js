@@ -596,7 +596,16 @@ async function playTtsUrlSequenceIncremental(
  */
 async function runNdjsonTtsPlayback(
   res,
-  { onMeta, onDone, onPlayStart, onPlayEnd, onReplyProgress, skipAudio, suppressReplyProgress }
+  {
+    onMeta,
+    onDone,
+    onPlayStart,
+    onPlayEnd,
+    onReplyProgress,
+    skipAudio,
+    suppressReplyProgress,
+    onNdjsonLine,
+  }
 ) {
   const reader = res.body.getReader();
   activeNdjsonBodyReader = reader;
@@ -676,6 +685,11 @@ async function runNdjsonTtsPlayback(
           }
         }
         for (const obj of objs) {
+          if (typeof onNdjsonLine === "function") {
+            try {
+              onNdjsonLine(obj);
+            } catch (_) {}
+          }
           if (obj.type === "asr" && obj.transcript != null) {
             wrapOnMeta({ transcript: String(obj.transcript) });
             logVoicePipe("NDJSON asr line (user transcript early)");

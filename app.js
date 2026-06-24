@@ -13,6 +13,7 @@ try {
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
   console.warn("[VERA_BUILD] whisper_interrupt_confirmation_v2_loaded");
+  console.warn("[VERA_BUILD] whisper_interrupt_ndjson_line_probe_v1_loaded");
 } catch (_) {}
 
 /* =========================
@@ -20079,9 +20080,93 @@ function shouldConfirmWhisperInterruptTranscript() {
 }
 
 function handleWhisperInterruptTranscriptMissing(context = {}) {
-  logWhisperInterruptQa("WHISPER_INTERRUPT_TRANSCRIPT_MISSING", null, context);
+  return rejectWhisperInterruptNoTranscript({
+    ...context,
+    via: "explicit_missing_handler",
+  });
+}
+
+function describeInterruptTranscriptFlags(obj) {
+  const o = obj && typeof obj === "object" ? obj : {};
+  return {
+    has_transcript: o.transcript != null && String(o.transcript).trim().length > 0,
+    has_transcript_key: Object.prototype.hasOwnProperty.call(o, "transcript"),
+    has_meta_transcript:
+      o.meta?.transcript != null && String(o.meta.transcript).trim().length > 0,
+    has_data_transcript:
+      o.data?.transcript != null && String(o.data.transcript).trim().length > 0,
+    has_text: o.text != null && String(o.text).trim().length > 0,
+    has_asr_text: o.asr_text != null && String(o.asr_text).trim().length > 0,
+    has_user_text: o.user_text != null && String(o.user_text).trim().length > 0,
+    has_delta: o.delta != null && String(o.delta).trim().length > 0,
+  };
+}
+
+function pickInterruptTranscriptFromObject(obj) {
+  if (!obj || typeof obj !== "object") return "";
+  for (const key of ["transcript", "asr_text", "user_text", "text"]) {
+    if (obj[key] != null) return String(obj[key]).trim();
+  }
+  if (obj.meta?.transcript != null) return String(obj.meta.transcript).trim();
+  if (obj.data?.transcript != null) return String(obj.data.transcript).trim();
+  return "";
+}
+
+function shouldAttemptInterruptTranscriptConfirmationFromNdjsonLine(obj) {
+  const eventType = String(obj?.type || obj?.event_type || "");
+  if (eventType === "asr") return true;
+  if (eventType === "meta") {
+    return (
+      Object.prototype.hasOwnProperty.call(obj, "transcript") ||
+      Object.prototype.hasOwnProperty.call(obj, "user_text") ||
+      Object.prototype.hasOwnProperty.call(obj, "asr_text") ||
+      Object.prototype.hasOwnProperty.call(obj, "text") ||
+      Boolean(pickInterruptTranscriptFromObject(obj))
+    );
+  }
+  return Boolean(pickInterruptTranscriptFromObject(obj));
+}
+
+function rejectWhisperInterruptNoTranscript(context = {}) {
+  logWhisperInterruptQa("WHISPER_INTERRUPT_NO_TRANSCRIPT_BEFORE_DONE", null, context);
   if (!shouldConfirmWhisperInterruptTranscript()) return true;
-  return handleWhisperInterruptTranscriptConfirmation("");
+  logWhisperInterruptQa("INTERRUPT_REJECTED", "missing_transcript", context);
+  ignoreWhisperInterruptCandidate("missing_transcript", {
+    transcriptLen: 0,
+    wordCount: 0,
+  });
+  return false;
+}
+
+function processWhisperInterruptNdjsonLine(obj, state, confirmationEnabled) {
+  const eventType = String(obj?.type || obj?.event_type || "unknown");
+  state.ndjsonEventCount += 1;
+  if (eventType === "meta") state.sawMeta = true;
+  if (eventType === "done") state.sawDone = true;
+  if (eventType === "asr") state.sawAsr = true;
+
+  logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_LINE", null, {
+    event_type: eventType,
+    top_level_keys: Object.keys(obj || {}).slice(0, 24),
+    ...describeInterruptTranscriptFlags(obj),
+    responseMode: "ndjson",
+  });
+
+  if (!confirmationEnabled) return;
+  if (state.whisperInterruptTranscriptRejected || state.whisperInterruptTranscriptConfirmed) {
+    return;
+  }
+  if (!shouldAttemptInterruptTranscriptConfirmationFromNdjsonLine(obj)) return;
+
+  state.sawTranscript = true;
+  state.whisperInterruptTranscriptSeen = true;
+  const transcriptText = pickInterruptTranscriptFromObject(obj);
+  if (!handleWhisperInterruptTranscriptConfirmation(transcriptText)) {
+    state.whisperInterruptTranscriptRejected = true;
+    activePipelineAbort?.abort();
+    return;
+  }
+  state.whisperInterruptTranscriptConfirmed = true;
 }
 
 function ignoreWhisperInterruptCandidate(rejectReason, { transcriptLen = 0, wordCount = 0 } = {}) {
@@ -23431,15 +23516,25 @@ async function runInferInterruptPipeline(formData) {
     logWhisperInterruptQa("WHISPER_INTERRUPT_RESPONSE_HEADERS", null, {
       ok: res.ok,
       status: res.status,
+      contentType: res.headers.get("content-type") || null,
       responsePath,
+      responseMode: responsePath,
       ttfbMs: Number(inferTtfbMs.toFixed(1)),
       ...confirmationState,
     });
 
     if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
-      let whisperInterruptTranscriptRejected = false;
-      let whisperInterruptTranscriptSeen = false;
+      const interruptNdjsonState = {
+        ndjsonEventCount: 0,
+        sawMeta: false,
+        sawDone: false,
+        sawAsr: false,
+        sawTranscript: false,
+        whisperInterruptTranscriptSeen: false,
+        whisperInterruptTranscriptConfirmed: false,
+        whisperInterruptTranscriptRejected: false,
+      };
 
       const runStream = async () => {
         let ndjsonMeta = null;
@@ -23447,12 +23542,21 @@ async function runInferInterruptPipeline(formData) {
         resetAudioHandlers();
         try {
           await runNdjsonTtsPlayback(res, {
+            onNdjsonLine: (obj) => {
+              processWhisperInterruptNdjsonLine(
+                obj,
+                interruptNdjsonState,
+                confirmationState.confirmationEnabled
+              );
+            },
             onMeta: (meta) => {
               logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
-                event_type: "meta",
-                hasTranscript: Boolean(meta?.transcript),
+                event_type: "meta_callback",
+                hasTranscript: Boolean(pickInterruptTranscriptFromObject(meta)),
+                ...describeInterruptTranscriptFlags(meta),
                 responsePath: "ndjson",
               });
+              if (interruptNdjsonState.whisperInterruptTranscriptRejected) return;
               ndjsonMeta = { ...ndjsonMeta, ...meta };
               if (
                 !streamReplyState.pendingReplyBack &&
@@ -23473,34 +23577,27 @@ async function runInferInterruptPipeline(formData) {
               if (meta.work_mode_timer) {
                 applyWorkModeTimerPayload(meta.work_mode_timer);
               }
-              if (meta.transcript) {
-                whisperInterruptTranscriptSeen = true;
-                if (
-                  !handleWhisperInterruptTranscriptConfirmation(meta.transcript)
-                ) {
-                  whisperInterruptTranscriptRejected = true;
-                  activePipelineAbort?.abort();
-                  return;
-                }
-                applyNdjsonUserTranscriptBubble(meta.transcript, "interrupt-ndjson");
-                armPendingNewsStatusBubble(meta.transcript);
-                const tr = String(meta.transcript || "").trim();
+              const transcriptText = pickInterruptTranscriptFromObject(meta);
+              if (
+                transcriptText &&
+                (!confirmationState.confirmationEnabled ||
+                  interruptNdjsonState.whisperInterruptTranscriptConfirmed)
+              ) {
+                applyNdjsonUserTranscriptBubble(transcriptText, "interrupt-ndjson");
+                armPendingNewsStatusBubble(transcriptText);
                 logInterruptTranscriptDebug("asr_result", {
-                  transcript: tr.slice(0, 120),
-                  transcript_char_count: tr.length,
-                  possibly_cutoff: /^(explain|second|part|music)\b/i.test(tr)
+                  transcript: transcriptText.slice(0, 120),
+                  transcript_char_count: transcriptText.length,
+                  possibly_cutoff: /^(explain|second|part|music)\b/i.test(transcriptText)
                 });
-                /* Stage 1 stabilization: pure-whisper interrupt path. Skip
-                   when the client already sent a transcript (browser-ASR
-                   interrupt path logs at its own fetch site). */
                 try {
                   const _clientTranscript = inferTranscriptFromFormData(formData);
                   if (!_clientTranscript) {
                     logTurnTextIntegrity({
                       source: "whisper",
                       raw_asr_text: null,
-                      normalized_text: meta.transcript,
-                      router_input_text: meta.transcript,
+                      normalized_text: transcriptText,
+                      router_input_text: transcriptText,
                       backend_payload_text: "",
                       request_id: null,
                       path: "interrupt-ndjson-whisper",
@@ -23519,26 +23616,36 @@ async function runInferInterruptPipeline(formData) {
               applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
             },
             onDone: (done) => {
+              interruptNdjsonState.sawDone = true;
               logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
                 event_type: "done",
-                hasTranscript: whisperInterruptTranscriptSeen,
+                hasTranscript: interruptNdjsonState.sawTranscript,
                 responsePath: "ndjson",
               });
               if (
                 confirmationState.confirmationEnabled &&
-                !whisperInterruptTranscriptSeen &&
-                !whisperInterruptTranscriptRejected
+                !interruptNdjsonState.whisperInterruptTranscriptSeen &&
+                !interruptNdjsonState.whisperInterruptTranscriptRejected
               ) {
-                whisperInterruptTranscriptRejected =
-                  !handleWhisperInterruptTranscriptMissing({
+                interruptNdjsonState.whisperInterruptTranscriptRejected =
+                  !rejectWhisperInterruptNoTranscript({
+                    responseMode: "ndjson",
                     responsePath: "ndjson",
                     status: res.status,
-                    event_type: "done",
+                    sawMeta: interruptNdjsonState.sawMeta,
+                    sawDone: interruptNdjsonState.sawDone,
+                    sawAsr: interruptNdjsonState.sawAsr,
+                    sawTranscript: interruptNdjsonState.sawTranscript,
+                    ndjsonEventCount: interruptNdjsonState.ndjsonEventCount,
                   });
-                if (whisperInterruptTranscriptRejected) {
+                if (interruptNdjsonState.whisperInterruptTranscriptRejected) {
                   activePipelineAbort?.abort();
                   return;
                 }
+              }
+              if (interruptNdjsonState.whisperInterruptTranscriptRejected) {
+                activePipelineAbort?.abort();
+                return;
               }
               logInferLatency(done, "interrupt", inferTtfbMs);
               finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
@@ -23547,10 +23654,16 @@ async function runInferInterruptPipeline(formData) {
             onPlayStart: () => {
               logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
                 event_type: "play_start",
-                hasTranscript: whisperInterruptTranscriptSeen,
+                hasTranscript: interruptNdjsonState.sawTranscript,
                 responsePath: "ndjson",
               });
-              if (whisperInterruptTranscriptRejected) return;
+              if (
+                interruptNdjsonState.whisperInterruptTranscriptRejected ||
+                (confirmationState.confirmationEnabled &&
+                  !interruptNdjsonState.whisperInterruptTranscriptConfirmed)
+              ) {
+                return;
+              }
               logVoiceFirstAudio("main-reply");
               logVoiceMainReplyAudio();
               applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
@@ -23565,18 +23678,50 @@ async function runInferInterruptPipeline(formData) {
             }
           });
         } catch (e) {
-          if (e?.name !== "AbortError" && !whisperInterruptTranscriptRejected) {
+          if (
+            e?.name !== "AbortError" &&
+            !interruptNdjsonState.whisperInterruptTranscriptRejected
+          ) {
             console.warn(e);
           }
         }
       };
 
       await runStream();
-      if (whisperInterruptTranscriptRejected) return;
+      if (interruptNdjsonState.whisperInterruptTranscriptRejected) return;
+      if (
+        confirmationState.confirmationEnabled &&
+        !interruptNdjsonState.whisperInterruptTranscriptConfirmed
+      ) {
+        if (
+          !rejectWhisperInterruptNoTranscript({
+            responseMode: "ndjson",
+            responsePath: "ndjson",
+            status: res.status,
+            sawMeta: interruptNdjsonState.sawMeta,
+            sawDone: interruptNdjsonState.sawDone,
+            sawAsr: interruptNdjsonState.sawAsr,
+            sawTranscript: interruptNdjsonState.sawTranscript,
+            ndjsonEventCount: interruptNdjsonState.ndjsonEventCount,
+            via: "post_stream_guard",
+          })
+        ) {
+          return;
+        }
+      }
       return;
     }
 
     const data = await res.json();
+    logWhisperInterruptQa("WHISPER_INTERRUPT_JSON_RESPONSE", null, {
+      ok: res.ok,
+      status: res.status,
+      contentType: res.headers.get("content-type") || null,
+      responseMode: "json",
+      top_level_keys: Object.keys(data || {}).slice(0, 24),
+      ...describeInterruptTranscriptFlags(data || {}),
+      ...confirmationState,
+    });
     logInferLatency(data, "interrupt", inferTtfbMs);
 
     requestInFlight = false;
@@ -23607,24 +23752,40 @@ async function runInferInterruptPipeline(formData) {
     }
     applyClientUiAction(data.client_action);
 
-    const jsonTranscript = String(data.transcript || "").trim();
-    if (confirmationState.confirmationEnabled && !jsonTranscript) {
-      if (
-        !handleWhisperInterruptTranscriptMissing({
-          responsePath: "json",
-          status: res.status,
-          event_type: "json_body",
-        })
-      ) {
+    const jsonTranscript = pickInterruptTranscriptFromObject(data);
+    if (confirmationState.confirmationEnabled) {
+      const hasTranscriptSignal =
+        shouldAttemptInterruptTranscriptConfirmationFromNdjsonLine(data) ||
+        Object.prototype.hasOwnProperty.call(data, "transcript") ||
+        Object.prototype.hasOwnProperty.call(data, "asr_text") ||
+        Object.prototype.hasOwnProperty.call(data, "user_text") ||
+        Object.prototype.hasOwnProperty.call(data, "text");
+      if (!hasTranscriptSignal) {
+        if (
+          !rejectWhisperInterruptNoTranscript({
+            responseMode: "json",
+            responsePath: "json",
+            status: res.status,
+            sawMeta: false,
+            sawDone: false,
+            sawAsr: false,
+            sawTranscript: false,
+            ndjsonEventCount: 0,
+            via: "json_body_no_transcript",
+          })
+        ) {
+          return;
+        }
+      } else if (!handleWhisperInterruptTranscriptConfirmation(jsonTranscript)) {
         return;
       }
-    } else if (!handleWhisperInterruptTranscriptConfirmation(data.transcript)) {
+    } else if (jsonTranscript && !handleWhisperInterruptTranscriptConfirmation(jsonTranscript)) {
       return;
     }
 
-    commitServerUserTranscriptBubble(data.transcript, "interrupt-json");
-    {
-      const tr = String(data.transcript || "").trim();
+    commitServerUserTranscriptBubble(jsonTranscript || data.transcript, "interrupt-json");
+    if (jsonTranscript) {
+      const tr = jsonTranscript;
       logInterruptTranscriptDebug("asr_result", {
         transcript: tr.slice(0, 120),
         transcript_char_count: tr.length,
