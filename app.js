@@ -1480,6 +1480,8 @@ const WHISPER_INTERRUPT_SUSTAIN_MS_PHONE = 120;
 const WHISPER_STRONG_FRAME_COUNT_DESKTOP = 4;
 const WHISPER_STRONG_FRAME_COUNT_PHONE = 3;
 const WHISPER_STRONG_MIN_WINDOW_MS = 120;
+/** Strong-frame fast path disabled; sustain + transcript confirmation handle barge-in. */
+const WHISPER_STRONG_INTERRUPT_PATH_ENABLED = false;
 const WHISPER_STRONG_MAX_CREST = 26;
 const WHISPER_SPIKY_CREST_REJECT = 24;
 const WHISPER_INTERRUPT_COOLDOWN_MS = 450;
@@ -18905,6 +18907,7 @@ function detectInterrupt() {
           (crest > WHISPER_SPIKY_CREST_REJECT &&
             speechWindowMs < WHISPER_SPIKY_BURST_WINDOW_MS));
       const strongReadyRaw =
+        WHISPER_STRONG_INTERRUPT_PATH_ENABLED &&
         whisperVadPath &&
         strongCountOk &&
         strongWindowOk &&
@@ -20038,6 +20041,90 @@ async function handleInterruptUtterance(blob) {
     blob_size: blob.size
   });
   await runInferInterruptPipeline(formData);
+}
+
+function shouldConfirmWhisperInterruptTranscript() {
+  try {
+    return whisperInterruptCaptureNeeded() && !browserAsrParallelMode;
+  } catch (_) {
+    return false;
+  }
+}
+
+function ignoreWhisperInterruptCandidate(rejectReason, { transcriptLen = 0, wordCount = 0 } = {}) {
+  logInterruptChain("whisper_interrupt_ignored", {
+    rejectReason,
+    transcript_len: transcriptLen,
+    word_count: wordCount,
+  });
+  _veraTtsCancelSource = "whisper_interrupt_ignored";
+  activePipelineAbort?.abort();
+  activePipelineAbort = null;
+  cancelMainTtsPlayback();
+  resetAudioHandlers();
+  const a = getAudioEl();
+  if (a) {
+    a.pause();
+    a.currentTime = 0;
+  }
+  hideSidePanel();
+  cancelPendingNewsStatusBubble("whisper_interrupt_ignored");
+  clearInterruptDetectionBubble();
+  interruptBargeInLatched = false;
+  processing = false;
+  requestInFlight = false;
+  voiceUxTurn = null;
+  _logVoiceStateTransition(
+    typeof waveState !== "undefined" ? waveState : null,
+    listeningMode === "ptt" ? "idle" : "listening",
+    "whisper_interrupt_ignored",
+    "ignoreWhisperInterruptCandidate"
+  );
+  if (listeningMode === "ptt") {
+    listening = false;
+    pttRecording = false;
+    waveState = "idle";
+    setStatus("Ready", "idle");
+    updateMuteInputButton();
+    return;
+  }
+  waveState = "listening";
+  listening = true;
+  if (inputMuted) {
+    showMutedStatusIfIdle();
+    return;
+  }
+  setStatus("Listening…", "listening");
+  window.setTimeout(() => {
+    if (!listening || processing || inputMuted) return;
+    startListening();
+  }, 80);
+}
+
+/**
+ * Whisper stage-2 gate. Returns true when interrupt processing should continue.
+ */
+function handleWhisperInterruptTranscriptConfirmation(transcript) {
+  if (!shouldConfirmWhisperInterruptTranscript()) return true;
+  const confirmation = evaluateWhisperInterruptTranscriptConfirmation(transcript);
+  logInterruptChain("whisper_interrupt_transcript_received", {
+    transcript_len: confirmation.transcriptLen,
+    word_count: confirmation.wordCount,
+    accepted: confirmation.accepted,
+    rejectReason: confirmation.rejectReason,
+  });
+  if (!confirmation.accepted) {
+    ignoreWhisperInterruptCandidate(confirmation.rejectReason, {
+      transcriptLen: confirmation.transcriptLen,
+      wordCount: confirmation.wordCount,
+    });
+    return false;
+  }
+  logInterruptChain("whisper_interrupt_accepted", {
+    transcript_len: confirmation.transcriptLen,
+    word_count: confirmation.wordCount,
+  });
+  return true;
 }
 
 async function playInterruptAnswer(data) {
@@ -23271,6 +23358,7 @@ async function runInferInterruptPipeline(formData) {
 
     if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
+      let whisperInterruptTranscriptRejected = false;
 
       const runStream = async () => {
         let ndjsonMeta = null;
@@ -23300,6 +23388,13 @@ async function runInferInterruptPipeline(formData) {
                 applyWorkModeTimerPayload(meta.work_mode_timer);
               }
               if (meta.transcript) {
+                if (
+                  !handleWhisperInterruptTranscriptConfirmation(meta.transcript)
+                ) {
+                  whisperInterruptTranscriptRejected = true;
+                  activePipelineAbort?.abort();
+                  return;
+                }
                 applyNdjsonUserTranscriptBubble(meta.transcript, "interrupt-ndjson");
                 armPendingNewsStatusBubble(meta.transcript);
                 const tr = String(meta.transcript || "").trim();
@@ -23350,11 +23445,14 @@ async function runInferInterruptPipeline(formData) {
             }
           });
         } catch (e) {
-          if (e?.name !== "AbortError") console.warn(e);
+          if (e?.name !== "AbortError" && !whisperInterruptTranscriptRejected) {
+            console.warn(e);
+          }
         }
       };
 
       await runStream();
+      if (whisperInterruptTranscriptRejected) return;
       return;
     }
 
@@ -23388,6 +23486,10 @@ async function runInferInterruptPipeline(formData) {
       return;
     }
     applyClientUiAction(data.client_action);
+
+    if (!handleWhisperInterruptTranscriptConfirmation(data.transcript)) {
+      return;
+    }
 
     commitServerUserTranscriptBubble(data.transcript, "interrupt-json");
     {
