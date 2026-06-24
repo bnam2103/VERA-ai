@@ -1363,7 +1363,7 @@ function whisperVadReasonIfNotTriggering({
 const INTERRUPT_GAP_RESET_MS = 110;
 /** Whisper barge-in: shorter sustain + strong-frame fast path (user speech over TTS). */
 const WHISPER_INTERRUPT_RMS_STRONG = 0.05;
-const WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP = 120;
+const WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP = 200;
 const WHISPER_INTERRUPT_SUSTAIN_MS_PHONE = 80;
 const WHISPER_STRONG_FRAME_COUNT_DESKTOP = 3;
 const WHISPER_STRONG_FRAME_COUNT_PHONE = 2;
