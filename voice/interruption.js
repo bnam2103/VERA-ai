@@ -618,15 +618,7 @@ function interruptSpeech() {
     logVeraInterruptDebug(_dbgEntry({ outcome: "early_return", reasonIfReturn: "not_continuous" }));
     return;
   }
-  const useBrowserAsr = browserAsrPreferred();
-  if (!interruptRecording && !useBrowserAsr) {
-    logVeraInterruptDebug(_dbgEntry({
-      outcome: "early_return",
-      reasonIfReturn: "interrupt_recording_false_single_asr",
-      useBrowserAsr,
-    }));
-    return;
-  }
+
   const a = getAudioEl();
   const htmlPlaying = a && !a.paused;
   const webTtsPlaying =
@@ -638,6 +630,20 @@ function interruptSpeech() {
       htmlPlaying: Boolean(htmlPlaying),
       webTtsPlaying: Boolean(webTtsPlaying),
     }));
+    return;
+  }
+
+  const useBrowserAsr = browserAsrPreferred();
+  if (!interruptRecording && !useBrowserAsr) {
+    /* Capture was not armed at TTS start (mic stream edge case). Still cut
+       assistant audio so the user is not talked over; utterance may be lost. */
+    logVeraInterruptDebug(_dbgEntry({
+      outcome: "audio_only_cancel",
+      reasonIfReturn: "interrupt_recording_false_single_asr",
+      useBrowserAsr,
+    }));
+    _veraTtsCancelSource = "interrupt_speech_audio_only_no_capture";
+    cancelBrowserInterruptTtsOnly();
     return;
   }
 

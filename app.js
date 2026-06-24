@@ -22147,7 +22147,7 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
           resetVadFastStopState("voice_tts_start");
           const interruptTtsId = interruptTranscriptNewTtsId();
           interruptPrearmTtsId = interruptTtsId;
-          if (micStream?.active) startInterruptCapture();
+          startInterruptCapture();
           void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
           if (!(inferPrep?.stage2VoiceBubble instanceof HTMLElement && inferPrep.stage2VoiceBubble.isConnected)) {
             applyAssistantReplyAndPanels(playData);
@@ -22413,7 +22413,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                   resetVadFastStopState("voice_tts_start_ndjson");
                   const interruptTtsId = interruptTranscriptNewTtsId();
                   interruptPrearmTtsId = interruptTtsId;
-                  if (micStream?.active) startInterruptCapture();
+                  startInterruptCapture();
                   void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
                   applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
                   setStatus(
