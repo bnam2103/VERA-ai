@@ -536,6 +536,10 @@ let interruptSpeechFrames = 0;
 let interruptSpeechStart = 0;
 /** Ms of speechLike time accumulated from RAF deltas (gaps do not add). */
 let interruptSpeechAccumMs = 0;
+/** Consecutive strong-RMS frames for Whisper fast interrupt (see detectInterrupt). */
+let whisperInterruptStrongFrames = 0;
+/** Perf-now timestamp: ignore further VAD triggers until this time (one-shot per TTS turn). */
+let whisperInterruptCooldownUntil = 0;
 let lastInterruptDetectTime = 0;
 let interruptLastSpeechLikeTime = 0;
 /** Snapshot from detectInterrupt when interruptSpeech() fires (for server interrupt_debug). */
@@ -1283,8 +1287,70 @@ function getInterruptSustainMs() {
     : INTERRUPT_SUSTAIN_MS_DESKTOP;
 }
 
+function getWhisperInterruptSustainMs() {
+  return isNarrowViewport()
+    ? WHISPER_INTERRUPT_SUSTAIN_MS_PHONE
+    : WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP;
+}
+
+function resetWhisperInterruptVadTriggerState() {
+  whisperInterruptStrongFrames = 0;
+  whisperInterruptCooldownUntil = 0;
+}
+
+function isWhisperStrongInterruptFrame(rms, zcr, crest) {
+  if (rms < WHISPER_INTERRUPT_RMS_STRONG) return false;
+  if (rms >= MAX_SPEECH_RMS * 1.25) return false;
+  if (crest > INTERRUPT_MAX_CREST) return false;
+  const zcrStrict = zcr >= INTERRUPT_ZCR_MIN && zcr <= INTERRUPT_ZCR_MAX;
+  const zcrLoose = zcr >= 0.018 && zcr <= 0.22;
+  return zcrStrict || (rms >= WHISPER_INTERRUPT_RMS_STRONG && zcrLoose);
+}
+
+function whisperInterruptEffectiveSpeechLike(rms, zcr, crest, heuristicPasses) {
+  if (heuristicPasses) return true;
+  return isWhisperStrongInterruptFrame(rms, zcr, crest);
+}
+
+function whisperVadReasonIfNotTriggering({
+  speechLike,
+  effectiveSpeechLike,
+  consecutiveSpeechFrames,
+  requiredSpeechFrames,
+  accumMs,
+  sustainMs,
+  strongFrames,
+  requiredStrongFrames,
+  cooldownActive,
+  interruptRecording,
+  sustainReady,
+  strongReady,
+}) {
+  if (inputMuted) return "input_muted";
+  if (listeningMode !== "continuous") return "not_continuous";
+  if (cooldownActive) return "cooldown_active";
+  if (!interruptRecording) return "interrupt_recording_false";
+  if (strongReady || sustainReady) return null;
+  if (!effectiveSpeechLike && !speechLike) return "not_speech_like";
+  if (strongFrames > 0 && strongFrames < requiredStrongFrames) {
+    return `strong_frames_${strongFrames}_of_${requiredStrongFrames}`;
+  }
+  if (consecutiveSpeechFrames < requiredSpeechFrames) return "insufficient_frames";
+  if (accumMs < sustainMs) {
+    return `accum_below_sustain_${Math.round(accumMs)}_of_${sustainMs}`;
+  }
+  return "threshold_not_met";
+}
+
 /** Max ms without a speech-like frame before resetting the sustain counter. */
 const INTERRUPT_GAP_RESET_MS = 110;
+/** Whisper barge-in: shorter sustain + strong-frame fast path (user speech over TTS). */
+const WHISPER_INTERRUPT_RMS_STRONG = 0.05;
+const WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP = 80;
+const WHISPER_INTERRUPT_SUSTAIN_MS_PHONE = 60;
+const WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED = 2;
+const WHISPER_INTERRUPT_COOLDOWN_MS = 450;
+const WHISPER_INTERRUPT_GAP_RESET_MS = 180;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
 const INTERRUPT_MAX_CREST = 38;
 const API_URL = "https://vera-api.vera-api-ned.workers.dev";
@@ -18565,67 +18631,21 @@ function detectInterrupt() {
 
       const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
       const speechLike = heuristicChecks.passes;
+      const whisperVadPath =
+        whisperInterruptCaptureNeeded() && !browserAsrParallelMode;
+      const effectiveSpeechLike = whisperVadPath
+        ? whisperInterruptEffectiveSpeechLike(rms, zcr, crest, speechLike)
+        : speechLike;
+      const gapResetMs = whisperVadPath
+        ? WHISPER_INTERRUPT_GAP_RESET_MS
+        : INTERRUPT_GAP_RESET_MS;
+      const sustainMs = whisperVadPath
+        ? getWhisperInterruptSustainMs()
+        : getInterruptSustainMs();
+      const cooldownActive = whisperVadPath && now < whisperInterruptCooldownUntil;
+      const strongFrame = whisperVadPath && isWhisperStrongInterruptFrame(rms, zcr, crest);
 
-      if (whisperInterruptCaptureNeeded()) {
-        logInterruptChain(
-          "vad_during_tts",
-          {
-            rms: Number(rms.toFixed(5)),
-            zcr: Number(zcr.toFixed(4)),
-            crest: Number(crest.toFixed(2)),
-            speechLike,
-            ttsPlaying: true,
-            interruptRecording,
-            asrMode: (function () {
-              try {
-                return getVeraAsrMode();
-              } catch (_) {
-                return null;
-              }
-            })(),
-            vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
-          },
-          { throttleKey: "vad_during_tts_whisper", throttleMs: 250 }
-        );
-      }
-
-      /* DEBUG: throttled VAD frame log (max ~once per 250ms) so we can
-         see whether detectInterrupt is firing at all while news TTS
-         plays, and whether accumulated speech is approaching the sustain
-         threshold. */
-      logVeraInterruptDebug(
-        {
-          tag: "interrupt_vad_frame",
-          now: Number(now.toFixed(1)),
-          listeningMode,
-          asrMode: (function () { try { return getVeraAsrMode(); } catch (_) { return null; } })(),
-          browserAsrPreferred: (function () { try { return browserAsrPreferred(); } catch (_) { return null; } })(),
-          browserAsrParallelMode,
-          assistantTtsPlaying: (function () { try { return isAssistantTtsPlaying(); } catch (_) { return null; } })(),
-          mainTtsPlaybackActive,
-          activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
-          htmlAudioPlaying: Boolean(htmlAudioPlaying),
-          rms: Number(rms.toFixed(5)),
-          zcr: Number(zcr.toFixed(4)),
-          crest: Number(crest.toFixed(2)),
-          speechLike,
-          vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
-          sustainThresholdMs: getInterruptSustainMs(),
-          vadThresholdPassed:
-            speechLike &&
-            interruptSpeechFrames + 1 >= INTERRUPT_MIN_FRAMES &&
-            interruptSpeechAccumMs + dt >= getInterruptSustainMs(),
-          interruptRecording,
-          vadFastStopArmed,
-          activeNdjsonBodyReaderPresent: Boolean(activeNdjsonBodyReader),
-          audioStartedAt: Number(Number(audioStartedAt || 0).toFixed(1)),
-          timeSinceTtsStartMs: Number((now - (audioStartedAt || now)).toFixed(1)),
-          duringNewsRender: _veraNewsPanelRenderInFlight
-        },
-        { throttleKey: "interrupt_vad_frame", throttleMs: 250 }
-      );
-
-      if (speechLike) {
+      if (effectiveSpeechLike) {
         interruptSpeechAccumMs += dt;
         if (interruptSpeechFrames === 0) {
           interruptSpeechStart = now;
@@ -18652,9 +18672,16 @@ function detectInterrupt() {
           heuristicChecks,
           at: now,
         };
+        if (whisperVadPath) {
+          if (strongFrame) {
+            whisperInterruptStrongFrames++;
+          } else {
+            whisperInterruptStrongFrames = 0;
+          }
+        }
       } else if (
         interruptLastSpeechLikeTime &&
-        now - interruptLastSpeechLikeTime <= INTERRUPT_GAP_RESET_MS
+        now - interruptLastSpeechLikeTime <= gapResetMs
       ) {
         // Allow tiny gaps so normal speech doesn't need a perfect uninterrupted stream (time here does not add to interruptSpeechAccumMs).
       } else {
@@ -18663,14 +18690,151 @@ function detectInterrupt() {
         interruptSpeechAccumMs = 0;
         interruptLastSpeechLikeTime = 0;
         lastInterruptSpeechLikeSnapshot = null;
+        whisperInterruptStrongFrames = 0;
       }
 
-      if (
-        speechLike &&
+      const sustainReady =
+        effectiveSpeechLike &&
         interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
-        interruptSpeechAccumMs >= getInterruptSustainMs()
-      ) {
-        const gate = "heuristic";
+        interruptSpeechAccumMs >= sustainMs;
+      const strongReady =
+        whisperVadPath &&
+        whisperInterruptStrongFrames >= WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED;
+      const triggerReady = !cooldownActive && (sustainReady || strongReady);
+
+      if (whisperVadPath) {
+        const reasonIfNotTriggering = whisperVadReasonIfNotTriggering({
+          speechLike,
+          effectiveSpeechLike,
+          consecutiveSpeechFrames: interruptSpeechFrames,
+          requiredSpeechFrames: INTERRUPT_MIN_FRAMES,
+          accumMs: interruptSpeechAccumMs,
+          sustainMs,
+          strongFrames: whisperInterruptStrongFrames,
+          requiredStrongFrames: WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED,
+          cooldownActive,
+          interruptRecording,
+          sustainReady,
+          strongReady,
+        });
+        logInterruptChain(
+          "vad_trigger_eval",
+          {
+            rms: Number(rms.toFixed(5)),
+            zcr: Number(zcr.toFixed(4)),
+            crest: Number(crest.toFixed(2)),
+            speechLike,
+            effectiveSpeechLike,
+            interruptRecording,
+            ttsPlaying: true,
+            asrMode: (function () {
+              try {
+                return getVeraAsrMode();
+              } catch (_) {
+                return null;
+              }
+            })(),
+            consecutiveSpeechFrames: interruptSpeechFrames,
+            requiredSpeechFrames: INTERRUPT_MIN_FRAMES,
+            vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+            sustainMs,
+            strongFrames: whisperInterruptStrongFrames,
+            requiredStrongFrames: WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED,
+            interruptCooldownActive: cooldownActive,
+            alreadyInterrupted: cooldownActive,
+            inputMuted,
+            listeningMode,
+            sustainReady,
+            strongReady,
+            reasonIfNotTriggering,
+          },
+          {
+            throttleKey: speechLike || effectiveSpeechLike ? "vad_trigger_eval_speech" : "vad_trigger_eval",
+            throttleMs: speechLike || effectiveSpeechLike ? 120 : 400,
+          }
+        );
+        if ((speechLike || effectiveSpeechLike) && !triggerReady && reasonIfNotTriggering) {
+          logInterruptChain(
+            "vad_speechlike_no_interrupt",
+            {
+              reason: reasonIfNotTriggering,
+              consecutiveSpeechFrames: interruptSpeechFrames,
+              requiredSpeechFrames: INTERRUPT_MIN_FRAMES,
+              strongFrames: whisperInterruptStrongFrames,
+              requiredStrongFrames: WHISPER_INTERRUPT_STRONG_FRAMES_REQUIRED,
+              vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+              sustainMs,
+              interruptRecording,
+              ttsPlaying: true,
+              asrMode: (function () {
+                try {
+                  return getVeraAsrMode();
+                } catch (_) {
+                  return null;
+                }
+              })(),
+            },
+            { throttleKey: "vad_speechlike_no_interrupt", throttleMs: 150 }
+          );
+        }
+        logInterruptChain(
+          "vad_during_tts",
+          {
+            rms: Number(rms.toFixed(5)),
+            zcr: Number(zcr.toFixed(4)),
+            crest: Number(crest.toFixed(2)),
+            speechLike,
+            effectiveSpeechLike,
+            strongFrame,
+            ttsPlaying: true,
+            interruptRecording,
+            asrMode: (function () {
+              try {
+                return getVeraAsrMode();
+              } catch (_) {
+                return null;
+              }
+            })(),
+            vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+            sustainMs,
+            strongFrames: whisperInterruptStrongFrames,
+          },
+          { throttleKey: "vad_during_tts_whisper", throttleMs: 250 }
+        );
+      }
+
+      logVeraInterruptDebug(
+        {
+          tag: "interrupt_vad_frame",
+          now: Number(now.toFixed(1)),
+          listeningMode,
+          asrMode: (function () { try { return getVeraAsrMode(); } catch (_) { return null; } })(),
+          browserAsrPreferred: (function () { try { return browserAsrPreferred(); } catch (_) { return null; } })(),
+          browserAsrParallelMode,
+          assistantTtsPlaying: (function () { try { return isAssistantTtsPlaying(); } catch (_) { return null; } })(),
+          mainTtsPlaybackActive,
+          activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+          htmlAudioPlaying: Boolean(htmlAudioPlaying),
+          rms: Number(rms.toFixed(5)),
+          zcr: Number(zcr.toFixed(4)),
+          crest: Number(crest.toFixed(2)),
+          speechLike,
+          effectiveSpeechLike: whisperVadPath ? effectiveSpeechLike : undefined,
+          vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+          sustainThresholdMs: sustainMs,
+          vadThresholdPassed: triggerReady,
+          interruptRecording,
+          vadFastStopArmed,
+          activeNdjsonBodyReaderPresent: Boolean(activeNdjsonBodyReader),
+          audioStartedAt: Number(Number(audioStartedAt || 0).toFixed(1)),
+          timeSinceTtsStartMs: Number((now - (audioStartedAt || now)).toFixed(1)),
+          duringNewsRender: _veraNewsPanelRenderInFlight
+        },
+        { throttleKey: "interrupt_vad_frame", throttleMs: 250 }
+      );
+
+      if (triggerReady) {
+        const gate = strongReady ? "whisper_strong_frames" : "heuristic";
         const snap = lastInterruptSpeechLikeSnapshot;
         logInterruptTriggerReason({
           gate,
@@ -18703,7 +18867,7 @@ function detectInterrupt() {
           preroll_available_ms: interruptPrearmStartedAt
             ? Number(Math.min(MAX_INTERRUPTION_PREROLL_MS, now - interruptPrearmStartedAt).toFixed(1))
             : 0,
-          gate: browserAsrParallelMode ? "heuristic_fast_stop" : "heuristic"
+          gate: browserAsrParallelMode ? "heuristic_fast_stop" : gate
         });
 
         /* DEBUG: VAD threshold passed — log before dispatch so we know
@@ -18746,8 +18910,23 @@ function detectInterrupt() {
           /* PART 1 — t4: gate passed, intent confirmed (single-ASR heuristic). */
           _recordInterruptTimingPoint("t4_interrupt_intent_detected", {
             autoStart: true,
-            extra: { gate: "heuristic_single_asr" },
+            extra: { gate: "heuristic_single_asr", whisperStrong: strongReady },
           });
+          logInterruptChain("vad_calling_interrupt_speech", {
+            consecutiveSpeechFrames: interruptSpeechFrames,
+            strongFrames: whisperInterruptStrongFrames,
+            rms: Number(rms.toFixed(5)),
+            zcr: Number(zcr.toFixed(4)),
+            asrMode: (function () {
+              try {
+                return getVeraAsrMode();
+              } catch (_) {
+                return null;
+              }
+            })(),
+            gate,
+          });
+          whisperInterruptCooldownUntil = now + WHISPER_INTERRUPT_COOLDOWN_MS;
           interruptSpeech();
         }
         interruptSpeechFrames = 0;
@@ -18755,6 +18934,7 @@ function detectInterrupt() {
         interruptSpeechAccumMs = 0;
         interruptLastSpeechLikeTime = 0;
         lastInterruptSpeechLikeSnapshot = null;
+        whisperInterruptStrongFrames = 0;
       }
 
       if (
@@ -18774,6 +18954,7 @@ function detectInterrupt() {
     lastInterruptDetectTime = 0;
     interruptLastSpeechLikeTime = 0;
     lastInterruptSpeechLikeSnapshot = null;
+    whisperInterruptStrongFrames = 0;
   }
 
   requestAnimationFrame(detectInterrupt);
@@ -19136,6 +19317,7 @@ async function armInterruptCaptureAtTtsStart({ ttsId = "" } = {}) {
   }
 
   logInterruptChain("start_capture_called", { asrMode });
+  resetWhisperInterruptVadTriggerState();
   startInterruptCapture();
   void prearmInterruptCaptureForTts({ ttsId });
 }
