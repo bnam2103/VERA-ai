@@ -1327,6 +1327,13 @@ function classifyWhisperInterruptFrame(rms, zcr, crest, speechWindowMs) {
     return { valid: false, rejectedReason: "zcr_out_of_speech_band" };
   }
   if (
+    crest >= 18 &&
+    crest <= WHISPER_SPIKY_CREST_REJECT &&
+    win < WHISPER_SPIKY_BURST_WINDOW_MS
+  ) {
+    return { valid: false, rejectedReason: "raspy_short_burst" };
+  }
+  if (
     crest > WHISPER_SPIKY_CREST_REJECT &&
     win < WHISPER_SPIKY_BURST_WINDOW_MS
   ) {
@@ -1381,7 +1388,7 @@ function whisperVadReasonIfNotTriggering({
   if (rejectedReason) return rejectedReason;
   if (spikyShortBurst) return "spiky_short_burst";
   if (validInterruptSpeechFrame && validFrameCount < WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN) {
-    return "waiting_for_stable_second_frame";
+    return `valid_frames_${validFrameCount}_of_${WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN}`;
   }
   if (!validInterruptSpeechFrame && !rawSpeechLike) return "not_speech_like";
   if (strongFrames > 0 && strongFrames < requiredStrongFrames) {
@@ -1406,13 +1413,13 @@ const INTERRUPT_GAP_RESET_MS = 110;
 const WHISPER_INTERRUPT_RMS_MIN = 0.02;
 const WHISPER_INTERRUPT_RMS_STRONG = 0.05;
 const WHISPER_VALID_ZCR_MIN = 0.015;
-const WHISPER_VALID_ZCR_MAX = 0.25;
+const WHISPER_VALID_ZCR_MAX = 0.19;
 const WHISPER_STRONG_ZCR_MIN = 0.02;
 const WHISPER_STRONG_ZCR_MAX = 0.2;
 const WHISPER_LOW_ZCR_HUM_MAX = 0.015;
 const WHISPER_LOW_ZCR_HIGH_RMS = 0.04;
-const WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN = 2;
-const WHISPER_SPIKY_BURST_WINDOW_MS = 100;
+const WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN = 3;
+const WHISPER_SPIKY_BURST_WINDOW_MS = 200;
 const WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP = 180;
 const WHISPER_INTERRUPT_SUSTAIN_MS_PHONE = 120;
 const WHISPER_STRONG_FRAME_COUNT_DESKTOP = 4;
