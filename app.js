@@ -1408,6 +1408,9 @@ function whisperVadReasonIfNotTriggering({
   interruptRecording,
   sustainReady,
   strongReady,
+  sustainReadyRaw,
+  strongReadyRaw,
+  smoothGateAllowsTrigger,
   spikyShortBurst,
   crest,
   spikyOrRaspyStart,
@@ -1422,6 +1425,12 @@ function whisperVadReasonIfNotTriggering({
   if (strongReady || sustainReady) return null;
   if (rejectedReason) return rejectedReason;
   if (spikyShortBurst) return "spiky_short_burst";
+  if (strongReadyRaw && !smoothGateAllowsTrigger) {
+    return "strong_ready_blocked_by_smooth_gate";
+  }
+  if (sustainReadyRaw && !smoothGateAllowsTrigger) {
+    return "sustain_ready_blocked_by_smooth_gate";
+  }
   if (spikyOrRaspyStart && !smoothContinuationReady) {
     if (smoothFrameCount === 0) return "spiky_start_waiting_for_smooth_continuation";
     return `smooth_frames_${smoothFrameCount}_of_${smoothFramesRequired}`;
@@ -18801,6 +18810,12 @@ function detectInterrupt() {
         ? getWhisperInterruptSustainMs()
         : getInterruptSustainMs();
       const cooldownActive = whisperVadPath && now < whisperInterruptCooldownUntil;
+      const smoothFramesRequired = WHISPER_SMOOTH_FRAMES_AFTER_RASPY_START;
+      const smoothGateAllowsTrigger =
+        !whisperVadPath ||
+        !whisperInterruptSpikyOrRaspyStart ||
+        whisperInterruptSmoothFrames >= smoothFramesRequired;
+      const smoothContinuationReady = smoothGateAllowsTrigger;
       const strongFrame =
         whisperVadPath &&
         isWhisperStrongInterruptFrame(rms, zcr, crest, speechWindowMsBefore);
@@ -18821,7 +18836,10 @@ function detectInterrupt() {
         }
         if (whisperVadPath) {
           whisperInterruptValidFrames++;
-          if (whisperInterruptValidFrames >= WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN) {
+          if (
+            whisperInterruptValidFrames >= WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN &&
+            smoothGateAllowsTrigger
+          ) {
             interruptSpeechAccumMs += dt;
             interruptSpeechFrames++;
             interruptLastSpeechLikeTime = now;
@@ -18869,20 +18887,14 @@ function detectInterrupt() {
 
       const speechWindowMs = interruptSpeechStart ? now - interruptSpeechStart : 0;
       const requiredStrongFrames = whisperVadPath ? getWhisperStrongFramesRequired() : 0;
-      const smoothFramesRequired = WHISPER_SMOOTH_FRAMES_AFTER_RASPY_START;
-      const smoothContinuationReady =
-        !whisperVadPath ||
-        !whisperInterruptSpikyOrRaspyStart ||
-        whisperInterruptSmoothFrames >= smoothFramesRequired;
       const sustainArmed =
         !whisperVadPath ||
         whisperInterruptValidFrames >= WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN;
-      const sustainReady =
+      const sustainReadyRaw =
         sustainArmed &&
         validInterruptSpeechFrame &&
         interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
-        interruptSpeechAccumMs >= sustainMs &&
-        smoothContinuationReady;
+        interruptSpeechAccumMs >= sustainMs;
       const strongCountOk =
         whisperVadPath && whisperInterruptStrongFrames >= requiredStrongFrames;
       const strongWindowOk = speechWindowMs >= WHISPER_STRONG_MIN_WINDOW_MS;
@@ -18892,14 +18904,24 @@ function detectInterrupt() {
         (rejectedReason === "spiky_short_burst" ||
           (crest > WHISPER_SPIKY_CREST_REJECT &&
             speechWindowMs < WHISPER_SPIKY_BURST_WINDOW_MS));
-      const strongReady =
+      const strongReadyRaw =
         whisperVadPath &&
         strongCountOk &&
         strongWindowOk &&
         validInterruptSpeechFrame &&
-        !spikyShortBurst &&
-        smoothContinuationReady;
+        !spikyShortBurst;
+      const sustainReady = sustainReadyRaw && smoothGateAllowsTrigger;
+      const strongReady = strongReadyRaw && smoothGateAllowsTrigger;
       const triggerReady = !cooldownActive && (sustainReady || strongReady);
+      const triggerGate = strongReady
+        ? "whisper_strong_frames"
+        : sustainReady
+          ? "whisper_sustain"
+          : strongReadyRaw && !smoothGateAllowsTrigger
+            ? "strong_ready_blocked_by_smooth_gate"
+            : sustainReadyRaw && !smoothGateAllowsTrigger
+              ? "sustain_ready_blocked_by_smooth_gate"
+              : null;
 
       if (whisperVadPath) {
         const reasonIfNotTriggering = whisperVadReasonIfNotTriggering({
@@ -18922,6 +18944,9 @@ function detectInterrupt() {
           interruptRecording,
           sustainReady,
           strongReady,
+          sustainReadyRaw,
+          strongReadyRaw,
+          smoothGateAllowsTrigger,
           spikyShortBurst,
           crest,
           spikyOrRaspyStart: whisperInterruptSpikyOrRaspyStart,
@@ -18947,6 +18972,13 @@ function detectInterrupt() {
             smoothFrameCount: whisperInterruptSmoothFrames,
             smoothFramesRequired,
             smoothContinuationReady,
+            smoothGateAllowsTrigger,
+            sustainReadyRaw,
+            strongReadyRaw,
+            sustainReady,
+            strongReady,
+            triggerReady,
+            triggerGate,
             interruptRecording,
             ttsPlaying: true,
             asrMode: (function () {
@@ -19071,11 +19103,22 @@ function detectInterrupt() {
       );
 
       if (triggerReady) {
-        const gate = strongReady ? "whisper_strong_frames" : "heuristic";
+        const gate = strongReady
+          ? "whisper_strong_frames"
+          : whisperVadPath
+            ? "whisper_sustain"
+            : "heuristic";
+        const triggerKind =
+          gate === "whisper_strong_frames"
+            ? `whisper_strong_frames (${whisperInterruptStrongFrames} strong frames, window ≥ ${WHISPER_STRONG_MIN_WINDOW_MS}ms)`
+            : gate === "whisper_sustain"
+              ? `whisper_sustain (accumulated valid speech ≥ ${sustainMs}ms)`
+              : `heuristic (accumulated speechLike time ≥ ${sustainMs}ms)`;
         const snap = lastInterruptSpeechLikeSnapshot;
         const triggerSpeechLike = whisperVadPath ? validInterruptSpeechFrame : rawSpeechLike;
         logInterruptTriggerReason({
           gate,
+          triggerKind,
           triggerFrame: { rms, zcr, crest, speechLike: triggerSpeechLike },
           lastSpeechLike: snap,
           speechAccumMs: interruptSpeechAccumMs,
@@ -19088,7 +19131,7 @@ function detectInterrupt() {
           atTrigger: { rms, zcr, crest, speechLike: triggerSpeechLike },
           lastSpeechLike: snap,
           interruptGate: gate,
-          interruptReason: "heuristic",
+          interruptReason: gate,
           heuristicChecks: snap?.heuristicChecks ?? heuristicChecks,
           speechAccumMs: interruptSpeechAccumMs,
           wallMsSinceFirstSpeech: interruptSpeechStart
@@ -19274,6 +19317,7 @@ function computeHeuristicInterruptChecks(rms, zcr, crest) {
 
 function logInterruptTriggerReason({
   gate,
+  triggerKind,
   triggerFrame,
   lastSpeechLike,
   speechAccumMs,
@@ -19285,7 +19329,9 @@ function logInterruptTriggerReason({
     speechAccumMs: Number(speechAccumMs.toFixed(1)),
     wallMsSinceFirstSpeech: Number(wallMsSinceFirstSpeech.toFixed(1)),
     rafFrames,
-    triggerKind: `speech_frame (accumulated speechLike time ≥ ${getInterruptSustainMs()}ms)`,
+    triggerKind:
+      triggerKind ||
+      `speech_frame (accumulated speechLike time ≥ ${getInterruptSustainMs()}ms)`,
     triggerFrame: {
       rms: Number(triggerFrame.rms.toFixed(5)),
       zcr: Number(triggerFrame.zcr.toFixed(5)),
@@ -19306,7 +19352,7 @@ function logInterruptTriggerReason({
   if (h.zcrInRange) checks.push("zcr");
   if (h.crestOk) checks.push("crest");
   console.log(
-    "[INTERRUPT] trigger — heuristic (RMS/ZCR/crest + sustain; all must pass on speech frames)",
+    `[INTERRUPT] trigger — ${gate}`,
     {
       ...base,
       lastSpeechLike: lastSpeechLike
