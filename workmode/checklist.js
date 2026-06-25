@@ -235,17 +235,121 @@ function _getActiveChecklistCollapsedStorageKey() {
     : getAnonymousChecklistCollapsedStorageKey();
 }
 
-function readAnonymousChecklistBundle() {
+function _serializeAnonymousChecklistBundle(items) {
+  const sid = typeof getSessionId === "function" ? getSessionId() : "default";
+  return JSON.stringify({
+    auth_mode: "anonymous",
+    session_id: sid,
+    saved_at: Date.now(),
+    items: stripChecklistPlaceholdersForPersist(items),
+  });
+}
+
+function _parseAnonymousChecklistStorageRaw(raw) {
+  if (!raw) return { ok: true, items: [], reason: "empty" };
   try {
-    const raw = localStorage.getItem(getAnonymousChecklistStorageKey()) || "[]";
     const parsed = JSON.parse(raw);
-    const items = stripChecklistPlaceholdersForPersist(Array.isArray(parsed) ? parsed : []);
-    const completed_collapsed =
-      localStorage.getItem(getAnonymousChecklistCollapsedStorageKey()) === "1";
-    return { items, completed_collapsed };
+    if (Array.isArray(parsed)) {
+      return {
+        ok: true,
+        items: stripChecklistPlaceholdersForPersist(parsed),
+        reason: "legacy_array",
+      };
+    }
+    if (parsed && typeof parsed === "object") {
+      if (parsed.auth_mode && parsed.auth_mode !== "anonymous") {
+        return { ok: false, items: [], reason: "account_snapshot_while_logged_out" };
+      }
+      const sid = typeof getSessionId === "function" ? getSessionId() : "";
+      if (parsed.session_id && sid && parsed.session_id !== sid) {
+        return { ok: false, items: [], reason: "session_id_mismatch" };
+      }
+      const items = stripChecklistPlaceholdersForPersist(
+        Array.isArray(parsed.items) ? parsed.items : []
+      );
+      return { ok: true, items, reason: "anonymous_bundle" };
+    }
   } catch (_) {
+    return { ok: false, items: [], reason: "parse_error" };
+  }
+  return { ok: false, items: [], reason: "unsupported_shape" };
+}
+
+function _readAnonymousChecklistItemsForRestore() {
+  const raw = localStorage.getItem(getAnonymousChecklistStorageKey());
+  const parsed = _parseAnonymousChecklistStorageRaw(raw);
+  if (!parsed.ok) {
+    console.info("[checklist_restore_skipped]", { reason: parsed.reason });
     return { items: [], completed_collapsed: false };
   }
+  if (parsed.reason === "legacy_array") {
+    try {
+      const accountRaw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+      if (accountRaw) {
+        const accountItems = stripChecklistPlaceholdersForPersist(JSON.parse(accountRaw));
+        if (
+          accountItems.length > 0 &&
+          JSON.stringify(parsed.items) === JSON.stringify(accountItems)
+        ) {
+          console.info("[checklist_restore_skipped]", {
+            reason: "account_snapshot_while_logged_out",
+          });
+          return { items: [], completed_collapsed: false };
+        }
+      }
+    } catch (_) {}
+  }
+  const completed_collapsed =
+    localStorage.getItem(getAnonymousChecklistCollapsedStorageKey()) === "1";
+  return { items: parsed.items, completed_collapsed };
+}
+
+function readAnonymousChecklistBundle() {
+  return _readAnonymousChecklistItemsForRestore();
+}
+
+function _scrubPollutedAnonymousChecklistStorage() {
+  try {
+    const anonKey = getAnonymousChecklistStorageKey();
+    const raw = localStorage.getItem(anonKey);
+    if (!raw) return;
+    const parsed = _parseAnonymousChecklistStorageRaw(raw);
+    if (!parsed.ok) {
+      localStorage.setItem(anonKey, _serializeAnonymousChecklistBundle([]));
+      return;
+    }
+    if (parsed.reason !== "legacy_array" || parsed.items.length === 0) return;
+    const accountRaw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    if (!accountRaw) return;
+    const accountItems = stripChecklistPlaceholdersForPersist(JSON.parse(accountRaw));
+    if (
+      accountItems.length > 0 &&
+      JSON.stringify(parsed.items) === JSON.stringify(accountItems)
+    ) {
+      localStorage.setItem(anonKey, _serializeAnonymousChecklistBundle([]));
+      console.info("[checklist_restore_skipped]", {
+        reason: "account_snapshot_while_logged_out",
+      });
+    }
+  } catch (_) {}
+}
+
+function restoreAnonymousChecklistFromLocalStorage() {
+  console.info("[checklist_restore_start]", {
+    auth_mode: "anonymous",
+    logged_in: _checklistUsesAccountLocalStorage(),
+  });
+  if (_checklistUsesAccountLocalStorage()) return false;
+  _scrubPollutedAnonymousChecklistStorage();
+  if (typeof loadWorkChecklistItems === "function") {
+    loadWorkChecklistItems();
+  }
+  if (typeof applyWorkChecklistCompletedCollapseFromStorage === "function") {
+    applyWorkChecklistCompletedCollapseFromStorage();
+  }
+  const itemCount = readChecklistItemsFromStorage().length;
+  console.info("[checklist_anon_restore_done]", { item_count: itemCount });
+  return true;
 }
 
 function _checklistCancelPendingAccountSync() {
@@ -270,21 +374,13 @@ function _checklistBlockAccountWrites() {
 }
 
 function clearChecklistAfterLogout() {
-  console.info("[checklist_logout_cleanup]", { phase: "start" });
   _checklistBlockAccountWrites();
-  if (typeof loadWorkChecklistItems === "function") {
-    loadWorkChecklistItems();
-  }
-  if (typeof applyWorkChecklistCompletedCollapseFromStorage === "function") {
-    applyWorkChecklistCompletedCollapseFromStorage();
-  }
-  try {
-    console.info("[checklist_logout_cleanup]", {
-      phase: "done",
-      anonymous_item_count: readChecklistItemsFromStorage().length,
-      anonymous_storage_key: getAnonymousChecklistStorageKey(),
-    });
-  } catch (_) {}
+  _scrubPollutedAnonymousChecklistStorage();
+  restoreAnonymousChecklistFromLocalStorage();
+  console.info("[checklist_logout_cleanup_done]", {
+    anonymous_item_count: readChecklistItemsFromStorage().length,
+    anonymous_storage_key: getAnonymousChecklistStorageKey(),
+  });
 }
 
 function markWorkChecklistLocalMutation() {
@@ -321,21 +417,32 @@ function stripChecklistPlaceholdersForPersist(items) {
 function _persistChecklistItemsToStorage(items) {
   const stripped = stripChecklistPlaceholdersForPersist(items);
   markWorkChecklistLocalMutation();
-  localStorage.setItem(_getActiveChecklistItemsStorageKey(), JSON.stringify(stripped));
+  if (_checklistUsesAccountLocalStorage()) {
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+  } else {
+    localStorage.setItem(getAnonymousChecklistStorageKey(), _serializeAnonymousChecklistBundle(stripped));
+  }
   queueWorkChecklistSyncToServer();
   return stripped;
 }
 
 function sanitizeChecklistStorageInPlace() {
   try {
-    const storageKey = _getActiveChecklistItemsStorageKey();
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return false;
-    const items = JSON.parse(raw);
-    if (!Array.isArray(items)) return false;
-    const stripped = stripChecklistPlaceholdersForPersist(items);
-    if (JSON.stringify(stripped) === JSON.stringify(items)) return false;
-    localStorage.setItem(storageKey, JSON.stringify(stripped));
+    if (_checklistUsesAccountLocalStorage()) {
+      const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+      if (!raw) return false;
+      const items = JSON.parse(raw);
+      if (!Array.isArray(items)) return false;
+      const stripped = stripChecklistPlaceholdersForPersist(items);
+      if (JSON.stringify(stripped) === JSON.stringify(items)) return false;
+      localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+      queueWorkChecklistSyncToServer();
+      return true;
+    }
+    const bundle = _readAnonymousChecklistItemsForRestore();
+    const stripped = stripChecklistPlaceholdersForPersist(bundle.items);
+    if (JSON.stringify(stripped) === JSON.stringify(bundle.items)) return false;
+    localStorage.setItem(getAnonymousChecklistStorageKey(), _serializeAnonymousChecklistBundle(stripped));
     queueWorkChecklistSyncToServer();
     return true;
   } catch (_) {
@@ -372,8 +479,11 @@ function focusWorkChecklistUiPlaceholder() {
 }
 
 function readChecklistItemsFromStorage() {
+  if (!_checklistUsesAccountLocalStorage()) {
+    return _readAnonymousChecklistItemsForRestore().items;
+  }
   try {
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey()) || "[]";
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
     const parsed = JSON.parse(raw);
     return stripChecklistPlaceholdersForPersist(Array.isArray(parsed) ? parsed : []);
   } catch {
@@ -383,6 +493,7 @@ function readChecklistItemsFromStorage() {
 
 function queueWorkChecklistSyncToServer() {
   markWorkChecklistLocalMutation();
+  if (!_checklistUsesAccountLocalStorage()) return;
   if (workChecklistSyncTimer) window.clearTimeout(workChecklistSyncTimer);
   workChecklistSyncTimer = window.setTimeout(async () => {
     workChecklistSyncTimer = null;
@@ -391,6 +502,7 @@ function queueWorkChecklistSyncToServer() {
 }
 
 async function syncWorkChecklistToServerNow() {
+  if (!_checklistUsesAccountLocalStorage()) return;
   if (workChecklistSyncInFlight) return workChecklistSyncInFlight;
   workChecklistSyncInFlight = (async () => {
     try {
@@ -434,39 +546,19 @@ async function flushWorkChecklistSyncBeforeCommand() {
 
 async function hydrateWorkChecklistFromServer(force = false) {
   if (
-    !force &&
     typeof isSupabaseUserAuthenticated === "function" &&
     isSupabaseUserAuthenticated()
   ) {
     return;
   }
   if (!force && workChecklistHydrationPromise) return workChecklistHydrationPromise;
-  const startVersion = workChecklistLocalMutationVersion;
   workChecklistHydrationPromise = (async () => {
     try {
-      const res = await authFetch(
-        `${authApiUrl("/api/work-mode/checklist")}?session_id=${encodeURIComponent(getSessionId())}`,
-        { method: "GET" }
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !Array.isArray(data.items)) return;
-      if (!force && startVersion !== workChecklistLocalMutationVersion) return;
-      if (data.items.length === 0) {
-        const local = readChecklistItemsFromStorage();
-        const hasStoredContent = local.some((item) => !isChecklistPlaceholderItem(item));
-        if (hasStoredContent) return;
-      }
-      const hydrated = stripChecklistPlaceholdersForPersist(data.items);
-      localStorage.setItem(_getActiveChecklistItemsStorageKey(), JSON.stringify(hydrated));
-      if (typeof data.completed_collapsed === "boolean") {
-        localStorage.setItem(
-          _getActiveChecklistCollapsedStorageKey(),
-          data.completed_collapsed ? "1" : "0"
-        );
-      }
-      loadWorkChecklistItems();
+      restoreAnonymousChecklistFromLocalStorage();
     } catch (_) {
       /* keep local storage fallback */
+    } finally {
+      workChecklistHydrationPromise = null;
     }
   })();
   await workChecklistHydrationPromise;
@@ -876,8 +968,11 @@ const WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX = 26;
 let workChecklistDragSession = { id: "", startX: 0, lastX: 0 };
 
 function readChecklistItemsFromStorageSafe() {
+  if (!_checklistUsesAccountLocalStorage()) {
+    return _readAnonymousChecklistItemsForRestore().items;
+  }
   try {
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
+    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -2928,8 +3023,8 @@ function isWorkChecklistSupabaseUnsynced() {
 }
 
 function _applyChecklistBundleToLocalForSupabase(items, completed_collapsed) {
+  if (!_checklistSbIsLoggedIn()) return false;
   const rows = stripChecklistPlaceholdersForPersist(Array.isArray(items) ? items : []);
-  console.info("[checklist_apply_local]", { item_count: rows.length });
   try {
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(rows));
     if (typeof completed_collapsed === "boolean") {
@@ -2943,6 +3038,7 @@ function _applyChecklistBundleToLocalForSupabase(items, completed_collapsed) {
   }
   loadWorkChecklistItems();
   applyWorkChecklistCompletedCollapseFromStorage();
+  console.info("[checklist_account_hydrate_done]", { item_count: rows.length });
   return true;
 }
 
