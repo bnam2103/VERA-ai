@@ -18257,6 +18257,12 @@ function _usageTrackActionExecuted(payload, data, seqCtx, extra) {
   } catch (_) {}
 }
 
+function _usageSkipFinalizeActionApply(payload) {
+  const panelType = payload?.panel_type || "";
+  if (panelType === "checklist_control") return true;
+  return false;
+}
+
 async function applyActionPayload(data, seqCtx = {}) {
   // 2026-05-29 — multi-action planner pass-through.
   // When the backend executed a typed compound command, every action's
@@ -18782,7 +18788,9 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
     return;
   }
   /* Must assign state.bubble so applyNdjsonStreamingReplySoFar doesn't add a second bubble if done arrives before first audio (defer path). */
-  applyActionPayload(merged);
+  if (!_usageSkipFinalizeActionApply(pay)) {
+    applyActionPayload(merged);
+  }
   // Streaming finalized without ever calling onReplyProgress (no partials),
   // so we drop the pending bubble here just before creating the final one.
   cancelPendingNewsStatusBubble("ndjson_finalize");

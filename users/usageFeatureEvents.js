@@ -102,13 +102,23 @@
     };
   }
 
+  function plannerActionIndexForEvent(payload, meta) {
+    const m = meta && typeof meta === "object" ? meta : {};
+    if (Number.isFinite(Number(m.orderIndex))) return Number(m.orderIndex);
+    if (Number.isFinite(Number(payload?.planner_action_index))) {
+      return Number(payload.planner_action_index);
+    }
+    return undefined;
+  }
+
   function actionClientEventId(payload, meta) {
     const m = meta && typeof meta === "object" ? meta : {};
     const planId = String(payload?.action_plan_id || m.actionPlanId || "").trim();
-    const reqId = String(m.requestId || "").trim();
-    const idx = Number.isFinite(Number(m.orderIndex)) ? Number(m.orderIndex) : -1;
+    const reqId = String(m.requestId || payload?.request_id || "").trim();
+    const idx = plannerActionIndexForEvent(payload, meta);
+    const idxSeg = idx != null ? String(idx) : "";
     const cat = categorizePayload(payload);
-    return `action:${reqId}:${planId}:${idx}:${cat.action_type}:${cat.op}`;
+    return `action:${reqId}:${planId}:${idxSeg}:${cat.action_type}:${cat.op}`;
   }
 
   function musicPlayKind(op) {
@@ -141,12 +151,13 @@
     const m = meta && typeof meta === "object" ? meta : {};
     const e = extra && typeof extra === "object" ? extra : {};
     const cat = categorizePayload(payload);
+    const plannerIdx = plannerActionIndexForEvent(payload, m);
     emitFeatureEvent(
       e.success === false ? "action_failed" : "action_executed",
       {
         ...cat,
         action_plan_id: String(payload.action_plan_id || m.actionPlanId || "").slice(0, 64) || undefined,
-        planner_action_index: Number.isFinite(Number(m.orderIndex)) ? Number(m.orderIndex) : undefined,
+        planner_action_index: plannerIdx,
         source: String(m.source || "unknown").slice(0, 32),
         success: e.success !== false,
         error_code: e.error_code ? String(e.error_code).slice(0, 64) : undefined,
@@ -424,35 +435,77 @@
     const s = String(stage || "");
     const f = fields && typeof fields === "object" ? fields : {};
     const attemptId = String(f.interruptAttemptId || f.interrupt_attempt_id || "").slice(0, 64);
-    const baseProps = sanitizeFeatureProps({
-      asr_mode: f.asrMode || f.asr_mode,
-      gate: f.gate,
-      reject_reason: f.rejectReason || f.reject_reason || detail,
-      confirm_reason: detail,
-      interrupt_attempt_id: attemptId || undefined,
-      source: f.source || "voice",
-      success: f.accepted !== false,
-      word_count: Number.isFinite(Number(f.word_count)) ? Number(f.word_count) : undefined,
-    });
+    const asrMode = f.asrMode || f.asr_mode;
+    const gate = f.gate;
+    const source = f.source || "voice";
 
     if (s === "INTERRUPT_CANDIDATE") {
-      emitFeatureEvent("interrupt_candidate_detected", baseProps, `interrupt:${attemptId}:candidate`);
+      emitFeatureEvent(
+        "interrupt_candidate_detected",
+        sanitizeFeatureProps({
+          asr_mode: asrMode,
+          gate,
+          interrupt_attempt_id: attemptId || undefined,
+          source,
+        }),
+        `interrupt:${attemptId}:candidate`
+      );
       return;
     }
     if (s === "INTERRUPT_CANDIDATE_SUBMITTED_TO_WHISPER" || s === "INTERRUPT_CANDIDATE_PIPELINE_ENTER") {
-      emitFeatureEvent("interrupt_candidate_submitted", baseProps, `interrupt:${attemptId}:submitted`);
+      emitFeatureEvent(
+        "interrupt_candidate_submitted",
+        sanitizeFeatureProps({
+          asr_mode: asrMode,
+          interrupt_attempt_id: attemptId || undefined,
+          source,
+        }),
+        `interrupt:${attemptId}:submitted`
+      );
       return;
     }
     if (s === "INTERRUPT_CONFIRMED") {
-      emitFeatureEvent("interrupt_confirmed", baseProps, `interrupt:${attemptId}:confirmed`);
+      emitFeatureEvent(
+        "interrupt_confirmed",
+        sanitizeFeatureProps({
+          asr_mode: asrMode,
+          gate,
+          confirm_reason: f.confirmReason || f.confirm_reason || detail,
+          interrupt_attempt_id: attemptId || undefined,
+          source,
+          success: true,
+        }),
+        `interrupt:${attemptId}:confirmed`
+      );
       return;
     }
     if (s === "INTERRUPT_REJECTED") {
-      emitFeatureEvent("interrupt_rejected", baseProps, `interrupt:${attemptId}:rejected:${detail || ""}`);
+      emitFeatureEvent(
+        "interrupt_rejected",
+        sanitizeFeatureProps({
+          asr_mode: asrMode,
+          gate,
+          reject_reason: f.rejectReason || f.reject_reason || detail,
+          interrupt_attempt_id: attemptId || undefined,
+          source,
+          success: false,
+          word_count: Number.isFinite(Number(f.word_count)) ? Number(f.word_count) : undefined,
+        }),
+        `interrupt:${attemptId}:rejected:${detail || ""}`
+      );
       return;
     }
     if (s === "INTERRUPT_REJECTED_CLEANUP_DONE") {
-      emitFeatureEvent("interrupt_cleanup_done", baseProps, `interrupt:${attemptId}:cleanup`);
+      emitFeatureEvent(
+        "interrupt_cleanup_done",
+        sanitizeFeatureProps({
+          asr_mode: asrMode,
+          interrupt_attempt_id: attemptId || undefined,
+          source,
+          success: true,
+        }),
+        `interrupt:${attemptId}:cleanup`
+      );
     }
   }
 
