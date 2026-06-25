@@ -23,6 +23,7 @@ let _checklistHydrateRetryTimer = null;
 let _workspaceHydratedUserId = null;
 let _workspaceHydrateAttempts = 0;
 let _workspaceHydrateRetryTimer = null;
+let _supabaseWasAuthenticated = false;
 
 function _readMetaSupabaseConfig() {
   const urlMeta = document.querySelector('meta[name="vera-supabase-url"]');
@@ -346,6 +347,23 @@ async function refreshSupabaseAccountLabel() {
   }
   const me = await refreshSupabaseMeFromBackend();
   const uid = String(me?.user_id || "").trim();
+  const nowAuthenticated = Boolean(me?.authenticated);
+  if (_supabaseWasAuthenticated && !nowAuthenticated) {
+    const cleanupFn =
+      typeof clearWorkModeWorkspaceAfterLogout === "function"
+        ? clearWorkModeWorkspaceAfterLogout
+        : typeof window.clearWorkModeWorkspaceAfterLogout === "function"
+          ? window.clearWorkModeWorkspaceAfterLogout
+          : null;
+    if (cleanupFn) {
+      try {
+        cleanupFn();
+      } catch (err) {
+        console.warn("[workspace_logout_cleanup_failed]", err);
+      }
+    }
+  }
+  _supabaseWasAuthenticated = nowAuthenticated;
   _setSupabaseAccountLabel(me);
   _setAccountFabLabel(me);
   _renderAccountPanel(me);

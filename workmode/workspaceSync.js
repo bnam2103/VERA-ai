@@ -26,6 +26,8 @@ let _workspaceSaveInFlight = null;
 let _workspaceHydratePromise = null;
 let _workspaceClientRevision = 0;
 let _workspaceSyncStatus = "synced";
+/** Bumped on logout so in-flight PUTs and late hydrates cannot write or show cloud workspace. */
+let _workspaceWriteGeneration = 0;
 
 function _workspaceIsLoggedIn() {
   return (
@@ -312,8 +314,65 @@ function _hydrateRegistryRow(tab) {
   return row;
 }
 
+function _workspaceCancelPendingCloudSync() {
+  if (_workspaceSaveTimer) {
+    window.clearTimeout(_workspaceSaveTimer);
+    _workspaceSaveTimer = null;
+  }
+}
+
+function _workspaceBlockCloudWrites() {
+  _workspaceWriteGeneration += 1;
+  _workspaceCancelPendingCloudSync();
+  _workspaceHydratePromise = null;
+  _markWorkspaceUnsynced(false);
+}
+
+function clearWorkModeWorkspaceAfterLogout() {
+  if (!_workspaceIsVeraWorkModeContext()) return;
+
+  console.info("[workspace_logout_cleanup]", { phase: "start" });
+  _workspaceBlockCloudWrites();
+
+  if (typeof clearWorkModeLaneRegistry === "function") {
+    try {
+      clearWorkModeLaneRegistry();
+    } catch (_) {}
+  }
+  if (typeof initWorkModeStableLaneIdSlots === "function") {
+    try {
+      initWorkModeStableLaneIdSlots();
+    } catch (_) {}
+  }
+  if (typeof ensureFixedReasoningLanePanels === "function") {
+    try {
+      ensureFixedReasoningLanePanels(new Map(), 0);
+    } catch (_) {}
+  }
+  if (typeof restoreReasoningTabsState === "function") {
+    try {
+      restoreReasoningTabsState();
+    } catch (_) {}
+  } else if (typeof ensureFixedReasoningLanePanels === "function") {
+    try {
+      ensureFixedReasoningLanePanels(new Map(), 0);
+    } catch (_) {}
+  }
+  if (typeof renderReasoningTabStrip === "function") {
+    try {
+      renderReasoningTabStrip();
+    } catch (_) {}
+  }
+  if (typeof syncReasoningLaneBusySlotsAfterDomChange === "function") {
+    try {
+      syncReasoningLaneBusySlotsAfterDomChange();
+    } catch (_) {}
+  }
+  console.info("[workspace_logout_cleanup]", { phase: "done" });
+}
+
 function applyWorkModeWorkspaceSnapshot(data) {
-  if (!_workspaceIsVeraWorkModeContext()) return false;
+  if (!_workspaceIsLoggedIn() || !_workspaceIsVeraWorkModeContext()) return false;
   try {
     const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
     if (!panelsRoot) return false;
@@ -389,24 +448,29 @@ async function syncWorkModeWorkspaceToSupabaseNow() {
   if (!_workspaceIsLoggedIn() || !_workspaceIsVeraWorkModeContext()) return false;
   if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
 
+  const writeGen = _workspaceWriteGeneration;
   const token = await _workspaceAwaitAuthToken();
-  if (!token) {
-    _markWorkspaceUnsynced(true);
+  if (!token || writeGen !== _workspaceWriteGeneration || !_workspaceIsLoggedIn()) {
+    if (token && _workspaceIsLoggedIn()) _markWorkspaceUnsynced(true);
     return false;
   }
 
   const snapshot = buildWorkModeWorkspaceSnapshot();
-  if (!snapshot) return false;
+  if (!snapshot || writeGen !== _workspaceWriteGeneration || !_workspaceIsLoggedIn()) {
+    return false;
+  }
 
   _logWorkspaceSaveStart(snapshot);
 
   const run = async () => {
+    if (writeGen !== _workspaceWriteGeneration || !_workspaceIsLoggedIn()) return false;
     try {
       const res = await authFetch(authApiUrl("/api/work-mode/workspace"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(snapshot),
       });
+      if (writeGen !== _workspaceWriteGeneration || !_workspaceIsLoggedIn()) return false;
       const rawBody = await _readWorkspacePutErrorBody(res);
       if (!res.ok) {
         const err = _unwrapWorkspaceApiError(rawBody);
@@ -544,6 +608,10 @@ async function hydrateWorkModeWorkspaceFromServer(force = false, opts = {}) {
         console.info("[workspace_hydrate_empty]", { source });
         return false;
       }
+      if (!_workspaceIsLoggedIn()) {
+        outcome = "logged_out";
+        return false;
+      }
       _workspaceClientRevision = Number(data.client_revision) || 0;
       const applied = applyWorkModeWorkspaceSnapshot(data);
       outcome = applied ? "applied" : "apply_skipped";
@@ -678,6 +746,7 @@ function _publishWorkModeWorkspaceSyncApi() {
   window.isWorkModeWorkspaceUnsynced = isWorkModeWorkspaceUnsynced;
   window.shouldSkipLocalReasoningTabsRestoreForCloud = shouldSkipLocalReasoningTabsRestoreForCloud;
   window.scheduleDeferredVeraChatRestoreIfAnonymous = scheduleDeferredVeraChatRestoreIfAnonymous;
+  window.clearWorkModeWorkspaceAfterLogout = clearWorkModeWorkspaceAfterLogout;
   window.__veraWorkspaceSyncReady = true;
 }
 
