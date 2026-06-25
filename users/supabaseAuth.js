@@ -20,6 +20,9 @@ let _settingsHydratedUserId = null;
 let _checklistHydratedUserId = null;
 let _checklistHydrateAttempts = 0;
 let _checklistHydrateRetryTimer = null;
+let _workspaceHydratedUserId = null;
+let _workspaceHydrateAttempts = 0;
+let _workspaceHydrateRetryTimer = null;
 
 function _readMetaSupabaseConfig() {
   const urlMeta = document.querySelector('meta[name="vera-supabase-url"]');
@@ -266,6 +269,54 @@ async function _hydrateChecklistAccountWhenReady(userId) {
   }
 }
 
+function _resolveWorkspaceHydrateFn() {
+  if (typeof hydrateWorkModeWorkspaceFromServer === "function") {
+    return hydrateWorkModeWorkspaceFromServer;
+  }
+  if (typeof window !== "undefined" && typeof window.hydrateWorkModeWorkspaceFromServer === "function") {
+    return window.hydrateWorkModeWorkspaceFromServer;
+  }
+  return null;
+}
+
+async function _hydrateWorkspaceAccountWhenReady(userId) {
+  const uid = String(userId || "").trim();
+  if (!uid || uid === _workspaceHydratedUserId) return;
+
+  const hydrateFn = _resolveWorkspaceHydrateFn();
+  if (!hydrateFn) {
+    if (_workspaceHydrateAttempts === 0) {
+      console.warn(
+        "[VERA][WORKSPACE] hydrateWorkModeWorkspaceFromServer missing — waiting for workmode/workspaceSync.js"
+      );
+    }
+    if (_workspaceHydrateAttempts < 50) {
+      _workspaceHydrateAttempts += 1;
+      if (_workspaceHydrateRetryTimer) window.clearTimeout(_workspaceHydrateRetryTimer);
+      _workspaceHydrateRetryTimer = window.setTimeout(() => {
+        _workspaceHydrateRetryTimer = null;
+        void _hydrateWorkspaceAccountWhenReady(uid);
+      }, 100);
+      return;
+    }
+    console.warn(
+      "[VERA][WORKSPACE] hydrateWorkModeWorkspaceFromServer missing — account workspace sync not loaded."
+    );
+    return;
+  }
+
+  _workspaceHydrateAttempts = 0;
+  if (_workspaceHydrateRetryTimer) {
+    window.clearTimeout(_workspaceHydrateRetryTimer);
+    _workspaceHydrateRetryTimer = null;
+  }
+  const applied = await hydrateFn();
+  if (applied) _workspaceHydratedUserId = uid;
+  if (typeof retryWorkModeWorkspaceSyncIfUnsynced === "function") {
+    void retryWorkModeWorkspaceSyncIfUnsynced("login");
+  }
+}
+
 async function refreshSupabaseAccountLabel() {
   if (!_supabaseConfigured && !_supabaseClient) {
     return false;
@@ -303,6 +354,16 @@ async function refreshSupabaseAccountLabel() {
     if (syncEl instanceof HTMLElement) {
       syncEl.hidden = true;
       syncEl.textContent = "";
+    }
+  }
+  if (me?.authenticated && uid && uid !== _workspaceHydratedUserId) {
+    void _hydrateWorkspaceAccountWhenReady(uid);
+  } else if (!me?.authenticated) {
+    _workspaceHydratedUserId = null;
+    _workspaceHydrateAttempts = 0;
+    if (_workspaceHydrateRetryTimer) {
+      window.clearTimeout(_workspaceHydrateRetryTimer);
+      _workspaceHydrateRetryTimer = null;
     }
   }
   if (typeof window.veraFeedbackOnAuthChanged === "function") {

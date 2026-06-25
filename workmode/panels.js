@@ -415,10 +415,8 @@ function activateReasoningTab(index, opts = {}) {
       source: String(opts.resolvedFrom || "ui").slice(0, 32),
     });
   } catch (_) {}
+  _queueWorkModeWorkspaceCloudSync();
 }
-
-/* =====================================================================
-   PART 1+3+5+6 (2026-05-28): "recently opened reasoning panel" tracking.
    --------------------------------------------------------------------
    The previous addReasoningTab() set `.is-active` on the new panel but
    did NOT update `focusedWorkModeLaneId` (in app.js). Because
@@ -3571,6 +3569,14 @@ function ensureFixedReasoningLanePanels(savedByIdx = new Map(), activeIdx = 0) {
  * (Stage 8, 2026-05-27). */
 
 /** Snapshot reasoning tabs to localStorage — call only on page unload (see wireReasoningTabStrip). */
+function _queueWorkModeWorkspaceCloudSync() {
+  try {
+    if (typeof queueWorkModeWorkspaceSync === "function") {
+      queueWorkModeWorkspaceSync();
+    }
+  } catch (_) {}
+}
+
 function persistReasoningTabsState() {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return;
@@ -3590,6 +3596,7 @@ function persistReasoningTabsState() {
   try {
     localStorage.setItem(getReasoningTabsStateStorageKey(), JSON.stringify(payload));
   } catch (_) {}
+  _queueWorkModeWorkspaceCloudSync();
 }
 
 function restoreReasoningTabsState() {

@@ -6798,10 +6798,16 @@ function migrateLegacyVeraChatStorageKey() {
 function persistVeraClientStateOnUnload() {
   persistVeraChatState();
   persistReasoningTabsState();
+  if (typeof queueWorkModeWorkspaceSync === "function") {
+    queueWorkModeWorkspaceSync({ immediate: true });
+  }
 }
 
 function persistVeraChatState() {
   if (chatStateHydrating) return;
+  if (typeof isSupabaseUserAuthenticated === "function" && isSupabaseUserAuthenticated()) {
+    return;
+  }
   const convo = document.getElementById("vera-conversation");
   if (!convo) return;
   const messages = [];
@@ -6843,6 +6849,9 @@ function persistVeraChatState() {
 }
 
 function restoreVeraChatState() {
+  if (typeof isSupabaseUserAuthenticated === "function" && isSupabaseUserAuthenticated()) {
+    return;
+  }
   const convo = document.getElementById("vera-conversation");
   if (!convo) return;
   let raw = "";
@@ -7209,7 +7218,14 @@ function wireReasoningTabStrip() {
   if (!tabsEl || tabsEl.dataset.wiredReasoningTabs === "1") return;
   if (!document.getElementById("vera-reasoning-tab-panels")) return;
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  restoreReasoningTabsState();
+  const skipLocalTabsForCloud =
+    typeof shouldSkipLocalReasoningTabsRestoreForCloud === "function" &&
+    shouldSkipLocalReasoningTabsRestoreForCloud();
+  if (skipLocalTabsForCloud) {
+    ensureFixedReasoningLanePanels(new Map(), 0);
+  } else {
+    restoreReasoningTabsState();
+  }
   if (panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length === 0) {
     ensureFixedReasoningLanePanels(new Map(), 0);
   }
@@ -7329,6 +7345,9 @@ function wireReasoningTabStrip() {
   if (bootActive instanceof HTMLElement) {
     const bootIdx = Number(bootActive.dataset.tabIndex);
     if (Number.isFinite(bootIdx)) setFocusedWorkModeLaneFromIndex(bootIdx);
+  }
+  if (skipLocalTabsForCloud && typeof hydrateWorkModeWorkspaceFromServer === "function") {
+    void hydrateWorkModeWorkspaceFromServer();
   }
   if (window.__veraReasoningTabsUnloadHook !== "1") {
     window.__veraReasoningTabsUnloadHook = "1";
@@ -11333,6 +11352,10 @@ function commitActiveWorkModeReasoningContext(payload, meta = {}) {
   });
 
   notifyWorkModeTtsReasoningCommitted(commitLaneId, o);
+
+  if (typeof queueWorkModeWorkspaceSync === "function") {
+    queueWorkModeWorkspaceSync();
+  }
 
   if (frozenTurnId) {
     const resultPack = classifyWorkModeSameTurnReasoningResultStatus(
@@ -16894,7 +16917,11 @@ loadWorkChecklistItems();
 window.loadWorkModeChecklist = loadWorkChecklistItems;
 window.hydrateWorkModeChecklistFromServer = hydrateWorkChecklistFromServer;
 migrateLegacyVeraChatStorageKey();
-restoreVeraChatState();
+if (typeof scheduleDeferredVeraChatRestoreIfAnonymous === "function") {
+  scheduleDeferredVeraChatRestoreIfAnonymous();
+} else {
+  restoreVeraChatState();
+}
 wireReasoningTabStrip();
 
 /* [reasoning_close_handler_registered] PART 8: post-boot diagnostic — prove
