@@ -2826,6 +2826,35 @@ body.chat-started .input-container {
   margin: 0 0 8px;
 }
 
+.vera-account-success {
+  color: #86efac;
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+
+.vera-account-link-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(147, 197, 253, 0.95);
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.vera-account-link-btn:hover {
+  color: #bfdbfe;
+}
+
+.vera-account-link-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .vera-account-memories-wrap {
   margin-top: 1.25rem;
   padding-top: 1rem;

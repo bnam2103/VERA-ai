@@ -24,6 +24,140 @@ let _workspaceHydratedUserId = null;
 let _workspaceHydrateAttempts = 0;
 let _workspaceHydrateRetryTimer = null;
 let _supabaseWasAuthenticated = false;
+let _memoriesFetchGeneration = 0;
+/** @type {'login' | 'forgot' | 'reset-password'} */
+let _accountAuthView = "login";
+let _authUiBusy = false;
+
+const AUTH_PASSWORD_RESET_SUCCESS_MSG =
+  "If an account exists for this email, a reset link has been sent.";
+const AUTH_MIN_PASSWORD_LENGTH = 6;
+const AUTH_PASSWORD_UPDATED_MSG = "Password updated. You can now use your account.";
+
+function _validateResetEmail(email) {
+  const e = String(email || "").trim();
+  if (!e) return { ok: false, error: "Enter your email address." };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+    return { ok: false, error: "Enter a valid email address." };
+  }
+  return { ok: true, email: e };
+}
+
+function _validateNewPasswordPair(password, confirm) {
+  const p = String(password || "");
+  const c = String(confirm || "");
+  if (!p || !c) return { ok: false, error: "Enter and confirm your new password." };
+  if (p.length < AUTH_MIN_PASSWORD_LENGTH) {
+    return {
+      ok: false,
+      error: `Password must be at least ${AUTH_MIN_PASSWORD_LENGTH} characters.`,
+    };
+  }
+  if (p !== c) return { ok: false, error: "Passwords do not match." };
+  return { ok: true, password: p };
+}
+
+function _passwordResetRedirectUrl() {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set("mode", "reset-password");
+    url.hash = "";
+    return `${url.origin}${url.pathname}${url.search}`;
+  } catch (_) {
+    return `${window.location.origin}${window.location.pathname}?mode=reset-password`;
+  }
+}
+
+function _clearResetPasswordUrlParam() {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("mode")) return;
+    url.searchParams.delete("mode");
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState({}, "", next);
+  } catch (_) {}
+}
+
+function _setAuthUiBusy(busy) {
+  _authUiBusy = Boolean(busy);
+  const ids = [
+    "vera-account-sign-in",
+    "vera-account-sign-up",
+    "vera-account-forgot-password-link",
+    "vera-account-send-reset",
+    "vera-account-forgot-back",
+    "vera-account-update-password",
+  ];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el instanceof HTMLButtonElement) el.disabled = _authUiBusy;
+  }
+}
+
+function _showAccountSuccess(msg) {
+  const el = document.getElementById("vera-account-success");
+  if (el instanceof HTMLElement) {
+    el.textContent = msg || "";
+    el.hidden = !msg;
+  }
+  _showAccountError("");
+}
+
+function _clearAccountSuccess() {
+  const el = document.getElementById("vera-account-success");
+  if (el instanceof HTMLElement) {
+    el.textContent = "";
+    el.hidden = true;
+  }
+  const forgotOk = document.getElementById("vera-account-forgot-success");
+  if (forgotOk instanceof HTMLElement) {
+    forgotOk.textContent = "";
+    forgotOk.hidden = true;
+  }
+  const resetOk = document.getElementById("vera-account-reset-success");
+  if (resetOk instanceof HTMLElement) {
+    resetOk.textContent = "";
+    resetOk.hidden = true;
+  }
+}
+
+function _showAccountAuthView() {
+  const loginView = document.getElementById("vera-account-login-view");
+  const forgotView = document.getElementById("vera-account-forgot-view");
+  const resetView = document.getElementById("vera-account-reset-password-view");
+  const view = _accountAuthView;
+  if (loginView) loginView.hidden = view !== "login";
+  if (forgotView) forgotView.hidden = view !== "forgot";
+  if (resetView) resetView.hidden = view !== "reset-password";
+}
+
+function _openAccountSectionInSettings() {
+  const settingsModal = document.getElementById("vera-settings-modal");
+  const accountSection = document.getElementById("vera-account-section");
+  if (settingsModal) settingsModal.removeAttribute("hidden");
+  accountSection?.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+function _enterPasswordRecoveryView() {
+  _accountAuthView = "reset-password";
+  _showAccountAuthView();
+  _openAccountSectionInSettings();
+  _clearResetPasswordUrlParam();
+}
+
+async function _detectPasswordRecoveryOnLoad() {
+  if (!_supabaseClient) return;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("mode") !== "reset-password") return;
+    const { data } = await _supabaseClient.auth.getSession();
+    if (data?.session) _enterPasswordRecoveryView();
+  } catch (_) {}
+}
+
+function _handleAuthStateChangeEvent(event) {
+  if (event === "PASSWORD_RECOVERY") _enterPasswordRecoveryView();
+}
 
 function _readMetaSupabaseConfig() {
   const urlMeta = document.querySelector('meta[name="vera-supabase-url"]');
@@ -125,6 +259,15 @@ function _renderAccountPanel(me) {
     errEl.hidden = true;
   }
 
+  if (_accountAuthView === "reset-password") {
+    if (statusEl) statusEl.textContent = "Set a new password to finish resetting your account.";
+    signedOut?.removeAttribute("hidden");
+    signedIn?.setAttribute("hidden", "");
+    memoriesWrap?.setAttribute("hidden", "");
+    _showAccountAuthView();
+    return;
+  }
+
   if (!_supabaseConfigured) {
     if (statusEl) statusEl.textContent = "Supabase auth is not configured on this server.";
     signedOut?.setAttribute("hidden", "");
@@ -152,6 +295,11 @@ function _renderAccountPanel(me) {
     if (passIn instanceof HTMLInputElement) passIn.value = "";
     const list = document.getElementById("vera-account-memories-list");
     if (list) list.innerHTML = "";
+    if (_accountAuthView !== "reset-password") {
+      _accountAuthView = "login";
+    }
+    _showAccountAuthView();
+    _clearAccountSuccess();
   }
 }
 
@@ -159,6 +307,7 @@ async function refreshSupabaseMemoriesList() {
   const wrap = document.getElementById("vera-account-memories-wrap");
   const list = document.getElementById("vera-account-memories-list");
   if (!(wrap instanceof HTMLElement) || !(list instanceof HTMLElement)) return;
+  const genAtStart = _memoriesFetchGeneration;
   if (!_lastMeSnapshot?.authenticated) {
     wrap.setAttribute("hidden", "");
     list.innerHTML = "";
@@ -167,13 +316,15 @@ async function refreshSupabaseMemoriesList() {
 
   try {
     const res = await authFetchImpl(authApiUrl("/api/memories"), { method: "GET" });
+    if (genAtStart !== _memoriesFetchGeneration) return;
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
+    if (!res.ok || !_lastMeSnapshot?.authenticated) {
       wrap.setAttribute("hidden", "");
       return;
     }
     wrap.removeAttribute("hidden");
     const memories = Array.isArray(data.memories) ? data.memories : [];
+    if (genAtStart !== _memoriesFetchGeneration) return;
     list.innerHTML = "";
     if (!memories.length) {
       const empty = document.createElement("li");
@@ -203,6 +354,51 @@ async function refreshSupabaseMemoriesList() {
   } catch (_) {
     wrap.setAttribute("hidden", "");
   }
+}
+
+function clearMemoriesAfterLogout() {
+  _memoriesFetchGeneration += 1;
+  const wrap = document.getElementById("vera-account-memories-wrap");
+  const list = document.getElementById("vera-account-memories-list");
+  if (wrap instanceof HTMLElement) wrap.setAttribute("hidden", "");
+  if (list instanceof HTMLElement) list.innerHTML = "";
+}
+
+function _resolveLogoutCleanupFn(fnName) {
+  if (fnName === "clearMemoriesAfterLogout") return clearMemoriesAfterLogout;
+  if (typeof window !== "undefined" && typeof window[fnName] === "function") {
+    return window[fnName];
+  }
+  return null;
+}
+
+function _runAccountLogoutCleanup() {
+  try {
+    console.info("[account_logout_cleanup_start]");
+  } catch (_) {}
+  const components = [
+    ["workspace", "clearWorkModeWorkspaceAfterLogout"],
+    ["checklist", "clearChecklistAfterLogout"],
+    ["settings", "clearSettingsAfterLogout"],
+    ["memories", "clearMemoriesAfterLogout"],
+  ];
+  for (const [component, fnName] of components) {
+    const fn = _resolveLogoutCleanupFn(fnName);
+    if (!fn) continue;
+    try {
+      fn();
+    } catch (err) {
+      try {
+        console.warn("[account_logout_cleanup_failed]", {
+          component,
+          error: String(err?.message || err),
+        });
+      } catch (_) {}
+    }
+  }
+  try {
+    console.info("[account_logout_cleanup_done]");
+  } catch (_) {}
 }
 
 async function refreshSupabaseMeFromBackend() {
@@ -349,32 +545,7 @@ async function refreshSupabaseAccountLabel() {
   const uid = String(me?.user_id || "").trim();
   const nowAuthenticated = Boolean(me?.authenticated);
   if (_supabaseWasAuthenticated && !nowAuthenticated) {
-    const workspaceCleanupFn =
-      typeof clearWorkModeWorkspaceAfterLogout === "function"
-        ? clearWorkModeWorkspaceAfterLogout
-        : typeof window.clearWorkModeWorkspaceAfterLogout === "function"
-          ? window.clearWorkModeWorkspaceAfterLogout
-          : null;
-    if (workspaceCleanupFn) {
-      try {
-        workspaceCleanupFn();
-      } catch (err) {
-        console.warn("[workspace_logout_cleanup_failed]", err);
-      }
-    }
-    const checklistCleanupFn =
-      typeof clearChecklistAfterLogout === "function"
-        ? clearChecklistAfterLogout
-        : typeof window.clearChecklistAfterLogout === "function"
-          ? window.clearChecklistAfterLogout
-          : null;
-    if (checklistCleanupFn) {
-      try {
-        checklistCleanupFn();
-      } catch (err) {
-        console.warn("[checklist_logout_cleanup_failed]", err);
-      }
-    }
+    _runAccountLogoutCleanup();
   }
   _supabaseWasAuthenticated = nowAuthenticated;
   _setSupabaseAccountLabel(me);
@@ -464,10 +635,12 @@ async function initSupabaseAuth() {
       },
     });
 
-    _supabaseClient.auth.onAuthStateChange(() => {
+    _supabaseClient.auth.onAuthStateChange((event) => {
+      _handleAuthStateChangeEvent(event);
       refreshSupabaseAccountLabel().catch(() => {});
     });
 
+    await _detectPasswordRecoveryOnLoad();
     await refreshSupabaseAccountLabel();
     return true;
   })();
@@ -489,6 +662,131 @@ function wireSupabaseAccountUi() {
 
   accountFab?.addEventListener("click", openAccountInSettings);
 
+  document.getElementById("vera-account-forgot-password-link")?.addEventListener("click", () => {
+    if (_authUiBusy) return;
+    _showAccountError("");
+    _clearAccountSuccess();
+    const loginEmail = document.getElementById("vera-account-email")?.value?.trim() || "";
+    const forgotEmail = document.getElementById("vera-account-forgot-email");
+    if (forgotEmail instanceof HTMLInputElement && loginEmail) forgotEmail.value = loginEmail;
+    const emailRow = document.getElementById("vera-account-forgot-email-row");
+    const forgotActions = document.getElementById("vera-account-forgot-actions");
+    if (emailRow instanceof HTMLElement) emailRow.hidden = false;
+    if (forgotActions instanceof HTMLElement) forgotActions.hidden = false;
+    const forgotOk = document.getElementById("vera-account-forgot-success");
+    if (forgotOk instanceof HTMLElement) forgotOk.hidden = true;
+    _accountAuthView = "forgot";
+    _showAccountAuthView();
+  });
+
+  document.getElementById("vera-account-forgot-back")?.addEventListener("click", () => {
+    if (_authUiBusy) return;
+    _accountAuthView = "login";
+    _showAccountAuthView();
+    _showAccountError("");
+    _clearAccountSuccess();
+  });
+
+  document.getElementById("vera-account-send-reset")?.addEventListener("click", async () => {
+    if (!_supabaseClient) {
+      _showAccountError("Supabase auth is not available.");
+      return;
+    }
+    if (_authUiBusy) return;
+    _showAccountError("");
+    _clearAccountSuccess();
+    const emailRaw = document.getElementById("vera-account-forgot-email")?.value || "";
+    const validated = _validateResetEmail(emailRaw);
+    if (!validated.ok) {
+      _showAccountError(validated.error);
+      return;
+    }
+    _setAuthUiBusy(true);
+    try {
+      console.info("[auth_password_reset_request_start]", {
+        email_domain: String(validated.email).split("@")[1] || null,
+      });
+      const { error } = await _supabaseClient.auth.resetPasswordForEmail(validated.email, {
+        redirectTo: _passwordResetRedirectUrl(),
+      });
+      if (error) {
+        console.warn("[auth_password_reset_request_failed]", {
+          message: String(error.message || error),
+        });
+        _showAccountError("Could not send reset email. Please try again.");
+        return;
+      }
+      console.info("[auth_password_reset_request_done]", {
+        email_domain: String(validated.email).split("@")[1] || null,
+      });
+      const forgotOk = document.getElementById("vera-account-forgot-success");
+      if (forgotOk instanceof HTMLElement) {
+        forgotOk.textContent = AUTH_PASSWORD_RESET_SUCCESS_MSG;
+        forgotOk.hidden = false;
+      }
+      const emailRow = document.getElementById("vera-account-forgot-email-row");
+      const forgotActions = document.getElementById("vera-account-forgot-actions");
+      if (emailRow instanceof HTMLElement) emailRow.hidden = true;
+      if (forgotActions instanceof HTMLElement) forgotActions.hidden = true;
+    } catch (e) {
+      console.warn("[auth_password_reset_request_failed]", {
+        message: String(e?.message || e),
+      });
+      _showAccountError("Could not send reset email. Please try again.");
+    } finally {
+      _setAuthUiBusy(false);
+    }
+  });
+
+  document.getElementById("vera-account-update-password")?.addEventListener("click", async () => {
+    if (!_supabaseClient) {
+      _showAccountError("Supabase auth is not available.");
+      return;
+    }
+    if (_authUiBusy) return;
+    _showAccountError("");
+    _clearAccountSuccess();
+    const password = document.getElementById("vera-account-new-password")?.value || "";
+    const confirm = document.getElementById("vera-account-confirm-password")?.value || "";
+    const validated = _validateNewPasswordPair(password, confirm);
+    if (!validated.ok) {
+      _showAccountError(validated.error);
+      return;
+    }
+    _setAuthUiBusy(true);
+    try {
+      console.info("[auth_password_update_start]");
+      const { error } = await _supabaseClient.auth.updateUser({ password: validated.password });
+      if (error) {
+        console.warn("[auth_password_update_failed]", {
+          message: String(error.message || error),
+        });
+        _showAccountError(error.message || "Could not update password.");
+        return;
+      }
+      console.info("[auth_password_update_done]");
+      const newPass = document.getElementById("vera-account-new-password");
+      const confirmPass = document.getElementById("vera-account-confirm-password");
+      if (newPass instanceof HTMLInputElement) newPass.value = "";
+      if (confirmPass instanceof HTMLInputElement) confirmPass.value = "";
+      const resetOk = document.getElementById("vera-account-reset-success");
+      if (resetOk instanceof HTMLElement) {
+        resetOk.textContent = AUTH_PASSWORD_UPDATED_MSG;
+        resetOk.hidden = false;
+      }
+      _accountAuthView = "login";
+      _clearResetPasswordUrlParam();
+      await refreshSupabaseAccountLabel();
+    } catch (e) {
+      console.warn("[auth_password_update_failed]", {
+        message: String(e?.message || e),
+      });
+      _showAccountError(String(e?.message || e || "Could not update password."));
+    } finally {
+      _setAuthUiBusy(false);
+    }
+  });
+
   document.getElementById("vera-account-sign-in")?.addEventListener("click", async () => {
     if (!_supabaseClient) {
       _showAccountError("Supabase auth is not available.");
@@ -501,15 +799,20 @@ function wireSupabaseAccountUi() {
       _showAccountError("Enter email and password.");
       return;
     }
+    if (_authUiBusy) return;
+    _setAuthUiBusy(true);
     try {
       const { error } = await _supabaseClient.auth.signInWithPassword({ email, password });
       if (error) {
         _showAccountError(error.message || "Sign in failed.");
         return;
       }
+      _accountAuthView = "login";
       await refreshSupabaseAccountLabel();
     } catch (e) {
       _showAccountError(String(e?.message || e || "Sign in failed."));
+    } finally {
+      _setAuthUiBusy(false);
     }
   });
 
@@ -525,10 +828,12 @@ function wireSupabaseAccountUi() {
       _showAccountError("Enter email and password.");
       return;
     }
-    if (password.length < 6) {
-      _showAccountError("Password must be at least 6 characters.");
+    if (password.length < AUTH_MIN_PASSWORD_LENGTH) {
+      _showAccountError(`Password must be at least ${AUTH_MIN_PASSWORD_LENGTH} characters.`);
       return;
     }
+    if (_authUiBusy) return;
+    _setAuthUiBusy(true);
     try {
       const { data, error } = await _supabaseClient.auth.signUp({ email, password });
       if (error) {
@@ -539,9 +844,12 @@ function wireSupabaseAccountUi() {
         _showAccountError("Check your email to confirm your account, then sign in.");
         return;
       }
+      _accountAuthView = "login";
       await refreshSupabaseAccountLabel();
     } catch (e) {
       _showAccountError(String(e?.message || e || "Sign up failed."));
+    } finally {
+      _setAuthUiBusy(false);
     }
   });
 
@@ -617,5 +925,20 @@ try {
     window.refreshSupabaseMemoriesList = refreshSupabaseMemoriesList;
     window.isSupabaseUserAuthenticated = isSupabaseUserAuthenticated;
     window.authFetch = authFetchImpl;
+    window.clearMemoriesAfterLogout = clearMemoriesAfterLogout;
+    window._runAccountLogoutCleanup = _runAccountLogoutCleanup;
+    window.__veraAuthPasswordResetTestHooks = {
+      validateResetEmail: _validateResetEmail,
+      validateNewPasswordPair: _validateNewPasswordPair,
+      getPasswordResetSuccessMessage: () => AUTH_PASSWORD_RESET_SUCCESS_MSG,
+      getPasswordUpdatedMessage: () => AUTH_PASSWORD_UPDATED_MSG,
+      getPasswordResetRedirectUrl: _passwordResetRedirectUrl,
+      handleAuthStateChangeEvent: _handleAuthStateChangeEvent,
+      getAccountAuthView: () => _accountAuthView,
+      setAccountAuthView: (v) => {
+        _accountAuthView = v;
+      },
+      showAccountAuthView: _showAccountAuthView,
+    };
   }
 } catch (_) {}

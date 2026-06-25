@@ -2858,19 +2858,52 @@ document.addEventListener("click", () => {
       <h3>Account</h3>
       <p id="vera-account-status" class="vera-settings-hint">Loading account…</p>
       <p id="vera-account-error" class="vera-account-error" hidden role="alert"></p>
+      <p id="vera-account-success" class="vera-account-success" hidden role="status"></p>
 
       <div id="vera-account-signed-out">
-        <div class="vera-settings-row">
-          <label for="vera-account-email" class="vera-settings-label">Email</label>
-          <input id="vera-account-email" class="vera-account-input" type="email" autocomplete="email" placeholder="you@example.com" />
+        <div id="vera-account-login-view">
+          <div class="vera-settings-row">
+            <label for="vera-account-email" class="vera-settings-label">Email</label>
+            <input id="vera-account-email" class="vera-account-input" type="email" autocomplete="email" placeholder="you@example.com" />
+          </div>
+          <div class="vera-settings-row">
+            <label for="vera-account-password" class="vera-settings-label">Password</label>
+            <input id="vera-account-password" class="vera-account-input" type="password" autocomplete="current-password" placeholder="Password" />
+          </div>
+          <div class="vera-settings-row vera-account-actions">
+            <button type="button" id="vera-account-sign-in" class="vera-settings-save-btn">Log in</button>
+            <button type="button" id="vera-account-sign-up" class="vera-account-secondary-btn">Sign up</button>
+            <button type="button" id="vera-account-forgot-password-link" class="vera-account-link-btn">Forgot password?</button>
+          </div>
         </div>
-        <div class="vera-settings-row">
-          <label for="vera-account-password" class="vera-settings-label">Password</label>
-          <input id="vera-account-password" class="vera-account-input" type="password" autocomplete="current-password" placeholder="Password" />
+
+        <div id="vera-account-forgot-view" hidden>
+          <p class="vera-settings-hint">Enter your email and we&rsquo;ll send a password reset link.</p>
+          <div class="vera-settings-row" id="vera-account-forgot-email-row">
+            <label for="vera-account-forgot-email" class="vera-settings-label">Email</label>
+            <input id="vera-account-forgot-email" class="vera-account-input" type="email" autocomplete="email" placeholder="you@example.com" />
+          </div>
+          <div class="vera-settings-row vera-account-actions" id="vera-account-forgot-actions">
+            <button type="button" id="vera-account-send-reset" class="vera-settings-save-btn">Send reset link</button>
+            <button type="button" id="vera-account-forgot-back" class="vera-account-secondary-btn">Back to login</button>
+          </div>
+          <p id="vera-account-forgot-success" class="vera-account-success" hidden role="status"></p>
         </div>
-        <div class="vera-settings-row vera-account-actions">
-          <button type="button" id="vera-account-sign-in" class="vera-settings-save-btn">Log in</button>
-          <button type="button" id="vera-account-sign-up" class="vera-account-secondary-btn">Sign up</button>
+
+        <div id="vera-account-reset-password-view" hidden>
+          <p class="vera-settings-hint">Choose a new password for your account.</p>
+          <div class="vera-settings-row">
+            <label for="vera-account-new-password" class="vera-settings-label">New password</label>
+            <input id="vera-account-new-password" class="vera-account-input" type="password" autocomplete="new-password" placeholder="New password" />
+          </div>
+          <div class="vera-settings-row">
+            <label for="vera-account-confirm-password" class="vera-settings-label">Confirm password</label>
+            <input id="vera-account-confirm-password" class="vera-account-input" type="password" autocomplete="new-password" placeholder="Confirm password" />
+          </div>
+          <div class="vera-settings-row vera-account-actions">
+            <button type="button" id="vera-account-update-password" class="vera-settings-save-btn">Update password</button>
+          </div>
+          <p id="vera-account-reset-success" class="vera-account-success" hidden role="status"></p>
         </div>
       </div>
 
@@ -3053,10 +3086,10 @@ document.addEventListener("click", () => {
      Must load AFTER signinUi.js (authApiUrl, authFetch stub) and BEFORE
      workmode/checklist.js + app.js. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="users/supabaseAuth.js?v=8"></script>
+<script src="users/supabaseAuth.js?v=9"></script>
 <!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
-<script src="users/accountSettingsSync.js?v=1"></script>
+<script src="users/accountSettingsSync.js?v=2"></script>
 <!-- users/feedback.js — thumbs up/down on main chat Vera replies (Feedback MVP).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="users/feedback.js?v=4"></script>
