@@ -1944,6 +1944,9 @@ function startTyping() {
     if (typeof window.ensureVeraVoiceUiActive === "function") {
       void window.ensureVeraVoiceUiActive();
     }
+    try {
+      window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "work_mode_exit" });
+    } catch (_) {}
   }
 
   function enterVeraWorkMode() {
@@ -1973,6 +1976,9 @@ function startTyping() {
     if (typeof window.syncVeraHeaderDateTimeForWorkMode === "function") {
       window.syncVeraHeaderDateTimeForWorkMode();
     }
+    try {
+      window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "work_mode_enter" });
+    } catch (_) {}
   }
 
   window.setVeraWorkMode = function setVeraWorkMode(on) {
@@ -2052,6 +2058,12 @@ function startTyping() {
     home.hidden = true;
     document.body.classList.remove("vera-mode");
     document.body.classList.add("app-open", "bmo-open");
+    try {
+      if (typeof window.trackUsageSessionStart === "function") {
+        window.trackUsageSessionStart();
+      }
+      window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "bmo_enter" });
+    } catch (_) {}
     bmoLoadingScreen.hidden = false;
     bmoLoadingScreen.classList.remove("fade-in");
     bmoLoadingScreen.classList.add("fade-out");
@@ -2118,6 +2130,13 @@ function startTyping() {
 
       document.body.classList.remove("app-open", "bmo-open");
       document.body.classList.remove("vera-mode");
+      try {
+        window.veraUsageSyncModeFromDom?.({
+          trigger: "ui",
+          source: "bmo_exit",
+          to: "home",
+        });
+      } catch (_) {}
 
       home.hidden = false;
       home.classList.add("fade-out");
@@ -2386,6 +2405,7 @@ function revealApp() {
       if (typeof window.trackUsageSessionStart === "function") {
         window.trackUsageSessionStart();
       }
+      window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "vera_reveal", to: "voice_ui" });
     } catch (_) {}
 
     requestAnimationFrame(() => {
@@ -2439,6 +2459,13 @@ document.getElementById("return-home").onclick = async () => {
     if (typeof window.ensureVeraVoiceUiActive === "function") {
       void window.ensureVeraVoiceUiActive();
     }
+    try {
+      window.veraUsageSyncModeFromDom?.({
+        trigger: "ui",
+        source: "bmo_return_home",
+        to: "voice_ui",
+      });
+    } catch (_) {}
   }, 600);
 };
 
@@ -2459,6 +2486,13 @@ document.getElementById("return-home-vera").onclick = async () => {
 
     document.body.classList.remove("app-open");
     document.body.classList.remove("bmo-open");
+    try {
+      window.veraUsageSyncModeFromDom?.({
+        trigger: "ui",
+        source: "vera_return_home",
+        to: "home",
+      });
+    } catch (_) {}
     goHomeFromApp();
   }, 600);
 };
@@ -3011,7 +3045,7 @@ document.addEventListener("click", () => {
 <script src="users/feedback.js?v=4"></script>
 <!-- users/usageEvents.js — lightweight behavioral analytics (MVP).
      Must load AFTER utils/ids.js + supabaseAuth.js, BEFORE app.js. -->
-<script src="users/usageEvents.js?v=1"></script>
+<script src="users/usageEvents.js?v=2"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies
