@@ -12,6 +12,10 @@ const WORKSPACE_UNSYNCED_KEY = "vera_wm_workspace_unsynced_v1";
 const WORKSPACE_SAVE_DEBOUNCE_MS = 3000;
 const WORKSPACE_MAX_MESSAGES = 30;
 const WORKSPACE_MAX_MESSAGE_TEXT = 8000;
+const WORKSPACE_HYDRATE_FETCH_TIMEOUT_MS = 8000;
+const WORKSPACE_HYDRATE_BOOT_GUARD_MS = 2500;
+const WORKSPACE_HYDRATE_AUTH_WAIT_MS = 4000;
+const WORKSPACE_HYDRATE_BOOT_AUTH_WAIT_MS = 1500;
 
 let _workspaceSaveTimer = null;
 let _workspaceSaveInFlight = null;
@@ -233,62 +237,75 @@ function _hydrateRegistryRow(tab) {
 
 function applyWorkModeWorkspaceSnapshot(data) {
   if (!_workspaceIsVeraWorkModeContext()) return false;
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot) return false;
-  const tabs = Array.isArray(data?.tabs) ? data.tabs.slice(0, _workspaceMaxTabs()) : [];
-  const activeLaneId = String(data?.active_lane_id || "").trim();
+  try {
+    const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+    if (!panelsRoot) return false;
+    const tabs = Array.isArray(data?.tabs) ? data.tabs.slice(0, _workspaceMaxTabs()) : [];
+    const activeLaneId = String(data?.active_lane_id || "").trim();
 
-  if (typeof initWorkModeStableLaneIdSlots === "function") {
-    initWorkModeStableLaneIdSlots();
-  }
-
-  const savedByIdx = new Map();
-  let activeIdx = 0;
-  let nextIdx = 0;
-
-  const sorted = tabs
-    .filter((t) => t && !t.closed)
-    .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
-
-  for (const tab of sorted) {
-    if (!_tabHasWorkspaceContent(tab)) {
-      continue;
+    if (typeof initWorkModeStableLaneIdSlots === "function") {
+      initWorkModeStableLaneIdSlots();
     }
-    if (nextIdx >= _workspaceMaxTabs()) break;
-    const laneId = String(tab.lane_id || "").trim();
-    if (!laneId) continue;
-    if (typeof workModeStableLaneIdByIdx !== "undefined") {
-      workModeStableLaneIdByIdx[nextIdx] = laneId;
+
+    const savedByIdx = new Map();
+    let activeIdx = 0;
+    let nextIdx = 0;
+
+    const sorted = tabs
+      .filter((t) => t && !t.closed)
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+
+    for (const tab of sorted) {
+      if (!_tabHasWorkspaceContent(tab)) {
+        continue;
+      }
+      if (nextIdx >= _workspaceMaxTabs()) break;
+      const laneId = String(tab.lane_id || "").trim();
+      if (!laneId) continue;
+      if (typeof workModeStableLaneIdByIdx !== "undefined") {
+        workModeStableLaneIdByIdx[nextIdx] = laneId;
+      }
+      const topic = String(tab.title || REASONING_UNTITLED_TAB_NAME);
+      const topicGeneric =
+        typeof isGenericAutoRenamableReasoningPanelTitle === "function" &&
+        isGenericAutoRenamableReasoningPanelTitle(topic);
+      savedByIdx.set(nextIdx, {
+        html: String(tab.rendered_html || ""),
+        topic,
+        topicSet: topicGeneric ? "0" : "1",
+        laneLabel: String(tab.lane_label || topic || `Panel ${nextIdx + 1}`),
+        laneId,
+      });
+      const reg = _hydrateRegistryRow(tab);
+      if (reg && typeof workModeCompletedReasoningByLaneId !== "undefined") {
+        workModeCompletedReasoningByLaneId[laneId] = reg;
+      }
+      if (laneId === activeLaneId || tab.is_active) activeIdx = nextIdx;
+      nextIdx += 1;
     }
-    const topic = String(tab.title || REASONING_UNTITLED_TAB_NAME);
-    const topicGeneric =
-      typeof isGenericAutoRenamableReasoningPanelTitle === "function" &&
-      isGenericAutoRenamableReasoningPanelTitle(topic);
-    savedByIdx.set(nextIdx, {
-      html: String(tab.rendered_html || ""),
-      topic,
-      topicSet: topicGeneric ? "0" : "1",
-      laneLabel: String(tab.lane_label || topic || `Panel ${nextIdx + 1}`),
-      laneId,
+
+    if (typeof ensureFixedReasoningLanePanels === "function") {
+      ensureFixedReasoningLanePanels(savedByIdx, activeIdx);
+    }
+    if (typeof renderReasoningTabStrip === "function") {
+      renderReasoningTabStrip();
+    }
+    if (typeof syncReasoningLaneBusySlotsAfterDomChange === "function") {
+      syncReasoningLaneBusySlotsAfterDomChange();
+    }
+    return true;
+  } catch (err) {
+    console.warn("[workspace_hydrate_failed]", {
+      phase: "apply_snapshot",
+      error: String(err?.message || err),
     });
-    const reg = _hydrateRegistryRow(tab);
-    if (reg && typeof workModeCompletedReasoningByLaneId !== "undefined") {
-      workModeCompletedReasoningByLaneId[laneId] = reg;
+    if (typeof ensureFixedReasoningLanePanels === "function") {
+      try {
+        ensureFixedReasoningLanePanels(new Map(), 0);
+      } catch (_) {}
     }
-    if (laneId === activeLaneId || tab.is_active) activeIdx = nextIdx;
-    nextIdx += 1;
+    return false;
   }
-
-  if (typeof ensureFixedReasoningLanePanels === "function") {
-    ensureFixedReasoningLanePanels(savedByIdx, activeIdx);
-  }
-  if (typeof renderReasoningTabStrip === "function") {
-    renderReasoningTabStrip();
-  }
-  if (typeof syncReasoningLaneBusySlotsAfterDomChange === "function") {
-    syncReasoningLaneBusySlotsAfterDomChange();
-  }
-  return true;
 }
 
 async function syncWorkModeWorkspaceToSupabaseNow() {
@@ -361,49 +378,152 @@ function queueWorkModeWorkspaceSync(opts = {}) {
   }, WORKSPACE_SAVE_DEBOUNCE_MS);
 }
 
-async function hydrateWorkModeWorkspaceFromServer(force = false) {
-  if (!_workspaceIsLoggedIn() || !_workspaceIsVeraWorkModeContext()) return false;
-  if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
+async function hydrateWorkModeWorkspaceFromServer(force = false, opts = {}) {
+  const source = String(opts.source || "unknown");
+  const authWaitMs =
+    Number(opts.authWaitMs) > 0 ? Number(opts.authWaitMs) : WORKSPACE_HYDRATE_AUTH_WAIT_MS;
+  const fetchTimeoutMs =
+    Number(opts.maxWaitMs) > 0 ? Number(opts.maxWaitMs) : WORKSPACE_HYDRATE_FETCH_TIMEOUT_MS;
 
-  const uid =
-    typeof getSupabaseAccessToken === "function"
-      ? String((await _workspaceAwaitAuthToken(200)) ? "logged-in" : "")
-      : "";
-  void uid;
+  if (!_workspaceIsLoggedIn() || !_workspaceIsVeraWorkModeContext()) {
+    console.info("[workspace_hydrate_done]", { source, outcome: "skip_not_logged_in" });
+    return false;
+  }
+  if (typeof authFetch !== "function" || typeof authApiUrl !== "function") {
+    console.info("[workspace_hydrate_done]", { source, outcome: "skip_no_auth_fetch" });
+    return false;
+  }
 
   if (_workspaceHydratePromise && !force) return _workspaceHydratePromise;
 
+  console.info("[workspace_hydrate_start]", { source, force });
+
   _workspaceHydratePromise = (async () => {
+    let outcome = "failed";
     try {
-      const token = await _workspaceAwaitAuthToken();
-      if (!token) return false;
-      const res = await authFetch(authApiUrl("/api/work-mode/workspace"), { method: "GET" });
+      const token = await _workspaceAwaitAuthToken(authWaitMs);
+      if (!token) {
+        outcome = "no_token";
+        console.info("[workspace_hydrate_done]", { source, outcome });
+        return false;
+      }
+
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const fetchTimer =
+        controller && typeof window.setTimeout === "function"
+          ? window.setTimeout(() => {
+              try {
+                controller.abort();
+              } catch (_) {}
+            }, fetchTimeoutMs)
+          : null;
+
+      let res;
+      try {
+        res = await authFetch(authApiUrl("/api/work-mode/workspace"), {
+          method: "GET",
+          ...(controller ? { signal: controller.signal } : {}),
+        });
+      } catch (err) {
+        if (err && err.name === "AbortError") {
+          outcome = "timeout";
+          console.warn("[workspace_hydrate_timeout]", { source, fetchTimeoutMs });
+          _markWorkspaceUnsynced(true);
+          return false;
+        }
+        throw err;
+      } finally {
+        if (fetchTimer) window.clearTimeout(fetchTimer);
+      }
+
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        console.warn("[workspace_hydrate] GET failed", data);
+        outcome = `http_${res.status}`;
+        console.warn("[workspace_hydrate_failed]", { source, status: res.status, data });
+        if (res.status === 401 || res.status === 403) {
+          _markWorkspaceUnsynced(false);
+        } else {
+          _markWorkspaceUnsynced(true);
+        }
         return false;
       }
       if (data.empty || !Array.isArray(data.tabs) || !data.tabs.length) {
-        console.info("[workspace_hydrate] empty cloud workspace");
+        outcome = "empty";
+        console.info("[workspace_hydrate_empty]", { source });
         return false;
       }
       _workspaceClientRevision = Number(data.client_revision) || 0;
       const applied = applyWorkModeWorkspaceSnapshot(data);
-      console.info("[workspace_hydrate]", {
-        applied,
+      outcome = applied ? "applied" : "apply_skipped";
+      console.info("[workspace_hydrate_done]", {
+        source,
+        outcome,
         tab_count: data.tabs.length,
         active_lane_id: data.active_lane_id || null,
       });
       return applied;
     } catch (err) {
-      console.warn("[workspace_hydrate] error", err);
+      outcome = "error";
+      console.warn("[workspace_hydrate_failed]", {
+        source,
+        error: String(err?.message || err),
+      });
+      _markWorkspaceUnsynced(true);
+      if (typeof ensureFixedReasoningLanePanels === "function") {
+        try {
+          ensureFixedReasoningLanePanels(new Map(), 0);
+        } catch (_) {}
+      }
       return false;
     } finally {
       _workspaceHydratePromise = null;
+      if (outcome === "failed") {
+        console.info("[workspace_hydrate_done]", { source, outcome });
+      }
     }
   })();
 
   return _workspaceHydratePromise;
+}
+
+function scheduleWorkModeWorkspaceHydrateBestEffort(source = "boot") {
+  if (!_workspaceIsLoggedIn() || !_workspaceIsVeraWorkModeContext()) return;
+  void (async () => {
+    const guardMs = WORKSPACE_HYDRATE_BOOT_GUARD_MS;
+    let guardFired = false;
+    const guard = new Promise((resolve) => {
+      window.setTimeout(() => {
+        guardFired = true;
+        console.warn("[workspace_hydrate_timeout]", { source, kind: "boot_guard", guardMs });
+        resolve(false);
+      }, guardMs);
+    });
+    try {
+      await Promise.race([
+        hydrateWorkModeWorkspaceFromServer(false, {
+          source,
+          authWaitMs: WORKSPACE_HYDRATE_BOOT_AUTH_WAIT_MS,
+          maxWaitMs: WORKSPACE_HYDRATE_FETCH_TIMEOUT_MS,
+        }),
+        guard,
+      ]);
+    } catch (err) {
+      console.warn("[workspace_hydrate_failed]", {
+        source,
+        kind: "boot_guard_race",
+        error: String(err?.message || err),
+      });
+      if (typeof ensureFixedReasoningLanePanels === "function") {
+        try {
+          ensureFixedReasoningLanePanels(new Map(), 0);
+        } catch (_) {}
+      }
+    } finally {
+      if (guardFired) {
+        console.info("[app_reveal_forced_after_workspace_timeout]", { source, guardMs });
+      }
+    }
+  })();
 }
 
 async function retryWorkModeWorkspaceSyncIfUnsynced(reason) {
@@ -461,6 +581,7 @@ try {
   window.syncWorkModeWorkspaceToSupabaseNow = syncWorkModeWorkspaceToSupabaseNow;
   window.queueWorkModeWorkspaceSync = queueWorkModeWorkspaceSync;
   window.hydrateWorkModeWorkspaceFromServer = hydrateWorkModeWorkspaceFromServer;
+  window.scheduleWorkModeWorkspaceHydrateBestEffort = scheduleWorkModeWorkspaceHydrateBestEffort;
   window.retryWorkModeWorkspaceSyncIfUnsynced = retryWorkModeWorkspaceSyncIfUnsynced;
   window.isWorkModeWorkspaceUnsynced = isWorkModeWorkspaceUnsynced;
   window.shouldSkipLocalReasoningTabsRestoreForCloud = shouldSkipLocalReasoningTabsRestoreForCloud;

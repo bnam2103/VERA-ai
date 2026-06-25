@@ -417,6 +417,9 @@ function activateReasoningTab(index, opts = {}) {
   } catch (_) {}
   _queueWorkModeWorkspaceCloudSync();
 }
+
+/* =====================================================================
+   PART 1+3+5+6 (2026-05-28): "recently opened reasoning panel" tracking.
    --------------------------------------------------------------------
    The previous addReasoningTab() set `.is-active` on the new panel but
    did NOT update `focusedWorkModeLaneId` (in app.js). Because

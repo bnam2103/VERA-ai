@@ -7346,8 +7346,12 @@ function wireReasoningTabStrip() {
     const bootIdx = Number(bootActive.dataset.tabIndex);
     if (Number.isFinite(bootIdx)) setFocusedWorkModeLaneFromIndex(bootIdx);
   }
-  if (skipLocalTabsForCloud && typeof hydrateWorkModeWorkspaceFromServer === "function") {
-    void hydrateWorkModeWorkspaceFromServer();
+  if (skipLocalTabsForCloud) {
+    if (typeof scheduleWorkModeWorkspaceHydrateBestEffort === "function") {
+      scheduleWorkModeWorkspaceHydrateBestEffort("boot");
+    } else if (typeof hydrateWorkModeWorkspaceFromServer === "function") {
+      void hydrateWorkModeWorkspaceFromServer(false, { source: "boot_fallback" });
+    }
   }
   if (window.__veraReasoningTabsUnloadHook !== "1") {
     window.__veraReasoningTabsUnloadHook = "1";
