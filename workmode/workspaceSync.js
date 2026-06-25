@@ -16,6 +16,10 @@ const WORKSPACE_HYDRATE_FETCH_TIMEOUT_MS = 8000;
 const WORKSPACE_HYDRATE_BOOT_GUARD_MS = 2500;
 const WORKSPACE_HYDRATE_AUTH_WAIT_MS = 4000;
 const WORKSPACE_HYDRATE_BOOT_AUTH_WAIT_MS = 1500;
+const WORKSPACE_MAX_RENDERED_HTML_CHARS = 120_000;
+const WORKSPACE_MAX_SUMMARY_CHARS = 4000;
+const WORKSPACE_MAX_TITLE_CHARS = 120;
+const WORKSPACE_MAX_REGISTRY_JSON_CHARS = 32_000;
 
 let _workspaceSaveTimer = null;
 let _workspaceSaveInFlight = null;
@@ -47,6 +51,40 @@ async function _workspaceAwaitAuthToken(maxWaitMs = 4000) {
     await new Promise((resolve) => window.setTimeout(resolve, 50));
   }
   return null;
+}
+
+function _truncateWorkspaceText(value, limit) {
+  const text = String(value ?? "");
+  return text.length <= limit ? text : text.slice(0, limit);
+}
+
+function _registryJsonLength(registry) {
+  try {
+    return JSON.stringify(registry || {}).length;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function _logWorkspaceSaveStart(snapshot) {
+  const tabs = Array.isArray(snapshot?.tabs) ? snapshot.tabs : [];
+  try {
+    console.info("[workspace_save_start]", {
+      tab_count: tabs.length,
+      active_lane_id: snapshot?.active_lane_id || null,
+      client_revision: snapshot?.client_revision ?? null,
+      tabs: tabs.map((tab, i) => ({
+        index: i,
+        lane_id: tab?.lane_id || null,
+        sort_order: tab?.sort_order,
+        title_len: String(tab?.title || "").length,
+        html_len: String(tab?.rendered_html || "").length,
+        message_count: Array.isArray(tab?.messages) ? tab.messages.length : 0,
+        registry_json_len: _registryJsonLength(tab?.registry),
+        closed: Boolean(tab?.closed),
+      })),
+    });
+  } catch (_) {}
 }
 
 function _workspaceMaxTabs() {
@@ -167,7 +205,9 @@ function buildWorkModeWorkspaceSnapshot() {
   const order =
     typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
   const activeLane = order.find((p) => p.isActive)?.laneId || "";
-  const tabs = order.slice(0, _workspaceMaxTabs()).map((p, i) => {
+  const tabs = order
+    .slice(0, _workspaceMaxTabs())
+    .map((p, i) => {
     const panel =
       typeof getReasoningPanelElementByLaneId === "function"
         ? getReasoningPanelElementByLaneId(p.laneId)
@@ -188,20 +228,27 @@ function buildWorkModeWorkspaceSnapshot() {
       (panel && typeof getReasoningTabTopicLabel === "function"
         ? getReasoningTabTopicLabel(panel)
         : p.label) || REASONING_UNTITLED_TAB_NAME;
+    const renderedHtml = closed
+      ? ""
+      : _truncateWorkspaceText(scroll?.innerHTML || "", WORKSPACE_MAX_RENDERED_HTML_CHARS);
     return {
       lane_id: laneId,
       sort_order: i,
-      title: String(title || REASONING_UNTITLED_TAB_NAME).slice(0, 120),
-      lane_label: String(p.label || title || "").slice(0, 120),
+      title: _truncateWorkspaceText(title || REASONING_UNTITLED_TAB_NAME, WORKSPACE_MAX_TITLE_CHARS),
+      lane_label: _truncateWorkspaceText(p.label || title || "", WORKSPACE_MAX_TITLE_CHARS),
       is_active: Boolean(p.isActive),
       closed,
-      summary: String(registry.latest_reasoning_summary || "").slice(0, 4000),
+      summary: _truncateWorkspaceText(registry.latest_reasoning_summary || "", WORKSPACE_MAX_SUMMARY_CHARS),
       registry,
       messages: closed ? [] : _extractMessagesFromScroll(scroll),
-      rendered_html: closed ? "" : String(scroll?.innerHTML || ""),
+      rendered_html: renderedHtml,
       last_opened_at: p.isActive ? new Date().toISOString() : undefined,
       updated_at: new Date().toISOString(),
     };
+  })
+    .filter((tab) => String(tab.lane_id || "").trim());
+  tabs.forEach((tab, idx) => {
+    tab.sort_order = idx;
   });
   _workspaceClientRevision = Math.max(_workspaceClientRevision + 1, Date.now());
   return {
@@ -320,6 +367,8 @@ async function syncWorkModeWorkspaceToSupabaseNow() {
   const snapshot = buildWorkModeWorkspaceSnapshot();
   if (!snapshot) return false;
 
+  _logWorkspaceSaveStart(snapshot);
+
   const run = async () => {
     try {
       const res = await authFetch(authApiUrl("/api/work-mode/workspace"), {
@@ -329,7 +378,12 @@ async function syncWorkModeWorkspaceToSupabaseNow() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        console.warn("[workspace_sync] PUT failed", data);
+        console.warn("[workspace_sync] PUT failed", {
+          status: res.status,
+          error: data?.error || null,
+          detail: data?.detail || data,
+          field: data?.field || null,
+        });
         _markWorkspaceUnsynced(true);
         return false;
       }
