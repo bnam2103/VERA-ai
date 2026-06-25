@@ -68,9 +68,11 @@ function _registryJsonLength(registry) {
 
 function _logWorkspaceSaveStart(snapshot) {
   const tabs = Array.isArray(snapshot?.tabs) ? snapshot.tabs : [];
+  const nonEmptyTabs = tabs.filter((tab) => String(tab?.lane_id || "").trim());
   try {
     console.info("[workspace_save_start]", {
       tab_count: tabs.length,
+      non_empty_tab_count: nonEmptyTabs.length,
       active_lane_id: snapshot?.active_lane_id || null,
       client_revision: snapshot?.client_revision ?? null,
       tabs: tabs.map((tab, i) => ({
@@ -85,6 +87,36 @@ function _logWorkspaceSaveStart(snapshot) {
       })),
     });
   } catch (_) {}
+}
+
+function _unwrapWorkspaceApiError(data) {
+  if (!data || typeof data !== "object") return { error: null, detail: data, field: null };
+  if (data.error && data.detail) return data;
+  const nested = data.detail;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return {
+      error: nested.error || data.error || null,
+      detail: nested.detail || nested,
+      field: nested.field || data.field || null,
+      workspace_api_version: nested.workspace_api_version ?? data.workspace_api_version ?? null,
+    };
+  }
+  return {
+    error: data.error || null,
+    detail: data.detail ?? data,
+    field: data.field || null,
+    workspace_api_version: data.workspace_api_version ?? null,
+  };
+}
+
+async function _readWorkspacePutErrorBody(res) {
+  const text = await res.text().catch(() => "");
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return { detail: text.slice(0, 500) };
+  }
 }
 
 function _workspaceMaxTabs() {
@@ -243,7 +275,6 @@ function buildWorkModeWorkspaceSnapshot() {
       messages: closed ? [] : _extractMessagesFromScroll(scroll),
       rendered_html: renderedHtml,
       last_opened_at: p.isActive ? new Date().toISOString() : undefined,
-      updated_at: new Date().toISOString(),
     };
   })
     .filter((tab) => String(tab.lane_id || "").trim());
@@ -376,13 +407,21 @@ async function syncWorkModeWorkspaceToSupabaseNow() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(snapshot),
       });
-      const data = await res.json().catch(() => ({}));
+      const rawBody = await _readWorkspacePutErrorBody(res);
       if (!res.ok) {
-        console.warn("[workspace_sync] PUT failed", {
+        const err = _unwrapWorkspaceApiError(rawBody);
+        console.warn("[workspace_save_failed]", {
           status: res.status,
-          error: data?.error || null,
-          detail: data?.detail || data,
-          field: data?.field || null,
+          error: err.error,
+          detail: err.detail,
+          field: err.field,
+          workspace_api_version: err.workspace_api_version,
+          tab_count: Array.isArray(snapshot.tabs) ? snapshot.tabs.length : 0,
+          non_empty_tab_count: Array.isArray(snapshot.tabs)
+            ? snapshot.tabs.filter((t) => String(t?.lane_id || "").trim()).length
+            : 0,
+          active_lane_id: snapshot.active_lane_id || null,
+          client_revision: snapshot.client_revision ?? null,
         });
         _markWorkspaceUnsynced(true);
         return false;
