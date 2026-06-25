@@ -96,6 +96,22 @@ function _hashIndicatesPasswordResetExpired(hashOverride) {
   }
 }
 
+function _passwordResetErrorDiagnostics(error, redirectTo) {
+  const err = error && typeof error === "object" ? error : {};
+  return {
+    message: String(err.message || error || "unknown_error"),
+    status: err.status ?? null,
+    name: err.name ? String(err.name) : null,
+    code: err.code ? String(err.code) : null,
+    redirectTo: String(redirectTo || VERA_PASSWORD_RESET_REDIRECT_URL),
+  };
+}
+
+function _passwordResetUserFacingError(error) {
+  const msg = String(error?.message || error || "").trim();
+  return msg || "Could not send reset email. Please try again.";
+}
+
 function _logPasswordResetRedirect(redirectTo) {
   try {
     const loc = typeof window !== "undefined" ? window.location : null;
@@ -828,13 +844,15 @@ function wireSupabaseAccountUi() {
         redirectTo,
       });
       if (error) {
-        console.warn("[auth_password_reset_request_failed]", {
-          message: String(error.message || error),
-        });
-        _showAccountError("Could not send reset email. Please try again.");
+        console.error(
+          "[auth_password_reset_request_failed]",
+          _passwordResetErrorDiagnostics(error, redirectTo)
+        );
+        _showAccountError(_passwordResetUserFacingError(error));
         return;
       }
       console.info("[auth_password_reset_request_done]", {
+        redirectTo,
         email_domain: String(validated.email).split("@")[1] || null,
       });
       const forgotOk = document.getElementById("vera-account-forgot-success");
@@ -847,10 +865,12 @@ function wireSupabaseAccountUi() {
       if (emailRow instanceof HTMLElement) emailRow.hidden = true;
       if (forgotActions instanceof HTMLElement) forgotActions.hidden = true;
     } catch (e) {
-      console.warn("[auth_password_reset_request_failed]", {
-        message: String(e?.message || e),
-      });
-      _showAccountError("Could not send reset email. Please try again.");
+      const redirectTo = getVeraPasswordResetRedirectUrl();
+      console.error(
+        "[auth_password_reset_request_failed]",
+        _passwordResetErrorDiagnostics(e, redirectTo)
+      );
+      _showAccountError(_passwordResetUserFacingError(e));
     } finally {
       _setAuthUiBusy(false);
     }
@@ -1053,6 +1073,8 @@ try {
       getPasswordUpdatedMessage: () => AUTH_PASSWORD_UPDATED_MSG,
       getPasswordResetRedirectUrl: getVeraPasswordResetRedirectUrl,
       logPasswordResetRedirect: _logPasswordResetRedirect,
+      passwordResetErrorDiagnostics: _passwordResetErrorDiagnostics,
+      passwordResetUserFacingError: _passwordResetUserFacingError,
       getPasswordResetExpiredMessage: () => AUTH_PASSWORD_RESET_EXPIRED_MSG,
       hashIndicatesPasswordRecovery: _hashIndicatesPasswordRecovery,
       hashIndicatesPasswordResetExpired: _hashIndicatesPasswordResetExpired,
