@@ -200,6 +200,16 @@
       source: context.source || null,
     });
 
+    if (list.length > 1) {
+      try {
+        window.veraUsageOnMultiActionPlanStart?.(list, {
+          actionPlanId: context.actionPlanId || context.requestId,
+          requestId: context.requestId,
+          source: context.source || "multi_action",
+        });
+      } catch (_) {}
+    }
+
     let pendingPlayBarrier = false;
     let lastPlayExpectedTrack = "";
     let lastPlayTargetProvider = "";
@@ -257,6 +267,17 @@
             after: playbackSnapshot(readPlaybackState()),
           });
           results.push({ orderIndex: idx, actionType, ok: false, error: String(err?.message || err) });
+          try {
+            window.veraUsageOnActionSequenceFailed?.(
+              {
+                actionPlanId: context.actionPlanId || context.requestId,
+                requestId: context.requestId,
+                failedStepIndex: idx,
+                source: context.source || "multi_action",
+              },
+              String(err?.message || err || "apply_error")
+            );
+          } catch (_) {}
           continue;
         }
 
@@ -278,6 +299,19 @@
           applyResult: applyResult === undefined ? null : applyResult,
         });
         results.push({ orderIndex: idx, actionType, ok: true, elapsedMs });
+
+        try {
+          window.veraUsageOnMultiActionStep?.(
+            payload,
+            {
+              orderIndex: idx,
+              actionPlanId: payload?.action_plan_id || context.actionPlanId || context.requestId,
+              requestId: context.requestId,
+              source: context.source || "multi_action",
+            },
+            { success: true }
+          );
+        } catch (_) {}
 
         if (isMusicControlPayload(payload) && MUSIC_PLAY_OPS.has(op)) {
           lastPlayExpectedTrack =
@@ -309,6 +343,16 @@
       elapsedMs: Math.round(performance.now() - seqStart),
       actionTypes,
     });
+
+    if (list.length > 0 && list.every(isMusicControlPayload)) {
+      try {
+        window.veraUsageOnMusicSequenceExecuted?.(list, {
+          actionPlanId: context.actionPlanId || context.requestId,
+          requestId: context.requestId,
+          source: context.source || "multi_action",
+        });
+      } catch (_) {}
+    }
 
     return { ok: results.every((r) => r.ok), results };
   }

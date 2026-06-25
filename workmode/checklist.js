@@ -263,6 +263,14 @@ function commitWorkChecklistFromPlaceholderText(text) {
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   items.push({ id, text: normalized, done: false, parent_id: null });
   _persistChecklistItemsToStorage(items);
+  try {
+    window.veraUsageOnChecklistMutation?.({
+      op: "add",
+      item_count: 1,
+      source: "ui",
+      client_key: id,
+    });
+  } catch (_) {}
   return true;
 }
 
@@ -1403,6 +1411,15 @@ function persistWorkChecklistToggleWithSubtree(id, done) {
       idsToToggle.has(String(x?.id || "")) ? { ...x, done: wantDone } : x
     );
     _persistChecklistItemsToStorage(items);
+    try {
+      window.veraUsageOnChecklistMutation?.({
+        op: wantDone ? "complete" : "uncomplete",
+        item_count: idsToToggle.size,
+        batch_size: idsToToggle.size,
+        source: "ui",
+        client_key: sid,
+      });
+    } catch (_) {}
   } catch (_) {}
 }
 
@@ -1428,6 +1445,14 @@ function persistWorkChecklistRemove(id) {
     if (!Array.isArray(items)) items = [];
     items = items.filter((x) => String(x.id) !== id);
     _persistChecklistItemsToStorage(items);
+    try {
+      window.veraUsageOnChecklistMutation?.({
+        op: "delete",
+        item_count: 1,
+        source: "ui",
+        client_key: String(id || ""),
+      });
+    } catch (_) {}
   } catch (_) {}
 }
 
@@ -2306,6 +2331,16 @@ function applyWorkChecklistSyncPreview() {
     workChecklistSyncPendingPlanMeta = null;
     syncWorkChecklistSyncPlanButton();
     flashWorkChecklistPlanHint("Checklist updated from plan.");
+    try {
+      window.veraUsageOnChecklistMutation?.({
+        op: "sync",
+        item_count: insertedCount,
+        batch_size: insertedCount,
+        source: "ui",
+        sync_kind: "plan",
+        client_key: `plan_apply_${workChecklistSyncConsumedPlanVersion}`,
+      });
+    } catch (_) {}
     return true;
   } catch (err) {
     logPlanSyncDebug("accept_apply", {
@@ -2826,6 +2861,15 @@ async function syncWorkChecklistToSupabaseNow() {
   }
 
   const bundle = _readLocalChecklistBundleForSupabase();
+  const itemCount = Array.isArray(bundle.items) ? bundle.items.length : 0;
+  try {
+    window.veraUsageOnChecklistMutation?.({
+      op: "sync_start",
+      sync_kind: "supabase",
+      item_count: itemCount,
+      source: "sync",
+    });
+  } catch (_) {}
   const run = async () => {
     try {
       const res = await authFetch(authApiUrl("/api/checklist"), {
@@ -2837,6 +2881,17 @@ async function syncWorkChecklistToSupabaseNow() {
       if (!res.ok) {
         console.warn("[VERA][CHECKLIST] supabase PUT failed", data);
         _markChecklistSupabaseUnsynced(true);
+        try {
+          window.veraUsageOnChecklistMutation?.({
+            op: "sync_done",
+            sync_kind: "supabase",
+            item_count: itemCount,
+            source: "sync",
+            success: false,
+            error_code: String(data?.detail || res.status).slice(0, 64),
+            client_key: getSessionId(),
+          });
+        } catch (_) {}
         return false;
       }
       console.info("[checklist_put]", {
@@ -2846,10 +2901,31 @@ async function syncWorkChecklistToSupabaseNow() {
         auth_present: true,
       });
       _markChecklistSupabaseUnsynced(false);
+      try {
+        window.veraUsageOnChecklistMutation?.({
+          op: "sync_done",
+          sync_kind: "supabase",
+          item_count: itemCount,
+          source: "sync",
+          success: true,
+          client_key: getSessionId(),
+        });
+      } catch (_) {}
       return true;
     } catch (err) {
       console.warn("[VERA][CHECKLIST] supabase PUT error", err);
       _markChecklistSupabaseUnsynced(true);
+      try {
+        window.veraUsageOnChecklistMutation?.({
+          op: "sync_done",
+          sync_kind: "supabase",
+          item_count: itemCount,
+          source: "sync",
+          success: false,
+          error_code: String(err?.message || err || "sync_error").slice(0, 64),
+          client_key: getSessionId(),
+        });
+      } catch (_) {}
       return false;
     }
   };

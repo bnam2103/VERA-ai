@@ -2865,6 +2865,13 @@ async function ensureSingleActiveMusicProvider(targetProvider, opts = {}) {
     activeProviderBefore: oldProvider,
     elapsedMs: Math.round(performance.now() - t0),
   });
+  if (oldProvider && oldProvider !== "none" && oldProvider !== target) {
+    try {
+      window.veraUsageOnMusicProviderSwitched?.(oldProvider, target, {
+        source: opts.reason || "provider_exclusive",
+      });
+    } catch (_) {}
+  }
   return { targetProvider: target, oldProvider, elapsedMs: Math.round(performance.now() - t0) };
 }
 
@@ -15320,6 +15327,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     }
     laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
 
+    const reasoningUsageStreamT0 = performance.now();
+    try {
+      window.veraUsageOnReasoningPanelMessageSent?.({
+        lane_id: laneId,
+        panel_index: laneIdx,
+        source: turnContext?.source || "reasoning",
+        request_id: turnContext?.turn_id || undefined,
+        input_chars: String(streamReasoningText || "").length,
+      });
+    } catch (_) {}
+
     let sr;
     try {
       if (hasUpload) {
@@ -15666,6 +15684,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
               );
             }
           }
+          try {
+            window.veraUsageOnReasoningPanelReplyDone?.({
+              lane_id: streamLaneId,
+              panel_index: laneIdx,
+              source: turnContext?.source || "reasoning",
+              request_id: turnContext?.turn_id || undefined,
+              latency_ms: Math.round(performance.now() - reasoningUsageStreamT0),
+              response_chars: String(mdDone || "").length,
+              success: true,
+            });
+          } catch (_) {}
           safeReasoningLaneRelease("stream_completed");
         }
       });
@@ -15842,6 +15871,16 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
   laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
   let summaryText = "";
   let markdownAcc = "";
+  const reasoningUsageStreamT0 = performance.now();
+  try {
+    window.veraUsageOnReasoningPanelMessageSent?.({
+      lane_id: laneId,
+      panel_index: laneIdx,
+      source: turnContext?.source || "keyboard",
+      request_id: turnContext?.turn_id || undefined,
+      input_chars: String(text || "").length,
+    });
+  } catch (_) {}
   try {
     const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
       method: "POST",
@@ -16050,6 +16089,17 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         flashWorkChecklistPlanHint("Updated plan in reasoning — tap Sync to refresh checklist bullets.");
       }
     }
+    try {
+      window.veraUsageOnReasoningPanelReplyDone?.({
+        lane_id: streamLaneId,
+        panel_index: laneIdx,
+        source: turnContext?.source || "keyboard",
+        request_id: turnContext?.turn_id || undefined,
+        latency_ms: Math.round(performance.now() - reasoningUsageStreamT0),
+        response_chars: String(mdDone || "").length,
+        success: true,
+      });
+    } catch (_) {}
     safeComposerLaneRelease("stream_completed");
     maybeReasoningScrollToLatest(scrollEl);
   } catch (streamErr) {
@@ -17900,7 +17950,7 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
       const preview = document.getElementById(`${prefix}-spotify-preview-audio`);
       if (preview) preview.volume = next;
     }
-    return;
+    return { op, transportProvider: resolveMusicTransportProvider(prefix, seqCtx) };
   }
   const skipPanelRepeat = isRecentSameMusicPlay(payload, op);
   const sidePaneEl = uiEl("side-pane");
@@ -18192,6 +18242,21 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
   }
 }
 
+function _usageTrackActionExecuted(payload, data, seqCtx, extra) {
+  try {
+    window.veraUsageOnActionExecuted?.(
+      payload,
+      {
+        requestId: data?.request_id,
+        actionPlanId: payload?.action_plan_id || data?.action_plan_id,
+        orderIndex: seqCtx?.orderIndex,
+        source: seqCtx?.source || data?.type || "unknown",
+      },
+      extra
+    );
+  } catch (_) {}
+}
+
 async function applyActionPayload(data, seqCtx = {}) {
   // 2026-05-29 — multi-action planner pass-through.
   // When the backend executed a typed compound command, every action's
@@ -18254,6 +18319,7 @@ async function applyActionPayload(data, seqCtx = {}) {
   if (payload?.panel_type === "media_tabs" || payload?.panel_type === "news_results") {
     /* Large innerHTML (news + images + video embeds) can block the main thread; defer so BMO mouth RAF keeps up. */
     requestAnimationFrame(() => renderMediaTabsPanel(payload));
+    _usageTrackActionExecuted(payload, data, seqCtx);
     return;
   }
 
@@ -18267,6 +18333,7 @@ async function applyActionPayload(data, seqCtx = {}) {
     if (op === "close") {
       hideSidePanel();
       console.info("[news_panel_ui]", { stage: "frontend", op: "close" });
+      _usageTrackActionExecuted(payload, data, seqCtx);
       return;
     }
     /* op === "open" — render the news panel shell. If we have no fresh
@@ -18285,6 +18352,7 @@ async function applyActionPayload(data, seqCtx = {}) {
     };
     requestAnimationFrame(() => renderMediaTabsPanel(openPayload));
     console.info("[news_panel_ui]", { stage: "frontend", op: "open" });
+    _usageTrackActionExecuted(payload, data, seqCtx);
     return;
   }
 
@@ -18317,6 +18385,18 @@ async function applyActionPayload(data, seqCtx = {}) {
       }
       loadWorkChecklistItems();
       syncWorkChecklistHelpPlanButton();
+      try {
+        const n = Array.isArray(payload.items) ? payload.items.length : 0;
+        window.veraUsageOnChecklistMutation?.({
+          op: "sync",
+          item_count: n,
+          batch_size: n || undefined,
+          source: "voice",
+          sync_kind: "plan",
+          client_key: String(data?.request_id || ""),
+        });
+        _usageTrackActionExecuted(payload, data, seqCtx);
+      } catch (_) {}
     } catch (_) {}
     return;
   }
@@ -18390,6 +18470,7 @@ async function applyActionPayload(data, seqCtx = {}) {
           });
         } catch (_) {}
       }
+      _usageTrackActionExecuted(payload, data, seqCtx);
       return;
     }
     /* PART 3: backend can also drive panel close (e.g. the LLM router sent
@@ -18482,6 +18563,7 @@ async function applyActionPayload(data, seqCtx = {}) {
           source: payload.reason || "backend_action_payload",
         });
       }
+      _usageTrackActionExecuted(payload, data, seqCtx, { success: Boolean(exec?.ok) });
       return;
     }
     if (op === "reopen_last") {
@@ -18541,6 +18623,7 @@ async function applyActionPayload(data, seqCtx = {}) {
           requestedIndex: idx + 1,
           resolvedFrom: "visible_order",
         });
+        _usageTrackActionExecuted(payload, data, seqCtx);
       }
       return;
     }
@@ -18552,13 +18635,29 @@ async function applyActionPayload(data, seqCtx = {}) {
          reuse the existing Work Mode reasoning lane machinery rather
          than open a brand-new surface. */
       applyWorkModeReasoningOpenAndStreamPayload(payload, data);
+      _usageTrackActionExecuted(payload, data, seqCtx);
       return;
     }
     return;
   }
 
   if (payload?.panel_type === "music_control") {
-    return await applyMusicControlPayloadAsync(payload, data, seqCtx);
+    const musicResult = await applyMusicControlPayloadAsync(payload, data, seqCtx);
+    if (musicResult && typeof musicResult === "object" && musicResult.op) {
+      try {
+        window.veraUsageOnMusicControlApplied?.(
+          payload,
+          {
+            requestId: data?.request_id,
+            actionPlanId: payload?.action_plan_id || data?.action_plan_id,
+            orderIndex: seqCtx?.orderIndex,
+            source: seqCtx?.source || data?.type || "unknown",
+          },
+          musicResult
+        );
+      } catch (_) {}
+    }
+    return musicResult;
   }
 
   /* Keep the music panel open across normal assistant replies unless a new panel payload replaces it. */
@@ -19500,6 +19599,9 @@ function logWhisperInterruptQa(stage, detail, fields = {}) {
       timestamp: new Date().toISOString(),
       ...fields,
     });
+  } catch (_) {}
+  try {
+    window.veraUsageOnInterruptQa?.(stage, detail, fields);
   } catch (_) {}
 }
 

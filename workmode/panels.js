@@ -405,6 +405,16 @@ function activateReasoningTab(index, opts = {}) {
       _isGenericBlankReasoningPanelLabel(selectedTitleBefore) &&
       !_isGenericBlankReasoningPanelLabel(selectedTitleAfter),
   });
+  try {
+    const laneId = String(afterPanel?.laneId || beforePanel?.laneId || "");
+    window.veraUsageOnReasoningPanelFocused?.({
+      lane_id: laneId,
+      panel_index: idx,
+      from_panel_index:
+        beforePanel?.visualIndex != null ? Number(beforePanel.visualIndex) - 1 : undefined,
+      source: String(opts.resolvedFrom || "ui").slice(0, 32),
+    });
+  } catch (_) {}
 }
 
 /* =====================================================================
@@ -583,6 +593,15 @@ function addReasoningTab(opts) {
       panel_open_request_id: requestId || null,
       panel_count_after: panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length,
     }));
+  } catch (_) {}
+
+  try {
+    window.veraUsageOnReasoningPanelOpened?.({
+      lane_id: newLaneId,
+      panel_index: idx,
+      source,
+      request_id: requestId || undefined,
+    });
   } catch (_) {}
 
   return { laneId: newLaneId, tabIndex: idx };
@@ -1391,6 +1410,14 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
       panel_count_final: afterOrder.length,
       active_panel_id_after: activeAfter?.laneId || null,
     }));
+  } catch (_) {}
+
+  try {
+    window.veraUsageOnReasoningPanelClosed?.({
+      lane_id: closedLaneIds[0] || undefined,
+      closed_count: targets.length,
+      source: reason,
+    });
   } catch (_) {}
 
   return {

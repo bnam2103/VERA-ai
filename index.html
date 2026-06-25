@@ -3055,6 +3055,9 @@ document.addEventListener("click", () => {
 <!-- users/usageEvents.js — lightweight behavioral analytics (MVP).
      Must load AFTER utils/ids.js + supabaseAuth.js, BEFORE app.js. -->
 <script src="users/usageEvents.js?v=3"></script>
+<!-- users/usageFeatureEvents.js — Phase 2 feature interaction analytics.
+     Must load AFTER usageEvents.js, BEFORE app.js. -->
+<script src="users/usageFeatureEvents.js?v=1"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies
