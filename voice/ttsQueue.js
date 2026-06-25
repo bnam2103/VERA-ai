@@ -98,6 +98,28 @@ let mainTtsPlaybackToken = 0;
 /** Active NDJSON `res.body.getReader()`; cancelled on interrupt so the stream stops feeding the URL queue. */
 let activeNdjsonBodyReader = null;
 
+function _veraMusicTtsDiag(tag, extra) {
+  try {
+    if (typeof musicPlaybackDiag === "function") {
+      musicPlaybackDiag(tag, extra);
+    } else if (typeof window !== "undefined" && typeof window.__veraMusicPlaybackDiag === "function") {
+      window.__veraMusicPlaybackDiag(tag, extra);
+    }
+  } catch (_) {}
+}
+
+function _veraWrapTtsEndCallback(onLastEnd, source) {
+  if (!onLastEnd) return undefined;
+  const inner = typeof wrapLastChunkForBmoMouth === "function"
+    ? wrapLastChunkForBmoMouth(onLastEnd)
+    : onLastEnd;
+  return () => {
+    _veraMusicTtsDiag("[tts_audio_end]", { source });
+    _veraMusicTtsDiag("[music_state_after_tts]", { source });
+    inner();
+  };
+}
+
 /* =========================
    BOOKKEEPING
 ========================= */
@@ -261,6 +283,7 @@ async function playTtsUrlSequenceGapless(
   }
   await audioCtx.resume();
   await ensureMainAudioTtsGraph();
+  _veraMusicTtsDiag("[music_state_before_tts]", { source: "playTtsUrlSequenceGapless" });
   mainTtsPlaybackActive = true;
   getAudioEl()?.pause();
   let t = audioCtx.currentTime + 0.08;
@@ -352,13 +375,17 @@ async function playTtsUrlSequenceGapless(
       void startBmoTtsMouthAnimation();
     }
     if (!firstDone && onFirstStart) {
+      _veraMusicTtsDiag("[tts_audio_start]", {
+        source: "playTtsUrlSequenceGapless",
+        tts_chunk_index: i,
+      });
       onFirstStart();
       firstDone = true;
     }
     const isLast = i === relativeUrls.length - 1;
     registerMainTtsBufferSource(
       src,
-      isLast && onLastEnd ? wrapLastChunkForBmoMouth(onLastEnd) : undefined
+      isLast && onLastEnd ? _veraWrapTtsEndCallback(onLastEnd, "playTtsUrlSequenceGapless") : undefined
     );
     t = startAt + audBuf.duration;
   }
@@ -431,11 +458,12 @@ async function playTtsUrlSequenceIncremental(
      onPlayEnd / resumeAfterAssistantReplyPlayback never runs → processing stays true and listening never renews. */
   if (!curRel) {
     _dbgCheckpoint("exit_no_first_url");
-    const endFn = onLastEnd ? wrapLastChunkForBmoMouth(onLastEnd) : null;
+    const endFn = onLastEnd ? _veraWrapTtsEndCallback(onLastEnd, "playTtsUrlSequenceIncremental") : null;
     if (endFn) endFn();
     else mainTtsPlaybackActive = false;
     return;
   }
+  _veraMusicTtsDiag("[music_state_before_tts]", { source: "playTtsUrlSequenceIncremental" });
   mainTtsPlaybackActive = true;
   _dbgCheckpoint("main_tts_active_flipped_true");
   getAudioEl()?.pause();
@@ -569,13 +597,17 @@ async function playTtsUrlSequenceIncremental(
       void startBmoTtsMouthAnimation();
     }
     if (!firstDone && onFirstStart) {
+      _veraMusicTtsDiag("[tts_audio_start]", {
+        source: "playTtsUrlSequenceIncremental",
+        tts_chunk_index: chunkPlayIndex,
+      });
       onFirstStart();
       firstDone = true;
     }
     const isLast = !nextRel;
     registerMainTtsBufferSource(
       src,
-      isLast && onLastEnd ? wrapLastChunkForBmoMouth(onLastEnd) : undefined
+      isLast && onLastEnd ? _veraWrapTtsEndCallback(onLastEnd, "playTtsUrlSequenceIncremental") : undefined
     );
     _dbgCheckpoint("after_register_source", { isLast });
     t = startAt + audBuf.duration;

@@ -2915,7 +2915,14 @@ async function ensureSingleActiveMusicProvider(targetProvider, opts = {}) {
         if (typeof _veraSpotifyAcquirePlayback === "function") _veraSpotifyAcquirePlayback(prefix, opts.reason || "ensure_single_spotify");
         stopCurrentMusicPlaybackBeforeNewPlay("spotify");
         const free = document.getElementById(`${prefix}-free-music-audio`);
-        if (free && !free.paused) free.pause();
+        if (free && !free.paused) {
+          musicPlaybackDiag("[builtin_pause_called]", {
+            reason: opts.reason || "ensure_single_spotify",
+            source: "ensureSingleActiveMusicProvider",
+            prefix,
+          });
+          free.pause();
+        }
         st.active = "spotify";
         st.builtin.state = "suspended_for_spotify";
         st.builtin.paused = true;
@@ -3997,6 +4004,17 @@ async function restoreSpotifyPlaybackAfterPanelRemount(prefix) {
   const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
 
   if (resume?.preview_url && last.preview_url === resume.preview_url && audio) {
+    const previewIntact =
+      Boolean(audio.src) &&
+      !audio.ended &&
+      (audio.currentTime > 0 || !audio.paused);
+    if (previewIntact) {
+      if (!resume.paused && audio.paused) {
+        void audio.play().catch(() => {});
+      }
+      spotifySyncPlayButtonUi(prefix);
+      spotifyApplyNowStateToPanel(prefix);
+    } else {
     audio.volume = spotifyGetVolume();
     const targetSec = Math.max(0, Number(resume.currentTimeSec) || 0);
     const applySeek = () => {
@@ -4020,6 +4038,7 @@ async function restoreSpotifyPlaybackAfterPanelRemount(prefix) {
     });
     spotifySyncPlayButtonUi(prefix);
     spotifyApplyNowStateToPanel(prefix);
+    }
   }
 
   const wr = window.__veraSpotifyResumeWeb;
@@ -4056,6 +4075,9 @@ function restoreProductivityPanel(prefix) {
 function renderFinanceChartPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
+  try {
+    ensurePersistentMusicAudioHost(typeof appModePrefix === "function" ? appModePrefix() : "vera");
+  } catch (_) {}
 
   console.warn("[finance_panel_payload]", {
     user_text: payload?.query || "",
@@ -5958,8 +5980,17 @@ async function ensureSpotifyWebPlayer(prefix) {
       spotifyStopWebPlaybackUiTick();
       return;
     }
+    const wasPlaying = window.__veraSpotifyPlaybackActive === true;
     const curTrack = state?.track_window?.current_track;
     spotifySyncNowStateFromWebSdk(state);
+    if (state.paused && wasPlaying && typeof isMainTtsPlaying === "function" && isMainTtsPlaying()) {
+      musicPlaybackDiag("[spotify_sdk_paused_during_tts]", {
+        reason: "browser_sdk_state_paused",
+        source: "player_state_changed",
+        prefix,
+        sdk_paused: true,
+      });
+    }
     if (state.paused) removeSpotifyMiniButton(prefix);
     spotifyApplyNowStateToPanel(prefix);
     window.__veraSpotifyResumeWeb = {
@@ -6567,6 +6598,7 @@ function renderProductivityPanel() {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
   const prefix = appModePrefix();
+  ensurePersistentMusicAudioHost(prefix);
 
   const mount = () => {
     sidePaneEl.hidden = false;
@@ -6652,7 +6684,6 @@ function renderProductivityPanel() {
             </div>
           </div>
         </div>
-        <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
       </div>
       <div id="${prefix}-builtin-stack" class="music-pane-stack" hidden>
         <div class="music-inactive-source-banner" id="${prefix}-builtin-inactive-banner" hidden>
@@ -6664,10 +6695,10 @@ function renderProductivityPanel() {
           <div class="free-music-catalog" id="${prefix}-free-music-catalog"></div>
         </div>
       </div>
-      <audio id="${prefix}-free-music-audio" preload="metadata" crossorigin="anonymous" hidden></audio>
     </div>
   `;
 
+    ensurePersistentMusicAudioHost(prefix);
     sidePaneEl.scrollTop = 0;
     requestAnimationFrame(() => {
       sidePaneEl.classList.add("visible");
@@ -17524,6 +17555,11 @@ function stopCurrentMusicPlaybackBeforeNewPlay(source) {
   let spotifyStopped = false;
   try {
     if (free && !free.paused) {
+      musicPlaybackDiag("[builtin_pause_called]", {
+        reason: `stop_before_${newSource}`,
+        source: "stopCurrentMusicPlaybackBeforeNewPlay",
+        prefix,
+      });
       free.pause();
       builtinStopped = true;
       if (typeof freeMusicSyncNowFromAudio === "function") freeMusicSyncNowFromAudio(prefix);
@@ -17544,6 +17580,11 @@ function stopCurrentMusicPlaybackBeforeNewPlay(source) {
   try {
     const pause = window.VeraSpotify && window.VeraSpotify.pausePlayback;
     if (typeof pause === "function" && (spotifyWasPlaying || newSource === "builtin")) {
+      musicPlaybackDiag("[spotify_pause_called]", {
+        reason: `stop_before_${newSource}`,
+        source: "stopCurrentMusicPlaybackBeforeNewPlay",
+        prefix,
+      });
       // Pause Spotify whenever we're switching TO built-in. When switching
       // between Spotify tracks (play_track / play_album) Spotify itself
       // replaces the current track on the next play call, so an explicit
@@ -18012,6 +18053,12 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
   if (op === "pause") {
     const activeForPause = resolveMusicTransportProvider(prefix, seqCtx);
     const free = document.getElementById(`${prefix}-free-music-audio`);
+    musicPlaybackDiag("[music_pause_called]", {
+      reason: "voice_command_pause",
+      source: "applyMusicControlPayload",
+      prefix,
+      transport_provider: activeForPause,
+    });
     if (activeForPause === "builtin" && free && !free.paused) free.pause();
     else if (activeForPause !== "builtin") {
       const pause = window.VeraSpotify?.pausePlayback;
@@ -26746,6 +26793,11 @@ window.VeraSpotify = {
   },
   async pausePlayback() {
     const prefix = appModePrefix();
+    musicPlaybackDiag("[spotify_pause_called]", {
+      reason: "explicit_pause_playback",
+      source: "VeraSpotify.pausePlayback",
+      prefix,
+    });
     const web = window.__veraSpotifyPlayer;
     if (web && typeof web.pause === "function") {
       await web.pause();

@@ -271,6 +271,11 @@ function setActiveSidePaneTab(tabName) {
 function renderMediaTabsPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
+  try {
+    if (typeof ensurePersistentMusicAudioHost === "function") {
+      ensurePersistentMusicAudioHost(typeof appModePrefix === "function" ? appModePrefix() : "vera");
+    }
+  } catch (_) {}
 
   /* DEBUG: time the panel render so we can correlate main-thread stalls
      with interrupt_raf_gap logs. Hot path on news responses. */
@@ -521,6 +526,11 @@ function renderProductResultsPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
   if (veraPanelPayloadIsStale(payload, "product")) return;
+  try {
+    if (typeof ensurePersistentMusicAudioHost === "function") {
+      ensurePersistentMusicAudioHost(typeof appModePrefix === "function" ? appModePrefix() : "vera");
+    }
+  } catch (_) {}
 
   const mount = () => {
     document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
@@ -647,6 +657,11 @@ function renderLocationMapPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
   if (veraPanelPayloadIsStale(payload, "location")) return;
+  try {
+    if (typeof ensurePersistentMusicAudioHost === "function") {
+      ensurePersistentMusicAudioHost(typeof appModePrefix === "function" ? appModePrefix() : "vera");
+    }
+  } catch (_) {}
 
   const mount = () => {
     document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
