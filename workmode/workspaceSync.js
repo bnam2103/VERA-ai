@@ -20,7 +20,6 @@ const WORKSPACE_HYDRATE_BOOT_AUTH_WAIT_MS = 1500;
 let _workspaceSaveTimer = null;
 let _workspaceSaveInFlight = null;
 let _workspaceHydratePromise = null;
-let _workspaceHydratedUserId = null;
 let _workspaceClientRevision = 0;
 let _workspaceSyncStatus = "synced";
 
@@ -575,7 +574,7 @@ function scheduleDeferredVeraChatRestoreIfAnonymous() {
   }
 }
 
-try {
+function _publishWorkModeWorkspaceSyncApi() {
   window.buildWorkModeWorkspaceSnapshot = buildWorkModeWorkspaceSnapshot;
   window.applyWorkModeWorkspaceSnapshot = applyWorkModeWorkspaceSnapshot;
   window.syncWorkModeWorkspaceToSupabaseNow = syncWorkModeWorkspaceToSupabaseNow;
@@ -586,9 +585,29 @@ try {
   window.isWorkModeWorkspaceUnsynced = isWorkModeWorkspaceUnsynced;
   window.shouldSkipLocalReasoningTabsRestoreForCloud = shouldSkipLocalReasoningTabsRestoreForCloud;
   window.scheduleDeferredVeraChatRestoreIfAnonymous = scheduleDeferredVeraChatRestoreIfAnonymous;
-  wireWorkModeWorkspaceSupabaseListeners();
+  window.__veraWorkspaceSyncReady = true;
+}
+
+try {
+  console.info("[VERA][WORKSPACE] workspaceSync loaded");
+  _publishWorkModeWorkspaceSyncApi();
   console.info("[workspace_supabase_sync_ready]", {
     hydrate: typeof window.hydrateWorkModeWorkspaceFromServer,
     put: typeof window.syncWorkModeWorkspaceToSupabaseNow,
+    ready: window.__veraWorkspaceSyncReady === true,
   });
-} catch (_) {}
+  try {
+    window.dispatchEvent(new CustomEvent("vera:workspace-sync-ready"));
+  } catch (_) {}
+} catch (err) {
+  console.error("[VERA][WORKSPACE] workspaceSync init failed", err);
+  try {
+    window.__veraWorkspaceSyncReady = false;
+  } catch (_) {}
+}
+
+try {
+  wireWorkModeWorkspaceSupabaseListeners();
+} catch (err) {
+  console.warn("[VERA][WORKSPACE] listener wiring failed", err);
+}

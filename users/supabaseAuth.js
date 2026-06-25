@@ -290,7 +290,7 @@ async function _hydrateWorkspaceAccountWhenReady(userId) {
         "[VERA][WORKSPACE] hydrateWorkModeWorkspaceFromServer missing — waiting for workmode/workspaceSync.js"
       );
     }
-    if (_workspaceHydrateAttempts < 50) {
+    if (_workspaceHydrateAttempts < 200) {
       _workspaceHydrateAttempts += 1;
       if (_workspaceHydrateRetryTimer) window.clearTimeout(_workspaceHydrateRetryTimer);
       _workspaceHydrateRetryTimer = window.setTimeout(() => {
@@ -310,10 +310,33 @@ async function _hydrateWorkspaceAccountWhenReady(userId) {
     window.clearTimeout(_workspaceHydrateRetryTimer);
     _workspaceHydrateRetryTimer = null;
   }
-  const applied = await hydrateFn();
+  const applied = await hydrateFn(false, { source: "auth_login" });
   if (applied) _workspaceHydratedUserId = uid;
   if (typeof retryWorkModeWorkspaceSyncIfUnsynced === "function") {
     void retryWorkModeWorkspaceSyncIfUnsynced("login");
+  } else if (typeof window.retryWorkModeWorkspaceSyncIfUnsynced === "function") {
+    void window.retryWorkModeWorkspaceSyncIfUnsynced("login");
+  }
+}
+
+function _onWorkspaceSyncReadyForAuth() {
+  const uid = String(_lastMeSnapshot?.user_id || "").trim();
+  if (!uid || !_lastMeSnapshot?.authenticated) return;
+  _workspaceHydrateAttempts = 0;
+  if (_workspaceHydrateRetryTimer) {
+    window.clearTimeout(_workspaceHydrateRetryTimer);
+    _workspaceHydrateRetryTimer = null;
+  }
+  void _hydrateWorkspaceAccountWhenReady(uid);
+}
+
+if (typeof window !== "undefined" && !window.__veraWorkspaceAuthSyncListenerWired) {
+  window.__veraWorkspaceAuthSyncListenerWired = true;
+  window.addEventListener("vera:workspace-sync-ready", () => {
+    _onWorkspaceSyncReadyForAuth();
+  });
+  if (window.__veraWorkspaceSyncReady === true) {
+    _onWorkspaceSyncReadyForAuth();
   }
 }
 
