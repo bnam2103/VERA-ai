@@ -349,17 +349,30 @@ async function refreshSupabaseAccountLabel() {
   const uid = String(me?.user_id || "").trim();
   const nowAuthenticated = Boolean(me?.authenticated);
   if (_supabaseWasAuthenticated && !nowAuthenticated) {
-    const cleanupFn =
+    const workspaceCleanupFn =
       typeof clearWorkModeWorkspaceAfterLogout === "function"
         ? clearWorkModeWorkspaceAfterLogout
         : typeof window.clearWorkModeWorkspaceAfterLogout === "function"
           ? window.clearWorkModeWorkspaceAfterLogout
           : null;
-    if (cleanupFn) {
+    if (workspaceCleanupFn) {
       try {
-        cleanupFn();
+        workspaceCleanupFn();
       } catch (err) {
         console.warn("[workspace_logout_cleanup_failed]", err);
+      }
+    }
+    const checklistCleanupFn =
+      typeof clearChecklistAfterLogout === "function"
+        ? clearChecklistAfterLogout
+        : typeof window.clearChecklistAfterLogout === "function"
+          ? window.clearChecklistAfterLogout
+          : null;
+    if (checklistCleanupFn) {
+      try {
+        checklistCleanupFn();
+      } catch (err) {
+        console.warn("[checklist_logout_cleanup_failed]", err);
       }
     }
   }

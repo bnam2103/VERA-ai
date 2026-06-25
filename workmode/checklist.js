@@ -194,12 +194,98 @@
 
 const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
 const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
+const WORK_CHECKLIST_ANON_STORAGE_KEY_PREFIX = "vera_checklist_state:anon:";
+const WORK_CHECKLIST_ANON_COLLAPSED_KEY_PREFIX = "vera_checklist_state:anon_collapsed:";
 const WORK_CHECKLIST_PLACEHOLDER_LABEL = "List item";
 const WORK_CHECKLIST_UI_PLACEHOLDER_ID = "__vera_wm_checklist_placeholder__";
 let workChecklistSyncTimer = null;
 let workChecklistHydrationPromise = null;
 let workChecklistLocalMutationVersion = 0;
 let workChecklistSyncInFlight = null;
+/** Bumped on logout so in-flight account PUTs cannot overwrite Supabase with cleared/local rows. */
+let _checklistAuthWriteGeneration = 0;
+let _checklistSbHydratePromise = null;
+
+function _checklistUsesAccountLocalStorage() {
+  return (
+    typeof isSupabaseUserAuthenticated === "function" &&
+    isSupabaseUserAuthenticated()
+  );
+}
+
+function getAnonymousChecklistStorageKey() {
+  const sid = typeof getSessionId === "function" ? getSessionId() : "default";
+  return `${WORK_CHECKLIST_ANON_STORAGE_KEY_PREFIX}${sid}`;
+}
+
+function getAnonymousChecklistCollapsedStorageKey() {
+  const sid = typeof getSessionId === "function" ? getSessionId() : "default";
+  return `${WORK_CHECKLIST_ANON_COLLAPSED_KEY_PREFIX}${sid}`;
+}
+
+function _getActiveChecklistItemsStorageKey() {
+  return _checklistUsesAccountLocalStorage()
+    ? WORK_CHECKLIST_STORAGE_KEY
+    : getAnonymousChecklistStorageKey();
+}
+
+function _getActiveChecklistCollapsedStorageKey() {
+  return _checklistUsesAccountLocalStorage()
+    ? WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY
+    : getAnonymousChecklistCollapsedStorageKey();
+}
+
+function readAnonymousChecklistBundle() {
+  try {
+    const raw = localStorage.getItem(getAnonymousChecklistStorageKey()) || "[]";
+    const parsed = JSON.parse(raw);
+    const items = stripChecklistPlaceholdersForPersist(Array.isArray(parsed) ? parsed : []);
+    const completed_collapsed =
+      localStorage.getItem(getAnonymousChecklistCollapsedStorageKey()) === "1";
+    return { items, completed_collapsed };
+  } catch (_) {
+    return { items: [], completed_collapsed: false };
+  }
+}
+
+function _checklistCancelPendingAccountSync() {
+  if (workChecklistSyncTimer) {
+    window.clearTimeout(workChecklistSyncTimer);
+    workChecklistSyncTimer = null;
+  }
+}
+
+function _checklistBlockAccountWrites() {
+  _checklistAuthWriteGeneration += 1;
+  _checklistCancelPendingAccountSync();
+  _checklistSbHydratePromise = null;
+  try {
+    localStorage.removeItem("vera_wm_checklist_supabase_unsynced_v1");
+  } catch (_) {}
+  try {
+    if (typeof _setChecklistSupabaseSyncStatus === "function") {
+      _setChecklistSupabaseSyncStatus("synced");
+    }
+  } catch (_) {}
+}
+
+function clearChecklistAfterLogout() {
+  console.info("[checklist_logout_cleanup]", { phase: "start" });
+  _checklistBlockAccountWrites();
+  if (typeof loadWorkChecklistItems === "function") {
+    loadWorkChecklistItems();
+  }
+  if (typeof applyWorkChecklistCompletedCollapseFromStorage === "function") {
+    applyWorkChecklistCompletedCollapseFromStorage();
+  }
+  try {
+    console.info("[checklist_logout_cleanup]", {
+      phase: "done",
+      anonymous_item_count: readChecklistItemsFromStorage().length,
+      anonymous_storage_key: getAnonymousChecklistStorageKey(),
+    });
+  } catch (_) {}
+}
 
 function markWorkChecklistLocalMutation() {
   workChecklistLocalMutationVersion += 1;
@@ -235,20 +321,21 @@ function stripChecklistPlaceholdersForPersist(items) {
 function _persistChecklistItemsToStorage(items) {
   const stripped = stripChecklistPlaceholdersForPersist(items);
   markWorkChecklistLocalMutation();
-  localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+  localStorage.setItem(_getActiveChecklistItemsStorageKey(), JSON.stringify(stripped));
   queueWorkChecklistSyncToServer();
   return stripped;
 }
 
 function sanitizeChecklistStorageInPlace() {
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const storageKey = _getActiveChecklistItemsStorageKey();
+    const raw = localStorage.getItem(storageKey);
     if (!raw) return false;
     const items = JSON.parse(raw);
     if (!Array.isArray(items)) return false;
     const stripped = stripChecklistPlaceholdersForPersist(items);
     if (JSON.stringify(stripped) === JSON.stringify(items)) return false;
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+    localStorage.setItem(storageKey, JSON.stringify(stripped));
     queueWorkChecklistSyncToServer();
     return true;
   } catch (_) {
@@ -286,7 +373,7 @@ function focusWorkChecklistUiPlaceholder() {
 
 function readChecklistItemsFromStorage() {
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey()) || "[]";
     const parsed = JSON.parse(raw);
     return stripChecklistPlaceholdersForPersist(Array.isArray(parsed) ? parsed : []);
   } catch {
@@ -309,7 +396,8 @@ async function syncWorkChecklistToServerNow() {
     try {
       /* Session/voice-planner checklist (per tab session_id). Not account durable storage. */
       const items = readChecklistItemsFromStorage();
-      const completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
+      const completedCollapsed =
+        localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1";
       const sessionPut = authFetch(authApiUrl("/api/work-mode/checklist"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -369,10 +457,10 @@ async function hydrateWorkChecklistFromServer(force = false) {
         if (hasStoredContent) return;
       }
       const hydrated = stripChecklistPlaceholdersForPersist(data.items);
-      localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(hydrated));
+      localStorage.setItem(_getActiveChecklistItemsStorageKey(), JSON.stringify(hydrated));
       if (typeof data.completed_collapsed === "boolean") {
         localStorage.setItem(
-          WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
+          _getActiveChecklistCollapsedStorageKey(),
           data.completed_collapsed ? "1" : "0"
         );
       }
@@ -572,7 +660,7 @@ function _checklistDomState() {
     exists = ongoingItems + completedItems > 0;
     if (!exists) {
       try {
-        const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+        const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
         const items = raw ? JSON.parse(raw) : [];
         exists = Array.isArray(items) && items.length > 0;
       } catch (_) {}
@@ -789,7 +877,7 @@ let workChecklistDragSession = { id: "", startX: 0, lastX: 0 };
 
 function readChecklistItemsFromStorageSafe() {
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -875,7 +963,7 @@ function persistWorkChecklistOrderFromDom() {
     .filter((id) => id && id !== WORK_CHECKLIST_UI_PLACEHOLDER_ID);
   const completedIds = [...completedUl.querySelectorAll(":scope > li")].map((el) => el.dataset.id).filter(Boolean);
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     const map = new Map(items.map((x) => [String(x.id), x]));
@@ -894,7 +982,7 @@ function applyWorkChecklistCompletedCollapseFromStorage() {
   if (!pane || !btn || pane.classList.contains("vera-wm-checklist-pane--ongoing-only")) return;
   let collapsed = false;
   try {
-    collapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
+    collapsed = localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1";
   } catch (_) {}
   pane.classList.toggle("vera-wm-checklist-pane--completed-collapsed", collapsed);
   btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -911,7 +999,7 @@ function wireWorkChecklistCompletedCollapse() {
     pane.classList.toggle("vera-wm-checklist-pane--completed-collapsed", collapsed);
     btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     try {
-      localStorage.setItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY, collapsed ? "1" : "0");
+      localStorage.setItem(_getActiveChecklistCollapsedStorageKey(), collapsed ? "1" : "0");
       queueWorkChecklistSyncToServer();
     } catch (_) {}
   });
@@ -1343,7 +1431,7 @@ function loadWorkChecklistItems() {
 
 function persistWorkChecklistToggle(id, done) {
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     items = items.map((x) =>
@@ -1379,7 +1467,7 @@ function persistWorkChecklistToggleWithSubtree(id, done) {
   try {
     const sid = String(id || "");
     if (!sid) return;
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
 
@@ -1429,7 +1517,7 @@ function persistWorkChecklistUpdateText(id, text) {
       if (commitWorkChecklistFromPlaceholderText(text)) loadWorkChecklistItems();
       return;
     }
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     items = items.map((x) => (String(x.id) === id ? { ...x, text: String(text) } : x));
@@ -1440,7 +1528,7 @@ function persistWorkChecklistUpdateText(id, text) {
 function persistWorkChecklistRemove(id) {
   try {
     if (String(id) === WORK_CHECKLIST_UI_PLACEHOLDER_ID) return;
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
     let items = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(items)) items = [];
     items = items.filter((x) => String(x.id) !== id);
@@ -1627,7 +1715,7 @@ function veraDebugSyncStateSnapshot() {
   const previewPanel = document.getElementById("vera-wm-checklist-sync-preview");
   let checklistCount = 0;
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
     const items = raw ? JSON.parse(raw) : [];
     checklistCount = Array.isArray(items)
       ? items.filter((x) => x && String(x.text || "").trim()).length
@@ -1726,7 +1814,7 @@ function collectWorkChecklistOngoingTexts() {
 
 function workChecklistHasAnyStoredItems() {
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
     const items = raw ? JSON.parse(raw) : [];
     return Array.isArray(items) && items.length > 0;
   } catch {
@@ -2610,7 +2698,7 @@ function getChecklistDebugState() {
   let completedStoredCount = 0;
   let completedCollapsed = false;
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
     const items = raw ? JSON.parse(raw) : [];
     if (Array.isArray(items)) {
       storedItemCount = items.length;
@@ -2622,7 +2710,7 @@ function getChecklistDebugState() {
     }
   } catch (_) {}
   try {
-    completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
+    completedCollapsed = localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1";
   } catch (_) {}
   let ongoingDomCount = 0;
   let completedDomCount = 0;
@@ -2633,8 +2721,10 @@ function getChecklistDebugState() {
     completedDomCount = completedUl ? completedUl.querySelectorAll(":scope > li").length : 0;
   } catch (_) {}
   return {
-    storage_key: WORK_CHECKLIST_STORAGE_KEY,
-    completed_collapsed_key: WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
+    storage_key: _getActiveChecklistItemsStorageKey(),
+    completed_collapsed_key: _getActiveChecklistCollapsedStorageKey(),
+    account_storage_key: WORK_CHECKLIST_STORAGE_KEY,
+    anonymous_storage_key: getAnonymousChecklistStorageKey(),
     help_plan_max_items: WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS,
     sync_preview_max_chars: WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS,
     subitem_indent_threshold_px: WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX,
@@ -2681,7 +2771,6 @@ console.info("[checklist_supabase_sync_loaded]");
 
 const WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY = "vera_wm_checklist_supabase_unsynced_v1";
 const WORK_CHECKLIST_SB_RETRY_INTERVAL_MS = 45000;
-let _checklistSbHydratePromise = null;
 let _checklistSbSaveInFlight = null;
 let _checklistSbRetryInFlight = false;
 let _checklistSbRetryTimer = null;
@@ -2707,7 +2796,15 @@ async function _checklistSbAwaitAuthToken(maxWaitMs = 4000) {
 
 function _readLocalChecklistBundleForSupabase() {
   return {
-    items: readChecklistItemsFromStorage(),
+    items: (() => {
+      try {
+        const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
+        const parsed = JSON.parse(raw);
+        return stripChecklistPlaceholdersForPersist(Array.isArray(parsed) ? parsed : []);
+      } catch (_) {
+        return [];
+      }
+    })(),
     completed_collapsed: localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1",
   };
 }
@@ -2853,10 +2950,10 @@ async function syncWorkChecklistToSupabaseNow() {
   if (!_checklistSbIsLoggedIn()) return false;
   if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
 
+  const writeGen = _checklistAuthWriteGeneration;
   const token = await _checklistSbAwaitAuthToken();
-  if (!token) {
-    console.warn("[VERA][CHECKLIST] supabase PUT skipped — no auth token");
-    _markChecklistSupabaseUnsynced(true);
+  if (!token || writeGen !== _checklistAuthWriteGeneration || !_checklistSbIsLoggedIn()) {
+    if (token && _checklistSbIsLoggedIn()) _markChecklistSupabaseUnsynced(true);
     return false;
   }
 
@@ -2871,6 +2968,7 @@ async function syncWorkChecklistToSupabaseNow() {
     });
   } catch (_) {}
   const run = async () => {
+    if (writeGen !== _checklistAuthWriteGeneration || !_checklistSbIsLoggedIn()) return false;
     try {
       const res = await authFetch(authApiUrl("/api/checklist"), {
         method: "PUT",
@@ -2955,10 +3053,11 @@ async function hydrateChecklistMergeOnLogin() {
         return false;
       }
 
-      const local = _readLocalChecklistBundleForSupabase();
+      const local = readAnonymousChecklistBundle();
       console.info("[checklist_hydrate]", {
         phase: "request",
         local_count: local.items.length,
+        merge_source: "anonymous_local_snapshot",
       });
 
       const res = await authFetch(authApiUrl("/api/checklist/merge"), {
@@ -3008,6 +3107,8 @@ try {
   window.retryChecklistSupabaseSyncIfUnsynced = retryChecklistSupabaseSyncIfUnsynced;
   window.isWorkChecklistSupabaseUnsynced = isWorkChecklistSupabaseUnsynced;
   window.wireChecklistSupabaseRetryListeners = wireChecklistSupabaseRetryListeners;
+  window.clearChecklistAfterLogout = clearChecklistAfterLogout;
+  window.getAnonymousChecklistStorageKey = getAnonymousChecklistStorageKey;
   if (isWorkChecklistSupabaseUnsynced()) {
     _setChecklistSupabaseSyncStatus("unsynced");
   }

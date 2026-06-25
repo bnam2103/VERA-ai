@@ -125,6 +125,8 @@ function resetVeraSessionAndUi() {
     localStorage.removeItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY);
     if (prevSessionId) {
       localStorage.removeItem(`${REASONING_TABS_STATE_STORAGE_KEY_PREFIX}:${prevSessionId}`);
+      localStorage.removeItem(`vera_checklist_state:anon:${prevSessionId}`);
+      localStorage.removeItem(`vera_checklist_state:anon_collapsed:${prevSessionId}`);
     }
   } catch (_) {}
   ensureFixedReasoningLanePanels(new Map(), 0);
