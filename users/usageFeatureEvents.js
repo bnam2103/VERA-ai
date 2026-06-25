@@ -152,6 +152,9 @@
     const e = extra && typeof extra === "object" ? extra : {};
     const cat = categorizePayload(payload);
     const plannerIdx = plannerActionIndexForEvent(payload, m);
+    if (payload.panel_type === "checklist_control" && plannerIdx == null) {
+      return;
+    }
     emitFeatureEvent(
       e.success === false ? "action_failed" : "action_executed",
       {

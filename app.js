@@ -2635,6 +2635,105 @@ function getProductivityMusicSource(prefix) {
     : "spotify";
 }
 
+/**
+ * Long-lived built-in + Spotify preview `<audio>` nodes live outside
+ * replaceable side-pane markup so news/media/finance panel renders cannot
+ * destroy active playback.
+ */
+function ensurePersistentMusicAudioHost(prefix) {
+  const p = String(prefix || appModePrefix?.() || "vera").trim();
+  if (!p) return null;
+  const hostId = `${p}-persistent-music-audio-host`;
+  let host = document.getElementById(hostId);
+  if (!host) {
+    host = document.createElement("div");
+    host.id = hostId;
+    host.className = "vera-persistent-music-audio-host";
+    host.hidden = true;
+    host.setAttribute("aria-hidden", "true");
+    const veraMain = document.querySelector("main.chat-centered");
+    const bmoMain = document.querySelector("main.bmo-shell");
+    const anchor =
+      p === "bmo"
+        ? bmoMain || document.getElementById("bmo-audio")?.parentElement
+        : veraMain || document.getElementById("vera-audio")?.parentElement;
+    (anchor || document.body).appendChild(host);
+  }
+  const ensureAudio = (id, attrs) => {
+    let el = document.getElementById(id);
+    if (el && el.parentElement !== host) {
+      host.appendChild(el);
+    }
+    if (!el) {
+      el = document.createElement("audio");
+      el.id = id;
+      for (const [k, v] of Object.entries(attrs)) {
+        el.setAttribute(k, v);
+      }
+      el.hidden = true;
+      host.appendChild(el);
+    }
+    return el;
+  };
+  ensureAudio(`${p}-free-music-audio`, { preload: "metadata", crossorigin: "anonymous" });
+  ensureAudio(`${p}-spotify-preview-audio`, { preload: "none", crossorigin: "anonymous" });
+  return host;
+}
+
+function musicPlaybackDiagSnapshot(prefix) {
+  const p = prefix || appModePrefix?.() || "vera";
+  const free = document.getElementById(`${p}-free-music-audio`);
+  const preview = document.getElementById(`${p}-spotify-preview-audio`);
+  let activeProvider = "none";
+  try {
+    const st = veraMusicSourceState();
+    activeProvider = st?.active || getActivePlaybackSource(p) || "none";
+  } catch (_) {
+    activeProvider = getActivePlaybackSource(p) || "none";
+  }
+  return {
+    active_music_provider: activeProvider,
+    spotify_playing: isSpotifyMusicAudiblyPlaying(),
+    builtin_playing: isBuiltinMusicAudiblyPlaying(p),
+    builtin_audio_host: free?.parentElement?.id || "",
+    spotify_preview_host: preview?.parentElement?.id || "",
+  };
+}
+
+function musicPlaybackDiag(tag, extra = {}) {
+  try {
+    const snap = musicPlaybackDiagSnapshot(extra.prefix);
+    console.info(tag, {
+      ...snap,
+      reason: extra.reason || "",
+      source: extra.source || "",
+      tts_chunk_index: extra.tts_chunk_index ?? undefined,
+      ...extra,
+    });
+  } catch (_) {}
+}
+
+function initPersistentMusicAudioHosts() {
+  for (const p of ["vera", "bmo"]) {
+    try {
+      ensurePersistentMusicAudioHost(p);
+    } catch (_) {}
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.ensurePersistentMusicAudioHost = ensurePersistentMusicAudioHost;
+  window.__veraMusicPlaybackDiag = musicPlaybackDiag;
+  window.__veraMusicPlaybackDiagSnapshot = musicPlaybackDiagSnapshot;
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", initPersistentMusicAudioHosts);
+    } else {
+      initPersistentMusicAudioHosts();
+    }
+  }
+}
+
 /* =========================================================================
    Global music playback state (PART 1 of the music UI refactor)
 
@@ -2992,6 +3091,11 @@ function isBuiltinFreeMusicPlaying(prefix) {
 function stopBuiltinFreeMusic(prefix) {
   const a = document.getElementById(`${prefix}-free-music-audio`);
   if (!a) return;
+  musicPlaybackDiag("[builtin_pause_called]", {
+    reason: "stop_builtin_free_music",
+    source: "stopBuiltinFreeMusic",
+    prefix,
+  });
   a.pause();
   a.removeAttribute("src");
   a.loop = false;
@@ -2999,7 +3103,12 @@ function stopBuiltinFreeMusic(prefix) {
   window.__veraFreeMusicPlayback = null;
 }
 
-async function pauseSpotifyLayersForBuiltin(prefix) {
+async function pauseSpotifyLayersForBuiltin(prefix, opts = {}) {
+  musicPlaybackDiag("[spotify_pause_called]", {
+    reason: opts.reason || "pause_spotify_layers_for_builtin",
+    source: opts.source || "pauseSpotifyLayersForBuiltin",
+    prefix,
+  });
   const preview = document.getElementById(`${prefix}-spotify-preview-audio`);
   if (preview && !preview.paused) preview.pause();
   window.__veraSpotifyPlaybackActive = false;
@@ -18244,6 +18353,12 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
 
 function _usageTrackActionExecuted(payload, data, seqCtx, extra) {
   try {
+    if (payload?.panel_type === "checklist_control") {
+      const hasIdx =
+        Number.isFinite(Number(seqCtx?.orderIndex)) ||
+        Number.isFinite(Number(payload?.planner_action_index));
+      if (!hasIdx) return;
+    }
     window.veraUsageOnActionExecuted?.(
       payload,
       {

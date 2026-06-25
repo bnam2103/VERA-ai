@@ -902,6 +902,10 @@
     </div>
 
     <audio id="vera-audio" preload="auto" crossorigin="anonymous"></audio>
+    <div id="vera-persistent-music-audio-host" class="vera-persistent-music-audio-host" hidden aria-hidden="true">
+      <audio id="vera-free-music-audio" preload="metadata" crossorigin="anonymous" hidden></audio>
+      <audio id="vera-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
+    </div>
   </main>
   <div class="vera-bottom-right-tools" aria-label="Quick tools">
     <div class="vera-work-mode-tools-row" role="group" aria-label="Work mode controls">
@@ -1339,6 +1343,10 @@
     </div>
 
     <audio id="bmo-audio" preload="auto" crossorigin="anonymous"></audio>
+    <div id="bmo-persistent-music-audio-host" class="vera-persistent-music-audio-host" hidden aria-hidden="true">
+      <audio id="bmo-free-music-audio" preload="metadata" crossorigin="anonymous" hidden></audio>
+      <audio id="bmo-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
+    </div>
     <div class="bmo-bottom-right-tools" aria-label="Quick tools">
       <button
         type="button"
