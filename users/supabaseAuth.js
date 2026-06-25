@@ -25,7 +25,7 @@ let _workspaceHydrateAttempts = 0;
 let _workspaceHydrateRetryTimer = null;
 let _supabaseWasAuthenticated = false;
 let _memoriesFetchGeneration = 0;
-/** @type {'login' | 'forgot' | 'reset-password'} */
+/** @type {'login' | 'forgot' | 'reset-password' | 'reset-expired'} */
 let _accountAuthView = "login";
 let _authUiBusy = false;
 
@@ -33,42 +33,27 @@ const AUTH_PASSWORD_RESET_SUCCESS_MSG =
   "If an account exists for this email, a reset link has been sent.";
 const AUTH_MIN_PASSWORD_LENGTH = 6;
 const AUTH_PASSWORD_UPDATED_MSG = "Password updated. You can now use your account.";
-/** Deployed Vera frontend (GitHub Pages). Used for password-reset email links from local dev. */
-const VERA_PROD_AUTH_ORIGIN = "https://bnam2103.github.io";
-const VERA_PROD_AUTH_PATH = "/VERA-ai/";
-
-function _isLocalDevHostname(hostname) {
-  const h = String(hostname || "").toLowerCase();
-  return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
-}
-
-function _normalizeVeraProdPath(path) {
-  let p = String(path || "/").trim();
-  if (!p.startsWith("/")) p = `/${p}`;
-  if (!p.endsWith("/")) p = `${p}/`;
-  return p;
-}
+/** Deployed Vera frontend (GitHub Pages). Password-reset emails always use this URL. */
+const VERA_PASSWORD_RESET_REDIRECT_URL =
+  "https://bnam2103.github.io/VERA-ai/?mode=reset-password";
+const AUTH_PASSWORD_RESET_EXPIRED_MSG =
+  "This reset link expired or is invalid. Please request a new password reset link.";
 
 function getVeraPasswordResetRedirectUrl() {
-  const prodOrigin = VERA_PROD_AUTH_ORIGIN;
-  const prodPath = _normalizeVeraProdPath(VERA_PROD_AUTH_PATH);
-  const prodUrl = `${prodOrigin}${prodPath}?mode=reset-password`;
+  return VERA_PASSWORD_RESET_REDIRECT_URL;
+}
 
+function _parseAuthHashParams(hashOverride) {
   try {
-    if (typeof window === "undefined" || !window.location) return prodUrl;
-    const host = String(window.location.hostname || "").toLowerCase();
-
-    /* Never send reset emails to localhost — links must open deployed Vera. */
-    if (_isLocalDevHostname(host)) {
-      return prodUrl;
-    }
-
-    const url = new URL(window.location.href);
-    url.searchParams.set("mode", "reset-password");
-    url.hash = "";
-    return `${url.origin}${url.pathname}${url.search}`;
+    const raw =
+      hashOverride != null
+        ? String(hashOverride)
+        : String(window.location?.hash || "");
+    const hash = raw.replace(/^#/, "").trim();
+    if (!hash) return null;
+    return new URLSearchParams(hash);
   } catch (_) {
-    return prodUrl;
+    return null;
   }
 }
 
@@ -80,9 +65,32 @@ function _hashIndicatesPasswordRecovery(hashOverride) {
         : String(window.location?.hash || "");
     const hash = raw.replace(/^#/, "").trim();
     if (!hash) return false;
+    if (_hashIndicatesPasswordResetExpired(hashOverride)) return false;
     if (/(?:^|[&?])type=recovery(?:&|$)/i.test(hash)) return true;
-    const params = new URLSearchParams(hash);
-    return params.get("type") === "recovery";
+    const params = _parseAuthHashParams(hashOverride);
+    return params?.get("type") === "recovery";
+  } catch (_) {
+    return false;
+  }
+}
+
+function _hashIndicatesPasswordResetExpired(hashOverride) {
+  try {
+    const raw =
+      hashOverride != null
+        ? String(hashOverride)
+        : String(window.location?.hash || "");
+    const hash = raw.replace(/^#/, "").trim();
+    if (!hash) return false;
+    if (/error_code=otp_expired/i.test(hash)) return true;
+    if (/error=access_denied/i.test(hash)) return true;
+    const params = _parseAuthHashParams(hashOverride);
+    if (!params) return false;
+    const error = String(params.get("error") || "").toLowerCase();
+    const errorCode = String(params.get("error_code") || "").toLowerCase();
+    if (errorCode === "otp_expired") return true;
+    if (error === "access_denied") return true;
+    return false;
   } catch (_) {
     return false;
   }
@@ -90,14 +98,20 @@ function _hashIndicatesPasswordRecovery(hashOverride) {
 
 function _logPasswordResetRedirect(redirectTo) {
   try {
-    const u = new URL(String(redirectTo || ""));
+    const loc = typeof window !== "undefined" ? window.location : null;
     console.info("[auth_password_reset_redirect]", {
-      origin: u.origin,
-      pathname: u.pathname,
-      mode: u.searchParams.get("mode"),
+      redirectTo: String(redirectTo || ""),
+      origin: loc?.origin ?? null,
+      pathname: loc?.pathname ?? null,
+      hostname: loc?.hostname ?? null,
     });
   } catch (_) {
-    console.info("[auth_password_reset_redirect]", { origin: null, pathname: null, mode: "reset-password" });
+    console.info("[auth_password_reset_redirect]", {
+      redirectTo: String(redirectTo || ""),
+      origin: null,
+      pathname: null,
+      hostname: null,
+    });
   }
 }
 
@@ -124,14 +138,18 @@ function _validateNewPasswordPair(password, confirm) {
   return { ok: true, password: p };
 }
 
-function _clearResetPasswordUrlParam() {
+function _clearPasswordResetUrlArtifacts() {
   try {
     const url = new URL(window.location.href);
-    if (!url.searchParams.has("mode")) return;
+    url.hash = "";
     url.searchParams.delete("mode");
-    const next = `${url.pathname}${url.search}${url.hash}`;
+    const next = `${url.pathname}${url.search}`;
     window.history.replaceState({}, "", next);
   } catch (_) {}
+}
+
+function _clearResetPasswordUrlParam() {
+  _clearPasswordResetUrlArtifacts();
 }
 
 function _setAuthUiBusy(busy) {
@@ -143,6 +161,8 @@ function _setAuthUiBusy(busy) {
     "vera-account-send-reset",
     "vera-account-forgot-back",
     "vera-account-update-password",
+    "vera-account-reset-expired-request",
+    "vera-account-reset-expired-back",
   ];
   for (const id of ids) {
     const el = document.getElementById(id);
@@ -181,10 +201,12 @@ function _showAccountAuthView() {
   const loginView = document.getElementById("vera-account-login-view");
   const forgotView = document.getElementById("vera-account-forgot-view");
   const resetView = document.getElementById("vera-account-reset-password-view");
+  const expiredView = document.getElementById("vera-account-reset-expired-view");
   const view = _accountAuthView;
   if (loginView) loginView.hidden = view !== "login";
   if (forgotView) forgotView.hidden = view !== "forgot";
   if (resetView) resetView.hidden = view !== "reset-password";
+  if (expiredView) expiredView.hidden = view !== "reset-expired";
 }
 
 function _openAccountSectionInSettings() {
@@ -198,12 +220,26 @@ function _enterPasswordRecoveryView() {
   _accountAuthView = "reset-password";
   _showAccountAuthView();
   _openAccountSectionInSettings();
-  _clearResetPasswordUrlParam();
+  _clearPasswordResetUrlArtifacts();
+}
+
+function _enterPasswordResetExpiredView() {
+  _accountAuthView = "reset-expired";
+  _showAccountAuthView();
+  _openAccountSectionInSettings();
+  _clearPasswordResetUrlArtifacts();
+  console.info("[auth_password_reset_expired_link]", {
+    error_code: "otp_expired",
+  });
 }
 
 async function _detectPasswordRecoveryOnLoad() {
   if (!_supabaseClient) return;
   try {
+    if (_hashIndicatesPasswordResetExpired()) {
+      _enterPasswordResetExpiredView();
+      return;
+    }
     const params = new URLSearchParams(window.location.search);
     const modeReset = params.get("mode") === "reset-password";
     const hashRecovery = _hashIndicatesPasswordRecovery();
@@ -745,6 +781,28 @@ function wireSupabaseAccountUi() {
     _clearAccountSuccess();
   });
 
+  document.getElementById("vera-account-reset-expired-request")?.addEventListener("click", () => {
+    if (_authUiBusy) return;
+    _showAccountError("");
+    _clearAccountSuccess();
+    const emailRow = document.getElementById("vera-account-forgot-email-row");
+    const forgotActions = document.getElementById("vera-account-forgot-actions");
+    if (emailRow instanceof HTMLElement) emailRow.hidden = false;
+    if (forgotActions instanceof HTMLElement) forgotActions.hidden = false;
+    const forgotOk = document.getElementById("vera-account-forgot-success");
+    if (forgotOk instanceof HTMLElement) forgotOk.hidden = true;
+    _accountAuthView = "forgot";
+    _showAccountAuthView();
+  });
+
+  document.getElementById("vera-account-reset-expired-back")?.addEventListener("click", () => {
+    if (_authUiBusy) return;
+    _accountAuthView = "login";
+    _showAccountAuthView();
+    _showAccountError("");
+    _clearAccountSuccess();
+  });
+
   document.getElementById("vera-account-send-reset")?.addEventListener("click", async () => {
     if (!_supabaseClient) {
       _showAccountError("Supabase auth is not available.");
@@ -994,7 +1052,11 @@ try {
       getPasswordResetSuccessMessage: () => AUTH_PASSWORD_RESET_SUCCESS_MSG,
       getPasswordUpdatedMessage: () => AUTH_PASSWORD_UPDATED_MSG,
       getPasswordResetRedirectUrl: getVeraPasswordResetRedirectUrl,
+      logPasswordResetRedirect: _logPasswordResetRedirect,
+      getPasswordResetExpiredMessage: () => AUTH_PASSWORD_RESET_EXPIRED_MSG,
       hashIndicatesPasswordRecovery: _hashIndicatesPasswordRecovery,
+      hashIndicatesPasswordResetExpired: _hashIndicatesPasswordResetExpired,
+      enterPasswordResetExpiredView: _enterPasswordResetExpiredView,
       handleAuthStateChangeEvent: _handleAuthStateChangeEvent,
       getAccountAuthView: () => _accountAuthView,
       setAccountAuthView: (v) => {

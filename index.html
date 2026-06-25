@@ -2890,6 +2890,16 @@ document.addEventListener("click", () => {
           <p id="vera-account-forgot-success" class="vera-account-success" hidden role="status"></p>
         </div>
 
+        <div id="vera-account-reset-expired-view" hidden>
+          <p id="vera-account-reset-expired-message" class="vera-account-error" role="alert">
+            This reset link expired or is invalid. Please request a new password reset link.
+          </p>
+          <div class="vera-settings-row vera-account-actions">
+            <button type="button" id="vera-account-reset-expired-request" class="vera-settings-save-btn">Request new reset link</button>
+            <button type="button" id="vera-account-reset-expired-back" class="vera-account-secondary-btn">Back to login</button>
+          </div>
+        </div>
+
         <div id="vera-account-reset-password-view" hidden>
           <p class="vera-settings-hint">Choose a new password for your account.</p>
           <div class="vera-settings-row">
@@ -3086,7 +3096,7 @@ document.addEventListener("click", () => {
      Must load AFTER signinUi.js (authApiUrl, authFetch stub) and BEFORE
      workmode/checklist.js + app.js. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="users/supabaseAuth.js?v=10"></script>
+<script src="users/supabaseAuth.js?v=11"></script>
 <!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="users/accountSettingsSync.js?v=2"></script>
