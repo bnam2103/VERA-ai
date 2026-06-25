@@ -8,6 +8,12 @@
   const SESSION_START_KEY_PREFIX = "vera_usage_session_start:";
   const REPLY_DONE_KEY_PREFIX = "vera_usage_reply_done:";
   const MODE_HEARTBEAT_MS = 60000;
+  const TINY_TRANSITION_FLUSH_MS = 50;
+  const TRANSITION_FLUSH_SOURCES = new Set([
+    "mode_change",
+    "surface_exit",
+    "vera_to_bmo",
+  ]);
   const FORBIDDEN_PROP_KEYS = new Set([
     "text",
     "transcript",
@@ -39,11 +45,13 @@
   const _modeTracker = {
     uiMode: null,
     appSurface: null,
+    sessionId: null,
     visibleSegmentStart: null,
     segmentId: null,
     heartbeatTimer: null,
   };
   let _segmentCounter = 0;
+  let _veraLeavePending = null;
 
   function sanitizeClientProps(props) {
     if (!props || typeof props !== "object") return props;
@@ -108,7 +116,7 @@
         veraApp &&
         !veraApp.hidden
       ) {
-      const work = workModeOn();
+        const work = workModeOn();
         return {
           uiMode: work ? "work_mode" : "voice_ui",
           appSurface: "vera",
@@ -155,6 +163,9 @@
   function startVisibleSegment() {
     _modeTracker.segmentId = newSegmentId();
     _modeTracker.visibleSegmentStart = performance.now();
+    if (typeof getSessionId === "function") {
+      _modeTracker.sessionId = getSessionId();
+    }
   }
 
   function clearVisibleSegment() {
@@ -254,20 +265,43 @@
     const options = opts && typeof opts === "object" ? opts : {};
     const ms = elapsedVisibleMs();
     if (ms <= 0 || !_modeTracker.uiMode) return;
+
+    const sourceKey = String(source || "unknown").slice(0, 32);
+    if (
+      options.skipTinyTransitionArtifact &&
+      ms < TINY_TRANSITION_FLUSH_MS &&
+      TRANSITION_FLUSH_SOURCES.has(sourceKey)
+    ) {
+      clearVisibleSegment();
+      return;
+    }
+
+    const pinnedMode = _modeTracker.uiMode;
+    const pinnedSurface = _modeTracker.appSurface || resolveAppSurfaceFallback();
+    const pinnedSessionId =
+      _modeTracker.sessionId ||
+      (typeof getSessionId === "function" ? getSessionId() : "");
     const segmentId = _modeTracker.segmentId;
     clearVisibleSegment();
-    trackUsageEvent(
-      "mode_duration_flush",
-      {
-        mode: _modeTracker.uiMode,
+
+    if (!pinnedSessionId || !pinnedMode) return;
+
+    const body = {
+      session_id: pinnedSessionId,
+      event_type: "mode_duration_flush",
+      client_event_id: newClientEventId().slice(0, 128),
+      event_props: sanitizeClientProps({
+        mode: pinnedMode,
+        ui_mode: pinnedMode,
+        app_surface: pinnedSurface,
         duration_ms: ms,
-        app_surface: _modeTracker.appSurface || resolveAppSurfaceFallback(),
-        source: String(source || "unknown").slice(0, 32),
+        source: sourceKey,
         visible: options.visible !== false,
         segment_id: segmentId,
-      },
-      { clientEventId: newClientEventId(), beacon: Boolean(options.beacon) }
-    );
+        authenticated: isAuthenticated(),
+      }),
+    };
+    void postUsageEvent(body, { beacon: Boolean(options.beacon) });
   }
 
   function stopModeHeartbeat() {
@@ -288,17 +322,91 @@
     }, MODE_HEARTBEAT_MS);
   }
 
+  function clearModeTrackerState() {
+    _modeTracker.uiMode = null;
+    _modeTracker.appSurface = null;
+    _modeTracker.sessionId = null;
+    clearVisibleSegment();
+    stopModeHeartbeat();
+  }
+
+  function enterBmoModeFromPending(opts) {
+    const pending = _veraLeavePending;
+    const options = opts && typeof opts === "object" ? opts : {};
+    const trigger = String(
+      options.trigger || pending?.trigger || "ui"
+    ).slice(0, 32);
+    const prevMode = pending?.prevMode || null;
+    const prevSurface = pending?.prevSurface || "vera";
+    _veraLeavePending = null;
+
+    if (prevMode) {
+      trackUsageEvent(
+        "mode_changed",
+        {
+          from_mode: prevMode,
+          to_mode: "bmo",
+          trigger,
+          from_app_surface: prevSurface,
+          to_app_surface: "bmo",
+        },
+        { clientEventId: newClientEventId() }
+      );
+    }
+    trackUsageEvent(
+      "bmo_mode_entered",
+      { trigger, from: prevSurface },
+      { clientEventId: newClientEventId() }
+    );
+    _modeTracker.uiMode = "bmo";
+    _modeTracker.appSurface = "bmo";
+    if (isPageVisible()) {
+      startVisibleSegment();
+    } else {
+      clearVisibleSegment();
+    }
+    startModeHeartbeat();
+  }
+
+  function veraUsageLeaveVeraForBmo(opts) {
+    const options = opts && typeof opts === "object" ? opts : {};
+    const trigger = String(options.trigger || "ui").slice(0, 32);
+    const prevMode = _modeTracker.uiMode;
+    const prevSurface = _modeTracker.appSurface || "vera";
+
+    if (prevMode) {
+      emitModeDurationFlush(options.source || "vera_to_bmo", {
+        skipTinyTransitionArtifact: true,
+        visible: isPageVisible(),
+        beacon: Boolean(options.beacon),
+      });
+    }
+
+    _veraLeavePending = {
+      prevMode,
+      prevSurface,
+      trigger,
+    };
+    clearModeTrackerState();
+  }
+
   function transitionToMode(newUiMode, newAppSurface, opts) {
     const options = opts && typeof opts === "object" ? opts : {};
     const trigger = String(options.trigger || "system").slice(0, 32);
     const prevMode = _modeTracker.uiMode;
     const prevSurface = _modeTracker.appSurface;
 
+    if (newUiMode === "bmo" && newAppSurface === "bmo" && _veraLeavePending) {
+      enterBmoModeFromPending(options);
+      return;
+    }
+
     if (!newUiMode) {
       if (!prevMode) return;
       emitModeDurationFlush(options.source || "surface_exit", {
         visible: isPageVisible(),
         beacon: Boolean(options.beacon),
+        skipTinyTransitionArtifact: Boolean(options.skipTinyTransitionArtifact),
       });
       if (prevMode === "work_mode") {
         trackUsageEvent("work_mode_exited", { trigger }, { clientEventId: newClientEventId() });
@@ -310,9 +418,7 @@
           { clientEventId: newClientEventId() }
         );
       }
-      _modeTracker.uiMode = null;
-      _modeTracker.appSurface = null;
-      stopModeHeartbeat();
+      clearModeTrackerState();
       return;
     }
 
@@ -324,6 +430,7 @@
       emitModeDurationFlush(options.source || "mode_change", {
         visible: isPageVisible(),
         beacon: Boolean(options.beacon),
+        skipTinyTransitionArtifact: Boolean(options.skipTinyTransitionArtifact),
       });
     }
 
@@ -399,7 +506,6 @@
       },
       { clientEventId: newClientEventId() }
     );
-    syncModeFromDom({ trigger: "session_start", source: "session_start" });
   }
 
   function veraUsageOnMessageSent(ctx) {
@@ -511,6 +617,7 @@
       window.trackUsageEvent = trackUsageEvent;
       window.trackUsageSessionStart = trackUsageSessionStart;
       window.veraUsageSyncModeFromDom = syncModeFromDom;
+      window.veraUsageLeaveVeraForBmo = veraUsageLeaveVeraForBmo;
       window.veraUsageOnMessageSent = veraUsageOnMessageSent;
       window.veraUsageOnAssistantReplyDone = veraUsageOnAssistantReplyDone;
       window.veraUsageOnAssistantReplyFailed = veraUsageOnAssistantReplyFailed;

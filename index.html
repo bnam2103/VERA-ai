@@ -1925,7 +1925,8 @@ function startTyping() {
   }
   window.pauseMusicPanelOnNavAway = pauseMusicPanelOnNavAway;
 
-  function exitVeraWorkMode() {
+  function exitVeraWorkMode(opts) {
+    const skipUsageSync = Boolean(opts && opts.skipUsageSync);
     if (typeof window.layoutVeraWorkModePanels === "function") {
       window.layoutVeraWorkModePanels(false);
     }
@@ -1944,9 +1945,11 @@ function startTyping() {
     if (typeof window.ensureVeraVoiceUiActive === "function") {
       void window.ensureVeraVoiceUiActive();
     }
-    try {
-      window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "work_mode_exit" });
-    } catch (_) {}
+    if (!skipUsageSync) {
+      try {
+        window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "work_mode_exit" });
+      } catch (_) {}
+    }
   }
 
   function enterVeraWorkMode() {
@@ -2044,7 +2047,7 @@ function startTyping() {
   });
 
   function openBmoPage() {
-    exitVeraWorkMode();
+    exitVeraWorkMode({ skipUsageSync: true });
     if (!bmoPage.hidden) {
       return;
     }
@@ -2057,6 +2060,12 @@ function startTyping() {
     veraApp.hidden = true;
     home.hidden = true;
     document.body.classList.remove("vera-mode");
+    try {
+      window.veraUsageLeaveVeraForBmo?.({
+        trigger: "ui",
+        source: "vera_to_bmo",
+      });
+    } catch (_) {}
     document.body.classList.add("app-open", "bmo-open");
     try {
       if (typeof window.trackUsageSessionStart === "function") {
@@ -2405,7 +2414,7 @@ function revealApp() {
       if (typeof window.trackUsageSessionStart === "function") {
         window.trackUsageSessionStart();
       }
-      window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "vera_reveal", to: "voice_ui" });
+      window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "vera_reveal" });
     } catch (_) {}
 
     requestAnimationFrame(() => {
@@ -3045,7 +3054,7 @@ document.addEventListener("click", () => {
 <script src="users/feedback.js?v=4"></script>
 <!-- users/usageEvents.js — lightweight behavioral analytics (MVP).
      Must load AFTER utils/ids.js + supabaseAuth.js, BEFORE app.js. -->
-<script src="users/usageEvents.js?v=2"></script>
+<script src="users/usageEvents.js?v=3"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies
