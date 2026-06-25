@@ -9587,6 +9587,60 @@ function resolveReasoningPanelTopicFromContext() {
 }
 
 /**
+ * Pull the substantive question/task from the portion of the utterance that
+ * precedes an explicit panel-destination phrase ("… in this panel").
+ */
+function extractSubstantiveTopicBeforePanelPhrase(text) {
+  const s = String(text || "").trim();
+  if (!s) return "";
+  const panelM = s.match(_REASONING_PANEL_IN_RE);
+  if (!panelM) return "";
+  let before = s.slice(0, panelM.index ?? 0).trim().replace(/[?,;.]+\s*$/u, "").trim();
+  if (!before) return "";
+  before = before
+    .replace(
+      /\s*(?:[,;]|\?)?\s*(?:(?:can|could|would|will)\s+you\s+|please\s+)?(?:explain|describe|write|put|show)\s+(?:it|that|this|them)(?:\s+there)?\s*$/iu,
+      ""
+    )
+    .trim()
+    .replace(/[?,;.]+\s*$/u, "")
+    .trim();
+  if (!before) return "";
+  const parts = before.split(/\?\s+/u).map((p) => p.trim()).filter(Boolean);
+  if (parts.length > 1) {
+    const substantive = parts.find((p) => p.length >= 12) || parts[0];
+    if (!substantive) return "";
+    return substantive.endsWith("?") ? substantive : `${substantive}?`;
+  }
+  return before.length >= 8 ? before : "";
+}
+
+/** Resolve explicit-panel pronoun topics from prior turn, same utterance, or voice anchor. */
+function resolveTopicForExplicitPanelReference(text, ref) {
+  if (!ref || !ref.matched) return { topic: "", priorTopicUsed: false, source: "none" };
+  if (ref.topic) return { topic: String(ref.topic).trim(), priorTopicUsed: false, source: "explicit_topic" };
+  const fromSameUtterance = extractSubstantiveTopicBeforePanelPhrase(text);
+  if (fromSameUtterance) {
+    return { topic: fromSameUtterance, priorTopicUsed: false, source: "same_utterance_before_panel_phrase" };
+  }
+  const fromPrior = resolveReasoningPanelTopicFromContext();
+  if (fromPrior) {
+    return {
+      topic: fromPrior,
+      priorTopicUsed: Boolean(ref.wasPronoun),
+      source: "prior_substantive_user_text",
+    };
+  }
+  return { topic: "", priorTopicUsed: false, source: "unresolved" };
+}
+
+function rememberWorkModeSubstantiveUserText(text) {
+  const t = String(text || "").trim();
+  if (!t || isGenericExampleFollowUpText(t)) return;
+  workModeLastSubstantiveUserText = t;
+}
+
+/**
  * True when the user is only asking to switch reasoning tabs (mirrors `app.py` `_explicit_work_mode_panel_navigation`).
  * Used to skip `maybePrepareWorkModeReasoning` so navigation does not also spawn a reasoning stream.
  */
@@ -9652,6 +9706,9 @@ function detectCompoundActionFamilies(text) {
      "explain X in panel 2" which the backend planner rewrites into
      panel.navigate + reasoning.request. */
   if (!families.includes("panel") && /\bin\s+(?:the\s+)?panel\s+\d+\b/i.test(s)) {
+    families.push("panel");
+  }
+  if (!families.includes("panel") && _REASONING_PANEL_IN_RE.test(s)) {
     families.push("panel");
   }
   const isCompound = families.length >= 2;
@@ -14553,56 +14610,59 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const _briefModifier = isBriefExplanationModifier(trimmed);
   const _simpleDefinition = isSimpleDefinitionQuestion(trimmed);
   if (_explicitPanelRef.matched) {
-    /* Resolve "this/that/it" topic to the previous substantive user request
-       when the explicit-panel phrasing was pronoun-only. If no prior topic
-       is on record, fall back to Voice UI so we don't open an empty panel —
-       the backend ack/clarification text can ask "what should I explain?". */
-    let resolvedTopic = _explicitPanelRef.topic || null;
-    let prior_topic_used = false;
+    const _panelTopicResolve = resolveTopicForExplicitPanelReference(trimmed, _explicitPanelRef);
+    let resolvedTopic = _panelTopicResolve.topic || null;
+    const prior_topic_used = Boolean(_panelTopicResolve.priorTopicUsed);
+    try {
+      console.info("[voice_to_panel_intent]", {
+        detected_phrase: "explicit_reasoning_panel_reference",
+        raw_preview: String(trimmed || "").slice(0, 240),
+        was_pronoun: Boolean(_explicitPanelRef.wasPronoun),
+        target_panel: _explicitPanelRef.targetPanel ?? null,
+        active_lane_id: getActiveDomReasoningLaneId?.() || getFocusedWorkModeLaneId?.() || null,
+        resolved_topic_source: _panelTopicResolve.source,
+        resolved_topic_preview: resolvedTopic ? String(resolvedTopic).slice(0, 160) : null,
+      });
+    } catch (_) {}
     if (!resolvedTopic && _explicitPanelRef.wasPronoun) {
-      const fromContext = resolveReasoningPanelTopicFromContext();
-      if (fromContext) {
-        resolvedTopic = fromContext;
-        prior_topic_used = true;
-      } else {
-        /* No prior topic to attach — bail to Voice UI; backend chat path
-           will produce a clarifying reply. */
-        logReasoningRouteDebug({
-          raw_text: String(trimmed || "").slice(0, 240),
-          reasoning_gate_called: true,
-          reasoning_gate_result: "voice_ui",
-          reasoning_gate_reason: "explicit_panel_pronoun_without_prior_topic",
-          explicit_panel_reference: true,
-          simple_definition_detected: false,
-          brief_explanation_detected: false,
-          broad_complex_topic_detected: false,
-          complex_task_detected: false,
-          active_work_mode: true,
-          prior_topic_used: false,
-          resolved_topic: null,
-          route_source: "frontend_explicit_panel_pronoun_unresolved",
-          final_action_type: "voice_ui_clarification",
-          final_panel_target: null,
-          final_route: "chat",
-          final_route_reasoning: false,
-          backend_classify_route: null,
-          backend_category: null,
-          backend_confidence: null,
-          heuristic_reasoning: false,
-          personal_statement_veto: false,
-          venting_signals: [],
-          venting_score: 0,
-          explicit_artifact_intent: false,
-          artifact_signals: [],
-          force_active_lane: false,
-          task_follow_up_continuing: false,
-          planning_intent: false,
-          reason: "explicit_panel_pronoun_without_prior_topic",
-          math_router_enabled: MATH_ROUTER_ENABLED,
-          arithmetic_fast_path_match: false
-        });
-        return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
-      }
+      logReasoningRouteDebug({
+        raw_text: String(trimmed || "").slice(0, 240),
+        reasoning_gate_called: true,
+        reasoning_gate_result: "voice_ui",
+        reasoning_gate_reason: "explicit_panel_pronoun_without_prior_topic",
+        explicit_panel_reference: true,
+        simple_definition_detected: false,
+        brief_explanation_detected: false,
+        broad_complex_topic_detected: false,
+        complex_task_detected: false,
+        active_work_mode: true,
+        prior_topic_used: false,
+        resolved_topic: null,
+        route_source: "frontend_explicit_panel_pronoun_unresolved",
+        final_action_type: "voice_ui_clarification",
+        final_panel_target: null,
+        final_route: "chat",
+        final_route_reasoning: false,
+        backend_classify_route: null,
+        backend_category: null,
+        backend_confidence: null,
+        heuristic_reasoning: false,
+        personal_statement_veto: false,
+        venting_signals: [],
+        venting_score: 0,
+        explicit_artifact_intent: false,
+        artifact_signals: [],
+        force_active_lane: false,
+        task_follow_up_continuing: false,
+        planning_intent: false,
+        reason: "explicit_panel_pronoun_without_prior_topic",
+        math_router_enabled: MATH_ROUTER_ENABLED,
+        arithmetic_fast_path_match: false
+      });
+      const substantiveFallback =
+        extractSubstantiveTopicBeforePanelPhrase(trimmed) || String(trimmed || "").trim();
+      rememberWorkModeSubstantiveUserText(substantiveFallback);
+      return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
     }
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
@@ -14783,7 +14843,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
    * — exactly the failing case the spec calls out.
    */
   const _compound = detectCompoundActionFamilies(trimmed);
-  if (_compound.isCompound && !callerForcedReasoning) {
+  const gateForcedAfterExplicitPanel =
+    Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel");
+  if (_compound.isCompound && !callerForcedReasoning && !gateForcedAfterExplicitPanel) {
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
       reasoning_gate_called: true,
@@ -17891,6 +17953,13 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
      exist yet (e.g. user asked for Panel 4 but only Panel 1-2 are open),
      create extra panels until the index is reachable. ``addReasoningTab``
      enforces ``REASONING_TABS_MAX`` so we can't open more than the limit. */
+  if (panelsRoot && resolvedIdx0 == null && !wantsNewPanel && typeof getActiveReasoningLaneIndex === "function") {
+    const activeIdx = getActiveReasoningLaneIndex();
+    if (Number.isFinite(activeIdx) && activeIdx >= 0) {
+      resolvedIdx0 = activeIdx;
+      target1based = activeIdx + 1;
+    }
+  }
   if (panelsRoot && resolvedIdx0 != null) {
     let panelEl = panelsRoot.querySelector(
       `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
@@ -18827,6 +18896,19 @@ async function applyActionPayload(data, seqCtx = {}) {
       return;
     }
     if (op === "open_and_stream") {
+      try {
+        console.info("[reasoning_action_received]", {
+          op,
+          prompt_preview: String(payload?.prompt || "").slice(0, 160),
+          target_panel_index_1based: payload?.target_panel_index_1based ?? null,
+          active_lane_id: getActiveDomReasoningLaneId?.() || null,
+          source: seqCtx?.source || data?.type || "unknown",
+        });
+        console.info("[reasoning_action_execute_start]", {
+          op,
+          active_lane_id: getActiveDomReasoningLaneId?.() || null,
+        });
+      } catch (_) {}
       /* 2026-05-29 spec PART 3 — open + stream a CLEAN reasoning prompt
          into a target panel. Driven by the backend planner's
          reasoning.request direct dispatcher; the prompt arrives
@@ -18834,6 +18916,12 @@ async function applyActionPayload(data, seqCtx = {}) {
          reuse the existing Work Mode reasoning lane machinery rather
          than open a brand-new surface. */
       applyWorkModeReasoningOpenAndStreamPayload(payload, data);
+      try {
+        console.info("[reasoning_action_execute_done]", {
+          op,
+          active_lane_id: getActiveDomReasoningLaneId?.() || null,
+        });
+      } catch (_) {}
       _usageTrackActionExecuted(payload, data, seqCtx);
       return;
     }
