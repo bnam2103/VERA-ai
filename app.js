@@ -9713,6 +9713,20 @@ function detectCompoundActionFamilies(text) {
   if (!families.includes("panel") && _REASONING_PANEL_IN_RE.test(s)) {
     families.push("panel");
   }
+  /* Panel phrase as routing destination (substantive topic + "in this panel")
+     is a single reasoning intent — not a compound panel+reasoning command. */
+  if (
+    families.length >= 2 &&
+    families.includes("panel") &&
+    families.includes("reasoning") &&
+    extractSubstantiveTopicBeforePanelPhrase(s)
+  ) {
+    return {
+      isCompound: false,
+      families: ["reasoning"],
+      reason: "panel_routing_directive_single_intent"
+    };
+  }
   const isCompound = families.length >= 2;
   const reason = isCompound
     ? `compound_${families.join("_")}`
@@ -12579,6 +12593,7 @@ function classifyWorkModeTurnIntent(userText) {
 
 function buildWorkModeReasoningStage1AckText(trimmed, opts = {}) {
   const o = opts || {};
+  if (o.explicitPanelDestination) return "I'll explain it in the reasoning panel.";
   if (o.hasUpload) return "I'll work from your file in the reasoning space.";
   if (o.planningIntent) return "I'll lay out the plan in the reasoning space.";
   /* Math-router disabled: never promise Python execution from Stage-1.
@@ -14508,6 +14523,17 @@ function enqueueWorkModeAssistantTtsPlayback(
  * Fetch abort is tied to `workModeDeferredStage2AbortController` (reset on VERA session reset), not `activePipelineAbort`.
  */
 function scheduleWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtStage1End }) {
+  if (prep?.voiceTwoStage?.skipStage2Infer) {
+    try {
+      console.info("[voice_to_panel_intent]", {
+        explicit_panel_destination: true,
+        consumed_by_reasoning_route: true,
+        stage2_infer_skipped: true,
+        reason: "explicit_panel_destination_ack_only"
+      });
+    } catch (_) {}
+    return;
+  }
   void (async () => {
     try {
       logStage2Debug(prep, {
@@ -14622,8 +14648,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         was_pronoun: Boolean(_explicitPanelRef.wasPronoun),
         target_panel: _explicitPanelRef.targetPanel ?? null,
         active_lane_id: getActiveDomReasoningLaneId?.() || getFocusedWorkModeLaneId?.() || null,
+        explicit_panel_destination: true,
         resolved_topic_source: _panelTopicResolve.source,
         resolved_topic_preview: resolvedTopic ? String(resolvedTopic).slice(0, 160) : null,
+        consumed_by_reasoning_route: Boolean(resolvedTopic),
       });
     } catch (_) {}
     if (!resolvedTopic && _explicitPanelRef.wasPronoun) {
@@ -14705,6 +14733,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     opts.__reasoningGateForceRoute = "reasoning_panel";
     opts.__reasoningGateReason = "explicit_panel_reference";
     opts.__reasoningGateResolvedTopic = resolvedTopic || null;
+    opts.__explicitPanelDestinationConsumed = Boolean(resolvedTopic);
     opts.__reasoningGateTargetPanel = _explicitPanelRef.targetPanel ?? null;
   } else if (_conversationalCheck && !callerForcedReasoning) {
     /* 2026-06-13 — narrow conversational / check-in guard. Runs AFTER the
@@ -14924,13 +14953,23 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       priorThreadAnchor ||
       ""
   ).trim();
-  const deicticCompose = composeDeicticVoiceToPanelReasoningTask({
-    userText: effectiveUserText,
-    originalUserText: rawTrimmed,
-    resolvedReferent: priorVoiceTopic,
-    topicAnchor: priorThreadAnchor
-  });
-  const streamUserRequestForReasoning = deicticCompose?.composedTask || effectiveUserText;
+  const gateForcedExplicitPanel = Boolean(opts.__reasoningGateForceRoute === "reasoning_panel");
+  const explicitPanelStreamTopic = String(
+    opts.__reasoningGateResolvedTopic || extractSubstantiveTopicBeforePanelPhrase(rawTrimmed) || ""
+  ).trim();
+  let deicticCompose = null;
+  if (!(gateForcedExplicitPanel && explicitPanelStreamTopic)) {
+    deicticCompose = composeDeicticVoiceToPanelReasoningTask({
+      userText: effectiveUserText,
+      originalUserText: rawTrimmed,
+      resolvedReferent: priorVoiceTopic,
+      topicAnchor: priorThreadAnchor
+    });
+  }
+  const streamUserRequestForReasoning =
+    gateForcedExplicitPanel && explicitPanelStreamTopic
+      ? explicitPanelStreamTopic
+      : deicticCompose?.composedTask || effectiveUserText;
   if (deicticCompose) {
     try {
       console.info("[voice_to_panel_deictic_compose]", {
@@ -15279,6 +15318,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const requestHasComputationalNumericIntent =
     detectWorkModeRequestHasComputationalNumericIntent(effectiveUserText);
   const stage1AckText = buildWorkModeReasoningStage1AckText(effectiveUserText, {
+    explicitPanelDestination: Boolean(opts.__explicitPanelDestinationConsumed),
     hasUpload,
     planningIntent,
     requestHasComputationalNumericIntent,
@@ -15289,6 +15329,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   });
   const voiceTwoStage = {
     reasoningRouted: true,
+    skipStage2Infer: Boolean(opts.__explicitPanelDestinationConsumed),
+    explicitPanelDestination: Boolean(opts.__explicitPanelDestinationConsumed),
     requestHasComputationalNumericIntent,
     requestHasCodeIntent,
     requestHasProofIntent,
@@ -15374,9 +15416,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     continueLaneForThisTurn
   );
   if (!isGenericExampleFollowUpText(effectiveUserText)) {
-    laneTopicSeedByIdx[laneIdx] = deicticCompose?.resolvedReferent || effectiveUserText;
+    laneTopicSeedByIdx[laneIdx] =
+      explicitPanelStreamTopic || deicticCompose?.resolvedReferent || effectiveUserText;
     workModeLastSubstantiveLaneIdx = laneIdx;
-    workModeLastSubstantiveUserText = rawTrimmed || effectiveUserText;
+    workModeLastSubstantiveUserText =
+      explicitPanelStreamTopic || rawTrimmed || effectiveUserText;
   }
   /* Voice /infer waits for the full reasoning NDJSON stream (summary + markdown + done) so handoff context is complete. */
   const chainP = runOnLaneReasoningChain(laneIdx, async () => {
@@ -18058,6 +18102,8 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
            force the recursive turn's reasoning gate to route to the panel. */
         __reasoningGateForceRoute: explicitPanelDestination ? "reasoning_panel" : undefined,
         __reasoningGateReason: explicitPanelDestination ? "explicit_panel_destination" : undefined,
+        __reasoningGateResolvedTopic: explicitPanelDestination ? promptClean : undefined,
+        __explicitPanelDestinationConsumed: explicitPanelDestination,
         /* 2026-06-01 — thread the explicit target panel into the recursive
            turn so the reasoning prep's lane acquisition cannot drift onto
            a different panel between the activate-tab call above and the
