@@ -33,6 +33,73 @@ const AUTH_PASSWORD_RESET_SUCCESS_MSG =
   "If an account exists for this email, a reset link has been sent.";
 const AUTH_MIN_PASSWORD_LENGTH = 6;
 const AUTH_PASSWORD_UPDATED_MSG = "Password updated. You can now use your account.";
+/** Deployed Vera frontend (GitHub Pages). Used for password-reset email links from local dev. */
+const VERA_PROD_AUTH_ORIGIN = "https://bnam2103.github.io";
+const VERA_PROD_AUTH_PATH = "/VERA-ai/";
+
+function _isLocalDevHostname(hostname) {
+  const h = String(hostname || "").toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+}
+
+function _normalizeVeraProdPath(path) {
+  let p = String(path || "/").trim();
+  if (!p.startsWith("/")) p = `/${p}`;
+  if (!p.endsWith("/")) p = `${p}/`;
+  return p;
+}
+
+function getVeraPasswordResetRedirectUrl() {
+  const prodOrigin = VERA_PROD_AUTH_ORIGIN;
+  const prodPath = _normalizeVeraProdPath(VERA_PROD_AUTH_PATH);
+  const prodUrl = `${prodOrigin}${prodPath}?mode=reset-password`;
+
+  try {
+    if (typeof window === "undefined" || !window.location) return prodUrl;
+    const host = String(window.location.hostname || "").toLowerCase();
+
+    /* Never send reset emails to localhost — links must open deployed Vera. */
+    if (_isLocalDevHostname(host)) {
+      return prodUrl;
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.set("mode", "reset-password");
+    url.hash = "";
+    return `${url.origin}${url.pathname}${url.search}`;
+  } catch (_) {
+    return prodUrl;
+  }
+}
+
+function _hashIndicatesPasswordRecovery(hashOverride) {
+  try {
+    const raw =
+      hashOverride != null
+        ? String(hashOverride)
+        : String(window.location?.hash || "");
+    const hash = raw.replace(/^#/, "").trim();
+    if (!hash) return false;
+    if (/(?:^|[&?])type=recovery(?:&|$)/i.test(hash)) return true;
+    const params = new URLSearchParams(hash);
+    return params.get("type") === "recovery";
+  } catch (_) {
+    return false;
+  }
+}
+
+function _logPasswordResetRedirect(redirectTo) {
+  try {
+    const u = new URL(String(redirectTo || ""));
+    console.info("[auth_password_reset_redirect]", {
+      origin: u.origin,
+      pathname: u.pathname,
+      mode: u.searchParams.get("mode"),
+    });
+  } catch (_) {
+    console.info("[auth_password_reset_redirect]", { origin: null, pathname: null, mode: "reset-password" });
+  }
+}
 
 function _validateResetEmail(email) {
   const e = String(email || "").trim();
@@ -55,17 +122,6 @@ function _validateNewPasswordPair(password, confirm) {
   }
   if (p !== c) return { ok: false, error: "Passwords do not match." };
   return { ok: true, password: p };
-}
-
-function _passwordResetRedirectUrl() {
-  try {
-    const url = new URL(window.location.href);
-    url.searchParams.set("mode", "reset-password");
-    url.hash = "";
-    return `${url.origin}${url.pathname}${url.search}`;
-  } catch (_) {
-    return `${window.location.origin}${window.location.pathname}?mode=reset-password`;
-  }
 }
 
 function _clearResetPasswordUrlParam() {
@@ -149,9 +205,11 @@ async function _detectPasswordRecoveryOnLoad() {
   if (!_supabaseClient) return;
   try {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("mode") !== "reset-password") return;
+    const modeReset = params.get("mode") === "reset-password";
+    const hashRecovery = _hashIndicatesPasswordRecovery();
+    if (!modeReset && !hashRecovery) return;
     const { data } = await _supabaseClient.auth.getSession();
-    if (data?.session) _enterPasswordRecoveryView();
+    if (data?.session || hashRecovery) _enterPasswordRecoveryView();
   } catch (_) {}
 }
 
@@ -706,8 +764,10 @@ function wireSupabaseAccountUi() {
       console.info("[auth_password_reset_request_start]", {
         email_domain: String(validated.email).split("@")[1] || null,
       });
+      const redirectTo = getVeraPasswordResetRedirectUrl();
+      _logPasswordResetRedirect(redirectTo);
       const { error } = await _supabaseClient.auth.resetPasswordForEmail(validated.email, {
-        redirectTo: _passwordResetRedirectUrl(),
+        redirectTo,
       });
       if (error) {
         console.warn("[auth_password_reset_request_failed]", {
@@ -927,12 +987,14 @@ try {
     window.authFetch = authFetchImpl;
     window.clearMemoriesAfterLogout = clearMemoriesAfterLogout;
     window._runAccountLogoutCleanup = _runAccountLogoutCleanup;
+    window.getVeraPasswordResetRedirectUrl = getVeraPasswordResetRedirectUrl;
     window.__veraAuthPasswordResetTestHooks = {
       validateResetEmail: _validateResetEmail,
       validateNewPasswordPair: _validateNewPasswordPair,
       getPasswordResetSuccessMessage: () => AUTH_PASSWORD_RESET_SUCCESS_MSG,
       getPasswordUpdatedMessage: () => AUTH_PASSWORD_UPDATED_MSG,
-      getPasswordResetRedirectUrl: _passwordResetRedirectUrl,
+      getPasswordResetRedirectUrl: getVeraPasswordResetRedirectUrl,
+      hashIndicatesPasswordRecovery: _hashIndicatesPasswordRecovery,
       handleAuthStateChangeEvent: _handleAuthStateChangeEvent,
       getAccountAuthView: () => _accountAuthView,
       setAccountAuthView: (v) => {
