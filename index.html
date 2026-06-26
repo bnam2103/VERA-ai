@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="styles.css?v=13">
+  <link rel="stylesheet" href="styles.css?v=15">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -952,13 +952,13 @@
     <button type="button" id="vera-settings-open" class="vera-settings-fab" title="Open settings">
       Settings
     </button>
-    <div class="bmo-mode-guide vera-mode-guide" aria-label="Input mode guide">
-      <button type="button" class="bmo-mode-guide-minimize" aria-label="Minimize input mode guide">-</button>
-      <button type="button" class="bmo-mode-guide-restore" aria-label="Expand input mode guide">☰</button>
-      <p><strong>🎧 Continuous Listening</strong><br>Best with headphones or AirPods so VERA's voice does not echo back into the mic.</p>
-      <p><strong>🎙️ Push-to-Talk</strong><br>Works without headphones. Press to speak, then VERA listens and responds one turn at a time.</p>
-      <p><strong>⌨️ Keyboard</strong><br>Type when voice is inconvenient, noisy, or unavailable.</p>
-    </div>
+    <button
+      type="button"
+      id="vera-input-guide-open"
+      class="vera-input-guide-fab"
+      title="How to use Vera — input modes"
+      aria-label="How to use Vera — input modes"
+    >☰</button>
   </div>
 </section>
 
@@ -1367,13 +1367,13 @@
       <button type="button" id="bmo-settings-open" class="vera-settings-fab" title="Open settings">
         Settings
       </button>
-      <div class="bmo-mode-guide" aria-label="Input mode guide">
-        <button type="button" class="bmo-mode-guide-minimize" aria-label="Minimize input mode guide">-</button>
-        <button type="button" class="bmo-mode-guide-restore" aria-label="Expand input mode guide">☰</button>
-        <p><strong>🎧 Continuous Listening</strong><br>Best with headphones or AirPods so VERA's voice does not echo back into the mic.</p>
-        <p><strong>🎙️ Push-to-Talk</strong><br>Works without headphones. Press to speak, then VERA listens and responds one turn at a time.</p>
-        <p><strong>⌨️ Keyboard</strong><br>Type when voice is inconvenient, noisy, or unavailable.</p>
-      </div>
+      <button
+        type="button"
+        id="bmo-input-guide-open"
+        class="vera-input-guide-fab"
+        title="How to use Vera — input modes"
+        aria-label="How to use Vera — input modes"
+      >☰</button>
     </div>
   </main>
 </section>
@@ -1411,7 +1411,10 @@
 
   const navHome = document.getElementById("nav-home");
   const navAboutVera = document.getElementById("nav-about-vera");
-  const modeGuides = Array.from(document.querySelectorAll(".bmo-mode-guide"));
+  const modeGuideOpenBtns = [
+    document.getElementById("vera-input-guide-open"),
+    document.getElementById("bmo-input-guide-open"),
+  ];
 
   const aboutVeraSection = document.getElementById("about-vera");
   const typedEl = document.getElementById("typed-text");
@@ -2551,21 +2554,16 @@ function typeStartup(options = {}) {
 }
 
 function wireModeGuideToggle() {
-  modeGuides.forEach((guide) => {
-    const minimizeBtn = guide.querySelector(".bmo-mode-guide-minimize");
-    const restoreBtn = guide.querySelector(".bmo-mode-guide-restore");
-    if (!minimizeBtn || !restoreBtn) return;
-
-    minimizeBtn.addEventListener("click", (event) => {
+  modeGuideOpenBtns.forEach((btn) => {
+    if (!(btn instanceof HTMLButtonElement)) return;
+    btn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      guide.classList.add("is-collapsed");
-    });
-
-    restoreBtn.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      guide.classList.remove("is-collapsed");
+      if (typeof window.veraOpenSettingsToGuideSection === "function") {
+        window.veraOpenSettingsToGuideSection();
+      } else if (typeof window.veraOpenSettingsModal === "function") {
+        window.veraOpenSettingsModal();
+      }
     });
   });
 }
@@ -3087,6 +3085,24 @@ document.addEventListener("click", () => {
         <button type="button" id="vera-setting-planning-deadline-timer" class="vera-settings-toggle is-on" aria-pressed="true" title="When on, due-in phrases start a countdown that ends 10 minutes before the time you gave">
           <span class="knob"></span>
         </button>
+      </div>
+    </section>
+    <section id="vera-settings-guide-section" class="vera-settings-section vera-settings-guide-section" aria-labelledby="vera-settings-guide-title">
+      <h3 id="vera-settings-guide-title">How to use Vera</h3>
+      <p class="vera-settings-hint">Choose how you want to talk or type with Vera.</p>
+      <div class="vera-settings-guide-cards">
+        <article class="vera-settings-guide-card">
+          <h4 class="vera-settings-guide-card-title">🎧 Continuous Listening</h4>
+          <p class="vera-settings-guide-card-text">Best with headphones or AirPods so VERA's voice does not echo back into the mic.</p>
+        </article>
+        <article class="vera-settings-guide-card">
+          <h4 class="vera-settings-guide-card-title">🎙️ Push-to-Talk</h4>
+          <p class="vera-settings-guide-card-text">Works without headphones. Press to speak, then VERA listens and responds one turn at a time.</p>
+        </article>
+        <article class="vera-settings-guide-card">
+          <h4 class="vera-settings-guide-card-title">⌨️ Keyboard</h4>
+          <p class="vera-settings-guide-card-text">Type when voice is inconvenient, noisy, or unavailable.</p>
+        </article>
       </div>
     </section>
     <div class="vera-settings-actions">
