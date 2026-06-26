@@ -840,6 +840,7 @@ function wireSupabaseAccountUi() {
       });
       const redirectTo = getVeraPasswordResetRedirectUrl();
       _logPasswordResetRedirect(redirectTo);
+      console.info("[password_reset_redirect_to]", redirectTo);
       const { error } = await _supabaseClient.auth.resetPasswordForEmail(validated.email, {
         redirectTo,
       });
