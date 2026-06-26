@@ -943,6 +943,9 @@
     <div id="vera-usage-credits" class="vera-usage-credits" hidden aria-live="polite">
       <span id="vera-usage-credits-text" class="vera-usage-credits-text"></span>
     </div>
+    <button type="button" id="vera-explicit-feedback-btn" class="vera-explicit-feedback-btn">
+      Give feedback +50 credits
+    </button>
     <button type="button" id="vera-account-open" class="vera-account-fab" title="Account — sign in or sign up">
       Account
     </button>
@@ -2850,6 +2853,49 @@ document.addEventListener("click", () => {
   </div>
 </div>
 
+<div id="vera-explicit-feedback-modal" class="vera-explicit-feedback-modal" hidden aria-hidden="true">
+  <button type="button" class="vera-explicit-feedback-backdrop" tabindex="-1" aria-label="Close feedback"></button>
+  <div class="vera-explicit-feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="vera-explicit-feedback-title">
+    <div class="vera-explicit-feedback-header">
+      <h2 id="vera-explicit-feedback-title">Share feedback</h2>
+      <button type="button" id="vera-explicit-feedback-close" class="vera-explicit-feedback-close" aria-label="Close">✕</button>
+    </div>
+    <p class="vera-settings-hint">Complete this short form to unlock +50 bonus credits for today.</p>
+    <p id="vera-explicit-feedback-error" class="vera-account-error" hidden role="alert"></p>
+    <p id="vera-explicit-feedback-success" class="vera-account-success" hidden role="status"></p>
+    <div id="vera-explicit-feedback-form">
+      <div class="vera-settings-row">
+        <span class="vera-settings-label">Rating</span>
+        <div id="vera-explicit-feedback-rating" class="vera-feedback-rating" role="group" aria-label="Rating from 1 to 5">
+          <button type="button" class="vera-feedback-rating-btn" data-rating="1" aria-pressed="false">1</button>
+          <button type="button" class="vera-feedback-rating-btn" data-rating="2" aria-pressed="false">2</button>
+          <button type="button" class="vera-feedback-rating-btn" data-rating="3" aria-pressed="false">3</button>
+          <button type="button" class="vera-feedback-rating-btn" data-rating="4" aria-pressed="false">4</button>
+          <button type="button" class="vera-feedback-rating-btn" data-rating="5" aria-pressed="false">5</button>
+        </div>
+      </div>
+      <div class="vera-settings-row">
+        <label for="vera-explicit-feedback-reason" class="vera-settings-label">Why this rating?</label>
+        <textarea id="vera-explicit-feedback-reason" class="vera-explicit-feedback-reason" rows="4" placeholder="What worked well or what felt broken?"></textarea>
+      </div>
+      <div class="vera-settings-row">
+        <span class="vera-settings-label">Categories (optional)</span>
+        <div id="vera-explicit-feedback-categories" class="vera-feedback-categories"></div>
+      </div>
+      <div class="vera-settings-row" id="vera-explicit-feedback-contact-wrap" hidden>
+        <label class="vera-settings-label">
+          <input type="checkbox" id="vera-explicit-feedback-contact" />
+          You may contact me about this feedback
+        </label>
+      </div>
+      <div class="vera-settings-row vera-account-actions">
+        <button type="button" id="vera-explicit-feedback-submit" class="vera-settings-save-btn">Submit feedback and unlock +50 credits</button>
+        <button type="button" id="vera-explicit-feedback-cancel" class="vera-account-secondary-btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="vera-settings-modal" class="vera-settings-modal" hidden>
   <div class="vera-settings-card" role="dialog" aria-modal="true" aria-labelledby="vera-settings-title">
     <div class="vera-settings-header">
@@ -3115,6 +3161,9 @@ document.addEventListener("click", () => {
 <!-- users/usageCredits.js — daily credit usage pill (read-only).
      Must load AFTER usageFeatureEvents.js (reasoning refresh hook), BEFORE app.js. -->
 <script src="users/usageCredits.js?v=1"></script>
+<!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
+     Must load AFTER usageCredits.js, BEFORE app.js. -->
+<script src="users/explicitFeedback.js?v=1"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies

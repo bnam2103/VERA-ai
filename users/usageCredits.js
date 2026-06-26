@@ -12,20 +12,15 @@
     if (el instanceof HTMLElement) el.hidden = true;
   }
 
-  function formatFeatureTooltip(features, authMode) {
-    const f = features && typeof features === "object" ? features : {};
-    const wm = f.work_mode || {};
-    const search = f.search || {};
-    const img = f.image_pdf || {};
-    const lines = [
-      `Work Mode: ${Number(wm.used) || 0} / ${Number(wm.cap) || 0}`,
-      `Search: ${Number(search.used) || 0} / ${Number(search.cap) || 0}`,
-      `Image/PDF: ${Number(img.used) || 0} / ${Number(img.cap) || 0}`,
-    ];
-    if (authMode === "anonymous") {
-      lines.push("Sign in for higher daily limits.");
+  function formatUsageTooltip(authMode, bonusCredits) {
+    const bonus = Number(bonusCredits) || 0;
+    if (bonus > 0) {
+      return `Includes +${bonus} feedback bonus today.`;
     }
-    return lines.join("\n");
+    if (authMode === "authenticated") {
+      return "Daily Vera usage resets tomorrow. Give feedback to unlock +50 credits.";
+    }
+    return "Daily free usage resets tomorrow. Give feedback to unlock +50 credits.";
   }
 
   function renderUsageCreditsDisplay(payload) {
@@ -38,12 +33,13 @@
     }
     const used = Number(payload.credits_used) || 0;
     const cap = Number(payload.credits_cap) || 0;
+    const bonus = Number(payload.bonus_credits) || 0;
     const authMode = payload.auth_mode === "authenticated" ? "authenticated" : "anonymous";
     textEl.textContent =
       authMode === "authenticated"
         ? `Credits: ${used} / ${cap}`
         : `Free credits: ${used} / ${cap}`;
-    wrap.title = formatFeatureTooltip(payload.features, authMode);
+    wrap.title = formatUsageTooltip(authMode, bonus);
     wrap.hidden = false;
   }
 

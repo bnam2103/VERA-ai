@@ -709,6 +709,9 @@ async function refreshSupabaseAccountLabel() {
   try {
     window.veraRefreshUsageCredits?.();
   } catch (_) {}
+  try {
+    window.veraRefreshFeedbackStatus?.();
+  } catch (_) {}
   return Boolean(me?.authenticated);
 }
 
