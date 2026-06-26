@@ -770,8 +770,16 @@ function wireSupabaseAccountUi() {
   const accountSection = document.getElementById("vera-account-section");
 
   const openAccountInSettings = () => {
+    if (typeof window.veraOpenSettingsToAccountSection === "function") {
+      window.veraOpenSettingsToAccountSection();
+      return;
+    }
     if (!(settingsModal instanceof HTMLElement)) return;
     settingsModal.removeAttribute("hidden");
+    const card = settingsModal.querySelector(".vera-settings-card");
+    if (card instanceof HTMLElement) {
+      card.scrollTo({ top: 0, behavior: "auto" });
+    }
     accountSection?.scrollIntoView({ block: "start", behavior: "smooth" });
     refreshSupabaseAccountLabel().catch(() => {});
   };

@@ -26284,6 +26284,27 @@ function wireVeraSettingsPanel() {
     }
   };
 
+  const scrollSettingsCardTo = (target = "top") => {
+    const card = modal.querySelector(".vera-settings-card");
+    if (!(card instanceof HTMLElement)) return;
+    requestAnimationFrame(() => {
+      if (target === "account") {
+        const section = document.getElementById("vera-account-section");
+        if (section instanceof HTMLElement) {
+          card.scrollTo({ top: Math.max(0, section.offsetTop - 12), behavior: "smooth" });
+          const email = document.getElementById("vera-account-email");
+          if (email instanceof HTMLInputElement && !email.disabled) {
+            try {
+              email.focus({ preventScroll: true });
+            } catch (_) {}
+          }
+          return;
+        }
+      }
+      card.scrollTo({ top: 0, behavior: "auto" });
+    });
+  };
+
   const open = (options = {}) => {
     hydrate();
     void refreshCostLogDevUi();
@@ -26296,21 +26317,7 @@ function wireVeraSettingsPanel() {
       main_asr_partial_min_chars: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
     });
     modal.removeAttribute("hidden");
-    if (options.scrollToGuide) {
-      requestAnimationFrame(() => {
-        const section = document.getElementById("vera-settings-guide-section");
-        const card = modal.querySelector(".vera-settings-card");
-        if (!(section instanceof HTMLElement)) return;
-        if (card instanceof HTMLElement) {
-          const top = section.offsetTop - 12;
-          card.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-        } else {
-          section.scrollIntoView({ behavior: "smooth", block: "nearest" });
-        }
-        section.classList.add("is-highlighted");
-        window.setTimeout(() => section.classList.remove("is-highlighted"), 1800);
-      });
-    }
+    scrollSettingsCardTo(options.scrollTo === "account" ? "account" : "top");
   };
   const close = () => {
     modal.setAttribute("hidden", "");
@@ -26319,7 +26326,7 @@ function wireVeraSettingsPanel() {
   try {
     if (typeof window !== "undefined") {
       window.veraOpenSettingsModal = () => open();
-      window.veraOpenSettingsToGuideSection = () => open({ scrollToGuide: true });
+      window.veraOpenSettingsToAccountSection = () => open({ scrollTo: "account" });
     }
   } catch (_) {}
 

@@ -2744,32 +2744,6 @@ body.chat-started .input-container {
   transform: scale(0.98);
 }
 
-.vera-input-guide-fab {
-  pointer-events: auto;
-  min-width: 44px;
-  height: 30px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(128, 186, 255, 0.62);
-  background: rgba(16, 24, 40, 0.82);
-  color: rgba(231, 241, 255, 0.94);
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-  font-family: inherit;
-  box-shadow: 0 5px 14px rgba(16, 58, 112, 0.34);
-  transition: filter 0.2s ease, transform 0.15s ease;
-}
-
-.vera-input-guide-fab:hover {
-  filter: brightness(1.05);
-}
-
-.vera-input-guide-fab:active {
-  transform: translateY(1px);
-}
-
 .vera-usage-credits {
   pointer-events: auto;
   border: 1px solid rgba(255, 255, 255, 0.2);
@@ -3102,130 +3076,6 @@ body.chat-started .input-container {
   font-size: 0.88rem;
   opacity: 0.75;
   padding: 0.25rem 0;
-}
-
-.bmo-mode-guide {
-  position: relative;
-  pointer-events: auto;
-  width: 340px;
-  max-width: 340px;
-  flex: 0 0 340px;
-  padding: 10px 12px;
-  border: 1px solid rgba(20, 61, 46, 0.28);
-  border-radius: 12px;
-  background: rgba(231, 248, 236, 0.9);
-  box-shadow: 0 8px 22px rgba(11, 46, 34, 0.14);
-  color: rgba(20, 61, 46, 0.92);
-  font-size: 12px;
-  line-height: 1.45;
-  opacity: 0;
-  transform: translateY(8px);
-  visibility: hidden;
-  transition: opacity 0.35s ease, transform 0.35s ease;
-}
-
-.vera-mode-guide {
-  border-color: rgba(68, 102, 140, 0.38);
-  background: rgba(16, 24, 40, 0.82);
-  box-shadow: 0 8px 22px rgba(2, 8, 20, 0.36);
-  color: rgba(231, 241, 255, 0.94);
-}
-
-.bmo-mode-guide-minimize,
-.bmo-mode-guide-restore {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  min-width: 24px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid rgba(20, 120, 86, 0.55);
-  background: transparent;
-  color: rgba(20, 61, 46, 0.9);
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: 0 5px 14px rgba(26, 109, 77, 0.24);
-  transition: filter 0.2s ease, transform 0.15s ease;
-}
-
-.vera-mode-guide .bmo-mode-guide-minimize,
-.vera-mode-guide .bmo-mode-guide-restore {
-  border-color: rgba(128, 186, 255, 0.62);
-  background: transparent;
-  color: rgba(231, 241, 255, 0.94);
-  box-shadow: 0 5px 14px rgba(16, 58, 112, 0.34);
-}
-
-.bmo-mode-guide-minimize:hover,
-.bmo-mode-guide-restore:hover {
-  filter: brightness(1.05);
-}
-
-.bmo-mode-guide-minimize:active,
-.bmo-mode-guide-restore:active {
-  transform: translateY(1px);
-}
-
-.bmo-mode-guide-minimize {
-  font-size: 11px;
-}
-
-.bmo-mode-guide-restore {
-  display: none;
-  font-size: 13px;
-}
-
-.bmo-mode-guide.is-collapsed {
-  width: auto;
-  max-width: none;
-  flex: 0 0 auto;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-.bmo-mode-guide.is-collapsed p {
-  display: none;
-}
-
-.bmo-mode-guide.is-collapsed .bmo-mode-guide-minimize {
-  display: none;
-}
-
-.bmo-mode-guide.is-collapsed .bmo-mode-guide-restore {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  position: static;
-  min-width: 44px;
-  height: 30px;
-  padding: 0 10px;
-}
-
-.bmo-mode-guide p {
-  margin: 0 0 8px;
-}
-
-.bmo-mode-guide p:last-child {
-  margin-bottom: 0;
-}
-
-body.bmo-open #bmo-page.bmo-animate-in .bmo-mode-guide:not(.vera-mode-guide) {
-  opacity: 1;
-  transform: translateY(0);
-  visibility: visible;
-  transition-delay: 4.2s;
-}
-
-body.app-open:not(.bmo-open) #vera-app.fade-in .vera-mode-guide {
-  opacity: 1;
-  transform: translateY(0);
-  visibility: visible;
-  transition-delay: 0.9s;
 }
 
 /* Signed-in user name (POST /api/user/sign-in) */
@@ -4413,184 +4263,6 @@ body.chat-started .input-bar {
   pointer-events: auto;
 }
 
-/* Work Mode guide modal (static screenshots) */
-.vera-work-guide-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 2500;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px 16px;
-  box-sizing: border-box;
-}
-
-.vera-work-guide-modal[hidden] {
-  display: none !important;
-}
-
-.vera-work-guide-backdrop {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: rgba(4, 8, 16, 0.72);
-  backdrop-filter: blur(6px);
-  cursor: pointer;
-}
-
-.vera-work-guide-dialog {
-  position: relative;
-  z-index: 1;
-  width: min(720px, 100%);
-  max-height: min(90vh, 920px);
-  display: flex;
-  flex-direction: column;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(14, 20, 32, 0.96);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
-  color: rgba(255, 255, 255, 0.92);
-  overflow: hidden;
-}
-
-.vera-work-guide-close {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  z-index: 2;
-  width: 36px;
-  height: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 999px;
-  background: rgba(12, 18, 28, 0.65);
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
-  font-family: inherit;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition:
-    background 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.vera-work-guide-close:hover {
-  background: rgba(24, 32, 48, 0.85);
-  border-color: rgba(255, 255, 255, 0.38);
-}
-
-.vera-work-guide-title {
-  margin: 0;
-  padding: 20px 52px 12px 20px;
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.vera-work-guide-scroll {
-  overflow-y: auto;
-  padding: 16px 20px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.vera-work-guide-card {
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
-  padding: 14px 16px 16px;
-  background: rgba(8, 12, 22, 0.55);
-}
-
-.vera-work-guide-card-title {
-  margin: 0 0 10px;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.95);
-}
-
-.vera-work-guide-shot {
-  display: block;
-  width: 100%;
-  max-width: 100%;
-  max-height: 320px;
-  object-fit: contain;
-  margin: 0 auto 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.35);
-}
-
-.vera-work-guide-lead {
-  margin: 0 0 12px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: rgba(255, 255, 255, 0.88);
-}
-
-.vera-work-guide-section-label {
-  margin: 0 0 8px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.62);
-}
-
-.vera-work-guide-commands {
-  margin: 0 0 12px;
-  padding-left: 0;
-  list-style: none;
-  font-size: 12px;
-  line-height: 1.55;
-  color: rgba(255, 255, 255, 0.84);
-}
-
-.vera-work-guide-commands li {
-  padding: 6px 10px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.vera-work-guide-commands li + li {
-  margin-top: 6px;
-}
-
-.vera-work-guide-note {
-  margin: 0 0 10px;
-  font-size: 12px;
-  line-height: 1.55;
-  color: rgba(255, 255, 255, 0.72);
-  font-style: italic;
-}
-
-.vera-work-guide-tip {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.55;
-  color: rgba(180, 210, 255, 0.9);
-}
-
-.vera-work-guide-tip strong,
-.vera-work-guide-note strong {
-  font-style: normal;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.92);
-}
-
-body.vera-work-guide-open {
-  overflow: hidden;
-}
-
 /* ----- VERA work mode: 3-column layout (music + checklist | reasoning | chat+voice) ----- */
 .vera-body-grid {
   display: flex;
@@ -4674,15 +4346,6 @@ body.vera-work-guide-open {
 /* Music lives in the work-mode left column; hide the floating Music pill (non–work-mode still uses it). */
 #vera-app.work-mode #vera-productivity-mode {
   display: none !important;
-}
-
-/* Work Mode guide: only while the work-mode layout is active (Work button stays visible to enter). */
-#vera-work-mode-guide {
-  display: none !important;
-}
-
-#vera-app.work-mode #vera-work-mode-guide {
-  display: inline-block !important;
 }
 
 #vera-app.work-mode .chat-centered::after {
@@ -6291,7 +5954,6 @@ body.vera-work-guide-open {
 
 @media (max-width: 768px) {
   #vera-work-mode,
-  #vera-work-mode-guide,
   .vera-work-mode-tools-row {
     display: none !important;
   }
@@ -7945,10 +7607,6 @@ body.chat-started .vera-guide {
 
   /* Floating Music / productivity — hidden on phone (no room + avoids overlap) */
   .productivity-mode-btn {
-    display: none;
-  }
-
-  .bmo-mode-guide {
     display: none;
   }
 
