@@ -16185,7 +16185,7 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
     });
   } catch (_) {}
   try {
-    const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+    const sr = await authFetch(`${API_URL}/work_mode/reasoning_stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
