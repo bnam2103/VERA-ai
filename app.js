@@ -23813,6 +23813,15 @@ async function runInferMainPipeline(formData, opts = {}) {
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (main — TTFB)");
 
+    if (!res.ok) {
+      processing = false;
+      requestInFlight = false;
+      if (!failPendingNewsStatusBubble("infer_main_http")) {
+        void veraSurfaceLlmFetchFailure({ feature: "infer_main", response: res });
+      }
+      return;
+    }
+
     const responseIsNdjson = res.ok && isNdjsonTtsResponse(res);
     const ttsSuppressedDueToMute =
       isWmStage2Voice
@@ -25586,6 +25595,16 @@ async function sendTextMessage() {
       signal: attachPipelineAbortSignal()
     });
     const textTtfbMs = performance.now() - textFetchStart;
+
+    if (!res.ok) {
+      requestInFlight = false;
+      processing = false;
+      textUxTurn = null;
+      if (!failPendingNewsStatusBubble("text_endpoint_http")) {
+        void veraSurfaceLlmFetchFailure({ feature: "text_endpoint", response: res });
+      }
+      return;
+    }
 
     if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
