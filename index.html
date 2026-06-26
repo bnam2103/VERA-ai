@@ -940,6 +940,9 @@
     <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
   </div>
   <div class="vera-bottom-left-tools" aria-label="Settings tools">
+    <div id="vera-usage-credits" class="vera-usage-credits" hidden aria-live="polite">
+      <span id="vera-usage-credits-text" class="vera-usage-credits-text"></span>
+    </div>
     <button type="button" id="vera-account-open" class="vera-account-fab" title="Account — sign in or sign up">
       Account
     </button>
@@ -3109,6 +3112,9 @@ document.addEventListener("click", () => {
 <!-- users/usageFeatureEvents.js — Phase 2 feature interaction analytics.
      Must load AFTER usageEvents.js, BEFORE app.js. -->
 <script src="users/usageFeatureEvents.js?v=1"></script>
+<!-- users/usageCredits.js — daily credit usage pill (read-only).
+     Must load AFTER usageFeatureEvents.js (reasoning refresh hook), BEFORE app.js. -->
+<script src="users/usageCredits.js?v=1"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies

@@ -401,6 +401,34 @@ async function veraSurfaceLlmFetchFailure({
     veraShowCapabilityFailureBubble("safety_413", msg, { actionId: turnId });
     return "safety_413";
   }
+  if (status === 429) {
+    let serverMsg = "";
+    try {
+      const body = await response.clone().json();
+      serverMsg = String(body?.detail || body?.message || "").trim();
+    } catch (_) {}
+    const msg =
+      serverMsg ||
+      "You've reached today's Vera usage limit. Try again tomorrow.";
+    logVeraCapabilityFailure(feature, "credit_cap_exceeded", {
+      status,
+      server_message: serverMsg.slice(0, 200),
+      ...(extra || {})
+    });
+    logCapabilityFallbackDebug({
+      capability: "reasoning",
+      failure_kind: "api_error",
+      should_show_bubble: true,
+      turn_id: turnId,
+      source_function: `veraSurfaceLlmFetchFailure:${feature}`,
+      raw_error_message: `HTTP 429 ${serverMsg.slice(0, 120)}`
+    });
+    veraShowSafetyFailureBubble(msg);
+    try {
+      window.veraRefreshUsageCredits?.();
+    } catch (_) {}
+    return "credit_cap";
+  }
   const rawErrorMessage =
     response?.status != null
       ? `HTTP ${response.status}`
@@ -15670,7 +15698,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
               feature: "reasoning_stream_upload",
               response: sr
             });
-          } else if (sr.status === 413) {
+          } else if (sr.status === 413 || sr.status === 429) {
             void veraSurfaceLlmFetchFailure({
               feature: "reasoning_stream_upload",
               response: sr
@@ -26299,9 +26327,13 @@ wireVeraUserSignInHoldAndModal();
 wireVeraSettingsPanel();
 if (typeof wireSupabaseAccountUi === "function") wireSupabaseAccountUi();
 if (typeof initSupabaseAuth === "function") {
-  initSupabaseAuth().finally(() => refreshVeraActiveUserLabel());
+  initSupabaseAuth().finally(() => {
+    refreshVeraActiveUserLabel();
+    window.veraRefreshUsageCredits?.();
+  });
 } else {
   refreshVeraActiveUserLabel();
+  window.veraRefreshUsageCredits?.();
 }
 
 (function stripSpotifyOAuthQueryParams() {
