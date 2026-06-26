@@ -8650,6 +8650,57 @@ window.layoutVeraWorkModePanels = function layoutVeraWorkModePanels(on) {
   }
 };
 
+function logWmUploadLayoutDebug(tag, extra = {}) {
+  if (typeof window === "undefined" || window.__veraWmUploadLayoutDebug !== true) return;
+  try {
+    const veraApp = document.getElementById("vera-app");
+    const grid = document.getElementById("vera-body-grid");
+    const center = document.getElementById("vera-wm-center");
+    const bodyWrap = center?.querySelector(".vera-wm-reasoning-body-wrap");
+    const panels = document.getElementById("vera-reasoning-tab-panels");
+    const active = panels?.querySelector(".vera-reasoning-tab-panel.is-active");
+    const scroll = active?.querySelector(".vera-reasoning-scroll");
+    console.info("[wm_upload_layout]", {
+      tag: String(tag || ""),
+      work_mode: Boolean(veraApp?.classList.contains("work-mode")),
+      body_classes: String(document.body.className || ""),
+      vera_app_classes: String(veraApp?.className || ""),
+      grid_h: Math.round(grid?.getBoundingClientRect().height || 0),
+      center_h: Math.round(center?.getBoundingClientRect().height || 0),
+      body_wrap_h: Math.round(bodyWrap?.getBoundingClientRect().height || 0),
+      scroll_h: Math.round(scroll?.getBoundingClientRect().height || 0),
+      scroll_client_h: scroll?.clientHeight ?? null,
+      ...extra
+    });
+  } catch (_) {}
+}
+
+/** Reflow Work Mode grid/flex after reasoning upload/stream cleanup (success, error, cancel). */
+function scheduleRecalcWorkModeLayoutAfterReasoning(reason) {
+  if (!isVeraWorkModeOn()) return;
+  logWmUploadLayoutDebug("schedule", { reason: String(reason || "") });
+  const run = () => {
+    try {
+      window.layoutVeraWorkModePanels?.(true);
+      applyWorkModeLeftPaneLayoutFromStorage();
+      if (typeof recomputeReasoningPanelEmptyHints === "function") {
+        recomputeReasoningPanelEmptyHints();
+      }
+      window.syncVeraFlowVoiceDockLayoutClass?.();
+      logWmUploadLayoutDebug("recalc_done", { reason: String(reason || "") });
+    } catch (e) {
+      console.warn("[WorkMode] layout recalc after reasoning", e);
+    }
+  };
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(run));
+  } else {
+    window.setTimeout(run, 0);
+  }
+}
+
+window.scheduleRecalcWorkModeLayoutAfterReasoning = scheduleRecalcWorkModeLayoutAfterReasoning;
+
 window.ensureWorkModeVoiceUiActive = async function ensureWorkModeVoiceUiActive() {
   try {
     if (window.matchMedia("(max-width: 768px)").matches) return;
@@ -9215,6 +9266,14 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
               });
             }
           } catch (_) {}
+          if (!mdEl.dataset.wmUploadFirstChunkLogged) {
+            mdEl.dataset.wmUploadFirstChunkLogged = "1";
+            logWmUploadLayoutDebug("first_chunk", {
+              turn_id: turnContext?.turn_id || null,
+              lane_id: streamLaneId || null,
+              chunk_chars: String(o.text || "").length
+            });
+          }
           markdownAcc += String(o.text);
           mdEl.dataset.markdownAcc = markdownAcc;
           renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
@@ -15555,8 +15614,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           cleared_busy: true
         });
         logLaneBusyStateForReasoning("cleanup", laneIdx, turnIdForLifecycle, streamLaneId);
+        logWmUploadLayoutDebug("cleanup", {
+          reason: String(st || ""),
+          turn_id: turnIdForLifecycle,
+          lane_id: streamLaneId
+        });
+      } catch (_) {}
+      try {
+        closeWorkModeAttachmentPreviewModal();
       } catch (_) {}
       endWorkModeReasoningLaneRun(laneIdx);
+      scheduleRecalcWorkModeLayoutAfterReasoning(st);
     }
     startWorkModeReasoningWatchdog(
       laneIdx,
@@ -15588,6 +15656,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     } catch (_) {}
     try {
     if (hasUpload && turnContext?.turn_id) {
+      logWmUploadLayoutDebug("upload_start", {
+        turn_id: turnContext?.turn_id ?? null,
+        lane_id: streamLaneId,
+        file_count: attachmentList.length
+      });
       const uploadDescriptors = attachmentList.map((file) => {
         const pending = workModePendingAttachments.find((p) => p.file === file);
         const attachment_id = pending?.id || generateWorkModeAttachmentId();
@@ -15712,6 +15785,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           safeReasoningLaneRelease("upload_empty_body");
           return "reasoning-upload-failed";
         }
+        logWmUploadLayoutDebug("stream_start", {
+          turn_id: turnContext?.turn_id ?? null,
+          lane_id: streamLaneId,
+          status: sr.status
+        });
       } else {
         sr = await authFetch(`${API_URL}/work_mode/reasoning_stream`, {
           method: "POST",
