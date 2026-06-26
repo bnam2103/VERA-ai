@@ -2663,9 +2663,11 @@ body.chat-started .input-container {
   z-index: 120;
   display: flex;
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 10px;
   pointer-events: none;
+  max-width: min(96vw, 720px);
 }
 
 .bmo-bottom-left-tools {
@@ -6251,7 +6253,16 @@ body.vera-work-guide-open {
 }
 
 #vera-app.work-mode .vera-bottom-left-tools {
-  display: none;
+  display: flex;
+  flex-wrap: wrap;
+  bottom: 24px;
+  left: 28px;
+  z-index: 1400;
+  max-width: min(92vw, 520px);
+}
+
+#vera-app.work-mode .vera-mode-guide {
+  display: none !important;
 }
 
 @media (max-width: 768px) {

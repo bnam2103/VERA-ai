@@ -5,6 +5,10 @@
 (function () {
   "use strict";
 
+  const LOG_PREFIX = "[explicitFeedback]";
+  const STATUS_RETRY_MS = 2500;
+  const STATUS_RETRY_MAX = 4;
+
   const CATEGORY_OPTIONS = [
     { key: "work_mode", label: "Work Mode" },
     { key: "voice_assistant", label: "Voice assistant" },
@@ -21,9 +25,47 @@
   let _statusLoaded = false;
   let _alreadyClaimed = false;
   let _eligible = true;
+  let _statusRetryCount = 0;
+  let _statusRetryTimer = null;
+  let _wired = false;
+
+  function logInfo(...args) {
+    try {
+      console.log(LOG_PREFIX, ...args);
+    } catch (_) {}
+  }
+
+  function logWarn(...args) {
+    try {
+      console.warn(LOG_PREFIX, ...args);
+    } catch (_) {}
+  }
 
   function $(id) {
     return document.getElementById(id);
+  }
+
+  function ensureFeedbackButtonDom() {
+    let btn = $("vera-explicit-feedback-btn");
+    if (btn instanceof HTMLButtonElement) return btn;
+    const tools = document.querySelector(".vera-bottom-left-tools");
+    if (!(tools instanceof HTMLElement)) {
+      logWarn("bottom-left tools container missing; feedback button not mounted");
+      return null;
+    }
+    btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "vera-explicit-feedback-btn";
+    btn.className = "vera-explicit-feedback-btn";
+    btn.textContent = "Give feedback +50 credits";
+    const credits = $("vera-usage-credits");
+    if (credits instanceof HTMLElement && credits.parentElement === tools) {
+      credits.insertAdjacentElement("afterend", btn);
+    } else {
+      tools.prepend(btn);
+    }
+    logInfo("created feedback button in DOM");
+    return btn;
   }
 
   function showError(msg) {
@@ -46,18 +88,22 @@
   }
 
   function updateFeedbackButton() {
-    const btn = $("vera-explicit-feedback-btn");
+    const btn = ensureFeedbackButtonDom();
     if (!(btn instanceof HTMLButtonElement)) return;
-  btn.textContent = "Give feedback +50 credits";
+    btn.textContent = "Give feedback +50 credits";
+    btn.hidden = false;
+    btn.style.display = "";
+    btn.removeAttribute("aria-hidden");
     if (_alreadyClaimed) {
       btn.disabled = true;
       btn.title = "Feedback bonus already claimed today.";
       btn.textContent = "Feedback bonus claimed today";
     } else {
       btn.disabled = false;
-      btn.title = "Share feedback and unlock +50 bonus credits for today.";
+      btn.title = _statusLoaded
+        ? "Share feedback and unlock +50 bonus credits for today."
+        : "Share feedback and unlock +50 bonus credits for today. (Checking bonus status…)";
     }
-    btn.hidden = false;
   }
 
   function renderCategoryBubbles() {
@@ -110,7 +156,10 @@
 
   function openModal() {
     const modal = $("vera-explicit-feedback-modal");
-    if (!(modal instanceof HTMLElement)) return;
+    if (!(modal instanceof HTMLElement)) {
+      logWarn("feedback modal markup missing");
+      return;
+    }
     showError("");
     showSuccess("");
     setFormVisible(true);
@@ -135,25 +184,62 @@
     modal.setAttribute("aria-hidden", "true");
   }
 
+  function scheduleStatusRetry(reason) {
+    if (_statusRetryCount >= STATUS_RETRY_MAX) {
+      logWarn("status check gave up after retries:", reason);
+      return;
+    }
+    if (_statusRetryTimer != null) return;
+    _statusRetryCount += 1;
+    _statusRetryTimer = window.setTimeout(() => {
+      _statusRetryTimer = null;
+      void refreshFeedbackStatus();
+    }, STATUS_RETRY_MS);
+  }
+
   async function refreshFeedbackStatus() {
-    if (typeof getSessionId !== "function" || typeof authApiUrl !== "function") return;
+    updateFeedbackButton();
+    if (typeof getSessionId !== "function" || typeof authApiUrl !== "function") {
+      logWarn("session/auth helpers not ready yet; will retry");
+      scheduleStatusRetry("helpers-missing");
+      return;
+    }
     const sid = String(getSessionId() || "").trim();
-    if (!sid) return;
+    if (!sid) {
+      logWarn("session_id empty; will retry");
+      scheduleStatusRetry("missing-session-id");
+      return;
+    }
     const fetchFn = typeof authFetch === "function" ? authFetch : fetch;
     try {
       const res = await fetchFn(
         authApiUrl(`/api/feedback/status?session_id=${encodeURIComponent(sid)}`),
         { method: "GET" }
       );
-      if (!res.ok) return;
+      if (!res.ok) {
+        logWarn("status HTTP", res.status, res.statusText || "");
+        scheduleStatusRetry(`http-${res.status}`);
+        return;
+      }
       const data = await res.json().catch(() => null);
-      if (!data || data.ok !== true) return;
+      if (!data || data.ok !== true) {
+        logWarn("status payload invalid", data);
+        scheduleStatusRetry("bad-payload");
+        return;
+      }
       _alreadyClaimed = Boolean(data.already_claimed);
       _eligible = Boolean(data.eligible);
       _statusLoaded = true;
+      _statusRetryCount = 0;
       updateFeedbackButton();
-    } catch (_) {
-      /* non-blocking */
+      logInfo("status ok", {
+        already_claimed: _alreadyClaimed,
+        eligible: _eligible,
+        bonus_credits: data.bonus_credits,
+      });
+    } catch (err) {
+      logWarn("status fetch failed", err);
+      scheduleStatusRetry("network-error");
     }
   }
 
@@ -203,6 +289,7 @@
             ? detail
             : "Could not submit feedback. Please try again later."
         );
+        logWarn("submit failed", res.status, detail || data);
         return;
       }
       const granted = Number(data.granted_bonus_credits) || 0;
@@ -224,15 +311,18 @@
         window.veraRefreshUsageCredits?.();
       } catch (_) {}
       await refreshFeedbackStatus();
-    } catch (_) {
+    } catch (err) {
       showError("Could not reach the server. Your feedback was not saved.");
+      logWarn("submit network error", err);
     } finally {
       if (submitBtn instanceof HTMLButtonElement) submitBtn.disabled = false;
     }
   }
 
   function wireModal() {
-    $("vera-explicit-feedback-btn")?.addEventListener("click", () => {
+    if (_wired) return;
+    _wired = true;
+    ensureFeedbackButtonDom()?.addEventListener("click", () => {
       void refreshFeedbackStatus().finally(openModal);
     });
     $("vera-explicit-feedback-close")?.addEventListener("click", closeModal);
@@ -247,11 +337,28 @@
     });
   }
 
+  function watchVeraAppVisibility() {
+    const app = $("vera-app");
+    if (!(app instanceof HTMLElement)) return;
+    const onVisible = () => {
+      if (app.hidden) return;
+      updateFeedbackButton();
+      void refreshFeedbackStatus();
+    };
+    onVisible();
+    try {
+      const obs = new MutationObserver(onVisible);
+      obs.observe(app, { attributes: true, attributeFilter: ["hidden"] });
+    } catch (_) {}
+  }
+
   function initExplicitFeedback() {
+    logInfo("loaded");
     renderCategoryBubbles();
     wireRatingButtons();
     wireModal();
     updateFeedbackButton();
+    watchVeraAppVisibility();
     void refreshFeedbackStatus();
   }
 

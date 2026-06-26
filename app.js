@@ -26330,10 +26330,12 @@ if (typeof initSupabaseAuth === "function") {
   initSupabaseAuth().finally(() => {
     refreshVeraActiveUserLabel();
     window.veraRefreshUsageCredits?.();
+    window.veraRefreshFeedbackStatus?.();
   });
 } else {
   refreshVeraActiveUserLabel();
   window.veraRefreshUsageCredits?.();
+  window.veraRefreshFeedbackStatus?.();
 }
 
 (function stripSpotifyOAuthQueryParams() {
