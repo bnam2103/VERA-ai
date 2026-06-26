@@ -16218,8 +16218,18 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         cleared_busy: true
       });
       logLaneBusyStateForReasoning("composer_stream", laneIdx, turnIdLc, streamLaneId);
+      logWmUploadLayoutDebug("cleanup", {
+        reason: String(st || ""),
+        turn_id: turnIdLc,
+        lane_id: streamLaneId,
+        path: "composer"
+      });
+    } catch (_) {}
+    try {
+      closeWorkModeAttachmentPreviewModal();
     } catch (_) {}
     endWorkModeReasoningLaneRun(laneIdx);
+    scheduleRecalcWorkModeLayoutAfterReasoning(st);
   }
   startWorkModeReasoningWatchdog(
     laneIdx,

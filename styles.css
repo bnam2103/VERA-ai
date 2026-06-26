@@ -4734,6 +4734,13 @@ body.vera-work-guide-open {
   align-items: stretch;
 }
 
+#vera-app.work-mode .vera-wm-left,
+#vera-app.work-mode .vera-wm-center,
+#vera-app.work-mode .vera-wm-right {
+  min-height: 0;
+  align-self: stretch;
+}
+
 #vera-app.work-mode .vera-wm-left {
   display: flex;
   flex-direction: column;
@@ -5914,7 +5921,7 @@ body.vera-work-guide-open {
   border-radius: 12px;
   background: rgba(5, 10, 18, 0.72);
   backdrop-filter: blur(12px);
-  overflow: visible;
+  overflow: hidden;
 }
 
 #vera-app.work-mode .vera-reasoning-scroll {
@@ -6293,7 +6300,12 @@ body.vera-work-guide-open {
 @media (max-width: 1100px) {
   #vera-app.work-mode .vera-body-grid {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto 1fr;
+    /* Center row must share vertical space; plain `auto` collapses the reasoning workspace after reflow. */
+    grid-template-rows: auto minmax(0, 1.15fr) minmax(0, 1fr);
+  }
+  #vera-app.work-mode .vera-wm-reasoning-body-wrap {
+    flex: 1 1 auto;
+    min-height: 120px;
   }
   #vera-app.work-mode .vera-wm-left {
     flex-direction: column;
