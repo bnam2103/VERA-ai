@@ -933,6 +933,15 @@
     <div id="vera-usage-credits" class="vera-usage-credits" hidden aria-live="polite">
       <span id="vera-usage-credits-text" class="vera-usage-credits-text"></span>
     </div>
+    <button
+      type="button"
+      id="vera-no-cap-toggle"
+      class="vera-no-cap-toggle"
+      hidden
+      title="Testing only: disables credit cap enforcement but still logs usage."
+    >
+      No cap: OFF
+    </button>
     <button type="button" id="vera-explicit-feedback-btn" class="vera-explicit-feedback-btn">
       Give feedback +50 credits
     </button>
@@ -3002,7 +3011,7 @@ document.addEventListener("click", () => {
 <script src="users/usageFeatureEvents.js?v=1"></script>
 <!-- users/usageCredits.js — daily credit usage pill (read-only).
      Must load AFTER usageFeatureEvents.js (reasoning refresh hook), BEFORE app.js. -->
-<script src="users/usageCredits.js?v=2"></script>
+<script src="users/usageCredits.js?v=3"></script>
 <!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
      Must load AFTER usageCredits.js, BEFORE app.js. -->
 <script src="users/explicitFeedback.js?v=2"></script>
