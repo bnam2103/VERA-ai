@@ -12,7 +12,10 @@
     if (el instanceof HTMLElement) el.hidden = true;
   }
 
-  function formatUsageTooltip(authMode, bonusCredits) {
+  function formatUsageTooltip(authMode, bonusCredits, isDevUnlimited) {
+    if (isDevUnlimited) {
+      return "Developer unlimited credits (testing). Usage is still logged.";
+    }
     const bonus = Number(bonusCredits) || 0;
     if (bonus > 0) {
       return `Includes +${bonus} feedback bonus today.`;
@@ -32,14 +35,18 @@
       return;
     }
     const used = Number(payload.credits_used) || 0;
-    const cap = Number(payload.credits_cap) || 0;
+    const cap = payload.credits_cap;
     const bonus = Number(payload.bonus_credits) || 0;
     const authMode = payload.auth_mode === "authenticated" ? "authenticated" : "anonymous";
-    textEl.textContent =
-      authMode === "authenticated"
-        ? `Credits: ${used} / ${cap}`
-        : `Free credits: ${used} / ${cap}`;
-    wrap.title = formatUsageTooltip(authMode, bonus);
+    const isDevUnlimited = payload.is_dev_unlimited === true;
+    if (isDevUnlimited) {
+      textEl.textContent = `Developer — Credits: ${used} / ∞`;
+    } else if (authMode === "authenticated") {
+      textEl.textContent = `Credits: ${used} / ${Number(cap) || 0}`;
+    } else {
+      textEl.textContent = `Free credits: ${used} / ${Number(cap) || 0}`;
+    }
+    wrap.title = formatUsageTooltip(authMode, bonus, isDevUnlimited);
     wrap.hidden = false;
   }
 
