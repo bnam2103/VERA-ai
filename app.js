@@ -3911,6 +3911,9 @@ async function runBuiltinVoicePlayback(prefix, { playlistId = "", soundId = "" }
       return;
     }
     await playFreeMusicPlaylist(prefix, pl);
+    await ensureFreeMusicCatalogUi(prefix);
+    spotifyApplyNowStateToPanel(prefix);
+    spotifySyncPlayButtonUi(prefix);
     return;
   }
   if (sid) {
@@ -3922,6 +3925,9 @@ async function runBuiltinVoicePlayback(prefix, { playlistId = "", soundId = "" }
       return;
     }
     await playFreeMusicSingle(prefix, { title: tr.title || tr.id || sid, url: tr.url }, { loop: true });
+    await ensureFreeMusicCatalogUi(prefix);
+    spotifyApplyNowStateToPanel(prefix);
+    spotifySyncPlayButtonUi(prefix);
     return;
   }
   if (artistEl) artistEl.textContent = "Nothing to play — missing built-in target.";
@@ -4095,6 +4101,88 @@ function restoreProductivityPanel(prefix) {
   spotifyApplyViewMode(prefix);
   requestAnimationFrame(() => {
     sidePaneEl.classList.add("visible");
+  });
+}
+
+const MUSIC_CONTROL_TRANSPORT_ONLY_OPS = new Set([
+  "pause",
+  "resume",
+  "skip_next",
+  "skip_previous",
+  "volume_delta",
+  "close_panel",
+]);
+
+/** Open/show the full Music panel — same surface as clicking MUSIC. Not gated by playback dedupe. */
+function ensureMusicPanelOpenForVoicePlayback(reason = "voice_music_play") {
+  const prefix = appModePrefix();
+  const sidePaneEl = uiEl("side-pane");
+  const wmOn = isVeraWorkModeOn() && prefix === "vera";
+  const wmLayoutBefore = wmOn ? getWorkModeLeftPaneLayout() : "";
+  const mountedBefore =
+    Boolean(sidePaneEl?.innerHTML?.trim()) && sidePaneEl?.dataset?.sidePaneKind === "productivity";
+
+  console.info("[music_panel_open_request]", {
+    reason,
+    prefix,
+    work_mode: wmOn,
+    wm_layout_before: wmLayoutBefore || null,
+    side_pane_hidden: sidePaneEl ? Boolean(sidePaneEl.hidden) : true,
+    side_pane_visible_class: sidePaneEl ? sidePaneEl.classList.contains("visible") : false,
+    productivity_mounted: mountedBefore,
+  });
+
+  if (wmOn && typeof window.layoutVeraWorkModePanels === "function") {
+    window.layoutVeraWorkModePanels(true);
+  }
+  if (wmOn && getWorkModeLeftPaneLayout() === "checklist-full") {
+    setWorkModeLeftPaneLayout("split");
+  }
+
+  if (sidePaneEl) {
+    const hasProductivityMarkup =
+      Boolean(sidePaneEl.innerHTML.trim()) && sidePaneEl.dataset.sidePaneKind === "productivity";
+    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+    if (hasProductivityMarkup) {
+      if (sidePaneEl.hidden) {
+        restoreProductivityPanel(prefix);
+      } else {
+        sidePaneEl.hidden = false;
+        sidePaneEl.dataset.sidePaneKind = "productivity";
+        document.body.classList.add("news-panel-open");
+        sidePaneEl.classList.add("visible");
+        removeSpotifyMiniButton(prefix);
+        spotifyApplyViewMode(prefix);
+      }
+    } else {
+      renderProductivityPanel({ immediate: true });
+    }
+    document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
+  }
+
+  const wmLayoutAfter = wmOn ? getWorkModeLeftPaneLayout() : "";
+  console.info("[music_panel_visible]", {
+    reason,
+    visible: sidePaneEl ? sidePaneEl.classList.contains("visible") : false,
+    hidden: sidePaneEl ? Boolean(sidePaneEl.hidden) : true,
+    collapsed: wmOn ? wmLayoutAfter === "checklist-full" : false,
+    mounted:
+      Boolean(sidePaneEl?.innerHTML?.trim()) && sidePaneEl?.dataset?.sidePaneKind === "productivity",
+    wm_layout: wmLayoutAfter || null,
+  });
+}
+
+function logMusicRenderState(prefix, extra = {}) {
+  const pfx = prefix || appModePrefix();
+  const st = veraMusicSourceState();
+  const gs = getGlobalPlaybackState(pfx);
+  console.info("[music_render_state]", {
+    source: getProductivityMusicSource(pfx),
+    active_playback_source: getActivePlaybackSource(pfx),
+    title: st.builtin?.title || st.spotify?.title || gs?.trackTitle || "",
+    is_playing: Boolean(gs?.isPlaying),
+    tab: getProductivityMusicSource(pfx),
+    ...extra,
   });
 }
 
@@ -6628,7 +6716,7 @@ function wireProductivityPanelEvents(prefix) {
   spotifyApplyNowStateToPanel(prefix);
 }
 
-function renderProductivityPanel() {
+function renderProductivityPanel(opts = {}) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
   const prefix = appModePrefix();
@@ -6741,6 +6829,10 @@ function renderProductivityPanel() {
     wireProductivityPanelEvents(prefix);
   };
 
+  if (opts.immediate) {
+    mount();
+    return;
+  }
   runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
 }
 
@@ -9465,11 +9557,36 @@ const _REASONING_PANEL_SIMPLE_DEF_RES = [
   /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?define\s+(?:the\s+(?:term|word)\s+)?(.+?)\s*[?.!]*\s*$/i
 ];
 
-const _REASONING_PANEL_PUT_RE =
-  /\b(?:put|place|write|answer|show|drop|paste)\s+(?:(this|that|it|them)|the\s+answer|the\s+explanation|an?\s+explanation\s+of\s+(.+?))\s+(?:in|into|onto|on)\s+(?:the\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?/i;
+const _REASONING_PANEL_ORD_TAIL =
+  "(?:\\s*#?\\s*(\\d+)|\\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?";
 
-const _REASONING_PANEL_IN_RE =
-  /\b(?:in|into|using|on|via|inside|within)\s+(?:(?:the|this|that|a)\s+)?(?:(?:current|active|same|previous|reasoning|work\s*mode|workmode)\s+)*(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?\b/i;
+const _REASONING_PANEL_DEST_NOUN =
+  "(?:reasoning(?:\\s+(?:panel|space|tab|page))?|(?:panel|tab|space|page)|work\\s*mode|workmode)" +
+  _REASONING_PANEL_ORD_TAIL;
+
+const _REASONING_PANEL_DEST_ADJ_RE =
+  "(?:(?:current|active|same|previous|new|another|extra|fresh|empty|reasoning|work\\s*mode|workmode)\\s+)*";
+
+const _REASONING_PANEL_PREP_RE = "(?:in|into|inside|within|on|via|using|to)";
+
+const _REASONING_PANEL_ACTION_PUT_RE =
+  "(?:put|place|write|answer|show|drop|paste|explain|send|move|open|work\\s+out|do)";
+
+const _REASONING_PANEL_PUT_RE = new RegExp(
+  "\\b" + _REASONING_PANEL_ACTION_PUT_RE +
+  "\\s+(?:(this|that|it|them)|the\\s+answer|the\\s+explanation|an?\\s+explanation\\s+of\\s+(.+?))" +
+  "\\s+" + _REASONING_PANEL_PREP_RE + "\\s+(?:(?:the|a|my)\\s+)?" +
+  _REASONING_PANEL_DEST_ADJ_RE + _REASONING_PANEL_DEST_NOUN,
+  "i"
+);
+
+const _REASONING_PANEL_IN_RE = new RegExp(
+  "\\b" + _REASONING_PANEL_PREP_RE +
+  "\\s+(?:(?:the|this|that|a|my)\\s+)?" +
+  "(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\\s+)?" +
+  _REASONING_PANEL_DEST_ADJ_RE + _REASONING_PANEL_DEST_NOUN + "\\b",
+  "i"
+);
 
 const _REASONING_PANEL_IMPERATIVE_RE =
   /\b(?:use|open|launch|spin\s*up|fire\s*up)\s+(?:up\s+)?(?:(?:a|another|the|one\s+more|some)\s+)?(?:(?:new|extra|additional|empty|fresh|another)\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|work\s*mode|workmode)\b/i;
@@ -9642,8 +9759,9 @@ function isExplicitReasoningPanelReference(text) {
   }
   const mIn = s.match(_REASONING_PANEL_IN_RE);
   if (mIn) {
-    const num = mIn[1] ? parseInt(mIn[1], 10) : null;
-    const ord = (mIn[2] || "").toLowerCase();
+    const preOrd = (mIn[1] || "").toLowerCase();
+    const num = mIn[2] ? parseInt(mIn[2], 10) : null;
+    const ord = (mIn[3] || preOrd || "").toLowerCase();
     const targetPanel = Number.isFinite(num)
       ? num
       : (_REASONING_PANEL_ORD_MAP[ord] != null ? _REASONING_PANEL_ORD_MAP[ord] : null);
@@ -9683,6 +9801,14 @@ function resolveReasoningPanelTopicFromContext() {
  * Pull the substantive question/task from the portion of the utterance that
  * precedes an explicit panel-destination phrase ("… in this panel").
  */
+function extractRawTopicBeforePanelPhrase(text) {
+  const s = String(text || "").trim();
+  if (!s) return "";
+  const panelM = s.match(_REASONING_PANEL_IN_RE) || s.match(_REASONING_PANEL_PUT_RE);
+  if (!panelM) return "";
+  return s.slice(0, panelM.index ?? 0).trim().replace(/[?,;.]+\s*$/u, "").trim();
+}
+
 function extractSubstantiveTopicBeforePanelPhrase(text) {
   const s = String(text || "").trim();
   if (!s) return "";
@@ -9716,11 +9842,30 @@ function resolveTopicForExplicitPanelReference(text, ref) {
   if (fromSameUtterance) {
     return { topic: fromSameUtterance, priorTopicUsed: false, source: "same_utterance_before_panel_phrase" };
   }
+  if (ref.wasPronoun) {
+    const fromPrior = resolveReasoningPanelTopicFromContext();
+    if (fromPrior) {
+      return {
+        topic: fromPrior,
+        priorTopicUsed: true,
+        source: "prior_substantive_user_text",
+      };
+    }
+    const rawBefore = extractRawTopicBeforePanelPhrase(text);
+    if (rawBefore && !/^(?:that|this|it)(?:\s+there)?[?.!]*$/i.test(rawBefore)) {
+      return { topic: rawBefore, priorTopicUsed: false, source: "same_utterance_raw_before_panel" };
+    }
+    return { topic: "", priorTopicUsed: false, source: "unresolved" };
+  }
+  const rawBefore = extractRawTopicBeforePanelPhrase(text);
+  if (rawBefore) {
+    return { topic: rawBefore, priorTopicUsed: false, source: "same_utterance_raw_before_panel" };
+  }
   const fromPrior = resolveReasoningPanelTopicFromContext();
   if (fromPrior) {
     return {
       topic: fromPrior,
-      priorTopicUsed: Boolean(ref.wasPronoun),
+      priorTopicUsed: false,
       source: "prior_substantive_user_text",
     };
   }
@@ -18698,6 +18843,14 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
 async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
   const prefix = appModePrefix();
   const op = payload.op || "open_panel";
+  console.info("[music_action_payload_received]", {
+    action: op,
+    playlist_id: payload.playlist_id || "",
+    sound_id: payload.sound_id || "",
+    playlist_name: payload.playlist_name || "",
+    request_id: data?.request_id || null,
+    source_event_type: data?.type || seqCtx?.source || "",
+  });
   console.info("[music_control_payload]", {
     music_control_received: true,
     op,
@@ -18799,20 +18952,15 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
     }
     return { op, transportProvider: resolveMusicTransportProvider(prefix, seqCtx) };
   }
-  const skipPanelRepeat = isRecentSameMusicPlay(payload, op);
-  const sidePaneEl = uiEl("side-pane");
-  if (sidePaneEl && !skipPanelRepeat) {
-    const hasProductivityMarkup =
-      Boolean(sidePaneEl.innerHTML.trim()) && sidePaneEl.dataset.sidePaneKind === "productivity";
-    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
-    if (hasProductivityMarkup) {
-      if (sidePaneEl.hidden) restoreProductivityPanel(prefix);
-    } else {
-      renderProductivityPanel();
-    }
-    document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
+  if (!MUSIC_CONTROL_TRANSPORT_ONLY_OPS.has(op)) {
+    ensureMusicPanelOpenForVoicePlayback("voice_music_play");
   }
   if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
+    console.info("[music_voice_action_detected]", {
+      query: payload.playlist_id || payload.sound_id || "",
+      source: "builtin",
+      op,
+    });
     await ensureSingleActiveMusicProvider("builtin", { reason: "play_builtin" });
     const sourceStateBeforeBuiltinPlay = veraMusicSourceState();
     const preservedBuiltinTime =
@@ -18849,12 +18997,19 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
           }
         }
       }
+      console.info("[music_playback_start]", {
+        source: "builtin",
+        track_id: payload.playlist_id || payload.sound_id || "",
+        name: payload.playlist_id || payload.sound_id || "",
+        request_id: data?.request_id || null,
+      });
       console.info("[music_control_payload]", {
         music_play_op: "play_builtin",
         playback_started: true,
         playback_backend: "builtin_audio",
         request_id: data?.request_id || null
       });
+      logMusicRenderState(pfx, { reason: "play_builtin" });
     } catch (err) {
       console.warn("[music_control_payload]", {
         music_play_op: "play_builtin",
