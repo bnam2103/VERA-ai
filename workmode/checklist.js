@@ -495,6 +495,105 @@ function readChecklistItemsFromStorageSafe() {
   return readChecklistItemsFromStorage();
 }
 
+/** Normalize server/voice full-state checklist rows for canonical local storage. */
+function normalizeChecklistControlItems(items) {
+  if (!Array.isArray(items)) return [];
+  return stripChecklistPlaceholdersForPersist(
+    items
+      .filter((row) => row && typeof row === "object")
+      .map((row) => ({
+        id: String(row.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+        text: String(row.text || "").trim(),
+        done: Boolean(row.done),
+        parent_id:
+          row.parent_id == null || String(row.parent_id || "").trim() === ""
+            ? null
+            : String(row.parent_id)
+      }))
+      .filter((row) => String(row.text || "").trim())
+  );
+}
+
+/**
+ * Apply backend checklist_control voice payload to canonical storage + UI.
+ * @returns {{ ok: boolean, beforeCount: number, afterCount: number, reason: string }}
+ */
+function applyChecklistControlVoicePayload(payload = {}) {
+  const op = String(payload.op || payload.action || "checklist_control").trim();
+  const before = readChecklistItemsFromStorage();
+  const beforeCount = before.filter((x) => String(x?.text || "").trim()).length;
+  try {
+    console.info("[checklist_client_mutation_start]", {
+      action: op,
+      before_count: beforeCount,
+      payload_item_count: Array.isArray(payload.items) ? payload.items.length : 0
+    });
+  } catch (_) {}
+
+  if (!Array.isArray(payload.items)) {
+    try {
+      console.warn("[checklist_client_mutation_missing]", {
+        reason: "missing_items_array",
+        action: op
+      });
+    } catch (_) {}
+    return { ok: false, beforeCount, afterCount: beforeCount, reason: "missing_items_array" };
+  }
+
+  const normalized = normalizeChecklistControlItems(payload.items);
+  _persistChecklistItemsToStorage(normalized);
+  if (typeof payload.completed_collapsed === "boolean") {
+    try {
+      localStorage.setItem(
+        _getActiveChecklistCollapsedStorageKey(),
+        payload.completed_collapsed ? "1" : "0"
+      );
+      queueWorkChecklistSyncToServer();
+    } catch (_) {}
+  }
+  loadWorkChecklistItems();
+  applyWorkChecklistCompletedCollapseFromStorage();
+  syncWorkChecklistEraseButton();
+  syncWorkChecklistHelpPlanButton();
+  scheduleSyncPlanButtonRefresh(0);
+
+  const after = readChecklistItemsFromStorage();
+  const afterCount = after.filter((x) => String(x?.text || "").trim()).length;
+  let ongoingDom = 0;
+  try {
+    const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
+    ongoingDom = ongoingUl
+      ? [...ongoingUl.querySelectorAll(":scope > li")].filter(
+          (el) => el.dataset.id !== WORK_CHECKLIST_UI_PLACEHOLDER_ID
+        ).length
+      : 0;
+  } catch (_) {}
+  try {
+    console.info("[checklist_client_mutation_done]", {
+      action: op,
+      before_count: beforeCount,
+      after_count: afterCount
+    });
+    console.info("[checklist_render_after_voice_action]", {
+      action: op,
+      stored_count: afterCount,
+      ongoing_dom_count: ongoingDom
+    });
+  } catch (_) {}
+
+  const changed = JSON.stringify(before) !== JSON.stringify(after);
+  if (!changed && op && !/undo|clear/i.test(op)) {
+    try {
+      console.warn("[checklist_client_mutation_missing]", {
+        reason: "no_state_change",
+        action: op
+      });
+    } catch (_) {}
+    return { ok: false, beforeCount, afterCount, reason: "no_state_change" };
+  }
+  return { ok: true, beforeCount, afterCount, reason: "" };
+}
+
 function queueWorkChecklistSyncToServer() {
   markWorkChecklistLocalMutation();
   if (!_checklistUsesAccountLocalStorage()) return;

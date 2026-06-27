@@ -18306,6 +18306,17 @@ function makeNdjsonPayloadDedupeKey(event, payload, index) {
   return `${req}:${planId}:${seqIdx}:${type}:${op}`;
 }
 
+const CHECKLIST_VOICE_MUTATION_FAILED_REPLY =
+  "I found that item, but couldn't update the checklist.";
+
+async function applyNdjsonDonePayloadsBeforeFinalize(ndjsonMeta, done, streamReplyState) {
+  await applyNdjsonActionPayloadEvent(done, "done");
+  if (done?.__checklistMutationFailed) {
+    done.reply = CHECKLIST_VOICE_MUTATION_FAILED_REPLY;
+  }
+  finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+}
+
 async function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown") {
   const plural = Array.isArray(event?.action_payloads)
     ? event.action_payloads.filter(Boolean)
@@ -18358,10 +18369,23 @@ async function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown")
   }
 
   for (let idx = 0; idx < deduped.length; idx++) {
-    await applyActionPayload(
-      { ...event, action_payload: deduped[idx], action_payloads: null },
-      { orderIndex: idx, source: ndjsonEventType }
-    );
+    const payload = deduped[idx];
+    if (payload?.panel_type === "checklist_control") {
+      try {
+        console.info("[checklist_voice_action_detected]", {
+          action: payload.op || null,
+          target_text: null,
+          target_id: null,
+          ndjson_event_type: ndjsonEventType,
+          payload_item_count: Array.isArray(payload.items) ? payload.items.length : 0
+        });
+      } catch (_) {}
+    }
+    const pack = { ...event, action_payload: deduped[idx], action_payloads: null };
+    await applyActionPayload(pack, { orderIndex: idx, source: ndjsonEventType });
+    if (pack.__checklistMutationFailed) {
+      event.__checklistMutationFailed = true;
+    }
   }
 }
 
@@ -19208,31 +19232,53 @@ async function applyActionPayload(data, seqCtx = {}) {
 
   if (payload?.panel_type === "checklist_control") {
     try {
+      console.info("[checklist_client_action_received]", {
+        action: payload.op || null,
+        payload_mode: payload.payload_mode || "full_state",
+        payload_item_count: Array.isArray(payload.items) ? payload.items.length : 0
+      });
       markWorkChecklistLocalMutation();
-      if (Array.isArray(payload.items)) {
-        localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(payload.items));
-      }
-      if (typeof payload.completed_collapsed === "boolean") {
-        localStorage.setItem(
-          WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
-          payload.completed_collapsed ? "1" : "0"
-        );
-      }
-      loadWorkChecklistItems();
-      syncWorkChecklistHelpPlanButton();
-      try {
-        const n = Array.isArray(payload.items) ? payload.items.length : 0;
+      const mutation =
+        typeof applyChecklistControlVoicePayload === "function"
+          ? applyChecklistControlVoicePayload(payload)
+          : { ok: false, reason: "apply_fn_missing" };
+      if (!mutation?.ok) {
+        data.__checklistMutationFailed = true;
+        try {
+          console.warn("[checklist_voice_action_result]", {
+            action: payload.op || null,
+            success: false,
+            reason: mutation?.reason || "mutation_failed"
+          });
+        } catch (_) {}
+      } else {
+        try {
+          console.info("[checklist_voice_action_result]", {
+            action: payload.op || null,
+            success: true,
+            before_count: mutation.beforeCount,
+            after_count: mutation.afterCount
+          });
+        } catch (_) {}
+        const n = Number(mutation.afterCount) || 0;
         window.veraUsageOnChecklistMutation?.({
-          op: "sync",
+          op: String(payload.op || "voice").replace(/^checklist\./, ""),
           item_count: n,
           batch_size: n || undefined,
           source: "voice",
-          sync_kind: "plan",
-          client_key: String(data?.request_id || ""),
+          sync_kind: "voice_full_state",
+          client_key: String(data?.request_id || "")
         });
         _usageTrackActionExecuted(payload, data, seqCtx);
+      }
+    } catch (err) {
+      data.__checklistMutationFailed = true;
+      try {
+        console.warn("[checklist_client_mutation_missing]", {
+          reason: String(err?.message || err || "apply_throw")
+        });
       } catch (_) {}
-    } catch (_) {}
+    }
     return;
   }
 
@@ -24452,12 +24498,16 @@ async function runInferMainPipeline(formData, opts = {}) {
                     streamReplyState.pendingReplyBack ||
                     stage2ReplyBack ||
                     buildWorkModeVoiceReplyBack({ prep: inferPrep, userText: inferUserText });
+                  const donePack = { ...done, reply: effectiveReply };
+                  await applyNdjsonActionPayloadEvent(donePack, "done");
+                  if (donePack.__checklistMutationFailed) {
+                    effectiveReply = CHECKLIST_VOICE_MUTATION_FAILED_REPLY;
+                  }
                   finalizeNdjsonStreamingReply(
                     ndjsonMeta,
                     { ...done, reply: effectiveReply },
                     streamReplyState
                   );
-                  applyNdjsonActionPayloadEvent({ ...done, reply: effectiveReply }, "done");
                   if (isWmStage2Voice && effectiveReply) {
                     const bubble = ensureStage2VoiceBubble(
                       inferPrep,
@@ -24793,8 +24843,7 @@ async function runInferInterruptPipeline(formData) {
                 return;
               }
               logInferLatency(done, "interrupt", inferTtfbMs);
-              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
-              applyNdjsonActionPayloadEvent(done, "done");
+              void applyNdjsonDonePayloadsBeforeFinalize(ndjsonMeta, done, streamReplyState);
             },
             onPlayStart: () => {
               logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
@@ -26138,8 +26187,7 @@ async function sendTextMessage() {
             },
             onDone: (done) => {
               logInferLatency(done, "text", textTtfbMs);
-              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
-              applyNdjsonActionPayloadEvent(done, "done");
+              void applyNdjsonDonePayloadsBeforeFinalize(ndjsonMeta, done, streamReplyState);
             },
             onPlayStart: () => {
               logTextFirstAudio("main-reply");
