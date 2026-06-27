@@ -676,7 +676,7 @@ function _looksLikeChecklistCommand(text) {
   const t = String(text || "").toLowerCase();
   if (!t) return false;
   /* "remove/delete/mark/check ... item/task/bullet/checklist ..." */
-  if (/\b(?:remove|delete|cross\s+off|check\s+off|uncheck|mark)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)?\s*(?:and\s+(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)\s*)?(?:item|task|bullet|checklist|to[- ]?do|todo|step)s?\b/.test(t)) {
+  if (/\b(?:remove|delete|cross\s+off|check\s+off|uncheck|tick|check|mark)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)?\s*(?:and\s+(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)\s*)?(?:item|task|bullet|checklist|to[- ]?do|todo|step)s?\b/.test(t)) {
     return true;
   }
   if (/\b(?:remove|delete)\s+items?\s+\d+/.test(t)) return true;
@@ -723,9 +723,23 @@ const CHECKLIST_ORDINAL_WORD_RE_FRAG =
 const CHECKLIST_REMOVAL_VERB_RE =
   /\b(?:remove|delete|erase|take\s+out|get\s+rid\s+of|clear|drop)\b/i;
 const CHECKLIST_ADD_VERB_RE = /\b(?:add|append|create|insert)\b/i;
-const CHECKLIST_COMPLETE_VERB_RE =
-  /\b(?:complete|completed|done|finish|finished|mark|check\s+off|tick\s+off)\b/i;
+const CHECKLIST_COMPLETE_AUX_RE =
+  /\b(?:complete|completed|finish|finished|check\s+off|tick\s+off|mark\s+complete)\b/i;
+const CHECKLIST_UNCOMPLETE_VERB_RE =
+  /\b(?:uncheck|undo\s+complete|mark\b.*\bincomplete\b|move\b.*\bongoing\b|mark\b.*\bnot\s+done\b)/i;
+const CHECKLIST_STATUS_REVIEW_RE =
+  /\bcheck\s+(?:my|the|our|this|that)?\s*(?:check\s*list|checklist|to-?do(?:\s+list)?|list|plan)\b|\bcheck\s+(?:if|whether)\b|\bcheck\s+(?:what|how\s+many)\b/i;
 const CHECKLIST_UPDATE_VERB_RE = /\b(?:update|replace|rename|change)\b/i;
+
+function _isChecklistCompleteVerb(text, hasItemTarget) {
+  const latest = String(text || "");
+  if (!latest.trim() || CHECKLIST_STATUS_REVIEW_RE.test(latest)) return false;
+  if (CHECKLIST_COMPLETE_AUX_RE.test(latest)) return true;
+  if (/\bmark\b/i.test(latest) && /\b(?:complete|completed|done)\b/i.test(latest)) return true;
+  if (hasItemTarget && /\b(?:tick|check)\b/i.test(latest)) return true;
+  if (hasItemTarget && /\bdone\b/i.test(latest)) return true;
+  return false;
+}
 
 const CHECKLIST_NOUN_RE =
   /\b(?:checklist|check\s+list|to-?do(?:\s+list)?|task\s*list|item|items|task|tasks|bullet|bullets|row|rows|step|steps|sub-?item|sub-?items|sub-?bullet|sub-?bullets)\b/i;
@@ -894,6 +908,10 @@ function detectChecklistActionIntent(opts = {}) {
   };
   if (!latest) return { ...base, reason: "empty_text" };
 
+  if (CHECKLIST_STATUS_REVIEW_RE.test(latest)) {
+    return { ...base, reason: "checklist_status_review" };
+  }
+
   const nonChecklistMatch = CHECKLIST_NON_OBJECT_NOUN_RE.exec(latest);
   const checklistNounMatch = CHECKLIST_NOUN_RE.exec(latest);
   if (nonChecklistMatch && !checklistNounMatch) {
@@ -907,9 +925,11 @@ function detectChecklistActionIntent(opts = {}) {
 
   const removalVerb = CHECKLIST_REMOVAL_VERB_RE.test(latest);
   const addVerb = CHECKLIST_ADD_VERB_RE.test(latest);
-  const completeVerb = CHECKLIST_COMPLETE_VERB_RE.test(latest);
-  const updateVerb = CHECKLIST_UPDATE_VERB_RE.test(latest);
   const indices = parseChecklistOrdinals(latest);
+  const hasItemTarget = indices.length >= 1;
+  const completeVerb = _isChecklistCompleteVerb(latest, hasItemTarget);
+  const uncompleteVerb = CHECKLIST_UNCOMPLETE_VERB_RE.test(latest);
+  const updateVerb = CHECKLIST_UPDATE_VERB_RE.test(latest);
   const wholeSection = CHECKLIST_WHOLE_SECTION_RE.test(latest);
   const subItem = CHECKLIST_SUB_ITEM_RE.test(latest);
   const scope = wholeSection ? "whole_section" : (subItem ? "sub_item" : (indices.length || checklistNounMatch ? "top_level" : "unknown"));
@@ -978,6 +998,19 @@ function detectChecklistActionIntent(opts = {}) {
       scope,
       confidence: explicitChecklistWord ? 0.85 : 0.65,
       reason: explicitChecklistWord ? "add_verb_plus_checklist_word" : "add_verb_plus_checklist_noun_with_context",
+      detectedObjectType: "checklist_item"
+    };
+  }
+
+  if (uncompleteVerb && (explicitChecklistWord || (checklistNounMatch && hasContext) || indices.length >= 1)) {
+    return {
+      ...base,
+      isChecklistAction: true,
+      action: "uncomplete",
+      indices,
+      scope,
+      confidence: explicitChecklistWord ? 0.85 : 0.7,
+      reason: explicitChecklistWord ? "uncomplete_verb_plus_checklist_word" : "uncomplete_verb_plus_context",
       detectedObjectType: "checklist_item"
     };
   }
