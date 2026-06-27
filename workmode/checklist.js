@@ -491,6 +491,10 @@ function readChecklistItemsFromStorage() {
   }
 }
 
+function readChecklistItemsFromStorageSafe() {
+  return readChecklistItemsFromStorage();
+}
+
 function queueWorkChecklistSyncToServer() {
   markWorkChecklistLocalMutation();
   if (!_checklistUsesAccountLocalStorage()) return;
@@ -751,11 +755,7 @@ function _checklistDomState() {
     const completedItems = completedUl ? completedUl.querySelectorAll(":scope > li").length : 0;
     exists = ongoingItems + completedItems > 0;
     if (!exists) {
-      try {
-        const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
-        const items = raw ? JSON.parse(raw) : [];
-        exists = Array.isArray(items) && items.length > 0;
-      } catch (_) {}
+      exists = readChecklistItemsFromStorage().length > 0;
     }
   } catch (_) {}
   return { exists, visible };
@@ -967,19 +967,6 @@ function createWorkChecklistDragHandle() {
 const WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX = 26;
 let workChecklistDragSession = { id: "", startX: 0, lastX: 0 };
 
-function readChecklistItemsFromStorageSafe() {
-  if (!_checklistUsesAccountLocalStorage()) {
-    return _readAnonymousChecklistItemsForRestore().items;
-  }
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 function writeChecklistItemsToStorageSafe(items) {
   try {
     _persistChecklistItemsToStorage(items);
@@ -1058,11 +1045,8 @@ function persistWorkChecklistOrderFromDom() {
     .filter((id) => id && id !== WORK_CHECKLIST_UI_PLACEHOLDER_ID);
   const completedIds = [...completedUl.querySelectorAll(":scope > li")].map((el) => el.dataset.id).filter(Boolean);
   try {
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
-    const map = new Map(items.map((x) => [String(x.id), x]));
-    const persisted = stripChecklistPlaceholdersForPersist(items);
+    const map = new Map(readChecklistItemsFromStorage().map((x) => [String(x.id), x]));
+    const persisted = stripChecklistPlaceholdersForPersist([...map.values()]);
     const next = stripChecklistPlaceholdersForPersist(
       [...ongoingIds, ...completedIds].map((id) => map.get(id)).filter(Boolean)
     );
@@ -1526,9 +1510,7 @@ function loadWorkChecklistItems() {
 
 function persistWorkChecklistToggle(id, done) {
   try {
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
+    let items = readChecklistItemsFromStorage();
     items = items.map((x) =>
       String(x.id) === id ? { ...x, done: Boolean(done) } : x
     );
@@ -1562,9 +1544,7 @@ function persistWorkChecklistToggleWithSubtree(id, done) {
   try {
     const sid = String(id || "");
     if (!sid) return;
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
+    let items = readChecklistItemsFromStorage();
 
     const target = items.find((x) => String(x?.id || "") === sid);
     const wantDone = Boolean(done);
@@ -1612,9 +1592,7 @@ function persistWorkChecklistUpdateText(id, text) {
       if (commitWorkChecklistFromPlaceholderText(text)) loadWorkChecklistItems();
       return;
     }
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
+    let items = readChecklistItemsFromStorage();
     items = items.map((x) => (String(x.id) === id ? { ...x, text: String(text) } : x));
     _persistChecklistItemsToStorage(items);
   } catch (_) {}
@@ -1623,9 +1601,7 @@ function persistWorkChecklistUpdateText(id, text) {
 function persistWorkChecklistRemove(id) {
   try {
     if (String(id) === WORK_CHECKLIST_UI_PLACEHOLDER_ID) return;
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
+    let items = readChecklistItemsFromStorage();
     items = items.filter((x) => String(x.id) !== id);
     _persistChecklistItemsToStorage(items);
     try {
@@ -1810,11 +1786,7 @@ function veraDebugSyncStateSnapshot() {
   const previewPanel = document.getElementById("vera-wm-checklist-sync-preview");
   let checklistCount = 0;
   try {
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
-    const items = raw ? JSON.parse(raw) : [];
-    checklistCount = Array.isArray(items)
-      ? items.filter((x) => x && String(x.text || "").trim()).length
-      : 0;
+    checklistCount = readChecklistItemsFromStorage().filter((x) => x && String(x.text || "").trim()).length;
   } catch (_) {}
   const snapshot = {
     timestamp: new Date().toISOString(),
@@ -1909,9 +1881,7 @@ function collectWorkChecklistOngoingTexts() {
 
 function workChecklistHasAnyStoredItems() {
   try {
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
-    const items = raw ? JSON.parse(raw) : [];
-    return Array.isArray(items) && items.length > 0;
+    return readChecklistItemsFromStorage().length > 0;
   } catch {
     return false;
   }
@@ -2275,11 +2245,22 @@ function buildChecklistProposalFromMarkdown(markdown) {
     full.match(
       /(?:^|\n)\s*(?:SYNC CHECKLIST|Checklist|Plan checklist|Tasks)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:#{1,6}\s+|[A-Z][A-Z0-9 \-/]{2,}:?\s*\n)|\s*$)/i
     );
-  const source = syncBlockMatch ? syncBlockMatch[1] : full;
   const hasExplicitSyncBlock = Boolean(syncBlockMatch);
-  const planishMarkdown = /\b(plan|schedule|outline|essay|draft|revise|revision|research|write|study|prepare|time\s*block|hour|deadline|due)\b/i.test(
-    full.slice(0, 5000)
-  );
+  const hasTimePlanBullets =
+    /\[\s*(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|[a-z]+)\s*-\s*(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|[a-z]+)\s*\]\s*:/i.test(
+      full
+    );
+  const planishMarkdown =
+    hasExplicitSyncBlock ||
+    /\b(?:study\s+plan|task\s+list|to-?do\s+list|plan\s+checklist|sync\s+checklist)\b/i.test(full.slice(0, 5000)) ||
+    (hasTimePlanBullets &&
+      /\b(plan|schedule|outline|deadline|time\s*block)\b/i.test(full.slice(0, 5000)));
+  const source = syncBlockMatch
+    ? syncBlockMatch[1]
+    : planishMarkdown && (hasExplicitSyncBlock || hasTimePlanBullets)
+      ? full
+      : "";
+  if (!source.trim()) return [];
   const rawLines = source.split("\n");
   const proposals = [];
   let currentTop = "";
@@ -2315,12 +2296,9 @@ function buildChecklistProposalFromMarkdown(markdown) {
         proposals.push({ depth: 1, text });
         subCountByTopText.set(topKey, cur + 1);
       } else {
-        // Preferred plan output has `[time-time]: task` top-level bullets, but
-        // real planning turns sometimes produce normal bullets. If the markdown
-        // is explicitly a sync block, or the saved pending turn is clearly a
-        // plan, accept practical top-level bullets so the Sync button does not
-        // disappear after a useful plan.
-        if (!hasExplicitSyncBlock && !timeTitlePattern.test(text) && !planishMarkdown) continue;
+        // Accept top-level bullets only from explicit sync blocks, time-titled
+        // plan rows, or clearly plan-shaped markdown — not general explanatory lists.
+        if (!hasExplicitSyncBlock && !timeTitlePattern.test(text)) continue;
         proposals.push({ depth: 0, text });
         currentTop = text;
         subCountByTopText.set(text.toLowerCase(), 0);
@@ -2336,7 +2314,7 @@ function buildChecklistProposalFromMarkdown(markdown) {
     seen.add(key);
     cleaned.push(row);
   }
-  if (!cleaned.length && planishMarkdown) {
+  if (!cleaned.length && planishMarkdown && hasExplicitSyncBlock) {
     const fallbackRows = [];
     const fallbackSeen = new Set();
     for (const raw of rawLines) {
@@ -2367,6 +2345,23 @@ function formatChecklistProposalText(rows) {
     .join("\n");
 }
 
+function materializeChecklistItemsFromProposalRows(rows) {
+  const out = [];
+  let parentId = null;
+  for (const row of rows) {
+    const text = normalizeChecklistRowText(row?.text);
+    if (!text || isChecklistPlaceholderLabel(text)) continue;
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (Number(row?.depth) > 0) {
+      out.push({ id, text, done: false, parent_id: parentId });
+    } else {
+      parentId = id;
+      out.push({ id, text, done: false, parent_id: null });
+    }
+  }
+  return out;
+}
+
 function parseChecklistProposalText(text) {
   const lines = String(text || "")
     .replace(/\r/g, "")
@@ -2381,26 +2376,7 @@ function parseChecklistProposalText(text) {
     if (!clean) continue;
     rows.push({ depth: indent >= 2 ? 1 : 0, text: clean });
   }
-  if (!rows.length) return [];
-  const out = [];
-  let parentId = null;
-  for (const row of rows) {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    if (row.depth === 0) parentId = id;
-    out.push({
-      id,
-      text: row.text,
-      done: false,
-      parent_id: row.depth > 0 ? parentId : null
-    });
-  }
-  out.push({
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    text: "",
-    done: false,
-    parent_id: null
-  });
-  return out;
+  return materializeChecklistItemsFromProposalRows(rows);
 }
 
 function setWorkChecklistSyncPreviewEditing(editing) {
@@ -2793,15 +2769,12 @@ function getChecklistDebugState() {
   let completedStoredCount = 0;
   let completedCollapsed = false;
   try {
-    const raw = localStorage.getItem(_getActiveChecklistItemsStorageKey());
-    const items = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(items)) {
-      storedItemCount = items.length;
-      for (const it of items) {
-        if (!it || typeof it.text !== "string") continue;
-        if (String(it.text).trim()) nonBlankStoredCount += 1;
-        if (it.done) completedStoredCount += 1;
-      }
+    const items = readChecklistItemsFromStorage();
+    storedItemCount = items.length;
+    for (const it of items) {
+      if (!it || typeof it.text !== "string") continue;
+      if (String(it.text).trim()) nonBlankStoredCount += 1;
+      if (it.done) completedStoredCount += 1;
     }
   } catch (_) {}
   try {

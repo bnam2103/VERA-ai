@@ -5307,9 +5307,13 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
   let checklistItems = [];
   if (inWorkMode) {
     try {
-      const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) checklistItems = parsed;
+      if (typeof readChecklistItemsFromStorage === "function") {
+        checklistItems = readChecklistItemsFromStorage();
+      } else {
+        const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) checklistItems = parsed;
+      }
     } catch (_) {}
   }
   const ongoing = checklistItems
