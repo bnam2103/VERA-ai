@@ -2810,6 +2810,10 @@ body.chat-started .input-container {
   display: none !important;
 }
 
+#vera-app:not(.work-mode) .vera-no-cap-toggle[hidden] {
+  display: none !important;
+}
+
 .vera-explicit-feedback-btn {
   pointer-events: auto;
   border: 1px solid rgba(96, 165, 250, 0.35);

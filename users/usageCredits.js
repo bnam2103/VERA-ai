@@ -15,10 +15,36 @@
     if (el instanceof HTMLElement) el.hidden = true;
   }
 
+  function readNoCapToggleEnabled(payload) {
+    const v = payload?.no_cap_toggle_enabled;
+    if (v === true || v === 1) return true;
+    const s = String(v ?? "").trim().toLowerCase();
+    return s === "true" || s === "1" || s === "yes" || s === "on";
+  }
+
+  function readNoCapActive(payload) {
+    const v = payload?.no_cap_active;
+    if (v === true || v === 1) return true;
+    const s = String(v ?? "").trim().toLowerCase();
+    return s === "true" || s === "1";
+  }
+
+  function logNoCapState(payload, tag) {
+    try {
+      console.info("[usageCredits]", tag || "state", {
+        no_cap_toggle_enabled: readNoCapToggleEnabled(payload),
+        no_cap_active: readNoCapActive(payload),
+        raw_toggle: payload?.no_cap_toggle_enabled,
+        raw_active: payload?.no_cap_active
+      });
+    } catch (_) {}
+  }
+
   function syncNoCapToggleButton(payload) {
     const btn = document.getElementById("vera-no-cap-toggle");
     if (!(btn instanceof HTMLButtonElement)) return;
-    const enabled = Boolean(payload?.no_cap_toggle_enabled);
+    const enabled = readNoCapToggleEnabled(payload);
+    logNoCapState(payload, enabled ? "toggle_visible" : "toggle_hidden");
     _noCapToggleEnabled = enabled;
     if (!enabled) {
       btn.hidden = true;
@@ -27,7 +53,7 @@
       _noCapActive = false;
       return;
     }
-    _noCapActive = Boolean(payload?.no_cap_active);
+    _noCapActive = readNoCapActive(payload);
     btn.hidden = false;
     btn.classList.toggle("is-on", _noCapActive);
     btn.textContent = _noCapActive ? "No cap: ON" : "No cap: OFF";
@@ -64,7 +90,7 @@
     const cap = Number(payload.credits_cap) || 0;
     const bonus = Number(payload.bonus_credits) || 0;
     const authMode = payload.auth_mode === "authenticated" ? "authenticated" : "anonymous";
-    const noCapActive = Boolean(payload.no_cap_active);
+    const noCapActive = readNoCapActive(payload);
     if (noCapActive) {
       textEl.textContent =
         authMode === "authenticated"
@@ -142,6 +168,7 @@
           return null;
         }
         renderUsageCreditsDisplay(data);
+        logNoCapState(data, "credits_today_ok");
         return data;
       } catch (_) {
         hideUsagePill();
@@ -174,6 +201,12 @@
 
   wireNoCapToggleButton();
   wireUsageCreditsRefreshHooks();
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("DOMContentLoaded", () => {
+      void refreshUsageCreditsToday();
+    });
+  }
 
   try {
     if (typeof window !== "undefined") {
