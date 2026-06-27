@@ -2129,6 +2129,13 @@ function acknowledgeWorkModeTimerUp() {
 /** Server `/infer` + `/text` short-circuit: schedule a one-shot reminder in work mode only. */
 function applyWorkModeTimerPayload(wm) {
   if (!wm || typeof wm !== "object") return;
+  try {
+    console.info("[timer_client_action_received]", {
+      duration_seconds: wm.duration_seconds ?? null,
+      cancel: wm.cancel === true,
+      has_fire_at: Number.isFinite(Number(wm.fire_at_epoch_ms)),
+    });
+  } catch (_) {}
   if (typeof isVeraWorkModeOn !== "function" || !isVeraWorkModeOn()) return;
   if (appModePrefix() !== "vera") return;
   if (wm.cancel === true) {
@@ -2138,13 +2145,25 @@ function applyWorkModeTimerPayload(wm) {
   const id = String(wm.id || "");
   const fireMs = Number(wm.fire_at_epoch_ms);
   const message = String(wm.message || "Your work mode timer is up.");
-  if (!Number.isFinite(fireMs)) return;
+  if (!Number.isFinite(fireMs)) {
+    try {
+      console.warn("[timer_client_start_failed]", { reason: "invalid_fire_at_epoch_ms" });
+    } catch (_) {}
+    return;
+  }
   if (id && id === veraLastWorkModeTimerClientId) return;
   clearVeraWorkModeClientTimer();
   veraLastWorkModeTimerClientId = id || String(fireMs);
   veraWorkModeTimerFireAtMs = fireMs;
   updateWorkModeTimerHeaderFromState();
   startWorkModeTimerUiFastRefreshIfNeeded();
+  try {
+    const durationSeconds = Math.max(0, Math.round((fireMs - Date.now()) / 1000));
+    console.info("[timer_client_start_success]", {
+      timer_id: id || veraLastWorkModeTimerClientId,
+      duration_seconds: durationSeconds,
+    });
+  } catch (_) {}
   const delay = Math.max(0, fireMs - Date.now());
   const timerTtsPayload = {
     audio_url: wm.audio_url,
@@ -8505,6 +8524,22 @@ function acquireWorkModeReasoningLane(_forTopicText = "") {
   });
 }
 
+function ensureReasoningPanelIndexExists(targetIdx0) {
+  const want = Number(targetIdx0);
+  if (!Number.isFinite(want) || want < 0) return false;
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot || typeof addReasoningTab !== "function") return false;
+  let panelEl = panelsRoot.querySelector(`.vera-reasoning-tab-panel[data-tab-index="${want}"]`);
+  let guard = 0;
+  while (!panelEl && guard < (typeof REASONING_TABS_MAX === "number" ? REASONING_TABS_MAX : 8)) {
+    const opened = addReasoningTab({ source: "explicit_panel_voice_target" });
+    if (!opened) break;
+    panelEl = panelsRoot.querySelector(`.vera-reasoning-tab-panel[data-tab-index="${want}"]`);
+    guard += 1;
+  }
+  return Boolean(panelEl);
+}
+
 function acquireWorkModeReasoningLaneForIndex(desiredLaneIdx) {
   const idxs = getReasoningPanelIndices();
   const raw = Number(desiredLaneIdx);
@@ -9557,8 +9592,11 @@ const _REASONING_PANEL_SIMPLE_DEF_RES = [
   /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?define\s+(?:the\s+(?:term|word)\s+)?(.+?)\s*[?.!]*\s*$/i
 ];
 
+const _REASONING_PANEL_ORD_WORDS =
+  "first|second|third|fourth|fifth|sixth|seventh|eighth|one|two|three|four|five|six|seven|eight";
+
 const _REASONING_PANEL_ORD_TAIL =
-  "(?:\\s*#?\\s*(\\d+)|\\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?";
+  "(?:\\s*#?\\s*(\\d+)|\\s+(" + _REASONING_PANEL_ORD_WORDS + "))?";
 
 const _REASONING_PANEL_DEST_NOUN =
   "(?:reasoning(?:\\s+(?:panel|space|tab|page))?|(?:panel|tab|space|page)|work\\s*mode|workmode)" +
@@ -9583,7 +9621,7 @@ const _REASONING_PANEL_PUT_RE = new RegExp(
 const _REASONING_PANEL_IN_RE = new RegExp(
   "\\b" + _REASONING_PANEL_PREP_RE +
   "\\s+(?:(?:the|this|that|a|my)\\s+)?" +
-  "(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\\s+)?" +
+  "(?:(?:" + _REASONING_PANEL_ORD_WORDS + ")\\s+)?" +
   _REASONING_PANEL_DEST_ADJ_RE + _REASONING_PANEL_DEST_NOUN + "\\b",
   "i"
 );
@@ -9596,7 +9634,9 @@ const _REASONING_PANEL_PRONOUN_RE =
 
 const _REASONING_PANEL_ORD_MAP = {
   first: 1, second: 2, third: 3, fourth: 4,
-  fifth: 5, sixth: 6, seventh: 7, eighth: 8
+  fifth: 5, sixth: 6, seventh: 7, eighth: 8,
+  one: 1, two: 2, three: 3, four: 4,
+  five: 5, six: 6, seven: 7, eight: 8
 };
 
 const _REASONING_PANEL_BROAD_TOPIC_RE_LIST = [
@@ -10906,6 +10946,60 @@ function composeDeicticVoiceToPanelReasoningTask(opts = {}) {
     newDetails: newDetails || null,
     originalUserText: original
   };
+}
+
+function buildVoiceDeicticReferentFromRecentContext() {
+  const priorUser = String(workModeLastSubstantiveUserText || "").trim();
+  const turns = collectRecentVoiceTurnPairs(2);
+  let lastAssistant = "";
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (turns[i]?.role === "assistant" && String(turns[i].content || "").trim()) {
+      lastAssistant = String(turns[i].content).trim();
+      break;
+    }
+  }
+  const parts = [];
+  if (priorUser) parts.push(`User concern: ${summarizeVoiceTopicAnchorForPanel(priorUser)}`);
+  if (lastAssistant) {
+    parts.push(`Prior Voice UI guidance: ${summarizeVoiceTopicAnchorForPanel(lastAssistant, 360)}`);
+  }
+  return parts.join(" ").trim();
+}
+
+function resolveExplicitPanelStreamTask(text, ref) {
+  const raw = String(text || "").trim();
+  if (!ref?.matched) return { task: "", source: "none", referent: "" };
+  const priorReferent =
+    buildVoiceDeicticReferentFromRecentContext() || resolveReasoningPanelTopicFromContext();
+  if (detectVoiceToPanelDeicticWritingHandoff(raw)) {
+    const compose = composeDeicticVoiceToPanelReasoningTask({
+      userText: raw,
+      originalUserText: raw,
+      resolvedReferent: priorReferent,
+      topicAnchor: priorReferent
+    });
+    if (compose?.composedTask) {
+      return {
+        task: compose.composedTask,
+        source: "deictic_compose",
+        referent: compose.resolvedReferent || priorReferent
+      };
+    }
+  }
+  const resolved = resolveTopicForExplicitPanelReference(text, ref);
+  if (resolved.topic) {
+    let task = resolved.topic;
+    if (ref.wasPronoun && /\b(?:write|draft|compose|prepare)\b/i.test(raw) && priorReferent) {
+      const action = /\bdraft\b/i.test(raw)
+        ? "Draft"
+        : /\bcompose\b/i.test(raw)
+          ? "Compose"
+          : "Write";
+      task = `${action} a clear deliverable based on this prior context: ${priorReferent}`;
+    }
+    return { task, source: resolved.source, referent: priorReferent || resolved.topic };
+  }
+  return { task: "", source: "unresolved", referent: priorReferent };
 }
 
 function detectVoiceToPanelActionReference(text) {
@@ -12831,7 +12925,17 @@ function classifyWorkModeTurnIntent(userText) {
 
 function buildWorkModeReasoningStage1AckText(trimmed, opts = {}) {
   const o = opts || {};
-  if (o.explicitPanelDestination) return "I'll open this in the panel.";
+  if (o.explicitPanelDestination) {
+    const n = Number(o.explicitPanelTarget);
+    const userText = String(o.userText || trimmed || "");
+    if (Number.isFinite(n) && n >= 1) {
+      if (/\bwrite\b/i.test(userText)) return `I'll write it in panel ${n}.`;
+      if (/\b(?:draft|compose)\b/i.test(userText)) return `I'll draft it in panel ${n}.`;
+      if (/\bexplain\b/i.test(userText)) return `I'll explain it in panel ${n}.`;
+      return `I'll open this in panel ${n}.`;
+    }
+    return "I'll open this in the panel.";
+  }
   if (o.hasUpload) return "Let me take a look at the file.";
   if (o.planningIntent) return "Let me lay out a plan.";
   if (o.requestHasCodeIntent) return "Let me trace through it.";
@@ -15238,10 +15342,26 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const _briefModifier = isBriefExplanationModifier(trimmed);
   const _simpleDefinition = isSimpleDefinitionQuestion(trimmed);
   if (_explicitPanelRef.matched) {
-    const _panelTopicResolve = resolveTopicForExplicitPanelReference(trimmed, _explicitPanelRef);
-    let resolvedTopic = _panelTopicResolve.topic || null;
-    const prior_topic_used = Boolean(_panelTopicResolve.priorTopicUsed);
+    const _panelTopicResolve = resolveExplicitPanelStreamTask(trimmed, _explicitPanelRef);
+    let resolvedTopic = _panelTopicResolve.task || null;
+    const prior_topic_used = Boolean(
+      _panelTopicResolve.source === "prior_substantive_user_text" ||
+        _panelTopicResolve.source === "deictic_compose"
+    );
     try {
+      console.info("[explicit_panel_target_detected]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        target_panel_number: _explicitPanelRef.targetPanel ?? null,
+        was_pronoun: Boolean(_explicitPanelRef.wasPronoun),
+      });
+      console.info("[deictic_panel_task_resolved]", {
+        original_text: String(trimmed || "").slice(0, 240),
+        resolved_task_preview: resolvedTopic ? String(resolvedTopic).slice(0, 240) : null,
+        referent_source: _panelTopicResolve.source,
+        referent_preview: _panelTopicResolve.referent
+          ? String(_panelTopicResolve.referent).slice(0, 200)
+          : null,
+      });
       console.info("[voice_to_panel_intent]", {
         detected_phrase: "explicit_reasoning_panel_reference",
         raw_preview: String(trimmed || "").slice(0, 240),
@@ -15333,8 +15453,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     opts.__reasoningGateForceRoute = "reasoning_panel";
     opts.__reasoningGateReason = "explicit_panel_reference";
     opts.__reasoningGateResolvedTopic = resolvedTopic || null;
-    opts.__explicitPanelDestinationConsumed = Boolean(resolvedTopic);
+    opts.__explicitPanelDestinationConsumed = true;
     opts.__reasoningGateTargetPanel = _explicitPanelRef.targetPanel ?? null;
+    opts.__voiceToPanelResolvedReferent = _panelTopicResolve.referent || null;
   } else if (_conversationalCheck && !callerForcedReasoning) {
     /* 2026-06-13 — narrow conversational / check-in guard. Runs AFTER the
        explicit-panel branch so explicit Work Mode requests always win.
@@ -15557,19 +15678,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const explicitPanelStreamTopic = String(
     opts.__reasoningGateResolvedTopic || extractSubstantiveTopicBeforePanelPhrase(rawTrimmed) || ""
   ).trim();
-  let deicticCompose = null;
-  if (!(gateForcedExplicitPanel && explicitPanelStreamTopic)) {
-    deicticCompose = composeDeicticVoiceToPanelReasoningTask({
-      userText: effectiveUserText,
-      originalUserText: rawTrimmed,
-      resolvedReferent: priorVoiceTopic,
-      topicAnchor: priorThreadAnchor
-    });
-  }
+  const deicticCompose =
+    !explicitPanelStreamTopic && detectVoiceToPanelDeicticWritingHandoff(rawTrimmed)
+      ? composeDeicticVoiceToPanelReasoningTask({
+          userText: effectiveUserText,
+          originalUserText: rawTrimmed,
+          resolvedReferent: priorVoiceTopic,
+          topicAnchor: priorThreadAnchor
+        })
+      : null;
   const streamUserRequestForReasoning =
-    gateForcedExplicitPanel && explicitPanelStreamTopic
-      ? explicitPanelStreamTopic
-      : deicticCompose?.composedTask || effectiveUserText;
+    explicitPanelStreamTopic || deicticCompose?.composedTask || effectiveUserText;
   if (deicticCompose) {
     try {
       console.info("[voice_to_panel_deictic_compose]", {
@@ -15919,6 +16038,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     detectWorkModeRequestHasComputationalNumericIntent(effectiveUserText);
   const stage1AckText = buildWorkModeReasoningStage1AckText(effectiveUserText, {
     explicitPanelDestination: Boolean(opts.__explicitPanelDestinationConsumed),
+    explicitPanelTarget: opts.__reasoningGateTargetPanel,
+    userText: effectiveUserText,
     hasUpload,
     planningIntent,
     requestHasComputationalNumericIntent,
@@ -15955,13 +16076,15 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
      panel does not exist we fall through to the existing priority chain
      so the planner doesn't deadlock on a missing tab. */
   let explicitTargetLaneIdx = null;
+  let explicitTargetPanel1Based = null;
   try {
     const targetPanel1Based = Number(opts && opts.__reasoningGateTargetPanel);
     if (Number.isFinite(targetPanel1Based) && targetPanel1Based >= 1) {
-      const idxs = (typeof getReasoningPanelIndices === "function")
-        ? getReasoningPanelIndices()
-        : [];
-      const candidate = Array.isArray(idxs) ? idxs[targetPanel1Based - 1] : undefined;
+      explicitTargetPanel1Based = targetPanel1Based;
+      const targetIdx0 = targetPanel1Based - 1;
+      ensureReasoningPanelIndexExists(targetIdx0);
+      const idxs = typeof getReasoningPanelIndices === "function" ? getReasoningPanelIndices() : [];
+      const candidate = Array.isArray(idxs) ? idxs[targetIdx0] : undefined;
       if (Number.isFinite(candidate)) {
         explicitTargetLaneIdx = Number(candidate);
       }
@@ -16016,7 +16139,22 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     return renderLaneId || turnContext?.turn_lane_id || getWorkModeReasoningLaneId(laneIdx);
   })();
   const renderLaneId = reasoningLaneId;
+  if (explicitTargetLaneIdx != null && typeof activateReasoningTab === "function") {
+    try {
+      activateReasoningTab(explicitTargetLaneIdx, {
+        commandText: streamUserRequestForReasoning || effectiveUserText,
+        requestedIndex: explicitTargetPanel1Based || explicitTargetLaneIdx + 1,
+        resolvedFrom: "explicit_panel_voice_target"
+      });
+    } catch (_) {}
+  }
   try {
+    console.info("[reasoning_lane_target]", {
+      requested_panel: explicitTargetPanel1Based,
+      selected_lane_idx: laneIdx,
+      render_lane_id: renderLaneId,
+      explicit_target_lane_idx: explicitTargetLaneIdx,
+    });
     console.info("[reasoning_stream_panel]", {
       prompt_preview: String(effectiveUserText || "").slice(0, 160),
       target_panel_index_1based: explicitTargetLaneIdx != null ? Number(opts.__reasoningGateTargetPanel) : null,
@@ -16059,7 +16197,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     });
     console.info("[reasoning_stream_start]", {
       turn_id: turnContext?.turn_id || null,
-      stream_lane_id: streamLaneId
+      stream_lane_id: streamLaneId,
+      task_preview: String(streamUserRequestForReasoning || "").slice(0, 240),
+      target_panel_index_1based: explicitTargetPanel1Based,
     });
     try {
       console.info("[reasoning_queue_start]", {

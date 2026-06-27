@@ -25,6 +25,10 @@ let _workspaceHydrateAttempts = 0;
 let _workspaceHydrateRetryTimer = null;
 let _supabaseWasAuthenticated = false;
 let _memoriesFetchGeneration = 0;
+/** Bumps on login click, sign-out, and explicit logout — stale async refreshes must not apply. */
+let _authGeneration = 0;
+/** Set while Supabase client has a persisted session user id (sync cache). */
+let _supabaseSessionUserId = null;
 /** @type {'login' | 'forgot' | 'reset-password' | 'reset-expired'} */
 let _accountAuthView = "login";
 let _authUiBusy = false;
@@ -551,22 +555,88 @@ function _runAccountLogoutCleanup() {
   } catch (_) {}
 }
 
-async function refreshSupabaseMeFromBackend() {
+async function refreshSupabaseMeFromBackend(opts = {}) {
+  const genAtStart = opts.generation != null ? opts.generation : _authGeneration;
+  const requestId = opts.requestId || `me_${genAtStart}_${_authNowMs()}`;
   try {
     const res = await authFetchImpl(
       authApiUrl(`/api/auth/me?session_id=${encodeURIComponent(getSessionId())}`),
       { method: "GET" }
     );
     const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      _lastMeSnapshot = data;
-      return data;
+    if (_authGenerationStale(genAtStart, "auth_me_response")) {
+      return _mergeMeWithSessionFallback(_lastMeSnapshot);
     }
-  } catch (_) {}
-  _lastMeSnapshot = { authenticated: false };
-  return _lastMeSnapshot;
+    if (res.ok) {
+      const merged = _mergeMeWithSessionFallback(data);
+      _lastMeSnapshot = merged;
+      return merged;
+    }
+    _authLog("[auth_profile_fetch_fail]", {
+      request_id: requestId,
+      status: res.status,
+    });
+  } catch (err) {
+    _authLog("[auth_profile_fetch_fail]", {
+      request_id: requestId,
+      message: String(err?.message || err),
+    });
+  }
+  const fallback = _mergeMeWithSessionFallback({ authenticated: false });
+  _lastMeSnapshot = fallback;
+  return fallback;
 }
 
+function _syncSupabaseSessionCache(session) {
+  const uid = session?.user?.id ? String(session.user.id).trim() : "";
+  _supabaseSessionUserId = uid || null;
+}
+
+function _mergeMeWithSessionFallback(backendMe) {
+  if (backendMe?.authenticated) return backendMe;
+  if (_supabaseSessionUserId) {
+    const sessionMe = _meFromSupabaseSession({
+      user: {
+        id: _supabaseSessionUserId,
+        email: _lastMeSnapshot?.email || backendMe?.email || "",
+      },
+    });
+    if (sessionMe) {
+      return {
+        ...sessionMe,
+        email: backendMe?.email || sessionMe.email || _lastMeSnapshot?.email || null,
+        profile: backendMe?.profile || _lastMeSnapshot?.profile || {},
+      };
+    }
+  }
+  if (backendMe && backendMe.authenticated === false && !_supabaseSessionUserId) {
+    return backendMe;
+  }
+  if (_lastMeSnapshot?.authenticated) return _lastMeSnapshot;
+  return { authenticated: false };
+}
+
+async function _getMeFromCurrentSupabaseSession() {
+  if (!_supabaseClient) return null;
+  try {
+    const { data } = await _supabaseClient.auth.getSession();
+    const session = data?.session || null;
+    _syncSupabaseSessionCache(session);
+    return session ? _meFromSupabaseSession(session) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _authGenerationStale(genAtStart, reason) {
+  if (genAtStart == null || genAtStart === _authGeneration) return false;
+  _authLog("[auth_stale_response_ignored]", {
+    request_generation: genAtStart,
+    current_generation: _authGeneration,
+    reason: reason || "generation_mismatch",
+  });
+  return true;
+}
 function _meFromSupabaseSession(session) {
   const user = session?.user;
   if (!user) return null;
@@ -586,31 +656,40 @@ function _meFromSupabaseSession(session) {
 }
 
 function _applyOptimisticSignedInFromSession(session) {
+  _syncSupabaseSessionCache(session);
   const me = _meFromSupabaseSession(session);
   if (!me) return false;
   _applySupabaseAccountChrome(me);
   return true;
 }
 
-function _applySupabaseAccountChrome(me) {
-  const uid = String(me?.user_id || "").trim();
-  const nowAuthenticated = Boolean(me?.authenticated);
+function _applySupabaseAccountChrome(me, opts = {}) {
+  const forceSignedOut = Boolean(opts.forceSignedOut);
+  let resolved = me;
+  if (!forceSignedOut && !me?.authenticated && _supabaseSessionUserId) {
+    resolved = _mergeMeWithSessionFallback(me);
+    if (resolved?.authenticated) {
+      _authLog("[auth_session_fallback_ui]", { reason: "blocked_logged_out_downgrade" });
+    }
+  }
+  const uid = String(resolved?.user_id || "").trim();
+  const nowAuthenticated = Boolean(resolved?.authenticated);
   if (_supabaseWasAuthenticated && !nowAuthenticated) {
     _runAccountLogoutCleanup();
   }
   _supabaseWasAuthenticated = nowAuthenticated;
-  _lastMeSnapshot = me;
-  _setSupabaseAccountLabel(me);
-  _setAccountFabLabel(me);
-  _renderAccountPanel(me);
+  _lastMeSnapshot = resolved;
+  _setSupabaseAccountLabel(resolved);
+  _setAccountFabLabel(resolved);
+  _renderAccountPanel(resolved);
   if (typeof hideLegacySignInUi === "function") {
     const legacyOn =
       typeof isLegacySignInEnabled === "function" && isLegacySignInEnabled();
-    if (!legacyOn || me?.authenticated) {
+    if (!legacyOn || resolved?.authenticated) {
       hideLegacySignInUi();
     }
   }
-  if (!me?.authenticated) {
+  if (!resolved?.authenticated) {
     _settingsHydratedUserId = null;
     _checklistHydratedUserId = null;
     _checklistHydrateAttempts = 0;
@@ -664,9 +743,10 @@ function _applySupabaseAccountUiFromMe(me) {
   _scheduleOptionalAuthSideEffects(me);
 }
 
-async function _runPostLoginOptionalRefresh() {
+async function _runPostLoginOptionalRefresh(genAtStart) {
+  const gen = genAtStart != null ? genAtStart : _authGeneration;
   const refreshStart = _authNowMs();
-  _authLog("[auth_post_login_refresh_start]");
+  _authLog("[auth_post_login_refresh_start]", { generation: gen });
   let slowWarned = false;
   const slowTimer = window.setTimeout(() => {
     slowWarned = true;
@@ -679,28 +759,32 @@ async function _runPostLoginOptionalRefresh() {
   try {
     const profileStart = _authNowMs();
     _authLog("[auth_profile_fetch_start]");
-    const me = await refreshSupabaseMeFromBackend();
+    const me = await refreshSupabaseMeFromBackend({ generation: gen });
     _authLog("[auth_profile_fetch_done]", {
       duration_ms: Math.round(_authNowMs() - profileStart),
     });
+    if (_authGenerationStale(gen, "post_login_profile")) return;
 
+    const resolved = _mergeMeWithSessionFallback(me);
     const labelStart = _authNowMs();
-    _authLog("[auth_account_label_update_start]");
-    _applySupabaseAccountChrome(me);
+    _authLog("[auth_account_label_update_start]", { background: true });
+    _applySupabaseAccountChrome(resolved);
     _authLog("[auth_account_label_update_done]", {
       duration_ms: Math.round(_authNowMs() - labelStart),
+      background: true,
     });
 
     const activeStart = _authNowMs();
     _authLog("[auth_user_active_fetch_start]");
     if (typeof refreshVeraActiveUserLabel === "function") {
-      await refreshVeraActiveUserLabel();
+      await refreshVeraActiveUserLabel({ generation: gen, skipSessionFirst: true });
     }
     _authLog("[auth_user_active_fetch_done]", {
       duration_ms: Math.round(_authNowMs() - activeStart),
     });
+    if (_authGenerationStale(gen, "post_login_user_active")) return;
 
-    _scheduleOptionalAuthSideEffects(me);
+    _scheduleOptionalAuthSideEffects(resolved);
 
     const creditsStart = _authNowMs();
     _authLog("[auth_credits_refresh_start]");
@@ -864,33 +948,71 @@ async function refreshSupabaseAccountLabel(opts = {}) {
   if (!_supabaseConfigured && !_supabaseClient) {
     return false;
   }
-  const skipBackend = Boolean(opts.meOverride);
+  const genAtStart = opts.generation != null ? opts.generation : _authGeneration;
+  const labelStart = _authNowMs();
+  _authLog("[auth_refresh_account_label_start]", { generation: genAtStart });
+
+  const skipBackend = Boolean(opts.skipBackend);
   const skipOptional = Boolean(opts.skipOptionalRefresh);
+  const skipSessionFirst = Boolean(opts.skipSessionFirst);
   let me = opts.meOverride || null;
-  if (!me) {
+  let source = me ? "override" : null;
+
+  if (!me && !skipSessionFirst) {
+    const sessionMe = await _getMeFromCurrentSupabaseSession();
+    if (sessionMe?.authenticated) {
+      me = sessionMe;
+      source = "supabase";
+      _authLog("[auth_show_signed_in_immediate]", { email: sessionMe.email });
+      _applySupabaseAccountChrome(sessionMe);
+      if (skipBackend) {
+        _authLog("[auth_refresh_account_label_done]", {
+          source,
+          duration_ms: Math.round(_authNowMs() - labelStart),
+        });
+        return true;
+      }
+    }
+  }
+
+  if (!skipBackend && !opts.meOverride) {
     const profileStart = _authNowMs();
     _authLog("[auth_profile_fetch_start]");
-    me = await refreshSupabaseMeFromBackend();
+    const backendMe = await refreshSupabaseMeFromBackend({ generation: genAtStart });
     _authLog("[auth_profile_fetch_done]", {
       duration_ms: Math.round(_authNowMs() - profileStart),
     });
+    if (_authGenerationStale(genAtStart, "refresh_account_label")) {
+      _authLog("[auth_refresh_account_label_done]", {
+        source: "stale",
+        duration_ms: Math.round(_authNowMs() - labelStart),
+      });
+      return Boolean(_lastMeSnapshot?.authenticated);
+    }
+    const resolved = _mergeMeWithSessionFallback(backendMe || me);
+    me = resolved;
+    source = source === "supabase" ? "supabase+backend" : resolved?.authenticated ? "backend" : "fallback";
   }
 
-  const labelStart = _authNowMs();
-  _authLog("[auth_account_label_update_start]");
+  if (!me) {
+    me = _mergeMeWithSessionFallback({ authenticated: false });
+    source = source || "fallback";
+  }
+
   if (skipOptional) {
     _applySupabaseAccountChrome(me);
   } else {
     _applySupabaseAccountUiFromMe(me);
   }
-  _authLog("[auth_account_label_update_done]", {
+  _authLog("[auth_refresh_account_label_done]", {
+    source: source || "unknown",
     duration_ms: Math.round(_authNowMs() - labelStart),
   });
   return Boolean(me?.authenticated);
 }
 
 function isSupabaseUserAuthenticated() {
-  return Boolean(_lastMeSnapshot?.authenticated);
+  return Boolean(_supabaseSessionUserId || _lastMeSnapshot?.authenticated);
 }
 
 function _showAccountError(msg) {
@@ -925,9 +1047,40 @@ async function initSupabaseAuth() {
       },
     });
 
-    _supabaseClient.auth.onAuthStateChange((event) => {
-      _handleAuthStateChangeEvent(event);
-      refreshSupabaseAccountLabel().catch(() => {});
+    try {
+      const { data: bootSession } = await _supabaseClient.auth.getSession();
+      _syncSupabaseSessionCache(bootSession?.session || null);
+    } catch (_) {}
+
+    _supabaseClient.auth.onAuthStateChange((event, session) => {
+      _authLog("[auth_state_change]", {
+        event,
+        has_session: Boolean(session),
+        email: session?.user?.email || null,
+      });
+      if (event === "SIGNED_OUT") {
+        _authGeneration += 1;
+        _syncSupabaseSessionCache(null);
+        _handleAuthStateChangeEvent(event);
+        _applySupabaseAccountChrome({ authenticated: false }, { forceSignedOut: true });
+        return;
+      }
+      _syncSupabaseSessionCache(session);
+      if (event === "PASSWORD_RECOVERY") {
+        _handleAuthStateChangeEvent(event);
+        return;
+      }
+      if (session?.user) {
+        const sessionMe = _meFromSupabaseSession(session);
+        if (sessionMe) {
+          _authLog("[auth_show_signed_in_immediate]", {
+            email: sessionMe.email,
+            source: "onAuthStateChange",
+          });
+          _applySupabaseAccountChrome(sessionMe);
+        }
+      }
+      void refreshSupabaseAccountLabel({ skipSessionFirst: true });
     });
 
     await _detectPasswordRecoveryOnLoad();
@@ -1127,23 +1280,15 @@ function wireSupabaseAccountUi() {
       return;
     }
     if (_authUiBusy) return;
+    _authGeneration += 1;
+    const loginGen = _authGeneration;
     _authLog("[auth_login_click]");
+    _authLog("[auth_login_ui_state]", { state: "logging_in" });
     _setAuthUiBusy(true, { signInLabel: "Logging in…" });
     try {
-      _authLog("[auth_login_start]");
       const signInStart = _authNowMs();
       _authLog("[auth_supabase_signin_start]");
       const { data, error } = await _supabaseClient.auth.signInWithPassword({ email, password });
-      _authLog("[auth_supabase_signin_done]", {
-        duration_ms: Math.round(_authNowMs() - signInStart),
-      });
-      if (error) {
-        _showAccountError(error.message || "Sign in failed.");
-        return;
-      }
-      _authLog("[auth_session_received]");
-      const labelStart = _authNowMs();
-      _authLog("[auth_account_label_update_start]");
       let session = data?.session || null;
       if (!session) {
         try {
@@ -1151,13 +1296,23 @@ function wireSupabaseAccountUi() {
           session = sessData?.session || null;
         } catch (_) {}
       }
-      _applyOptimisticSignedInFromSession(session);
-      _accountAuthView = "login";
-      _authLog("[auth_account_label_update_done]", {
-        duration_ms: Math.round(_authNowMs() - labelStart),
-        optimistic: true,
+      _authLog("[auth_supabase_signin_done]", {
+        duration_ms: Math.round(_authNowMs() - signInStart),
+        has_session: Boolean(session),
+        user_email: session?.user?.email || null,
       });
-      void _runPostLoginOptionalRefresh();
+      if (error) {
+        _showAccountError(error.message || "Sign in failed.");
+        return;
+      }
+      _syncSupabaseSessionCache(session);
+      _applyOptimisticSignedInFromSession(session);
+      _authLog("[auth_show_signed_in_immediate]", {
+        email: session?.user?.email || null,
+        source: "login",
+      });
+      _accountAuthView = "login";
+      void _runPostLoginOptionalRefresh(loginGen);
     } catch (e) {
       _showAccountError(String(e?.message || e || "Sign in failed."));
     } finally {
@@ -1194,8 +1349,14 @@ function wireSupabaseAccountUi() {
         return;
       }
       _accountAuthView = "login";
+      _authGeneration += 1;
+      _syncSupabaseSessionCache(data?.session);
       _applyOptimisticSignedInFromSession(data?.session);
-      void _runPostLoginOptionalRefresh();
+      _authLog("[auth_show_signed_in_immediate]", {
+        email: data?.session?.user?.email || null,
+        source: "signup",
+      });
+      void _runPostLoginOptionalRefresh(_authGeneration);
     } catch (e) {
       _showAccountError(String(e?.message || e || "Sign up failed."));
     } finally {
@@ -1206,12 +1367,14 @@ function wireSupabaseAccountUi() {
   document.getElementById("vera-account-sign-out")?.addEventListener("click", async () => {
     if (!_supabaseClient) return;
     _showAccountError("");
+    _authGeneration += 1;
     try {
       await _supabaseClient.auth.signOut();
+      _syncSupabaseSessionCache(null);
       _lastMeSnapshot = { authenticated: false };
-      await refreshSupabaseAccountLabel();
+      _applySupabaseAccountChrome({ authenticated: false }, { forceSignedOut: true });
       if (typeof refreshVeraActiveUserLabel === "function") {
-        await refreshVeraActiveUserLabel();
+        await refreshVeraActiveUserLabel({ skipSessionFirst: true, skipBackend: true });
       }
     } catch (e) {
       _showAccountError(String(e?.message || e || "Sign out failed."));

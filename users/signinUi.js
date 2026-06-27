@@ -184,9 +184,9 @@ function setVeraActiveUserLabel(usernameOrNull) {
   el.removeAttribute("hidden");
 }
 
-async function refreshVeraActiveUserLabel() {
+async function refreshVeraActiveUserLabel(opts = {}) {
   if (typeof refreshSupabaseAccountLabel === "function") {
-    const supabaseHandled = await refreshSupabaseAccountLabel();
+    const supabaseHandled = await refreshSupabaseAccountLabel(opts);
     if (supabaseHandled) return;
   }
   const tabUser = sessionStorage.getItem(VERA_TAB_ACTIVE_USER_KEY) || "";
