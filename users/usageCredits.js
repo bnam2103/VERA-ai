@@ -202,11 +202,8 @@
   wireNoCapToggleButton();
   wireUsageCreditsRefreshHooks();
 
-  if (typeof document !== "undefined") {
-    document.addEventListener("DOMContentLoaded", () => {
-      void refreshUsageCreditsToday();
-    });
-  }
+  /* Initial refresh runs from app.js after initSupabaseAuth().finally() to
+     avoid sending a stale Bearer token during Supabase session restore. */
 
   try {
     if (typeof window !== "undefined") {
