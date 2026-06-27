@@ -9621,7 +9621,7 @@ const _REASONING_PANEL_PUT_RE = new RegExp(
 const _REASONING_PANEL_IN_RE = new RegExp(
   "\\b" + _REASONING_PANEL_PREP_RE +
   "\\s+(?:(?:the|this|that|a|my)\\s+)?" +
-  "(?:(?:" + _REASONING_PANEL_ORD_WORDS + ")\\s+)?" +
+  "(?:(" + _REASONING_PANEL_ORD_WORDS + ")\\s+)?" +
   _REASONING_PANEL_DEST_ADJ_RE + _REASONING_PANEL_DEST_NOUN + "\\b",
   "i"
 );
@@ -9874,13 +9874,43 @@ function extractSubstantiveTopicBeforePanelPhrase(text) {
   return before.length >= 8 ? before : "";
 }
 
+function cleanExplicitPanelReasoningTask(text) {
+  let t = String(text || "").trim();
+  if (!t) return "";
+  t = t.replace(/^(?:(?:can|could|would|will)\s+you\s+|please\s+)+/i, "").trim();
+  t = t.replace(/[?.!,;]+\s*$/u, "").trim();
+  if (!t) return "";
+  if (!/^[A-Z]/.test(t)) t = t.charAt(0).toUpperCase() + t.slice(1);
+  if (!/[.!?]$/.test(t)) t += ".";
+  return t;
+}
+
+function extractExplicitPanelTopicLabelForAck(cleanedTask) {
+  const fromClean = String(cleanedTask || "").trim();
+  const m = fromClean.match(/^Explain\s+(.+?)\.?$/i);
+  if (m && m[1] && !/^(?:it|that|this|them)$/i.test(m[1].trim())) {
+    return m[1].trim().replace(/\.$/, "");
+  }
+  return null;
+}
+
 /** Resolve explicit-panel pronoun topics from prior turn, same utterance, or voice anchor. */
 function resolveTopicForExplicitPanelReference(text, ref) {
   if (!ref || !ref.matched) return { topic: "", priorTopicUsed: false, source: "none" };
-  if (ref.topic) return { topic: String(ref.topic).trim(), priorTopicUsed: false, source: "explicit_topic" };
+  if (ref.topic) {
+    return {
+      topic: cleanExplicitPanelReasoningTask(String(ref.topic).trim()),
+      priorTopicUsed: false,
+      source: "explicit_topic",
+    };
+  }
   const fromSameUtterance = extractSubstantiveTopicBeforePanelPhrase(text);
   if (fromSameUtterance) {
-    return { topic: fromSameUtterance, priorTopicUsed: false, source: "same_utterance_before_panel_phrase" };
+    return {
+      topic: cleanExplicitPanelReasoningTask(fromSameUtterance),
+      priorTopicUsed: false,
+      source: "same_utterance_before_panel_phrase",
+    };
   }
   if (ref.wasPronoun) {
     const fromPrior = resolveReasoningPanelTopicFromContext();
@@ -9899,7 +9929,11 @@ function resolveTopicForExplicitPanelReference(text, ref) {
   }
   const rawBefore = extractRawTopicBeforePanelPhrase(text);
   if (rawBefore) {
-    return { topic: rawBefore, priorTopicUsed: false, source: "same_utterance_raw_before_panel" };
+    return {
+      topic: cleanExplicitPanelReasoningTask(rawBefore),
+      priorTopicUsed: false,
+      source: "same_utterance_raw_before_panel",
+    };
   }
   const fromPrior = resolveReasoningPanelTopicFromContext();
   if (fromPrior) {
@@ -12929,6 +12963,12 @@ function buildWorkModeReasoningStage1AckText(trimmed, opts = {}) {
     const n = Number(o.explicitPanelTarget);
     const userText = String(o.userText || trimmed || "");
     if (Number.isFinite(n) && n >= 1) {
+      const cleanedTask = String(o.cleanedPanelTask || "").trim();
+      if (/\bexplain\b/i.test(userText)) {
+        const label = extractExplicitPanelTopicLabelForAck(cleanedTask);
+        if (label) return `I'll explain ${label} in panel ${n}.`;
+        return `I'll explain it in panel ${n}.`;
+      }
       if (/\bwrite\b/i.test(userText)) return `I'll write it in panel ${n}.`;
       if (/\b(?:draft|compose)\b/i.test(userText)) return `I'll draft it in panel ${n}.`;
       if (/\bexplain\b/i.test(userText)) return `I'll explain it in panel ${n}.`;
@@ -15344,6 +15384,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   if (_explicitPanelRef.matched) {
     const _panelTopicResolve = resolveExplicitPanelStreamTask(trimmed, _explicitPanelRef);
     let resolvedTopic = _panelTopicResolve.task || null;
+    if (resolvedTopic && _panelTopicResolve.source !== "deictic_compose") {
+      resolvedTopic = cleanExplicitPanelReasoningTask(resolvedTopic);
+    }
     const prior_topic_used = Boolean(
       _panelTopicResolve.source === "prior_substantive_user_text" ||
         _panelTopicResolve.source === "deictic_compose"
@@ -15352,7 +15395,16 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       console.info("[explicit_panel_target_detected]", {
         raw_text: String(trimmed || "").slice(0, 240),
         target_panel_number: _explicitPanelRef.targetPanel ?? null,
+        target_lane_index:
+          Number.isFinite(_explicitPanelRef.targetPanel) && _explicitPanelRef.targetPanel >= 1
+            ? _explicitPanelRef.targetPanel - 1
+            : null,
         was_pronoun: Boolean(_explicitPanelRef.wasPronoun),
+      });
+      console.info("[explicit_panel_task_cleaned]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        cleaned_task: resolvedTopic ? String(resolvedTopic).slice(0, 240) : null,
+        deictic_used: Boolean(_panelTopicResolve.source === "deictic_compose" || prior_topic_used),
       });
       console.info("[deictic_panel_task_resolved]", {
         original_text: String(trimmed || "").slice(0, 240),
@@ -16039,6 +16091,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const stage1AckText = buildWorkModeReasoningStage1AckText(effectiveUserText, {
     explicitPanelDestination: Boolean(opts.__explicitPanelDestinationConsumed),
     explicitPanelTarget: opts.__reasoningGateTargetPanel,
+    cleanedPanelTask: opts.__reasoningGateResolvedTopic || explicitPanelStreamTopic,
     userText: effectiveUserText,
     hasUpload,
     planningIntent,
