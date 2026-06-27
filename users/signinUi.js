@@ -206,18 +206,22 @@ async function refreshVeraActiveUserLabel() {
   try {
     /* PART 7: include session_id so the backend returns THIS session's
        active user, not whatever was last set process-wide. */
+    console.info("[boot] user active start");
     const res = await fetch(
       authApiUrl(`/api/user/active?session_id=${encodeURIComponent(getSessionId())}`),
       { method: "GET" }
     );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      console.warn("[boot] user active fail", { status: res.status });
       setVeraActiveUserLabel(null);
       return;
     }
     const activeName = data.username != null && data.username !== "" ? String(data.username) : tabUser;
     setVeraActiveUserLabel(activeName || null);
-  } catch {
+    console.info("[boot] user active done");
+  } catch (err) {
+    console.error("[boot] user active fail", err);
     setVeraActiveUserLabel(tabUser || null);
   }
 }

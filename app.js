@@ -24435,7 +24435,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                 onReplyProgress: (replySoFar) => {
                   applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
                 },
-                onDone: (done) => {
+                onDone: async (done) => {
                   logInferLatency(done, "main", inferTtfbMs);
                   let effectiveReply = String(done?.reply || "").trim();
                   if (isWmStage2Voice) {
@@ -26917,16 +26917,25 @@ function wireVeraSettingsPanel() {
 wireVeraUserSignInHoldAndModal();
 wireVeraSettingsPanel();
 if (typeof wireSupabaseAccountUi === "function") wireSupabaseAccountUi();
+console.info("[boot] app init start");
 if (typeof initSupabaseAuth === "function") {
-  initSupabaseAuth().finally(() => {
+  initSupabaseAuth()
+    .then(() => console.info("[boot] app init done"))
+    .catch((err) => console.error("[boot] app init fail", err))
+    .finally(() => {
+      refreshVeraActiveUserLabel();
+      window.veraRefreshUsageCredits?.();
+      window.veraRefreshFeedbackStatus?.();
+    });
+} else {
+  try {
     refreshVeraActiveUserLabel();
     window.veraRefreshUsageCredits?.();
     window.veraRefreshFeedbackStatus?.();
-  });
-} else {
-  refreshVeraActiveUserLabel();
-  window.veraRefreshUsageCredits?.();
-  window.veraRefreshFeedbackStatus?.();
+    console.info("[boot] app init done");
+  } catch (err) {
+    console.error("[boot] app init fail", err);
+  }
 }
 
 (function stripSpotifyOAuthQueryParams() {

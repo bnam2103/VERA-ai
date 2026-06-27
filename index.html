@@ -2179,6 +2179,8 @@ const bootPercent = document.getElementById("boot-percent");
 let currentProgress = 0;
 let bootPollInterval = null;
 let bootRevealTimer = null;
+let bootTimeoutTimer = null;
+const BOOT_STALL_TIMEOUT_MS = 30000;
 
 function setProgress(value) {
   const clamped = Math.max(0, Math.min(100, Math.round(value)));
@@ -2210,8 +2212,45 @@ function scheduleBootReveal() {
   }, 500);
 }
 
+function clearBootTimeout() {
+  if (bootTimeoutTimer) {
+    clearTimeout(bootTimeoutTimer);
+    bootTimeoutTimer = null;
+  }
+}
+
+function scheduleBootStallFallback() {
+  clearBootTimeout();
+  bootTimeoutTimer = setTimeout(() => {
+    if (appRevealed) return;
+    console.error(
+      "[boot] timeout — stalled at",
+      currentProgress + "%",
+      "for",
+      BOOT_STALL_TIMEOUT_MS,
+      "ms; forcing reveal"
+    );
+    if (typeof checkServer !== "function") {
+      console.error("[boot] checkServer missing — app.js may have failed to parse or load");
+    }
+    scheduleBootReveal();
+  }, BOOT_STALL_TIMEOUT_MS);
+}
+
 async function pollBootStatus() {
-  const state = await checkServer();
+  if (typeof checkServer !== "function") {
+    console.error("[boot] checkServer unavailable — app.js may not have loaded");
+    setProgress(0);
+    return;
+  }
+  let state = "offline";
+  try {
+    state = await checkServer();
+  } catch (err) {
+    console.error("[boot] server health check fail", err);
+    setProgress(0);
+    return;
+  }
 
   if (state === "offline") {
     hitStarting = false;
@@ -2235,6 +2274,7 @@ async function pollBootStatus() {
 
 async function startBootSequence() {
   if (bootLoader.classList.contains("active")) return;
+  console.info("[boot] start");
   try {
     bgMusic.pause();
     bgMusic.currentTime = 0;
@@ -2253,7 +2293,12 @@ async function startBootSequence() {
     bootRevealTimer = null;
   }
 
-  await pollBootStatus();
+  scheduleBootStallFallback();
+  try {
+    await pollBootStatus();
+  } catch (err) {
+    console.error("[boot] initial poll fail", err);
+  }
   if (!appRevealed) {
     bootPollInterval = setInterval(pollBootStatus, 600);
   }
@@ -2262,6 +2307,7 @@ async function startBootSequence() {
 function revealApp() {
   if (appRevealed) return;
   appRevealed = true;
+  clearBootTimeout();
 
   setTimeout(() => {
     exitVeraWorkMode();
@@ -3011,7 +3057,7 @@ document.addEventListener("click", () => {
 <script src="users/usageFeatureEvents.js?v=1"></script>
 <!-- users/usageCredits.js — daily credit usage pill (read-only).
      Must load AFTER usageFeatureEvents.js (reasoning refresh hook), BEFORE app.js. -->
-<script src="users/usageCredits.js?v=4"></script>
+<script src="users/usageCredits.js?v=5"></script>
 <!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
      Must load AFTER usageCredits.js, BEFORE app.js. -->
 <script src="users/explicitFeedback.js?v=2"></script>
@@ -3101,7 +3147,7 @@ document.addEventListener("click", () => {
      getChecklistDebugState() mirrors getReasoningPanelDebugState /
      getTtsDebugState / getInterruptionDebugState / getAsrDebugState.
      Extracted 2026-05-27, Stage 9. -->
-<script src="workmode/checklist.js?v=8"></script>
+<script src="workmode/checklist.js?v=9"></script>
 <!-- Account Work Mode workspace sync (reasoning tabs/spaces only). -->
 <script src="workmode/workspaceSync.js?v=6"></script>
 <!-- Account checklist Supabase sync is bundled in workmode/checklist.js (Phase 4b). -->
@@ -3139,7 +3185,7 @@ document.addEventListener("click", () => {
      Extracted 2026-05-27, Stage 10. -->
 <script src="news/newsRouter.js?v=3"></script>
 <script src="news/newsPanel.js?v=4"></script>
-<script src="app.js?v=113"></script>
+<script src="app.js?v=114"></script>
 <!-- voice/musicSequence.js — multi-action music sequential dispatch + provider exclusivity -->
 <script src="voice/musicSequence.js?v=2"></script>
 <!-- debug/voiceDebug.js loads AFTER app.js — only attaches the manual
@@ -3160,6 +3206,18 @@ document.addEventListener("click", () => {
      global lexical environment at CALL time. Extracted 2026-06-01,
      Patch B-2 option b. -->
 <script src="debug/reasoningGate.js?v=1"></script>
+<script>
+(function veraBootScriptsLoadedProbe() {
+  const missing = ["checkServer", "getSessionId", "authApiUrl"].filter(
+    (name) => typeof window[name] !== "function"
+  );
+  if (missing.length) {
+    console.error("[boot] scripts loaded with missing globals:", missing.join(", "));
+  } else {
+    console.info("[boot] scripts loaded");
+  }
+})();
+</script>
 </body>
 </html>
 

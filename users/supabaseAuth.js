@@ -280,7 +280,11 @@ function _readMetaSupabaseConfig() {
 
 async function _loadSupabaseClientConfig() {
   const meta = _readMetaSupabaseConfig();
-  if (meta?.configured) return meta;
+  if (meta?.configured) {
+    console.info("[boot] auth config done", { source: "meta" });
+    return meta;
+  }
+  console.info("[boot] auth config start");
   try {
     const res = await fetch(authApiUrl("/api/auth/config"), { method: "GET" });
     const data = await res.json().catch(() => ({}));
@@ -289,9 +293,13 @@ async function _loadSupabaseClientConfig() {
       window.VERA_API_BASE_URL = apiBase.replace(/\/$/, "");
     }
     if (res.ok && data?.configured && data.supabase_url && data.anon_key) {
+      console.info("[boot] auth config done");
       return data;
     }
-  } catch (_) {}
+    console.warn("[boot] auth config fail", { status: res.status });
+  } catch (err) {
+    console.error("[boot] auth config fail", err);
+  }
   return { configured: false };
 }
 
