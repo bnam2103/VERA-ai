@@ -28,6 +28,22 @@ let _memoriesFetchGeneration = 0;
 /** @type {'login' | 'forgot' | 'reset-password' | 'reset-expired'} */
 let _accountAuthView = "login";
 let _authUiBusy = false;
+const _authBusyButtonLabels = new Map();
+const AUTH_POST_LOGIN_REFRESH_WARN_MS = 3000;
+
+function _authNowMs() {
+  return typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+}
+
+function _authLog(tag, extra) {
+  try {
+    if (extra && typeof extra === "object") {
+      console.info(tag, extra);
+    } else {
+      console.info(tag);
+    }
+  } catch (_) {}
+}
 
 const AUTH_PASSWORD_RESET_SUCCESS_MSG =
   "If an account exists for this email, a reset link has been sent.";
@@ -168,8 +184,24 @@ function _clearResetPasswordUrlParam() {
   _clearPasswordResetUrlArtifacts();
 }
 
-function _setAuthUiBusy(busy) {
+function _setAuthUiBusy(busy, { signInLabel } = {}) {
   _authUiBusy = Boolean(busy);
+  const signIn = document.getElementById("vera-account-sign-in");
+  if (signIn instanceof HTMLButtonElement) {
+    if (_authUiBusy) {
+      if (!_authBusyButtonLabels.has("vera-account-sign-in")) {
+        _authBusyButtonLabels.set(
+          "vera-account-sign-in",
+          signIn.textContent || "Log in"
+        );
+      }
+      if (signInLabel) signIn.textContent = signInLabel;
+    } else {
+      const prev = _authBusyButtonLabels.get("vera-account-sign-in");
+      if (prev) signIn.textContent = prev;
+      _authBusyButtonLabels.delete("vera-account-sign-in");
+    }
+  }
   const ids = [
     "vera-account-sign-in",
     "vera-account-sign-up",
@@ -535,6 +567,171 @@ async function refreshSupabaseMeFromBackend() {
   return _lastMeSnapshot;
 }
 
+function _meFromSupabaseSession(session) {
+  const user = session?.user;
+  if (!user) return null;
+  const userId = String(user.id || "").trim();
+  if (!userId) return null;
+  const email = String(user.email || "").trim() || null;
+  const prevProfile =
+    _lastMeSnapshot?.authenticated && _lastMeSnapshot?.user_id === userId
+      ? _lastMeSnapshot.profile
+      : null;
+  return {
+    authenticated: true,
+    user_id: userId,
+    email,
+    profile: prevProfile || {},
+  };
+}
+
+function _applyOptimisticSignedInFromSession(session) {
+  const me = _meFromSupabaseSession(session);
+  if (!me) return false;
+  _applySupabaseAccountChrome(me);
+  return true;
+}
+
+function _applySupabaseAccountChrome(me) {
+  const uid = String(me?.user_id || "").trim();
+  const nowAuthenticated = Boolean(me?.authenticated);
+  if (_supabaseWasAuthenticated && !nowAuthenticated) {
+    _runAccountLogoutCleanup();
+  }
+  _supabaseWasAuthenticated = nowAuthenticated;
+  _lastMeSnapshot = me;
+  _setSupabaseAccountLabel(me);
+  _setAccountFabLabel(me);
+  _renderAccountPanel(me);
+  if (typeof hideLegacySignInUi === "function") {
+    const legacyOn =
+      typeof isLegacySignInEnabled === "function" && isLegacySignInEnabled();
+    if (!legacyOn || me?.authenticated) {
+      hideLegacySignInUi();
+    }
+  }
+  if (!me?.authenticated) {
+    _settingsHydratedUserId = null;
+    _checklistHydratedUserId = null;
+    _checklistHydrateAttempts = 0;
+    if (_checklistHydrateRetryTimer) {
+      window.clearTimeout(_checklistHydrateRetryTimer);
+      _checklistHydrateRetryTimer = null;
+    }
+    const syncEl = document.getElementById("vera-checklist-sync-status");
+    if (syncEl instanceof HTMLElement) {
+      syncEl.hidden = true;
+      syncEl.textContent = "";
+    }
+    _workspaceHydratedUserId = null;
+    _workspaceHydrateAttempts = 0;
+    if (_workspaceHydrateRetryTimer) {
+      window.clearTimeout(_workspaceHydrateRetryTimer);
+      _workspaceHydrateRetryTimer = null;
+    }
+  }
+  return uid;
+}
+
+function _scheduleOptionalAuthSideEffects(me) {
+  const uid = String(me?.user_id || "").trim();
+  if (!me?.authenticated || !uid) return;
+  if (typeof hydrateVeraSettingsFromSupabase === "function" && uid !== _settingsHydratedUserId) {
+    _settingsHydratedUserId = uid;
+    void hydrateVeraSettingsFromSupabase();
+  }
+  if (uid !== _checklistHydratedUserId) {
+    void _hydrateChecklistAccountWhenReady(uid);
+  }
+  if (uid !== _workspaceHydratedUserId) {
+    void _hydrateWorkspaceAccountWhenReady(uid);
+  }
+  if (typeof window.veraFeedbackOnAuthChanged === "function") {
+    try {
+      window.veraFeedbackOnAuthChanged();
+    } catch (_) {}
+  }
+  try {
+    window.veraRefreshUsageCredits?.();
+  } catch (_) {}
+  try {
+    window.veraRefreshFeedbackStatus?.();
+  } catch (_) {}
+}
+
+function _applySupabaseAccountUiFromMe(me) {
+  _applySupabaseAccountChrome(me);
+  _scheduleOptionalAuthSideEffects(me);
+}
+
+async function _runPostLoginOptionalRefresh() {
+  const refreshStart = _authNowMs();
+  _authLog("[auth_post_login_refresh_start]");
+  let slowWarned = false;
+  const slowTimer = window.setTimeout(() => {
+    slowWarned = true;
+    _authLog("[auth_post_login_refresh_slow]", {
+      duration_ms: Math.round(_authNowMs() - refreshStart),
+      limit_ms: AUTH_POST_LOGIN_REFRESH_WARN_MS,
+    });
+  }, AUTH_POST_LOGIN_REFRESH_WARN_MS);
+
+  try {
+    const profileStart = _authNowMs();
+    _authLog("[auth_profile_fetch_start]");
+    const me = await refreshSupabaseMeFromBackend();
+    _authLog("[auth_profile_fetch_done]", {
+      duration_ms: Math.round(_authNowMs() - profileStart),
+    });
+
+    const labelStart = _authNowMs();
+    _authLog("[auth_account_label_update_start]");
+    _applySupabaseAccountChrome(me);
+    _authLog("[auth_account_label_update_done]", {
+      duration_ms: Math.round(_authNowMs() - labelStart),
+    });
+
+    const activeStart = _authNowMs();
+    _authLog("[auth_user_active_fetch_start]");
+    if (typeof refreshVeraActiveUserLabel === "function") {
+      await refreshVeraActiveUserLabel();
+    }
+    _authLog("[auth_user_active_fetch_done]", {
+      duration_ms: Math.round(_authNowMs() - activeStart),
+    });
+
+    _scheduleOptionalAuthSideEffects(me);
+
+    const creditsStart = _authNowMs();
+    _authLog("[auth_credits_refresh_start]");
+    try {
+      await window.veraRefreshUsageCredits?.();
+    } catch (_) {}
+    _authLog("[auth_credits_refresh_done]", {
+      duration_ms: Math.round(_authNowMs() - creditsStart),
+    });
+
+    const feedbackStart = _authNowMs();
+    _authLog("[auth_feedback_refresh_start]");
+    try {
+      await window.veraRefreshFeedbackStatus?.();
+    } catch (_) {}
+    _authLog("[auth_feedback_refresh_done]", {
+      duration_ms: Math.round(_authNowMs() - feedbackStart),
+    });
+  } catch (err) {
+    _authLog("[auth_post_login_refresh_error]", {
+      message: String(err?.message || err),
+    });
+  } finally {
+    window.clearTimeout(slowTimer);
+    _authLog("[auth_post_login_refresh_done]", {
+      duration_ms: Math.round(_authNowMs() - refreshStart),
+      slow_warned: slowWarned,
+    });
+  }
+}
+
 function _resolveChecklistMergeHydrateFn() {
   if (typeof hydrateChecklistMergeOnLogin === "function") {
     return hydrateChecklistMergeOnLogin;
@@ -577,10 +774,18 @@ async function _hydrateChecklistAccountWhenReady(userId) {
     window.clearTimeout(_checklistHydrateRetryTimer);
     _checklistHydrateRetryTimer = null;
   }
-  const merged = await hydrateFn();
-  if (merged) _checklistHydratedUserId = uid;
-  if (typeof retryChecklistSupabaseSyncIfUnsynced === "function") {
-    void retryChecklistSupabaseSyncIfUnsynced("login");
+  const checklistStart = _authNowMs();
+  _authLog("[auth_checklist_sync_start]");
+  try {
+    const merged = await hydrateFn();
+    if (merged) _checklistHydratedUserId = uid;
+    if (typeof retryChecklistSupabaseSyncIfUnsynced === "function") {
+      void retryChecklistSupabaseSyncIfUnsynced("login");
+    }
+  } finally {
+    _authLog("[auth_checklist_sync_done]", {
+      duration_ms: Math.round(_authNowMs() - checklistStart),
+    });
   }
 }
 
@@ -655,71 +860,32 @@ if (typeof window !== "undefined" && !window.__veraWorkspaceAuthSyncListenerWire
   }
 }
 
-async function refreshSupabaseAccountLabel() {
+async function refreshSupabaseAccountLabel(opts = {}) {
   if (!_supabaseConfigured && !_supabaseClient) {
     return false;
   }
-  const me = await refreshSupabaseMeFromBackend();
-  const uid = String(me?.user_id || "").trim();
-  const nowAuthenticated = Boolean(me?.authenticated);
-  if (_supabaseWasAuthenticated && !nowAuthenticated) {
-    _runAccountLogoutCleanup();
+  const skipBackend = Boolean(opts.meOverride);
+  const skipOptional = Boolean(opts.skipOptionalRefresh);
+  let me = opts.meOverride || null;
+  if (!me) {
+    const profileStart = _authNowMs();
+    _authLog("[auth_profile_fetch_start]");
+    me = await refreshSupabaseMeFromBackend();
+    _authLog("[auth_profile_fetch_done]", {
+      duration_ms: Math.round(_authNowMs() - profileStart),
+    });
   }
-  _supabaseWasAuthenticated = nowAuthenticated;
-  _setSupabaseAccountLabel(me);
-  _setAccountFabLabel(me);
-  _renderAccountPanel(me);
-  if (typeof hideLegacySignInUi === "function") {
-    const legacyOn =
-      typeof isLegacySignInEnabled === "function" && isLegacySignInEnabled();
-    if (!legacyOn || me?.authenticated) {
-      hideLegacySignInUi();
-    }
-  }
-  if (me?.authenticated && typeof hydrateVeraSettingsFromSupabase === "function") {
-    if (uid && uid !== _settingsHydratedUserId) {
-      _settingsHydratedUserId = uid;
-      void hydrateVeraSettingsFromSupabase();
-    }
+
+  const labelStart = _authNowMs();
+  _authLog("[auth_account_label_update_start]");
+  if (skipOptional) {
+    _applySupabaseAccountChrome(me);
   } else {
-    _settingsHydratedUserId = null;
+    _applySupabaseAccountUiFromMe(me);
   }
-  if (me?.authenticated && uid && uid !== _checklistHydratedUserId) {
-    void _hydrateChecklistAccountWhenReady(uid);
-  } else if (!me?.authenticated) {
-    _checklistHydratedUserId = null;
-    _checklistHydrateAttempts = 0;
-    if (_checklistHydrateRetryTimer) {
-      window.clearTimeout(_checklistHydrateRetryTimer);
-      _checklistHydrateRetryTimer = null;
-    }
-    const syncEl = document.getElementById("vera-checklist-sync-status");
-    if (syncEl instanceof HTMLElement) {
-      syncEl.hidden = true;
-      syncEl.textContent = "";
-    }
-  }
-  if (me?.authenticated && uid && uid !== _workspaceHydratedUserId) {
-    void _hydrateWorkspaceAccountWhenReady(uid);
-  } else if (!me?.authenticated) {
-    _workspaceHydratedUserId = null;
-    _workspaceHydrateAttempts = 0;
-    if (_workspaceHydrateRetryTimer) {
-      window.clearTimeout(_workspaceHydrateRetryTimer);
-      _workspaceHydrateRetryTimer = null;
-    }
-  }
-  if (typeof window.veraFeedbackOnAuthChanged === "function") {
-    try {
-      window.veraFeedbackOnAuthChanged();
-    } catch (_) {}
-  }
-  try {
-    window.veraRefreshUsageCredits?.();
-  } catch (_) {}
-  try {
-    window.veraRefreshFeedbackStatus?.();
-  } catch (_) {}
+  _authLog("[auth_account_label_update_done]", {
+    duration_ms: Math.round(_authNowMs() - labelStart),
+  });
   return Boolean(me?.authenticated);
 }
 
@@ -961,15 +1127,37 @@ function wireSupabaseAccountUi() {
       return;
     }
     if (_authUiBusy) return;
-    _setAuthUiBusy(true);
+    _authLog("[auth_login_click]");
+    _setAuthUiBusy(true, { signInLabel: "Logging in…" });
     try {
-      const { error } = await _supabaseClient.auth.signInWithPassword({ email, password });
+      _authLog("[auth_login_start]");
+      const signInStart = _authNowMs();
+      _authLog("[auth_supabase_signin_start]");
+      const { data, error } = await _supabaseClient.auth.signInWithPassword({ email, password });
+      _authLog("[auth_supabase_signin_done]", {
+        duration_ms: Math.round(_authNowMs() - signInStart),
+      });
       if (error) {
         _showAccountError(error.message || "Sign in failed.");
         return;
       }
+      _authLog("[auth_session_received]");
+      const labelStart = _authNowMs();
+      _authLog("[auth_account_label_update_start]");
+      let session = data?.session || null;
+      if (!session) {
+        try {
+          const { data: sessData } = await _supabaseClient.auth.getSession();
+          session = sessData?.session || null;
+        } catch (_) {}
+      }
+      _applyOptimisticSignedInFromSession(session);
       _accountAuthView = "login";
-      await refreshSupabaseAccountLabel();
+      _authLog("[auth_account_label_update_done]", {
+        duration_ms: Math.round(_authNowMs() - labelStart),
+        optimistic: true,
+      });
+      void _runPostLoginOptionalRefresh();
     } catch (e) {
       _showAccountError(String(e?.message || e || "Sign in failed."));
     } finally {
@@ -1006,7 +1194,8 @@ function wireSupabaseAccountUi() {
         return;
       }
       _accountAuthView = "login";
-      await refreshSupabaseAccountLabel();
+      _applyOptimisticSignedInFromSession(data?.session);
+      void _runPostLoginOptionalRefresh();
     } catch (e) {
       _showAccountError(String(e?.message || e || "Sign up failed."));
     } finally {
