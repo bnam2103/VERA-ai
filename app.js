@@ -12682,10 +12682,17 @@ function classifyWorkModeTurnIntent(userText) {
 
 function buildWorkModeReasoningStage1AckText(trimmed, opts = {}) {
   const o = opts || {};
-  if (o.explicitPanelDestination) return "I'll explain it in Work Mode.";
-  if (o.hasUpload) return "I'll work from your file in Work Mode.";
-  if (o.planningIntent) return "I'll lay out the plan in Work Mode.";
-  return "I'll work through this in Work Mode.";
+  if (o.explicitPanelDestination) return "I'll open this in the panel.";
+  if (o.hasUpload) return "Let me take a look at the file.";
+  if (o.planningIntent) return "Let me lay out a plan.";
+  if (o.requestHasCodeIntent) return "Let me trace through it.";
+  const mathLike =
+    o.requestHasComputationalNumericIntent ||
+    o.requestHasDenseMathIntent ||
+    o.requestHasProofIntent ||
+    classifyWorkModeTurnIntent(trimmed).turn_intent === "solve";
+  if (mathLike) return "Let me work through the steps.";
+  return "Let me think through this.";
 }
 
 /* =========================
