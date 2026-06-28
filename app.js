@@ -10203,6 +10203,10 @@ const _WMC_CHECKLIST_FAMILY_RE =
 function _hasImplicitChecklistMutationFamily(text) {
   const t = String(text || "").trim();
   if (!t) return false;
+  if (typeof detectImplicitChecklistMutation === "function") {
+    const implicit = detectImplicitChecklistMutation(t);
+    if (implicit?.detected) return true;
+  }
   const low = t.toLowerCase();
   if (/\b(?:checklist|to-?do(?:\s+list)?)\b/.test(low)) return false;
   if (/\b(?:remove|delete|close|clear|hide|dismiss)\s+(?:the\s+)?(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|\d+(?:st|nd|rd|th)?)\s+)?(?:reasoning\s+)?(?:panel|tab)\b/.test(low)) {
@@ -10210,6 +10214,13 @@ function _hasImplicitChecklistMutationFamily(text) {
   }
   if (/\b(?:remove|delete|cross\s+off|check\s+off)\s+\S/.test(low)) return true;
   if (/\b(?:complete|mark)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|last|\d+)\b/.test(low)) return true;
+  if (/\b(?:add|append|insert)\s+(?!(\d+\s*(?:minute|minutes|min|hour|hours|second|seconds)\s+to\s+(?:the\s+)?timer\b))/.test(low)) {
+    if (/\b(?:add|append|insert)\s+(?:more\s+)?(?:detail|evidence)\b/.test(low)) return false;
+    if (/\b(?:add|append|insert)\s+.+\s+in\s+(?:the\s+)?panel\s+\d+\b/.test(low)) return false;
+    return true;
+  }
+  if (/\bmark\s+.+\s+(?:complete|completed|done)\b/.test(low)) return true;
+  if (/\b(?:check\s+off|tick\s+off)\s+\S/.test(low)) return true;
   return false;
 }
 
@@ -10263,6 +10274,29 @@ function _countDistinctPanelSubIntents(text) {
 function detectCompoundActionFamilies(text) {
   const s = String(text || "").trim();
   if (!s) return { isCompound: false, families: [], reason: "empty" };
+  const implicitChecklist =
+    typeof detectImplicitChecklistMutation === "function" ? detectImplicitChecklistMutation(s) : null;
+  if (implicitChecklist?.detected && implicitChecklist.count >= 2) {
+    try {
+      console.info("[compound_family_detected]", {
+        families: ["checklist"],
+        reason: "multi_checklist_mutation_implicit",
+      });
+      console.info("[compound_route_to_planner]", {
+        reason: "multi_checklist_mutation_implicit",
+        raw_preview: s.slice(0, 240),
+      });
+      console.info("[reasoning_fallback_blocked]", {
+        reason: "checklist_action_detected",
+        mutation_count: implicitChecklist.count,
+      });
+    } catch (_) {}
+    return {
+      isCompound: true,
+      families: ["checklist"],
+      reason: "multi_checklist_mutation_implicit",
+    };
+  }
   const connectorCompound = _connectorClauseCompoundDetection(s);
   if (connectorCompound) {
     try {
@@ -10286,6 +10320,13 @@ function detectCompoundActionFamilies(text) {
   if (_WMC_CHECKLIST_PLAN_FAMILY_RE.test(s)) families.push("checklist_plan");
   if (_WMC_CHECKLIST_FAMILY_RE.test(s)) families.push("checklist");
   if (!families.includes("checklist") && _hasImplicitChecklistMutationFamily(s)) families.push("checklist");
+  if (
+    implicitChecklist?.detected &&
+    implicitChecklist.count >= 2 &&
+    !families.includes("checklist")
+  ) {
+    families.push("checklist");
+  }
   /* Also count implicit "in panel N" as a panel family — covers
      "explain X in panel 2" which the backend planner rewrites into
      panel.navigate + reasoning.request. */
@@ -10323,9 +10364,13 @@ function detectCompoundActionFamilies(text) {
       reason: "panel_routing_directive_single_intent"
     };
   }
-  const isCompound = families.length >= 2;
+  const isCompound =
+    families.length >= 2 ||
+    (implicitChecklist?.detected && implicitChecklist.count >= 2 && families.includes("checklist"));
   const reason = isCompound
-    ? `compound_${families.join("_")}`
+    ? implicitChecklist?.detected && implicitChecklist.count >= 2 && families.length === 1
+      ? "multi_checklist_mutation_implicit"
+      : `compound_${families.join("_")}`
     : (families.length === 1 ? `single_family_${families[0]}` : "no_action_families");
   if (isCompound) {
     try {
@@ -16675,10 +16720,13 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       turn_id: turnContext?.turn_id || null
     });
     console.info("[reasoning_stream_start]", {
+      request_id: opts?.__reasoningRequestId || turnContext?.reasoning_request_id || null,
+      parent_turn_id: opts?.__reasoningParentTurnId || turnContext?.parent_turn_id || turnContext?.turn_id || null,
+      task: String(effectiveUserText || "").slice(0, 240),
+      target_panel: explicitTargetPanel1Based ?? (explicitTargetLaneIdx != null ? explicitTargetLaneIdx + 1 : null),
       turn_id: turnContext?.turn_id || null,
       stream_lane_id: streamLaneId,
-      task_preview: String(streamUserRequestForReasoning || "").slice(0, 240),
-      target_panel_index_1based: explicitTargetPanel1Based,
+      source: opts?.__reasoningStreamSource || "maybePrepareWorkModeReasoning",
     });
     try {
       console.info("[reasoning_queue_start]", {
@@ -18709,6 +18757,79 @@ function shouldPlayMusicThisInvocation(payload, op) {
   return true;
 }
 
+const VERA_REASONING_REQUEST_DEDUPE_TTL_MS = 120000;
+
+function cleanReasoningTaskForDedupe(text) {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .slice(0, 200);
+}
+
+function resolveReasoningTargetPanelKey(payload) {
+  if (!payload || typeof payload !== "object") return "active";
+  if (payload.target_panel === "new" || payload.target_new_panel === true) return "new";
+  const t1 = Number(payload.target_panel_index_1based);
+  if (Number.isFinite(t1) && t1 >= 1) return `panel:${t1}`;
+  const t0 = Number(payload.target_panel_index_0based);
+  if (Number.isFinite(t0) && t0 >= 0) return `panel:${t0 + 1}`;
+  return "active";
+}
+
+function makeReasoningRequestStableIds(payload) {
+  const requestId = String(payload?.reasoning_request_id || payload?.request_id || "").trim();
+  const actionId = String(payload?.action_id || "").trim();
+  const actionPlanId = String(payload?.action_plan_id || "").trim();
+  const plannerIdx = Number(payload?.planner_action_index);
+  const parentTurnId = String(payload?.parent_turn_id || "").trim();
+  return { requestId, actionId, actionPlanId, plannerIdx, parentTurnId };
+}
+
+function makeReasoningRequestDedupeKeys(payload) {
+  const ids = makeReasoningRequestStableIds(payload);
+  const task = cleanReasoningTaskForDedupe(payload?.prompt || payload?.content_task || "");
+  const panel = resolveReasoningTargetPanelKey(payload);
+  const keys = [];
+  if (ids.requestId) keys.push(`req:${ids.requestId}`);
+  if (ids.actionId) keys.push(`act:${ids.actionId}`);
+  if (ids.actionPlanId && Number.isFinite(ids.plannerIdx)) {
+    keys.push(`plan:${ids.actionPlanId}:${ids.plannerIdx}:open_and_stream`);
+  }
+  if (ids.parentTurnId && task) keys.push(`turn:${ids.parentTurnId}:${panel}:${task}`);
+  return keys;
+}
+
+function veraReasoningRequestDedupeStore() {
+  if (!window.__veraReasoningRequestDedupe || !(window.__veraReasoningRequestDedupe instanceof Map)) {
+    window.__veraReasoningRequestDedupe = new Map();
+  }
+  return window.__veraReasoningRequestDedupe;
+}
+
+function shouldStartReasoningOpenAndStream(payload, opts = {}) {
+  const allowRerun =
+    opts.allowRerun === true ||
+    payload?.reasoning_rerun === true ||
+    payload?.reasoning_refinement === true ||
+    payload?.reasoning_follow_up === true;
+  if (allowRerun) return { allow: true, keys: [] };
+  const store = veraReasoningRequestDedupeStore();
+  const now = Date.now();
+  for (const [k, at] of store.entries()) {
+    if (now - Number(at || 0) > VERA_REASONING_REQUEST_DEDUPE_TTL_MS) store.delete(k);
+  }
+  const keys = makeReasoningRequestDedupeKeys(payload);
+  if (!keys.length) return { allow: true, keys: [] };
+  for (const key of keys) {
+    if (store.has(key)) {
+      return { allow: false, reason: `duplicate_key:${key}`, dedupeKey: key, keys };
+    }
+  }
+  for (const key of keys) store.set(key, now);
+  return { allow: true, keys };
+}
+
 /** NDJSON may invoke ``applyActionPayload`` twice (finalize + first audio) — skip duplicate reasoning ops. */
 function workModeReasoningDedupeKey(payload) {
   if (!payload || payload.panel_type !== "work_mode_reasoning") return "";
@@ -18720,9 +18841,18 @@ function workModeReasoningDedupeKey(payload) {
       : `open_new:${Math.max(1, Number(payload.count) || 1)}`;
   }
   if (op === "open_and_stream") {
-    const requestId = String(payload.new_panel_request_id || payload.panel_open_request_id || "").trim();
-    const prompt = String(payload.prompt || "").trim().toLowerCase().slice(0, 120);
-    return requestId ? `open_and_stream:${requestId}:${prompt}` : "";
+    const ids = makeReasoningRequestStableIds(payload);
+    if (ids.requestId) return `open_and_stream:req:${ids.requestId}`;
+    if (ids.actionId) return `open_and_stream:act:${ids.actionId}`;
+    const prompt = cleanReasoningTaskForDedupe(payload.prompt);
+    const panel = resolveReasoningTargetPanelKey(payload);
+    if (ids.parentTurnId && prompt) return `open_and_stream:turn:${ids.parentTurnId}:${panel}:${prompt}`;
+    if (ids.actionPlanId && Number.isFinite(ids.plannerIdx)) {
+      return `open_and_stream:plan:${ids.actionPlanId}:${ids.plannerIdx}`;
+    }
+    const legacyRequestId = String(payload.new_panel_request_id || payload.panel_open_request_id || "").trim();
+    if (legacyRequestId && prompt) return `open_and_stream:${legacyRequestId}:${prompt}`;
+    return "";
   }
   if (op === "activate" && payload.panel_index != null) {
     return `activate:${Number(payload.panel_index)}`;
@@ -19175,6 +19305,17 @@ function makeNdjsonPayloadDedupeKey(event, payload, index) {
     ).slice(0, 120);
     return `${req}:${planId}:${seqIdx}:${type}:${op}:${target}`;
   }
+  if (type === "work_mode_reasoning" && op === "open_and_stream") {
+    const reasoningReqId = String(payload?.reasoning_request_id || payload?.request_id || "").trim();
+    if (reasoningReqId) return `${req}:${reasoningReqId}`;
+    const actionId = String(payload?.action_id || "").trim();
+    if (actionId) return `${req}:${actionId}`;
+    const task = cleanReasoningTaskForDedupe(payload?.prompt || "");
+    const panel = resolveReasoningTargetPanelKey(payload);
+    const parentTurnId = String(payload?.parent_turn_id || "").trim();
+    if (parentTurnId && task) return `${req}:${parentTurnId}:${panel}:${task}`;
+    return `${req}:${planId}:${seqIdx}:${type}:${op}:${panel}:${task}`;
+  }
   return `${req}:${planId}:${seqIdx}:${type}:${op}`;
 }
 
@@ -19305,11 +19446,41 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
     String(payload?.target_panel || "").toLowerCase() === "new";
   const newPanelRequestId = String(payload?.new_panel_request_id || payload?.panel_open_request_id || "").trim();
   const actionPlanId = String(payload?.action_plan_id || "").trim();
+  const reasoningRequestId = String(payload?.reasoning_request_id || payload?.request_id || "").trim();
+  const actionId = String(payload?.action_id || "").trim();
+  const parentTurnId = String(payload?.parent_turn_id || data?.parent_turn_id || "").trim();
   /* 2026-06-12 — the user gave an explicit panel destination ("... in
      panel N", "... in a new panel"). The recursive reasoning turn must be
      FORCED into the reasoning panel even if the bare task ("explain
      tennis") would otherwise qualify as a simple Voice-UI answer. */
   const explicitPanelDestination = payload?.explicit_panel_destination === true;
+
+  try {
+    console.info("[open_and_stream_payload_received]", {
+      action_id: actionId || null,
+      request_id: reasoningRequestId || null,
+      parent_turn_id: parentTurnId || null,
+      target_panel: wantsNewPanel ? "new" : target1based,
+      task: promptClean.slice(0, 240),
+      action_plan_id: actionPlanId || null,
+      planner_action_index: Number.isFinite(Number(payload?.planner_action_index))
+        ? Number(payload.planner_action_index)
+        : null,
+    });
+  } catch (_) {}
+
+  const openStreamDedupe = shouldStartReasoningOpenAndStream(payload);
+  if (!openStreamDedupe.allow) {
+    try {
+      console.info("[open_and_stream_payload_deduped]", {
+        action_id: actionId || null,
+        request_id: reasoningRequestId || null,
+        parent_turn_id: parentTurnId || null,
+        reason: openStreamDedupe.reason || "duplicate",
+      });
+    } catch (_) {}
+    return;
+  }
 
   /* Hard warning: a contaminated prompt would let the reasoning model see
      "play lo-fi" or "go to panel 2" — which would either produce a noisy
@@ -19497,12 +19668,9 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
       raw_text: String(data?.transcript || data?.user_text || "").slice(0, 240),
       cleaned_task: promptClean.slice(0, 240),
       target_panel_index_1based: target1based,
-    });
-    console.info("[reasoning_stream_start]", {
-      task: promptClean.slice(0, 240),
-      target_panel_index_1based: target1based,
-      target_panel_index_0based: resolvedIdx0,
-      source: "open_and_stream_dispatcher",
+      action_id: actionId || null,
+      request_id: reasoningRequestId || null,
+      parent_turn_id: parentTurnId || null,
     });
   } catch (_) {}
 
@@ -19532,6 +19700,10 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
       void sendVeraWorkModeTypedInferTurn(promptClean, {
         path: "wm-multi-action:reasoning.request.open_and_stream",
         __skipMultiActionPlanner: true,
+        __reasoningRequestId: reasoningRequestId || null,
+        __reasoningActionId: actionId || null,
+        __reasoningParentTurnId: parentTurnId || null,
+        __reasoningStreamSource: "open_and_stream_dispatcher",
         /* Explicit panel destination overrides the simple-chat shortcut:
            force the recursive turn's reasoning gate to route to the panel. */
         __reasoningGateForceRoute: explicitPanelDestination ? "reasoning_panel" : undefined,
@@ -20025,9 +20197,11 @@ function _usageTrackActionExecuted(payload, data, seqCtx, extra) {
   } catch (_) {}
 }
 
-function _usageSkipFinalizeActionApply(payload) {
+function _usageSkipFinalizeActionApply(payload, merged) {
   const panelType = payload?.panel_type || "";
   if (panelType === "checklist_control") return true;
+  const planned = Array.isArray(merged?.action_payloads) ? merged.action_payloads.filter(Boolean) : [];
+  if (planned.length >= 1) return true;
   return false;
 }
 
@@ -20482,6 +20656,15 @@ async function applyActionPayload(data, seqCtx = {}) {
     }
     if (op === "open_and_stream") {
       try {
+        const stableIds = makeReasoningRequestStableIds(payload);
+        console.info("[apply_action_payload_reasoning]", {
+          action_id: stableIds.actionId || null,
+          request_id: stableIds.requestId || null,
+          parent_turn_id: stableIds.parentTurnId || null,
+          target_panel: resolveReasoningTargetPanelKey(payload),
+          task: String(payload?.prompt || "").slice(0, 240),
+          source: seqCtx?.source || data?.type || "unknown",
+        });
         console.info("[reasoning_action_received]", {
           op,
           prompt_preview: String(payload?.prompt || "").slice(0, 160),
@@ -20654,7 +20837,7 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
     return;
   }
   /* Must assign state.bubble so applyNdjsonStreamingReplySoFar doesn't add a second bubble if done arrives before first audio (defer path). */
-  if (!_usageSkipFinalizeActionApply(pay)) {
+  if (!_usageSkipFinalizeActionApply(pay, merged)) {
     applyActionPayload(merged);
   }
   // Streaming finalized without ever calling onReplyProgress (no partials),
@@ -26830,7 +27013,11 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     turnContext,
     __reasoningGateTargetPanel: _forwardedTargetPanel,
     __reasoningGateForceRoute: _forwardedForceRoute,
-    __reasoningGateReason: opts && opts.__reasoningGateReason ? opts.__reasoningGateReason : undefined
+    __reasoningGateReason: opts && opts.__reasoningGateReason ? opts.__reasoningGateReason : undefined,
+    __reasoningRequestId: opts?.__reasoningRequestId || null,
+    __reasoningActionId: opts?.__reasoningActionId || null,
+    __reasoningParentTurnId: opts?.__reasoningParentTurnId || null,
+    __reasoningStreamSource: opts?.__reasoningStreamSource || null
   });
 
   const enqueued = enqueueWorkModeTypedVoiceInfer(async () => {

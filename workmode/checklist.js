@@ -669,6 +669,152 @@ async function hydrateWorkChecklistFromServer(force = false) {
 }
 
 /* =========================
+   IMPLICIT CHECKLIST MUTATION DETECTION
+   Route checklist edits by mutation verb + item-like targets without
+   requiring the literal word "checklist". Conservative blocklist keeps
+   timer / panel / reasoning-refinement phrasing out of checklist routing.
+========================= */
+
+const CHECKLIST_IMPLICIT_BLOCK_RES = [
+  /\b(?:add|append)\s+\d+\s*(?:minutes?|mins?|hours?|hrs?|seconds?|secs?)\s+to\s+(?:the\s+)?timer\b/i,
+  /\b(?:add|append)\s+(?:more\s+)?(?:detail|details|evidence|context|information|depth)\b/i,
+  /\b(?:remove|delete|close|clear|hide|dismiss)\s+(?:the\s+)?(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|\d+(?:st|nd|rd|th)?)\s+)?(?:reasoning\s+)?(?:panel|tab)s?\b/i,
+  /\bcomplete\s+(?:this|the|that)\s+(?:explanation|answer|response|essay|draft|paragraph|section|problem|question)\b/i,
+  /\b(?:add|put|move|place)\s+(?:this|that|it|the\s+(?:answer|explanation|evidence|response|content))\s+(?:to|in|into)\s+(?:the\s+)?(?:panel|reasoning)\b/i,
+  /\b(?:add|append)\s+.+\s+in\s+(?:the\s+)?panel\s+\d+\b/i,
+  /\bmark\s+(?:this|the|that)\s+(?:paragraph|sentence|section|line|page|word)\b/i,
+  /\b(?:add|turn\s+up|increase)\s+(?:the\s+)?volume\b/i,
+];
+
+function _stripChecklistCommandPoliteness(text) {
+  return String(text || "")
+    .trim()
+    .replace(/^\s*(?:please\s+|pls\s+|kindly\s+)+/i, "")
+    .replace(/^\s*(?:can|could|would|will)\s+you\b[\s,]+/i, "")
+    .replace(/^\s*(?:hey\s+vera|hey|ok|okay|alright)\b[\s,]+/i, "")
+    .trim();
+}
+
+function _detectChecklistNonObjectCollision(text) {
+  const latest = String(text || "");
+  const nonMatch = CHECKLIST_NON_OBJECT_NOUN_RE.exec(latest);
+  if (!nonMatch) return null;
+  if (CHECKLIST_NOUN_RE.test(latest)) return null;
+  return nonMatch[0].toLowerCase();
+}
+
+function _isBlockedImplicitChecklistCommand(text) {
+  const t = String(text || "").trim();
+  if (!t) return { blocked: true, reason: "empty" };
+  for (const re of CHECKLIST_IMPLICIT_BLOCK_RES) {
+    if (re.test(t)) return { blocked: true, reason: re.source.slice(0, 48) };
+  }
+  const collision = _detectChecklistNonObjectCollision(t);
+  if (collision) return { blocked: true, reason: `non_checklist_object:${collision}` };
+  return { blocked: false, reason: "" };
+}
+
+function _classifyImplicitChecklistMutationClause(clause) {
+  const raw = _stripChecklistCommandPoliteness(clause);
+  if (!raw) return null;
+  const low = raw.toLowerCase();
+  const block = _isBlockedImplicitChecklistCommand(raw);
+  if (block.blocked) return null;
+
+  if (
+    /\b(?:add|append|insert)\b/.test(low) &&
+    !/\bto\s+the\s+timer\b/.test(low) &&
+    !/\b(?:to|in|into)\s+(?:the\s+)?(?:panel|reasoning)\b/.test(low)
+  ) {
+    const m = raw.match(/\b(?:add|append|insert)\s+(?:the\s+)?(.+?)\s*$/i);
+    const body = String(m?.[1] || "").trim().replace(/[?.!]+$/, "").trim();
+    if (body && !/\b(?:panel|tab|timer|volume|minute|minutes|detail|evidence)\b/i.test(body)) {
+      return { action: "add", clause: raw, reason: "implicit_add_verb_with_item_target" };
+    }
+  }
+
+  if (
+    (/\b(?:mark|complete|check\s+off|tick\s+off)\b/i.test(raw) &&
+      /\b(?:complete|completed|done)\b/i.test(raw)) ||
+    /\bmark\s+.+\s+(?:complete|completed|done)\b/i.test(raw) ||
+    /\b(?:check\s+off|tick\s+off)\s+\S/i.test(raw)
+  ) {
+    return { action: "complete", clause: raw, reason: "implicit_complete_verb_with_item_target" };
+  }
+
+  if (
+    /\b(?:remove|delete|cross\s+off)\b/i.test(raw) &&
+    !/\b(?:panel|tab|reasoning)\b/i.test(raw)
+  ) {
+    return { action: "remove", clause: raw, reason: "implicit_remove_verb_with_item_target" };
+  }
+
+  if (CHECKLIST_UNCOMPLETE_VERB_RE.test(raw)) {
+    return { action: "uncomplete", clause: raw, reason: "implicit_uncomplete_verb_with_item_target" };
+  }
+
+  return null;
+}
+
+function _splitImplicitChecklistClauses(text) {
+  const s = String(text || "").trim();
+  if (!s) return [];
+  const parts = [];
+  let cursor = 0;
+  const re = /\s+(?:and|then|also)\s+/gi;
+  let match;
+  while ((match = re.exec(s)) != null) {
+    const before = s.slice(cursor, match.index).trim();
+    const after = s.slice(match.index + match[0].length).trim();
+    if (!before || !after) continue;
+    const rhsHit = _classifyImplicitChecklistMutationClause(after);
+    if (!rhsHit) continue;
+    parts.push(before);
+    cursor = match.index + match[0].length;
+  }
+  const tail = s.slice(cursor).trim();
+  if (tail) parts.push(tail);
+  return parts.length ? parts : [s];
+}
+
+function detectImplicitChecklistMutation(text) {
+  const raw = String(text || "").trim();
+  const empty = { detected: false, mutations: [], count: 0, reason: "empty" };
+  if (!raw) return empty;
+  const block = _isBlockedImplicitChecklistCommand(raw);
+  if (block.blocked) return { ...empty, reason: block.reason };
+
+  const scan = _splitImplicitChecklistClauses(raw);
+  const mutations = [];
+  const seen = new Set();
+  for (const clause of scan) {
+    const hit = _classifyImplicitChecklistMutationClause(clause);
+    if (!hit) continue;
+    const key = `${hit.action}:${hit.clause.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    mutations.push(hit);
+  }
+  if (!mutations.length) return { ...empty, reason: "no_implicit_mutation" };
+  try {
+    console.info("[checklist_implicit_action_detected]", {
+      raw_text: raw.slice(0, 240),
+      reason: mutations.length > 1 ? "multi_implicit_checklist_mutation" : mutations[0].reason,
+      actions: mutations.map((m) => m.action),
+      mutation_count: mutations.length,
+    });
+  } catch (_) {}
+  return {
+    detected: true,
+    mutations,
+    count: mutations.length,
+    reason: mutations.length > 1 ? "multi_implicit_checklist_mutation" : mutations[0].reason,
+  };
+}
+
+try { window.detectImplicitChecklistMutation = detectImplicitChecklistMutation; } catch (_) {}
+
+/* =========================
    CLOSE-PANEL DISAMBIGUATION HELPER (Spec PART 13)
    Phrases that look like checklist mutations should not trigger panel
    closes. Used by the reasoning-panel close-shortcut path in app.js.
@@ -676,6 +822,7 @@ async function hydrateWorkChecklistFromServer(force = false) {
 function _looksLikeChecklistCommand(text) {
   const t = String(text || "").toLowerCase();
   if (!t) return false;
+  if (detectImplicitChecklistMutation(text).detected) return true;
   /* Explicit reasoning-panel subject wins over ordinal+remove heuristics
      ("remove the fourth panel" is panel.close, not checklist.remove). */
   if (
@@ -926,6 +1073,21 @@ function detectChecklistActionIntent(opts = {}) {
 
   if (CHECKLIST_STATUS_REVIEW_RE.test(latest)) {
     return { ...base, reason: "checklist_status_review" };
+  }
+
+  const implicitMutation = detectImplicitChecklistMutation(latest);
+  if (implicitMutation.detected) {
+    const primary = implicitMutation.mutations[0];
+    return {
+      ...base,
+      isChecklistAction: true,
+      action: primary?.action || "add",
+      indices: [],
+      scope: "top_level",
+      confidence: implicitMutation.count >= 2 ? 0.9 : 0.8,
+      reason: implicitMutation.reason,
+      detectedObjectType: "checklist_item",
+    };
   }
 
   const nonChecklistMatch = CHECKLIST_NON_OBJECT_NOUN_RE.exec(latest);
