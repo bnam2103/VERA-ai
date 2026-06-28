@@ -6873,6 +6873,54 @@ body.bmo-open #bmo-side-pane.side-pane {
   background: #05080e;
 }
 
+.weather-forecast-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 4px 12px;
+}
+
+.weather-forecast-summary {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: var(--text-secondary, #c8d0dc);
+}
+
+.weather-forecast-table-wrap {
+  overflow-x: auto;
+}
+
+.weather-forecast-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.weather-forecast-table th,
+.weather-forecast-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  vertical-align: top;
+}
+
+.weather-forecast-table th {
+  font-weight: 600;
+  color: var(--text-secondary, #aeb8c8);
+}
+
+.weather-forecast-note {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--accent, #7ec8ff);
+}
+
+.weather-forecast-empty {
+  text-align: center;
+  color: var(--text-secondary, #9aa3b2);
+}
+
 /* =========================================================================
  * 2026-05-28 — product_results_panel + location_map_panel layout.
  * Goal: every product card has the SAME image height (aspect-ratio: 4/3,

@@ -8608,6 +8608,7 @@ function ensureReasoningPanelIndexExists(targetIdx0) {
   if (!Number.isFinite(want) || want < 0) return false;
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot || typeof addReasoningTab !== "function") return false;
+  const beforeCount = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length;
   let panelEl = panelsRoot.querySelector(`.vera-reasoning-tab-panel[data-tab-index="${want}"]`);
   let guard = 0;
   while (!panelEl && guard < (typeof REASONING_TABS_MAX === "number" ? REASONING_TABS_MAX : 8)) {
@@ -8616,6 +8617,16 @@ function ensureReasoningPanelIndexExists(targetIdx0) {
     panelEl = panelsRoot.querySelector(`.vera-reasoning-tab-panel[data-tab-index="${want}"]`);
     guard += 1;
   }
+  const afterCount = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length;
+  try {
+    console.info("[panel_ensure_exists]", {
+      requested_index: want,
+      before_count: beforeCount,
+      after_count: afterCount,
+      created_count: Math.max(0, afterCount - beforeCount),
+      exists: Boolean(panelEl),
+    });
+  } catch (_) {}
   return Boolean(panelEl);
 }
 
@@ -10080,9 +10091,22 @@ const _WMC_REASONING_FAMILY_RE =
 const _WMC_MUSIC_FAMILY_RE =
   /\b(?:play|pause|stop|resume|mute|unmute|unpause|skip(?:\s+(?:to\s+the\s+)?(?:next|previous|forward|back))?|next\s+(?:song|track)|previous\s+(?:song|track))\b|\b(?:turn|raise|lower|crank)\s+(?:up\s+|down\s+)?(?:the\s+)?(?:music|volume)\b/i;
 const _WMC_TIMER_FAMILY_RE =
-  /\b(?:set|start|begin)\s+(?:a\s+|the\s+|another\s+)?timer\b|\btimer\s+for\b|\bcancel\s+(?:the\s+|that\s+|my\s+)?timer\b|\berase\s+(?:the\s+|that\s+|my\s+)?timer\b/i;
+  /\b(?:set|start|create|make|begin)\s+(?:a\s+|an\s+|the\s+|another\s+|my\s+)?(?:[\w'-]+\s+){0,5}timer\b|\btimer\s+for\b|\bcancel\s+(?:the\s+|that\s+|my\s+)?timer\b|\berase\s+(?:the\s+|that\s+|my\s+)?timer\b/i;
+const _WMC_SEARCH_FAMILY_RE =
+  /\b(?:search(?:\s+the\s+web)?\s+for|look\s+up|google)\b/i;
 const _WMC_CHECKLIST_FAMILY_RE =
   /\b(?:add|put|remove|delete|cross\s+off|check\s+off|complete|mark)\b[^.?!]{0,40}\b(?:checklist|plan|todo|to[-\s]?do|list)\b|\b(?:checklist|plan|to[-\s]?do(?:\s+list)?)\b[^.?!]{0,40}\b(?:add|remove|delete|complete|mark)\b|\bcross\s+off\s+the\s+(?:first|second|third|fourth|fifth|last)\b/i;
+
+function _countDistinctPanelSubIntents(text) {
+  const low = String(text || "").toLowerCase();
+  let count = 0;
+  if (/\b(?:open|create|make|add)\s+(?:a|an|another|one\s+more|new)\s+(?:new\s+)?(?:reasoning\s+)?(?:panel|one)\b/.test(low)) {
+    count += 1;
+  }
+  if (/\bclose\b[^.?!]{0,48}\bpanel\b/.test(low)) count += 1;
+  if (/\b(?:switch|go|jump|navigate|move)\s+to\b[^.?!]{0,80}\bpanel\b/.test(low)) count += 1;
+  return count;
+}
 
 function detectCompoundActionFamilies(text) {
   const s = String(text || "").trim();
@@ -10092,6 +10116,7 @@ function detectCompoundActionFamilies(text) {
   if (_WMC_REASONING_FAMILY_RE.test(s)) families.push("reasoning");
   if (_WMC_MUSIC_FAMILY_RE.test(s)) families.push("music");
   if (_WMC_TIMER_FAMILY_RE.test(s)) families.push("timer");
+  if (_WMC_SEARCH_FAMILY_RE.test(s)) families.push("search");
   if (_WMC_CHECKLIST_FAMILY_RE.test(s)) families.push("checklist");
   /* Also count implicit "in panel N" as a panel family — covers
      "explain X in panel 2" which the backend planner rewrites into
@@ -10101,6 +10126,14 @@ function detectCompoundActionFamilies(text) {
   }
   if (!families.includes("panel") && _REASONING_PANEL_IN_RE.test(s)) {
     families.push("panel");
+  }
+  const panelSubIntents = _countDistinctPanelSubIntents(s);
+  if (panelSubIntents >= 2) {
+    return {
+      isCompound: true,
+      families: families.length ? families : ["panel"],
+      reason: "multi_panel_sub_intents",
+    };
   }
   /* Panel phrase as routing destination (substantive topic + "in this panel")
      is a single reasoning intent — not a compound panel+reasoning command. */
@@ -15460,6 +15493,30 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const _conversationalCheck = detectWorkModeConversationalCheck(trimmed);
   const _briefModifier = isBriefExplanationModifier(trimmed);
   const _simpleDefinition = isSimpleDefinitionQuestion(trimmed);
+  /* Numeric "in panel N" with an inline topic is owned by the backend
+     planner's open_and_stream path. Running the frontend gate too creates
+     duplicate panels and double reasoning streams. Deictic panel routing
+     ("write that in panel 3") still uses the frontend gate. */
+  if (
+    !callerForcedReasoning &&
+    !(opts && opts.__skipMultiActionPlanner) &&
+    _explicitPanelRef.matched &&
+    Number.isFinite(_explicitPanelRef.targetPanel) &&
+    _explicitPanelRef.targetPanel >= 1 &&
+    !_explicitPanelRef.wasPronoun &&
+    (extractSubstantiveTopicBeforePanelPhrase(trimmed) ||
+      Boolean(resolveExplicitPanelStreamTask(trimmed, _explicitPanelRef).task))
+  ) {
+    try {
+      console.info("[reasoning_gate_deferred_to_backend_planner]", {
+        raw_transcript: String(trimmed || "").slice(0, 240),
+        target_panel_number: _explicitPanelRef.targetPanel,
+        reason: "explicit_in_panel_number_backend_open_and_stream",
+      });
+    } catch (_) {}
+    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
   if (_explicitPanelRef.matched) {
     const _panelTopicResolve = resolveExplicitPanelStreamTask(trimmed, _explicitPanelRef);
     let resolvedTopic = _panelTopicResolve.task || null;
@@ -15764,6 +15821,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       arithmetic_fast_path_match: false
     });
     try {
+      console.info("[reasoning_gate_skip]", {
+        reason: "multi_action_executable",
+        raw_transcript: String(trimmed || "").slice(0, 240),
+        compound_action_families_detected: _compound.families,
+      });
       console.info("[reasoning_gate_deferred_to_compound_planner]", {
         raw_transcript: String(trimmed || "").slice(0, 240),
         compound_action_families_detected: _compound.families,
@@ -18967,20 +19029,12 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
     }
   }
   if (panelsRoot && resolvedIdx0 != null) {
-    let panelEl = panelsRoot.querySelector(
+    if (typeof ensureReasoningPanelIndexExists === "function") {
+      ensureReasoningPanelIndexExists(resolvedIdx0);
+    }
+    const panelEl = panelsRoot.querySelector(
       `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
     );
-    while (!panelEl && typeof addReasoningTab === "function") {
-      const opened = addReasoningTab({ source: "planner_reasoning_request_open_and_stream" });
-      if (!opened) break;
-      panelEl = panelsRoot.querySelector(
-        `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
-      );
-      if (!panelEl) {
-        const allPanels = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel");
-        if (allPanels.length >= 8) break;
-      }
-    }
     if (panelEl && typeof activateReasoningTab === "function") {
       activateReasoningTab(resolvedIdx0, {
         commandText: promptClean,
@@ -18989,6 +19043,14 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
       });
       activatedPanelLaneId = String(panelEl.dataset.laneId || activatedPanelLaneId || "");
     }
+    try {
+      console.info("[reasoning_lane_target]", {
+        requested_panel: target1based,
+        selected_lane_id: activatedPanelLaneId || getActiveDomReasoningLaneId?.() || null,
+        render_lane_id: getActiveDomReasoningLaneId?.() || null,
+        target_panel_index_0based: resolvedIdx0,
+      });
+    } catch (_) {}
   }
 
   try {
@@ -19654,6 +19716,16 @@ async function applyActionPayload(data, seqCtx = {}) {
 
   if (payload?.panel_type === "location_map_panel") {
     requestAnimationFrame(() => renderLocationMapPanel(payload));
+    return;
+  }
+
+  if (payload?.panel_type === "weather_forecast_panel") {
+    requestAnimationFrame(() => {
+      if (typeof renderWeatherForecastPanel === "function") {
+        renderWeatherForecastPanel(payload);
+      }
+    });
+    _usageTrackActionExecuted(payload, data, seqCtx);
     return;
   }
 

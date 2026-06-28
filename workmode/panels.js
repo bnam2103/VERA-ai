@@ -2540,6 +2540,27 @@ function executeCloseReasoningPanelsCommand(parsed, opts = {}) {
  * → moved to workmode/panels.js (Stage 8, 2026-05-27). */
 
 /* Try to handle a voice/text command client-side. Returns true when handled. */
+function shouldDeferClosePanelShortcutForMultiAction(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  try {
+    if (typeof detectCompoundActionFamilies === "function") {
+      const compound = detectCompoundActionFamilies(s);
+      if (compound.isCompound) return true;
+    }
+  } catch (_) {}
+  const low = s.toLowerCase();
+  if (!/\bclose\b/.test(low) || !/\bpanel\b/.test(low)) return false;
+  return (
+    /\b(?:open|create|make|add)\s+(?:a|an|another|one\s+more|new)\s+(?:new\s+)?(?:reasoning\s+)?(?:panel|one)\b/.test(low) ||
+    /\b(?:switch|go|jump|navigate|move)\s+to\b/.test(low) ||
+    /\b(?:pause|play|stop|resume|unpause)\b/.test(low) ||
+    /\b(?:explain|describe|write|help\s+me)\b/.test(low) ||
+    /\b(?:set|start|cancel)\b[^.?!]{0,20}\btimer\b/.test(low) ||
+    /\bchecklist\b/.test(low)
+  );
+}
+
 function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   if (!text) return false;
   const source = opts.reason || "client_shortcut";
@@ -2560,6 +2581,17 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   const gatePassed = Boolean(_gateWorkMode && _gateModePrefix === "vera");
   const hasReasoningPanelDom = order.length > 0;
   if (closePanelIntentDetected) {
+    if (shouldDeferClosePanelShortcutForMultiAction(text)) {
+      try {
+        console.info("[close_panel_shortcut_deferred] " + JSON.stringify({
+          raw_text: String(text || "").slice(0, 240),
+          input_source: inputSource,
+          source,
+          reason: "multi_action_planner",
+        }));
+      } catch (_) {}
+      return false;
+    }
     try {
       console.info("[close_panel_route_called] " + JSON.stringify({
         raw_text: String(text || ""),
