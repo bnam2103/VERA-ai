@@ -4073,9 +4073,38 @@ function wireFreeMusicAudioElement(prefix) {
     if (getProductivityMusicSource(prefix) !== "builtin") return;
     const st = window.__veraFreeMusicPlayback;
     if (!st) return;
+    const nowMs = performance.now();
+    const navState =
+      typeof ensureMusicNavigationState === "function" ? ensureMusicNavigationState() : null;
+    const manualRecent =
+      navState && typeof isFreeMusicEndedNavigationSuppressed === "function"
+        ? isFreeMusicEndedNavigationSuppressed(navState, nowMs)
+        : false;
+    const idx = Number(st.index) || 0;
+    const trackName = st.queue?.[idx]?.name || st.currentTrackId || null;
+    try {
+      console.info("[music_audio_ended]", {
+        track: trackName,
+        playlist_index: idx,
+        manual_navigation_recent: manualRecent,
+      });
+    } catch (_) {}
+    if (manualRecent) {
+      freeMusicSyncNowFromAudio(prefix);
+      spotifySyncPlayButtonUi(prefix);
+      return;
+    }
     if (st.mode === "playlist" && st.queue.length > 1) {
       const next = freeMusicGetAdjacentQueueIndex(prefix, "next");
       if (next == null) return;
+      if (typeof markMusicNavigationExecuted === "function" && navState) {
+        markMusicNavigationExecuted(navState, {
+          delta: 1,
+          source: "audio_ended",
+          actionId: null,
+          nowMs,
+        });
+      }
       void freeMusicPlayQueueIndex(prefix, next);
       return;
     }
@@ -6756,37 +6785,20 @@ function wireProductivityPanelEvents(prefix) {
     if (typeof toggle === "function") toggle().catch(() => {});
   });
 
-  document.getElementById(`${prefix}-spotify-next`)?.addEventListener("click", () => {
-    if (getProductivityMusicSource(prefix) === "builtin") {
-      const st = window.__veraFreeMusicPlayback;
-      if (st?.mode === "playlist" && st.queue?.length > 1) {
-        const next = freeMusicGetAdjacentQueueIndex(prefix, "next");
-        if (next == null) return;
-        void freeMusicPlayQueueIndex(prefix, next);
-      }
-      return;
+  wireMusicTransportButtonOnce(
+    document.getElementById(`${prefix}-spotify-next`),
+    "next",
+    () => {
+      void navigateMusicTrack(1, "button_next", null);
     }
-    invokeSpotifyTransport("skip_next", { source: "button" });
-  });
-  document.getElementById(`${prefix}-spotify-prev`)?.addEventListener("click", () => {
-    if (getProductivityMusicSource(prefix) === "builtin") {
-      const st = window.__veraFreeMusicPlayback;
-      const a = document.getElementById(`${prefix}-free-music-audio`);
-      if (st?.mode === "playlist" && st.queue?.length > 1) {
-        const pos = Math.round((a?.currentTime || 0) * 1000);
-        if (pos > SPOTIFY_PREVIOUS_RESTART_MS && a) {
-          a.currentTime = 0;
-          freeMusicSyncNowFromAudio(prefix);
-          return;
-        }
-        const prev = freeMusicGetAdjacentQueueIndex(prefix, "previous");
-        if (prev == null) return;
-        void freeMusicPlayQueueIndex(prefix, prev);
-      }
-      return;
+  );
+  wireMusicTransportButtonOnce(
+    document.getElementById(`${prefix}-spotify-prev`),
+    "previous",
+    () => {
+      void navigateMusicTrack(-1, "button_previous", null);
     }
-    invokeSpotifyTransport("skip_previous", { source: "button" });
-  });
+  );
 
   document.getElementById(`${prefix}-spotify-logout`)?.addEventListener("click", async () => {
     const base = localBackendBase();
@@ -6922,6 +6934,12 @@ function renderProductivityPanel(opts = {}) {
   ensurePersistentMusicAudioHost(prefix);
 
   const mount = () => {
+    try {
+      console.info("[music_panel_rerender]", {
+        prefix,
+        immediate: Boolean(opts.immediate),
+      });
+    } catch (_) {}
     sidePaneEl.hidden = false;
     sidePaneEl.dataset.sidePaneKind = "productivity";
     document.body.classList.add("news-panel-open");
@@ -18476,31 +18494,127 @@ async function invokeSpotifyTransport(op, { source = "unknown" } = {}) {
   return true;
 }
 
-async function builtinMusicTransportSkipNext(prefix) {
-  const st = window.__veraFreeMusicPlayback;
-  if (st?.mode === "playlist" && st.queue?.length > 1) {
-    const next = ((Number(st.index) || 0) + 1) % st.queue.length;
-    await freeMusicPlayQueueIndex(prefix, next);
-    return true;
-  }
-  return false;
-}
-
-async function builtinMusicTransportSkipPrevious(prefix) {
+async function navigateBuiltinMusicTrack(prefix, delta, source) {
   const st = window.__veraFreeMusicPlayback;
   const a = document.getElementById(`${prefix}-free-music-audio`);
-  if (st?.mode === "playlist" && st.queue?.length > 1) {
+  if (!st || st.mode !== "playlist" || !st.queue?.length || st.queue.length < 2) return false;
+  if (delta < 0) {
     const pos = Math.round((a?.currentTime || 0) * 1000);
     if (pos > SPOTIFY_PREVIOUS_RESTART_MS && a) {
       a.currentTime = 0;
       freeMusicSyncNowFromAudio(prefix);
       return true;
     }
-    const prev = ((Number(st.index) || 0) + st.queue.length - 1) % st.queue.length;
+    const prev = freeMusicGetAdjacentQueueIndex(prefix, "previous");
+    if (prev == null) return false;
     await freeMusicPlayQueueIndex(prefix, prev);
     return true;
   }
-  return false;
+  const next = freeMusicGetAdjacentQueueIndex(prefix, "next");
+  if (next == null) return false;
+  await freeMusicPlayQueueIndex(prefix, next);
+  return true;
+}
+
+/**
+ * Central manual track navigation (+1 next / -1 previous).
+ * All button clicks, voice payloads, and builtin transport use this path.
+ */
+async function navigateMusicTrack(delta, source = "unknown", actionId = null) {
+  const direction =
+    typeof musicNavigationDirectionLabel === "function"
+      ? musicNavigationDirectionLabel(delta)
+      : Number(delta) >= 0
+        ? "next"
+        : "previous";
+  const nowMs = performance.now();
+  const navState =
+    typeof ensureMusicNavigationState === "function" ? ensureMusicNavigationState() : null;
+  if (typeof logMusicNavigation === "function") {
+    logMusicNavigation("detected", {
+      direction,
+      delta: Number(delta) >= 0 ? 1 : -1,
+      source: String(source || "unknown"),
+      action_id: actionId || null,
+    });
+  }
+  if (navState && typeof shouldIgnoreMusicNavigationDuplicate === "function") {
+    const dup = shouldIgnoreMusicNavigationDuplicate(navState, {
+      delta,
+      source: String(source || "unknown"),
+      actionId,
+      nowMs,
+    });
+    if (dup.ignore) {
+      if (typeof logMusicNavigation === "function") {
+        logMusicNavigation("ignored_duplicate", {
+          direction,
+          reason: dup.reason,
+          source: String(source || "unknown"),
+          action_id: actionId || null,
+        });
+      }
+      return { ok: false, reason: "duplicate", direction };
+    }
+  }
+
+  const prefix = appModePrefix();
+  const stBefore = window.__veraFreeMusicPlayback;
+  const indexBefore = stBefore?.index ?? null;
+  const trackBefore =
+    stBefore?.currentTrackId || stBefore?.queue?.[Number(indexBefore) || 0]?.name || null;
+  if (typeof logMusicNavigation === "function") {
+    logMusicNavigation("execute_start", {
+      direction,
+      playlist_index_before: indexBefore,
+      track_before: trackBefore,
+      source: String(source || "unknown"),
+      action_id: actionId || null,
+    });
+  }
+  if (navState && typeof markMusicNavigationExecuted === "function") {
+    markMusicNavigationExecuted(navState, {
+      delta,
+      source: String(source || "unknown"),
+      actionId,
+      nowMs,
+    });
+  }
+
+  const transportProvider = resolveMusicTransportProvider(prefix, {});
+  let ok = false;
+  if (transportProvider === "builtin") {
+    ok = await navigateBuiltinMusicTrack(prefix, delta, source);
+  } else if (Number(delta) >= 0) {
+    ok = await invokeSpotifyTransport("skip_next", { source });
+  } else {
+    ok = await invokeSpotifyTransport("skip_previous", { source });
+  }
+
+  const stAfter = window.__veraFreeMusicPlayback;
+  const indexAfter = stAfter?.index ?? null;
+  const trackAfter =
+    stAfter?.currentTrackId || stAfter?.queue?.[Number(indexAfter) || 0]?.name || null;
+  if (typeof logMusicNavigation === "function") {
+    logMusicNavigation("execute_done", {
+      direction,
+      playlist_index_after: indexAfter,
+      track_after: trackAfter,
+      source: String(source || "unknown"),
+      ok,
+    });
+  }
+  return { ok, direction };
+}
+
+async function builtinMusicTransportSkipNext(prefix) {
+  const res = await navigateMusicTrack(1, "music_control_builtin", null);
+  return res?.ok === true;
+}
+
+async function builtinMusicTransportSkipPrevious(prefix) {
+  const res = await navigateMusicTrack(-1, "music_control_builtin", null);
+  return res?.ok === true;
 }
 
 /** Returns false when the same play was already started a few seconds ago (NDJSON finalize + first-audio both call this). */
@@ -19397,34 +19511,33 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
     return;
   }
   const transportProvider = resolveMusicTransportProvider(prefix, seqCtx);
-  if (op === "skip_next") {
+  if (op === "skip_next" || op === "skip_previous") {
     if (!shouldApplyMusicTransportAction(payload, op)) return;
+    const delta = op === "skip_previous" ? -1 : 1;
+    const actionId =
+      typeof buildMusicNavigationActionId === "function"
+        ? buildMusicNavigationActionId(payload, data, op)
+        : "";
+    if (typeof logMusicNavigation === "function") {
+      logMusicNavigation("payload", {
+        action_id: actionId || null,
+        direction: op === "skip_previous" ? "previous" : "next",
+        source: seqCtx?.source || data?.type || "music_control_payload",
+      });
+    }
     console.warn("[music_transport_route]", {
       op,
       transportProvider,
       uiTab: getProductivityMusicSource(prefix),
       sequenceActiveProvider: seqCtx?.activeProvider || null,
+      navigation_action_id: actionId || null,
     });
-    if (transportProvider === "builtin") {
-      await builtinMusicTransportSkipNext(prefix);
-      return { op, transportProvider };
-    }
-    await invokeSpotifyTransport("skip_next", { source: "command" });
-    return { op, transportProvider: "spotify" };
-  }
-  if (op === "skip_previous") {
-    if (!shouldApplyMusicTransportAction(payload, op)) return;
-    console.log("[MUSIC][SKIP_PREV] applyActionPayload dispatch", {
-      source: data?.type || "unknown",
-      has_payload: Boolean(payload),
-      transportProvider,
-    });
-    if (transportProvider === "builtin") {
-      await builtinMusicTransportSkipPrevious(prefix);
-      return { op, transportProvider };
-    }
-    await invokeSpotifyTransport("skip_previous", { source: "command" });
-    return { op, transportProvider: "spotify" };
+    await navigateMusicTrack(
+      delta,
+      seqCtx?.source || data?.type || "music_control_payload",
+      actionId || null
+    );
+    return { op, transportProvider };
   }
   if (op === "pause") {
     const activeForPause = resolveMusicTransportProvider(prefix, seqCtx);
