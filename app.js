@@ -5502,6 +5502,13 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
       }
     } catch (_) {}
   }
+  const planHierarchy =
+    inWorkMode && typeof buildChecklistPlanHierarchyFromStorage === "function"
+      ? buildChecklistPlanHierarchyFromStorage()
+      : { main_items: [], main_count: 0, subitem_count: 0 };
+  const ongoingMainTexts = (planHierarchy.main_items || [])
+    .map((x) => String(x.text || "").trim())
+    .filter(Boolean);
   const ongoing = checklistItems
     .filter((x) => x && !Boolean(x.done))
     .map((x) => String(x.text || "").trim())
@@ -5518,6 +5525,18 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
       text: String(x.text || "").trim().slice(0, 200),
       done: Boolean(x.done),
       parent_id: x.parent_id == null ? null : String(x.parent_id || "").slice(0, 80)
+    }));
+  const checklistMainItemsSnapshot = (planHierarchy.main_items || [])
+    .slice(0, 8)
+    .map((m) => ({
+      id: String(m.id || "").slice(0, 80),
+      text: String(m.text || "").trim().slice(0, 200),
+      done: Boolean(m.done),
+      children: (m.children || []).slice(0, 8).map((c) => ({
+        id: String(c.id || "").slice(0, 80),
+        text: String(c.text || "").trim().slice(0, 200),
+        done: Boolean(c.done),
+      })),
     }));
 
   const activeLaneIdx = inWorkMode ? getActiveReasoningLaneIndex() : null;
@@ -5577,7 +5596,10 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
       ? {
           ongoing_count: ongoing.length,
           completed_count: completed.length,
-          ongoing_items: ongoing.slice(0, 8),
+          main_count: Number(planHierarchy.main_count) || 0,
+          subitem_count: Number(planHierarchy.subitem_count) || 0,
+          ongoing_items: ongoingMainTexts.slice(0, 8),
+          main_items: checklistMainItemsSnapshot,
           items: checklistSnapshotItems,
         }
       : null,
@@ -17649,6 +17671,59 @@ function finalizeWorkChecklistSyncCommandTurn({
   }
 }
 
+function finalizeWorkChecklistPlanBlockedTurn({
+  transcript,
+  source,
+  isVoice,
+  message
+} = {}) {
+  const finalTranscript = String(transcript || "").trim();
+  const fromVoice = Boolean(isVoice);
+  const replyText = String(message || "").trim() || getChecklistPlanLimitMessage?.(0) || "I can't make that plan right now.";
+  try {
+    if (finalTranscript) {
+      commitServerUserTranscriptBubble(
+        finalTranscript,
+        fromVoice ? `work-mode-plan-${source || "voice"}` : "work-mode-plan-typed"
+      );
+    }
+  } catch (_) {}
+  if (fromVoice) {
+    try {
+      abortBrowserSpeechRecognizers();
+    } catch (_) {}
+    try {
+      clearVoiceMaxDurationTimer();
+    } catch (_) {}
+    try {
+      audioChunks = [];
+      hasSpoken = false;
+      mainBrowserFinalTranscript = "";
+      mainBrowserLastInterim = "";
+      mainBrowserFinalizeKind = "main";
+      interruptPartialLastText = "";
+      interruptBargeInLatched = false;
+    } catch (_) {}
+  }
+  try {
+    addBubble(replyText, "vera", { path: "work-mode-plan-blocked" });
+  } catch (_) {}
+  if (fromVoice) {
+    void playWorkModeTtsOnlyPhrase(replyText).catch(() => {});
+  }
+  requestInFlight = false;
+  processing = false;
+  voiceUxTurn = null;
+  setStatus("Ready", "idle");
+  updateMuteInputButton();
+  if (fromVoice && listeningMode === "continuous" && listening && !inputMuted) {
+    window.setTimeout(() => {
+      if (!listening || processing || inputMuted) return;
+      startListening();
+    }, 80);
+  }
+}
+
 async function maybeHandleWorkChecklistSyncShortcut(text, opts = {}) {
   const userText = String(text || "").trim();
   if (userText && lastCompletedWorkChecklistSyncCommandTurn) {
@@ -17782,15 +17857,27 @@ async function maybeHandleWorkChecklistSyncShortcut(text, opts = {}) {
   return true;
 }
 
-async function runWorkChecklistHelpPlan({ signal } = {}) {
+async function runWorkChecklistHelpPlan({ signal, isVoice, source, userText } = {}) {
   if (!isVeraWorkModeOn()) return false;
   if (workChecklistPlanRequestInFlight) return true;
-  const lines = collectWorkChecklistOngoingTexts();
-  if (!lines.length) {
-    flashWorkChecklistPlanHint("Add text to at least one ongoing item first.");
+  const validation =
+    typeof validateChecklistPlanRequest === "function"
+      ? validateChecklistPlanRequest()
+      : { ok: collectWorkChecklistOngoingTexts().length > 0, context: null, message: "Add text to at least one ongoing item first." };
+  if (!validation.ok) {
+    flashWorkChecklistPlanHint(validation.message);
+    if (isVoice) {
+      finalizeWorkChecklistPlanBlockedTurn({
+        transcript: userText || "plan my checklist",
+        source: source || "voice_or_typed_shortcut",
+        isVoice: true,
+        message: validation.message
+      });
+    }
     return true;
   }
-  const text = buildWorkChecklistHelpPlanUserMessage(lines);
+  const planContext = validation.context;
+  const text = buildWorkChecklistHelpPlanUserMessage(planContext);
   const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
   workChecklistPlanRequestInFlight = true;
   if (helpPlanBtn instanceof HTMLButtonElement) helpPlanBtn.disabled = true;
@@ -17801,7 +17888,7 @@ async function runWorkChecklistHelpPlan({ signal } = {}) {
     }
     const turnContext = createWorkModeFrozenTurnContext({
       userText: text,
-      source: "keyboard"
+      source: isVoice ? "voice" : "keyboard"
     });
     await streamWorkModeReasoningComposer(text, signal, { turnContext });
     const mdAfterHelp = getLatestWorkModeReasoningMarkdown();
@@ -17840,10 +17927,16 @@ async function runWorkChecklistHelpPlan({ signal } = {}) {
   return true;
 }
 
-async function maybeHandleWorkChecklistPlanShortcut(text, signal) {
+async function maybeHandleWorkChecklistPlanShortcut(text, opts) {
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
   if (!isWorkChecklistPlanShortcutIntent(text)) return false;
-  await runWorkChecklistHelpPlan({ signal });
+  const signal = opts instanceof AbortSignal ? opts : opts?.signal;
+  const isVoice = Boolean(opts && typeof opts === "object" && !(opts instanceof AbortSignal) && opts.isVoice);
+  const source =
+    opts && typeof opts === "object" && !(opts instanceof AbortSignal)
+      ? opts.source || (isVoice ? "voice_or_typed_shortcut" : "keyboard")
+      : "keyboard";
+  await runWorkChecklistHelpPlan({ signal, isVoice, source, userText: text });
   return true;
 }
 
@@ -23702,7 +23795,7 @@ async function finalizeMainBrowserTranscript(text) {
   ) {
     return;
   }
-  if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
+  if (await maybeHandleWorkChecklistPlanShortcut(trimmed, { isVoice: true, source: "main-browser-asr" })) {
     return;
   }
   /* PART 3: close-reasoning-panel client shortcut. Runs BEFORE /infer so
@@ -24432,7 +24525,7 @@ async function maybeRunInterruptionClientShortcuts(routedText, originalText) {
       });
       return true;
     }
-    if (await maybeHandleWorkChecklistPlanShortcut(routedText)) {
+    if (await maybeHandleWorkChecklistPlanShortcut(routedText, { isVoice: true, source: "voice_interruption" })) {
       logInterruptTranscriptDebug("routed_to_normal_user_turn", {
         original_transcript: String(originalText || "").slice(0, 120),
         normalized_command_text: routedText.slice(0, 120),
@@ -25782,7 +25875,7 @@ async function handleUtterance() {
         updateMuteInputButton();
         return;
       }
-      if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
+      if (await maybeHandleWorkChecklistPlanShortcut(trimmed, { isVoice: true, source: "server-asr-preflight" })) {
         requestInFlight = false;
         processing = false;
         voiceUxTurn = null;
@@ -26944,7 +27037,7 @@ async function onPttClick() {
       updateMuteInputButton();
       return;
     }
-    if (await maybeHandleWorkChecklistPlanShortcut(text)) {
+    if (await maybeHandleWorkChecklistPlanShortcut(text, { isVoice: true, source: "ptt-browser-asr" })) {
       setStatus("Ready", "idle");
       updateMuteInputButton();
       return;

@@ -18,7 +18,8 @@
  *        * parent-child nesting depth capped at 1,
  *    - same SYNC CHECKLIST markdown parser (heading detection,
  *      time-title bullet preference, planish-fallback heuristic,
- *      24-item help-plan cap, 12000-char preview cap, 80-row proposal
+ *      5 main-item help-plan cap (subitems excluded), 12000-char preview
+ *      cap, 80-row proposal
  *      cap, sub-item-count-by-top cap of 3),
  *    - same plan-sync preview lifecycle (Edit/Lock toggle, Apply,
  *      preview-already-empty messaging),
@@ -1756,6 +1757,7 @@ function persistWorkChecklistRemove(id) {
 ========================= */
 
 const WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS = 24;
+const WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT = 5;
 const WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS = 12000;
 let workChecklistSyncPreviewEditing = false;
 /** Bumps when reasoning finishes with a checklist-capable plan (see onDone). */
@@ -1997,18 +1999,121 @@ function describePlanSyncActiveContext() {
   };
 }
 
-function collectWorkChecklistOngoingTexts() {
-  const ul = document.getElementById("vera-wm-checklist-ongoing");
-  if (!ul) return [];
-  const out = [];
-  for (const li of ul.querySelectorAll(":scope > li")) {
-    const inp = li.querySelector(".vera-wm-checklist-task-input");
-    if (inp instanceof HTMLInputElement) {
-      const t = inp.value.trim();
-      if (t) out.push(t);
-    }
+function logChecklistPlanDebug(kind, payload) {
+  try {
+    console.info(`[checklist_plan_${kind}]`, payload || {});
+  } catch (_) {}
+}
+
+function buildChecklistPlanHierarchyFromStorage() {
+  let items = [];
+  try {
+    items = readChecklistItemsFromStorage();
+  } catch (_) {
+    items = [];
   }
-  return out;
+  const ongoing = items.filter(
+    (x) =>
+      x &&
+      !Boolean(x.done) &&
+      String(x.text || "").trim() &&
+      !isChecklistPlaceholderItem(x) &&
+      String(x.id || "") !== WORK_CHECKLIST_UI_PLACEHOLDER_ID
+  );
+  const mainById = new Map();
+  const orderedMain = [];
+  for (const row of ongoing) {
+    const pid =
+      row.parent_id == null || String(row.parent_id || "").trim() === ""
+        ? null
+        : String(row.parent_id);
+    if (pid) continue;
+    const id = String(row.id || "");
+    const main = {
+      id,
+      text: String(row.text || "").trim(),
+      done: false,
+      children: [],
+    };
+    mainById.set(id, main);
+    orderedMain.push(main);
+  }
+  for (const row of ongoing) {
+    const pid =
+      row.parent_id == null || String(row.parent_id || "").trim() === ""
+        ? null
+        : String(row.parent_id);
+    if (!pid || !mainById.has(pid)) continue;
+    mainById.get(pid).children.push({
+      id: String(row.id || ""),
+      text: String(row.text || "").trim(),
+      done: false,
+    });
+  }
+  const subitemCount = orderedMain.reduce((n, m) => n + (m.children?.length || 0), 0);
+  const hierarchyLog = orderedMain.map((m) => ({
+    parent_id: null,
+    text: m.text.slice(0, 80),
+    child_count: m.children.length,
+  }));
+  logChecklistPlanDebug("hierarchy", hierarchyLog);
+  return {
+    main_items: orderedMain,
+    main_count: orderedMain.length,
+    subitem_count: subitemCount,
+  };
+}
+
+function getChecklistPlanLimitMessage(mainCount) {
+  const n = Number(mainCount) || 0;
+  return `I can make a plan for up to ${WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT} main checklist items. You currently have ${n}. Please remove or group a few first.`;
+}
+
+function validateChecklistPlanRequest(planContext) {
+  const ctx =
+    planContext && Array.isArray(planContext.main_items)
+      ? planContext
+      : buildChecklistPlanHierarchyFromStorage();
+  logChecklistPlanDebug("build", {
+    main_count: ctx.main_count,
+    subitem_count: ctx.subitem_count,
+  });
+  logChecklistPlanDebug("context", {
+    main_items_preview: (ctx.main_items || []).slice(0, 8).map((m) => ({
+      text: m.text,
+      child_count: (m.children || []).length,
+      children: (m.children || []).slice(0, 4).map((c) => c.text),
+    })),
+  });
+  if (!ctx.main_count) {
+    return {
+      ok: false,
+      reason: "no_main_items",
+      message: "Add text to at least one ongoing item first.",
+      main_count: 0,
+    };
+  }
+  if (ctx.main_count > WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT) {
+    logChecklistPlanDebug("limit_exceeded", {
+      main_count: ctx.main_count,
+      limit: WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+    });
+    logChecklistPlanDebug("request_blocked", {
+      reason: "too_many_main_items",
+      main_count: ctx.main_count,
+    });
+    return {
+      ok: false,
+      reason: "too_many_main_items",
+      message: getChecklistPlanLimitMessage(ctx.main_count),
+      main_count: ctx.main_count,
+    };
+  }
+  return { ok: true, context: ctx };
+}
+
+function collectWorkChecklistOngoingTexts() {
+  return buildChecklistPlanHierarchyFromStorage().main_items.map((m) => m.text);
 }
 
 function workChecklistHasAnyStoredItems() {
@@ -2028,7 +2133,7 @@ function syncWorkChecklistEraseButton() {
 function syncWorkChecklistHelpPlanButton() {
   const btn = document.getElementById("vera-wm-checklist-help-plan");
   if (!btn) return;
-  btn.disabled = collectWorkChecklistOngoingTexts().length === 0;
+  btn.disabled = buildChecklistPlanHierarchyFromStorage().main_count === 0;
 }
 
 function planSyncPanelGenerationInfo(panel) {
@@ -2814,19 +2919,31 @@ function flashWorkChecklistPlanHint(message) {
   }, 4500);
 }
 
-function buildWorkChecklistHelpPlanUserMessage(lines) {
-  const cap = lines.slice(0, WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS);
-  const body = cap.map((t, i) => `${i + 1}. ${t}`).join("\n");
-  const more =
-    lines.length > WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS
-      ? `\n… (${lines.length - WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS} more items not shown)\n`
-      : "";
+function buildWorkChecklistHelpPlanUserMessage(planContext) {
+  const ctx =
+    planContext && Array.isArray(planContext.main_items)
+      ? planContext
+      : buildChecklistPlanHierarchyFromStorage();
+  const cap = (ctx.main_items || []).slice(0, WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT);
+  const bodyParts = [];
+  for (let i = 0; i < cap.length; i += 1) {
+    const main = cap[i];
+    bodyParts.push(`${i + 1}. ${main.text}`);
+    for (const child of main.children || []) {
+      bodyParts.push(`   - ${child.text}`);
+    }
+  }
+  const body = bodyParts.join("\n");
   return (
     workModePlanningTimeInjectionPrefix() +
     "[Planning help. Be detailed in your reasoning output. First provide a concise plan explanation and practical tips. Then include a dedicated markdown heading exactly: '## SYNC CHECKLIST'. Under that heading, output checklist-ready bullets only with strict format: top-level bullet must be [time-time]: specific task title, and each top-level task must have 1 to 3 indented substeps (never 0, never more than 3). Substeps should be concrete and short, like focused work chunks. Schedule only at or after CURRENT LOCAL TIME unless the user implies otherwise. In the SYNC CHECKLIST section do NOT include questions, question sections, or question marks.]\n\n" +
-    "Ongoing checklist (in order):\n" +
-    body +
-    more
+    "CHECKLIST HIERARCHY RULES:\n" +
+    "- Top-level items below are the MAIN tasks for scheduling (max one time block per main task).\n" +
+    "- Indented sub-items are details, constraints, or substeps of their parent — NOT separate main tasks.\n" +
+    "- Do NOT give sub-items their own top-level time blocks unless the user explicitly asked to split them out.\n" +
+    "- When planning, combine parent + sub-items in wording (e.g. 'English homework — Odyssey essay').\n\n" +
+    "Ongoing checklist (main items with sub-details):\n" +
+    body
   );
 }
 
@@ -2926,6 +3043,7 @@ function getChecklistDebugState() {
     account_storage_key: WORK_CHECKLIST_STORAGE_KEY,
     anonymous_storage_key: getAnonymousChecklistStorageKey(),
     help_plan_max_items: WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS,
+    help_plan_max_main_items: WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
     sync_preview_max_chars: WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS,
     subitem_indent_threshold_px: WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX,
     stored_item_count: storedItemCount,
