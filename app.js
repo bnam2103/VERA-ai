@@ -10534,6 +10534,10 @@ function workModeReasoningPrepOutcome(chainPromise, inferThreadAnchor, inferGate
     reasoningUploadState: meta.reasoningUploadState || null,
     voiceTwoStage: meta.voiceTwoStage || { reasoningRouted: false },
     reasoningLaneId: String(meta.reasoningLaneId || "").trim(),
+    explicitPanelTarget: Number.isFinite(Number(meta.explicitPanelTarget))
+      ? Number(meta.explicitPanelTarget)
+      : null,
+    explicitTargetLaneId: String(meta.explicitTargetLaneId || "").trim(),
     turnContext: meta.turnContext || null
   };
 }
@@ -13429,18 +13433,26 @@ function logVoicePanelContract(prep, userText) {
   } catch (_) {}
 }
 
-function logLaneHandoffForVoiceFinal(prep, streamLaneId) {
+function logLaneHandoffForVoiceFinal(prep, streamLaneId, extra = {}) {
   const frozen = String(prep?.turnContext?.turn_lane_id || "").trim();
   const stream = String(streamLaneId || prep?.reasoningLaneId || "").trim();
   const active = getActiveDomReasoningLaneId() || "";
   const turnId = String(prep?.turnContext?.turn_id || "").trim();
   const snap = turnId ? workModeStage2SameTurnByTurnId[turnId] || null : null;
+  const targetPanel =
+    extra.target_panel != null
+      ? extra.target_panel
+      : Number.isFinite(Number(prep?.explicitPanelTarget))
+        ? Number(prep.explicitPanelTarget)
+        : null;
+  const snapshotLane = String(extra.snapshot_lane_id || snap?.lane_id || "").trim();
   try {
     console.info("[lane_handoff]", {
       turn_id: turnId || null,
+      target_panel: targetPanel,
       frozen_lane_id: frozen || null,
       stream_lane_id: stream || null,
-      snapshot_lane_id: snap?.lane_id || null,
+      snapshot_lane_id: snapshotLane || null,
       active_dom_lane_id: active || null,
       mismatch: Boolean(frozen && stream && frozen !== stream)
     });
@@ -13452,13 +13464,57 @@ function resolveGroundedVoiceFinalPanelMarkdown(prep) {
   const frozenLane = String(prep?.turnContext?.turn_lane_id || "").trim();
   const streamLane = String(prep?.reasoningLaneId || "").trim();
   const userText = String(prep?.turnContext?.user_text || "").trim();
+  const explicitPanel = Boolean(prep?.voiceTwoStage?.explicitPanelDestination);
+  const explicitTargetLane = String(prep?.explicitTargetLaneId || streamLane || "").trim();
+  const expectedLane = explicitPanel && explicitTargetLane ? explicitTargetLane : streamLane || frozenLane;
   logVoicePanelContract(prep, userText);
-  logLaneHandoffForVoiceFinal(prep, streamLane);
 
   if (!turnId) {
-    return { ok: false, skipReason: "missing_turn_id", markdown: "", laneId: "" };
+    return { ok: false, skipReason: "missing_turn_id", markdown: "", laneId: expectedLane };
+  }
+  if (explicitPanel && explicitTargetLane && streamLane && streamLane !== explicitTargetLane) {
+    logLaneHandoffForVoiceFinal(prep, streamLane, {
+      target_panel: prep?.explicitPanelTarget ?? null,
+      snapshot_lane_id: null
+    });
+    try {
+      console.info("[voice_final_brief_skip]", {
+        turn_id: turnId,
+        reason: "explicit_target_stream_lane_mismatch",
+        target_panel: prep?.explicitPanelTarget ?? null,
+        expected_lane_id: explicitTargetLane,
+        stream_lane_id: streamLane
+      });
+    } catch (_) {}
+    return {
+      ok: false,
+      skipReason: "explicit_target_stream_lane_mismatch",
+      markdown: "",
+      laneId: explicitTargetLane
+    };
   }
   if (frozenLane && streamLane && frozenLane !== streamLane) {
+    if (explicitPanel) {
+      logLaneHandoffForVoiceFinal(prep, streamLane, {
+        target_panel: prep?.explicitPanelTarget ?? null,
+        snapshot_lane_id: null
+      });
+      try {
+        console.info("[voice_final_brief_skip]", {
+          turn_id: turnId,
+          reason: "frozen_stream_lane_mismatch",
+          target_panel: prep?.explicitPanelTarget ?? null,
+          frozen_lane_id: frozenLane,
+          stream_lane_id: streamLane
+        });
+      } catch (_) {}
+      return {
+        ok: false,
+        skipReason: "frozen_stream_lane_mismatch",
+        markdown: "",
+        laneId: expectedLane
+      };
+    }
     try {
       console.info("[voice_final_brief_skip]", {
         turn_id: turnId,
@@ -13470,24 +13526,37 @@ function resolveGroundedVoiceFinalPanelMarkdown(prep) {
   }
 
   const snap = workModeStage2SameTurnByTurnId[turnId] || null;
+  logLaneHandoffForVoiceFinal(prep, streamLane, {
+    target_panel: prep?.explicitPanelTarget ?? null,
+    snapshot_lane_id: snap?.lane_id || null
+  });
+
   if (snap) {
     if (String(snap.turn_id || "").trim() && String(snap.turn_id) !== turnId) {
-      return { ok: false, skipReason: "snapshot_turn_mismatch", markdown: "", laneId: streamLane };
+      return { ok: false, skipReason: "snapshot_turn_mismatch", markdown: "", laneId: expectedLane };
     }
     const snapLane = String(snap.lane_id || "").trim();
-    const expectedLane = streamLane || frozenLane;
     if (expectedLane && snapLane && snapLane !== expectedLane) {
       try {
         console.info("[voice_final_brief_skip]", {
           turn_id: turnId,
-          reason: "snapshot_lane_mismatch_soft",
+          reason: explicitPanel ? "snapshot_lane_mismatch" : "snapshot_lane_mismatch_soft",
+          target_panel: prep?.explicitPanelTarget ?? null,
           snapshot_lane_id: snapLane,
           expected_lane_id: expectedLane
         });
       } catch (_) {}
+      if (explicitPanel) {
+        return {
+          ok: false,
+          skipReason: "snapshot_lane_mismatch",
+          markdown: "",
+          laneId: expectedLane
+        };
+      }
     }
     const md = String(snap.latest_final_answer_excerpt || snap.latest_markdown_preview || "").trim();
-    if (md.length > 20) {
+    if (md.length > 20 && (!expectedLane || !snapLane || snapLane === expectedLane)) {
       return {
         ok: true,
         markdown: md,
@@ -13497,8 +13566,13 @@ function resolveGroundedVoiceFinalPanelMarkdown(prep) {
     }
   }
 
-  const lanesToTry = [...new Set([streamLane, frozenLane, snap?.lane_id].filter(Boolean))];
+  const lanesToTry = [
+    ...new Set(
+      [expectedLane, explicitTargetLane, streamLane, frozenLane, snap?.lane_id].filter(Boolean)
+    )
+  ];
   for (const laneForLive of lanesToTry) {
+    if (expectedLane && laneForLive !== expectedLane) continue;
     const liveMd = getWorkModeLaneMarkdownExcerptForStage2(laneForLive);
     if (liveMd.length > 20) {
       return { ok: true, markdown: liveMd, laneId: laneForLive, source: "live_lane_dom" };
@@ -13508,7 +13582,7 @@ function resolveGroundedVoiceFinalPanelMarkdown(prep) {
     ok: false,
     skipReason: "no_panel_markdown",
     markdown: "",
-    laneId: streamLane || frozenLane || ""
+    laneId: expectedLane || streamLane || frozenLane || ""
   };
 }
 
@@ -13628,7 +13702,7 @@ async function playWorkModeGroundedStage2Brief(prep, briefText, inferOpts = {}) 
 async function runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, inferOpts = {}) {
   const p = prep || {};
   const vs = p.voiceTwoStage || {};
-  if (!vs.reasoningRouted || vs.skipStage2Infer) {
+  if (!vs.reasoningRouted) {
     await p.chain;
     return;
   }
@@ -13639,7 +13713,9 @@ async function runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, i
   try {
     console.info("[voice_final_brief_attempt]", {
       turn_id: p?.turnContext?.turn_id || null,
-      lane_id: panelPack.laneId || p?.reasoningLaneId || p?.turnContext?.turn_lane_id || null,
+      explicit_panel_destination: Boolean(vs.explicitPanelDestination),
+      target_panel: p?.explicitPanelTarget ?? null,
+      lane_id: panelPack.laneId || p?.explicitTargetLaneId || p?.reasoningLaneId || p?.turnContext?.turn_lane_id || null,
       upload: hasUpload,
       markdown_len: String(panelPack.markdown || "").length
     });
@@ -15415,17 +15491,7 @@ function enqueueWorkModeAssistantTtsPlayback(
  * Fetch abort is tied to `workModeDeferredStage2AbortController` (reset on VERA session reset), not `activePipelineAbort`.
  */
 function scheduleWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtStage1End }) {
-  if (prep?.voiceTwoStage?.skipStage2Infer) {
-    try {
-      console.info("[voice_to_panel_intent]", {
-        explicit_panel_destination: true,
-        consumed_by_reasoning_route: true,
-        stage2_infer_skipped: true,
-        reason: "explicit_panel_destination_ack_only"
-      });
-    } catch (_) {}
-    return;
-  }
+  if (!prep?.voiceTwoStage?.reasoningRouted) return;
   void (async () => {
     try {
       logStage2Debug(prep, {
@@ -16256,7 +16322,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   });
   const voiceTwoStage = {
     reasoningRouted: true,
-    skipStage2Infer: Boolean(opts.__explicitPanelDestinationConsumed),
+    /* Legacy /infer brief-completion Stage 2 is never used for reasoning-routed
+       voice turns — grounded /work_mode/voice_final_brief runs instead
+       (see runInferAfterWorkModeReasoningPrep). Explicit panel destination
+       must still receive that grounded final summary after the panel stream. */
+    skipStage2Infer: false,
     explicitPanelDestination: Boolean(opts.__explicitPanelDestinationConsumed),
     requestHasComputationalNumericIntent,
     requestHasCodeIntent,
@@ -16997,6 +17067,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     reasoningUploadState,
     voiceTwoStage,
     reasoningLaneId: renderLaneId || turnContext?.turn_lane_id || reasoningLaneId,
+    explicitPanelTarget: explicitTargetPanel1Based,
+    explicitTargetLaneId: renderLaneId || turnContext?.turn_lane_id || reasoningLaneId,
     turnContext
   });
 }
@@ -23527,7 +23599,7 @@ async function runInferAfterWorkModeReasoningPrep(formData, prep, inferOpts = {}
   const p = prep || {};
   await p.inferGate;
   if (p.reasoningUploadState?.failed) return "reasoning-upload-failed";
-  if (p?.voiceTwoStage?.reasoningRouted && !p?.voiceTwoStage?.skipStage2Infer) {
+  if (p?.voiceTwoStage?.reasoningRouted) {
     await runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, inferOpts);
     return;
   }
