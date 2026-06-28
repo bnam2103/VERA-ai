@@ -5632,6 +5632,29 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
 
   const activeLaneIdx = inWorkMode ? getActiveReasoningLaneIndex() : null;
   const focusedLaneId = inWorkMode ? getFocusedWorkModeLaneId() : "";
+  const userTextForScope = String(snapshotOpts.userText || "").trim();
+  let contextScopeForSnapshot = null;
+  if (inWorkMode && userTextForScope && typeof buildReasoningContextScope === "function") {
+    const explicitFromOpts = Number.isFinite(Number(snapshotOpts.explicitPanelTarget))
+      ? Number(snapshotOpts.explicitPanelTarget)
+      : null;
+    const explicitFromText =
+      explicitFromOpts == null && typeof isExplicitReasoningPanelReference === "function"
+        ? (() => {
+            const ref = isExplicitReasoningPanelReference(userTextForScope);
+            return ref.matched && Number.isFinite(ref.targetPanel) ? ref.targetPanel : null;
+          })()
+        : null;
+    contextScopeForSnapshot = buildReasoningContextScope({
+      userText: userTextForScope,
+      inputSource: snapshotOpts.inputSource,
+      explicitPanelTarget: explicitFromOpts ?? explicitFromText,
+      activeLaneId: getActiveDomReasoningLaneId(),
+    });
+    if (contextScopeForSnapshot.block_voice_context) {
+      snapshotOpts = { ...snapshotOpts, suppressVoiceContext: true };
+    }
+  }
   let reasoningExcerpt = "";
   if (inWorkMode) {
     if (pinnedLaneId) {
@@ -5639,12 +5662,25 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
       if (pidx != null) {
         reasoningExcerpt = collectWorkModeReasoningExcerptForLaneIndex(pidx, 12000);
       }
+    } else if (
+      contextScopeForSnapshot?.explicit_panel_target &&
+      Number.isFinite(Number(contextScopeForSnapshot.target_panel))
+    ) {
+      const order =
+        typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+      const entry = Array.isArray(order) ? order[Number(contextScopeForSnapshot.target_panel) - 1] : null;
+      if (entry && Number.isFinite(entry.tabIndex)) {
+        reasoningExcerpt = collectWorkModeReasoningExcerptForLaneIndex(Number(entry.tabIndex), 12000);
+      }
     } else {
       reasoningExcerpt = collectWorkModeReasoningExcerptForContext();
     }
   }
   const suppressVoiceInSnapshot =
-    inWorkMode && (WORK_MODE_INFER_CONTAMINATION_TEST || snapshotOpts.weakVoiceOnly === true);
+    inWorkMode &&
+    (WORK_MODE_INFER_CONTAMINATION_TEST ||
+      snapshotOpts.weakVoiceOnly === true ||
+      Boolean(snapshotOpts.suppressVoiceContext));
   const voiceExcerpt =
     inWorkMode && !suppressVoiceInSnapshot ? collectWorkModeVoiceExcerptForContext(4500, 10) : "";
   const combinedProblemExcerpt = [reasoningExcerpt, voiceExcerpt]
@@ -11555,6 +11591,18 @@ function shouldIncludeVoiceContextForPanel(opts = {}) {
   const voiceTurns = collectRecentVoiceTurnPairs(1);
   const hasRecentVoice = voiceTurns.length > 0 || topicAnchor.length >= 6;
 
+  const contextScope =
+    opts.contextScope ||
+    buildReasoningContextScope({
+      userText: task,
+      cleanedPanelTask: task,
+      topicAnchor,
+      inputSource: opts.inputSource,
+      explicitPanelTarget: opts.explicitPanelTarget,
+      targetLaneId: opts.targetLaneId,
+      activeLaneId: opts.activeLaneId,
+    });
+
   const topicContinuity =
     Boolean(topicAnchor) &&
     (topicSimilarityScore(task, topicAnchor) >= VOICE_TO_PANEL_TOPIC_CONTINUITY_FLOOR ||
@@ -11567,10 +11615,40 @@ function shouldIncludeVoiceContextForPanel(opts = {}) {
     return { include: false, reasons: ["panel_local_follow_up"], deictic, actionRef, topicContinuity };
   }
 
+  if (contextScope.block_voice_context && !deictic && !actionRef) {
+    try {
+      console.info("[reasoning_context_blocked]", {
+        source: "voice_context",
+        reason: contextScope.explicit_panel_target
+          ? "explicit_target_non_deictic"
+          : "keyboard_non_deictic",
+      });
+      console.info("[reasoning_deictic_detected]", {
+        detected: Boolean(deictic || actionRef),
+        terms: deictic ? ["deictic"] : actionRef ? ["action_ref"] : [],
+      });
+    } catch (_) {}
+    return {
+      include: false,
+      reasons: [
+        contextScope.explicit_panel_target
+          ? "explicit_target_non_deictic"
+          : "keyboard_non_deictic",
+      ],
+      deictic,
+      actionRef,
+      topicContinuity,
+    };
+  }
+
   if (deictic) reasons.push("deictic_reference");
   if (actionRef) reasons.push("recent_action_reference");
-  if (isNewEmptyLane && hasRecentVoice) reasons.push("new_panel_from_voice");
-  if (topicContinuity && hasRecentVoice) reasons.push("topic_continuity");
+  if (isNewEmptyLane && hasRecentVoice && !contextScope.block_voice_context) {
+    reasons.push("new_panel_from_voice");
+  }
+  if (topicContinuity && hasRecentVoice && !contextScope.block_voice_context) {
+    reasons.push("topic_continuity");
+  }
 
   if (isNewEmptyLane && hasRecentVoice && !deictic && !actionRef && !topicContinuity && topicAnchor) {
     const sim = topicSimilarityScore(task, topicAnchor);
@@ -11583,12 +11661,112 @@ function shouldIncludeVoiceContextForPanel(opts = {}) {
     return { include: false, reasons: ["lane_has_substance"], deictic, actionRef, topicContinuity };
   }
 
-  if (isNewEmptyLane && hasRecentVoice && reasons.length === 0) {
+  if (isNewEmptyLane && hasRecentVoice && reasons.length === 0 && !contextScope.block_voice_context) {
     reasons.push("new_empty_lane");
   }
 
   const include = reasons.length > 0 && hasRecentVoice;
+  if (include) {
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_voice_context: true,
+        reason: reasons.join(","),
+      });
+    } catch (_) {}
+  }
   return { include, reasons, deictic, actionRef, topicContinuity };
+}
+
+function buildReasoningContextScope(opts = {}) {
+  const userText = String(opts.userText || opts.cleanedPanelTask || "").trim();
+  const inputSource =
+    String(opts.inputSource || opts.input_source || "").toLowerCase() === "voice"
+      ? "voice"
+      : "keyboard";
+  const targetPanel1Based = Number.isFinite(Number(opts.explicitPanelTarget))
+    ? Number(opts.explicitPanelTarget)
+    : Number.isFinite(Number(opts.targetPanel1Based))
+      ? Number(opts.targetPanel1Based)
+      : null;
+  const explicitPanelTarget = targetPanel1Based != null && targetPanel1Based >= 1;
+  const deictic =
+    Boolean(opts.deictic) ||
+    detectVoiceToPanelDeictic(userText) ||
+    detectVoiceToPanelActionReference(userText);
+  const cleanedTask = String(
+    opts.cleanedPanelTask ||
+      extractSubstantiveTopicBeforePanelPhrase(userText) ||
+      userText
+  ).trim();
+  const topicAnchor = String(opts.topicAnchor || workModeLastSubstantiveUserText || "").trim();
+  const activeLaneId = String(opts.activeLaneId || getActiveDomReasoningLaneId() || "").trim();
+  const targetLaneId = String(opts.targetLaneId || opts.laneId || "").trim();
+  let isFreshTopic = false;
+  if (explicitPanelTarget && !deictic && cleanedTask) {
+    if (!topicAnchor) {
+      isFreshTopic = true;
+    } else {
+      const sim = topicSimilarityScore(cleanedTask, topicAnchor);
+      const covFwd = topicCoverageScore(cleanedTask, topicAnchor);
+      const covRev = topicCoverageScore(topicAnchor, cleanedTask);
+      isFreshTopic =
+        (sim < VOICE_TO_PANEL_TOPIC_CONTINUITY_FLOOR &&
+          covFwd < 0.18 &&
+          covRev < 0.18) ||
+        detectNewDeliverableIntent(cleanedTask).detected;
+    }
+  }
+  const blockVoiceContext =
+    (explicitPanelTarget && !deictic) || (inputSource === "keyboard" && !deictic);
+  return {
+    input_source: inputSource,
+    target_panel: explicitPanelTarget ? targetPanel1Based : null,
+    active_lane_id: activeLaneId || null,
+    context_lane_id: targetLaneId || null,
+    target_lane_id: targetLaneId || null,
+    explicit_panel_target: explicitPanelTarget,
+    is_deictic: deictic,
+    is_fresh_topic: isFreshTopic,
+    cleaned_task: cleanedTask,
+    block_voice_context: blockVoiceContext,
+  };
+}
+
+function shouldBlockLanePriorContextForScope(scope, mainExcerpt, visible, task) {
+  if (!scope?.explicit_panel_target || scope.is_deictic) {
+    return { block: false, reason: "" };
+  }
+  const laneBody = String(mainExcerpt || visible || "").trim();
+  if (!laneBody) return { block: false, reason: "target_lane_empty" };
+  const topic = String(scope.cleaned_task || task || "").trim();
+  if (!topic || !scope.is_fresh_topic) return { block: false, reason: "not_fresh_topic" };
+  const sim = topicSimilarityScore(topic, laneBody.slice(0, 800));
+  if (sim < 0.12) {
+    return { block: true, reason: "fresh_topic_unrelated_lane_body" };
+  }
+  return { block: false, reason: "" };
+}
+
+function logReasoningContextScope(scope, extra = {}) {
+  if (!scope) return;
+  try {
+    console.info("[reasoning_context_scope]", {
+      input_source: scope.input_source,
+      target_panel: scope.target_panel,
+      active_panel: extra.active_panel ?? scope.target_panel,
+      context_panel: extra.context_panel ?? scope.target_panel,
+      active_lane_id: scope.active_lane_id,
+      context_lane_id: scope.context_lane_id,
+      explicit_panel_target: scope.explicit_panel_target,
+      is_deictic: scope.is_deictic,
+      is_fresh_topic: scope.is_fresh_topic,
+      cleaned_task_preview: String(scope.cleaned_task || "").slice(0, 120),
+    });
+    console.info("[reasoning_deictic_detected]", {
+      detected: Boolean(scope.is_deictic),
+      terms: scope.is_deictic ? ["deictic"] : [],
+    });
+  } catch (_) {}
 }
 
 function buildVoiceToPanelContextPacket(opts = {}) {
@@ -11605,7 +11783,12 @@ function buildVoiceToPanelContextPacket(opts = {}) {
     topicAnchor,
     mainExcerpt,
     visible,
-    isNewPanelFromVoice: Boolean(opts.isNewPanelFromVoice || opts.isNewPanelExplicit)
+    isNewPanelFromVoice: Boolean(opts.isNewPanelFromVoice || opts.isNewPanelExplicit),
+    inputSource: opts.inputSource,
+    explicitPanelTarget: opts.explicitPanelTarget,
+    targetLaneId: opts.targetLaneId,
+    activeLaneId: opts.activeLaneId,
+    contextScope: opts.contextScope,
   });
 
   if (!policy.include) {
@@ -11679,6 +11862,27 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
 
   const userText = String(opts.userText || "").trim();
   const turnContext = opts.turnContext || null;
+  const contextScope =
+    opts.contextScope ||
+    buildReasoningContextScope({
+      userText,
+      cleanedPanelTask: userText,
+      inputSource: opts.inputSource,
+      explicitPanelTarget: opts.explicitPanelTarget,
+      targetLaneId: laneId,
+      activeLaneId: opts.activeLaneId,
+      laneId,
+    });
+  logReasoningContextScope(contextScope, {
+    active_panel:
+      contextScope.active_lane_id && typeof getReasoningLaneIndexFromLaneId === "function"
+        ? (() => {
+            const idx = getReasoningLaneIndexFromLaneId(contextScope.active_lane_id);
+            return idx != null ? idx + 1 : null;
+          })()
+        : null,
+    context_panel: contextScope.target_panel,
+  });
   const requestHasCodeIntent =
     opts.requestHasCodeIntent != null
       ? Boolean(opts.requestHasCodeIntent)
@@ -11697,32 +11901,82 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     userText,
     mainExcerpt,
     visible,
-    turnId: turnContext?.turn_id || null
+    turnId: turnContext?.turn_id || null,
+    inputSource: contextScope.input_source,
+    explicitPanelTarget: contextScope.target_panel,
+    targetLaneId: laneId,
+    activeLaneId: contextScope.active_lane_id,
+    contextScope,
   });
   const voiceBlock = renderVoiceToPanelContextBlock(voiceToPanelBuilt);
+  const lanePriorBlock = shouldBlockLanePriorContextForScope(
+    contextScope,
+    mainExcerpt,
+    visible,
+    userText
+  );
 
   const parts = [];
   if (voiceBlock) {
     parts.push(voiceBlock);
+  } else if (contextScope.block_voice_context) {
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_voice_context: false,
+        reason: contextScope.explicit_panel_target
+          ? "explicit_target_non_deictic"
+          : "keyboard_non_deictic",
+      });
+    } catch (_) {}
   }
-  if (mainExcerpt) {
+  if (!lanePriorBlock.block && mainExcerpt) {
     parts.push(
       "ACTIVE_LANE_PRIOR_CONTEXT (authoritative — visible reasoning panel for this frozen lane; " +
         "use for all follow-ups):\n" +
         truncateWorkModeRegistryExcerpt(mainExcerpt, 14000)
     );
-  } else if (visible.trim()) {
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_active_lane: true,
+        reason: "target_lane_main_excerpt",
+      });
+    } catch (_) {}
+  } else if (!lanePriorBlock.block && visible.trim()) {
     parts.push(
       "ACTIVE_LANE_VISIBLE_MARKDOWN (from panel DOM):\n" + truncateWorkModeRegistryExcerpt(visible, 14000)
     );
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_active_lane: true,
+        reason: "target_lane_visible_markdown",
+      });
+    } catch (_) {}
+  } else if (lanePriorBlock.block) {
+    try {
+      console.info("[reasoning_context_blocked]", {
+        source: "active_lane",
+        reason: lanePriorBlock.reason,
+      });
+      console.info("[reasoning_context_injection]", {
+        included_active_lane: false,
+        reason: lanePriorBlock.reason,
+      });
+    } catch (_) {}
+  } else {
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_active_lane: false,
+        reason: "target_lane_empty",
+      });
+    } catch (_) {}
   }
-  if (handoff?.last_user_request && handoff.last_user_request !== userText) {
+  if (!lanePriorBlock.block && handoff?.last_user_request && handoff.last_user_request !== userText) {
     parts.push(`Last user request on this lane:\n${handoff.last_user_request}`);
   }
-  if (handoff?.prior_problem_anchor) {
+  if (!lanePriorBlock.block && handoff?.prior_problem_anchor) {
     parts.push(`Prior problem / thread anchor:\n${handoff.prior_problem_anchor}`);
   }
-  if (handoff?.latest_reasoning_summary) {
+  if (!lanePriorBlock.block && handoff?.latest_reasoning_summary) {
     parts.push(`Latest reasoning summary:\n${handoff.latest_reasoning_summary}`);
   }
 
@@ -11736,7 +11990,8 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     parts.push(attSection);
   }
 
-  const solutionVisible = workModeVisibleLaneHasCompletedSolution(visible || mainExcerpt);
+  const solutionVisible =
+    !lanePriorBlock.block && workModeVisibleLaneHasCompletedSolution(visible || mainExcerpt);
   if (solutionVisible) {
     let rule =
       "The active lane already contains a completed solution. Treat the user's request as a follow-up " +
@@ -11770,7 +12025,16 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     request_has_code_intent: requestHasCodeIntent,
     lane_client_context_len: laneClientContextCapped.length,
     voice_to_panel_included: Boolean(voiceToPanelBuilt?.include),
-    voice_to_panel_reasons: voiceToPanelBuilt?.policy?.reasons || []
+    voice_to_panel_reasons: voiceToPanelBuilt?.policy?.reasons || [],
+    reasoning_context_scope: {
+      input_source: contextScope.input_source,
+      target_panel: contextScope.target_panel,
+      is_deictic: contextScope.is_deictic,
+      is_fresh_topic: contextScope.is_fresh_topic,
+      block_voice_context: contextScope.block_voice_context,
+      lane_prior_blocked: lanePriorBlock.block,
+      lane_prior_block_reason: lanePriorBlock.reason || null,
+    },
   };
 
   if (!opts.skipLog) {
@@ -16692,7 +16956,37 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   if (turnContext && reasoningLaneId !== turnContext.turn_lane_id) {
     workModeTurnLaneGuard(turnContext, reasoningLaneId, "reasoning_route_lane_mismatch");
   }
-  const lanePriorForInfer = getWorkModeLanePriorUserRequest(reasoningLaneId) || priorThreadAnchor;
+  const reasoningInputSource =
+    String(opts.__reasoningInputSource || turnContext?.source || "").toLowerCase() === "voice"
+      ? "voice"
+      : "keyboard";
+  const reasoningContextScope = buildReasoningContextScope({
+    userText: streamUserRequestForReasoning,
+    cleanedPanelTask: explicitPanelStreamTopic || streamUserRequestForReasoning,
+    inputSource: reasoningInputSource,
+    explicitPanelTarget: explicitTargetPanel1Based,
+    targetLaneId: reasoningLaneId,
+    activeLaneId: getActiveDomReasoningLaneId(),
+    topicAnchor: priorThreadAnchor,
+  });
+  logReasoningContextScope(reasoningContextScope, {
+    active_panel:
+      reasoningContextScope.active_lane_id &&
+      typeof getReasoningLaneIndexFromLaneId === "function"
+        ? (() => {
+            const idx = getReasoningLaneIndexFromLaneId(reasoningContextScope.active_lane_id);
+            return idx != null ? idx + 1 : null;
+          })()
+        : null,
+    context_panel: explicitTargetPanel1Based,
+  });
+  const lanePriorOnTarget = getWorkModeLanePriorUserRequest(reasoningLaneId);
+  const useGlobalPriorAnchor = !(
+    reasoningContextScope.explicit_panel_target &&
+    reasoningContextScope.is_fresh_topic &&
+    !reasoningContextScope.is_deictic
+  );
+  const lanePriorForInfer = lanePriorOnTarget || (useGlobalPriorAnchor ? priorThreadAnchor : "");
   const inferThreadAnchor = computeWorkModeInferThreadAnchor(
     effectiveUserText,
     lanePriorForInfer,
@@ -16724,6 +17018,15 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       parent_turn_id: opts?.__reasoningParentTurnId || turnContext?.parent_turn_id || turnContext?.turn_id || null,
       task: String(effectiveUserText || "").slice(0, 240),
       target_panel: explicitTargetPanel1Based ?? (explicitTargetLaneIdx != null ? explicitTargetLaneIdx + 1 : null),
+      context_sources: {
+        input_source: reasoningContextScope.input_source,
+        voice_context: !reasoningContextScope.block_voice_context,
+        target_lane_only: Boolean(
+          reasoningContextScope.explicit_panel_target && !reasoningContextScope.is_deictic
+        ),
+        is_deictic: reasoningContextScope.is_deictic,
+        is_fresh_topic: reasoningContextScope.is_fresh_topic,
+      },
       turn_id: turnContext?.turn_id || null,
       stream_lane_id: streamLaneId,
       source: opts?.__reasoningStreamSource || "maybePrepareWorkModeReasoning",
@@ -16755,6 +17058,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       requestHasCodeIntent,
       planningIntent,
       currentAttachmentMeta,
+      inputSource: reasoningContextScope.input_source,
+      explicitPanelTarget: reasoningContextScope.target_panel,
+      activeLaneId: reasoningContextScope.active_lane_id,
+      contextScope: reasoningContextScope,
       voiceToPanelContextOpts: {
         originalUserText: String(opts.__voiceToPanelOriginalText || rawTrimmed || trimmed || "").trim(),
         cleanedPanelTask: streamUserRequest,
@@ -17374,11 +17681,26 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
   logWorkModeLaneInvariant("reasoning_stream_start", turnContext?.turn_lane_id || streamLaneId, streamLaneId, {
     turn_id: turnContext?.turn_id || null
   });
+  const streamUserRequest = String(text || "").trim();
+  const composerContextScope = buildReasoningContextScope({
+    userText: streamUserRequest,
+    cleanedPanelTask: streamUserRequest,
+    inputSource: "keyboard",
+    targetLaneId: streamLaneId,
+    activeLaneId: getActiveDomReasoningLaneId(),
+  });
+  logReasoningContextScope(composerContextScope);
   console.info("[reasoning_stream_start]", {
     turn_id: turnContext?.turn_id || null,
-    stream_lane_id: streamLaneId
+    stream_lane_id: streamLaneId,
+    task: String(text || "").slice(0, 240),
+    target_panel: null,
+    context_sources: {
+      input_source: "keyboard",
+      voice_context: !composerContextScope.block_voice_context,
+      is_deictic: composerContextScope.is_deictic,
+    },
   });
-  const streamUserRequest = String(text || "").trim();
   const streamPriorAnchor = getWorkModeLanePriorUserRequest(streamLaneId);
   const requestHasCodeIntent = detectWorkModeRequestHasCodeVoiceIntent(streamUserRequest);
   const modelPrep = prepareWorkModeReasoningModelCall({
@@ -17386,6 +17708,8 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
     userText: streamUserRequest,
     turnContext,
     requestHasCodeIntent,
+    inputSource: "keyboard",
+    contextScope: composerContextScope,
     voiceToPanelContextOpts: {
       originalUserText: streamUserRequest,
       cleanedPanelTask: streamUserRequest,
@@ -26933,7 +27257,21 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   formData.append("use_browser_asr", "1");
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
-  formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
+  const _veraInputSourceEarly =
+    (opts && opts.isVoice) || String(path || "").includes("voice") ? "voice" : "keyboard";
+  const _forwardedTargetPanelEarly = Number.isFinite(Number(opts && opts.__reasoningGateTargetPanel))
+    ? Number(opts.__reasoningGateTargetPanel)
+    : null;
+  formData.append(
+    "context_snapshot",
+    JSON.stringify(
+      buildClientContextSnapshot({
+        userText: trimmed,
+        inputSource: _veraInputSourceEarly,
+        explicitPanelTarget: _forwardedTargetPanelEarly,
+      })
+    )
+  );
   formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
   for (const f of pendingFiles) {
     const forInfer = f.slice(0, f.size, f.type || undefined);
@@ -27011,6 +27349,7 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   const reasoningPrepP = maybePrepareWorkModeReasoning(formData, trimmed || transcriptLine, undefined, {
     attachments: pendingFiles,
     turnContext,
+    __reasoningInputSource: _veraInputSource,
     __reasoningGateTargetPanel: _forwardedTargetPanel,
     __reasoningGateForceRoute: _forwardedForceRoute,
     __reasoningGateReason: opts && opts.__reasoningGateReason ? opts.__reasoningGateReason : undefined,
