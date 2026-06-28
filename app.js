@@ -2151,6 +2151,68 @@ function applyWorkModeTimerPayload(wm) {
     } catch (_) {}
     return;
   }
+  if (wm.extend === true) {
+    try {
+      if (veraWorkModeTimerTimeoutId != null) {
+        clearTimeout(veraWorkModeTimerTimeoutId);
+        veraWorkModeTimerTimeoutId = null;
+      }
+      veraWorkModeTimerExpired = false;
+      veraWorkModeTimerFireAtMs = fireMs;
+      if (id) veraLastWorkModeTimerClientId = id;
+      updateWorkModeTimerHeaderFromState();
+      startWorkModeTimerUiFastRefreshIfNeeded();
+      const timerTtsPayload = {
+        audio_url: wm.audio_url,
+        audio_urls: wm.audio_urls
+      };
+      const delay = Math.max(0, fireMs - Date.now());
+      veraWorkModeTimerTimeoutId = window.setTimeout(() => {
+        veraWorkModeTimerTimeoutId = null;
+        if (typeof isVeraWorkModeOn === "function" && !isVeraWorkModeOn()) {
+          clearVeraWorkModeClientTimer();
+          return;
+        }
+        if (appModePrefix() !== "vera") {
+          clearVeraWorkModeClientTimer();
+          return;
+        }
+        veraWorkModeTimerExpired = true;
+        updateWorkModeTimerHeaderFromState();
+        startWorkModeTimerUiFastRefreshIfNeeded();
+        openWorkModeTimerUpModal(message);
+        const urls =
+          typeof resolveAudioUrls === "function" ? resolveAudioUrls(timerTtsPayload) : [];
+        if (urls.length) {
+          void playTtsFromApi(timerTtsPayload, {}).catch(() => {});
+        } else {
+          try {
+            if (window.speechSynthesis) {
+              window.speechSynthesis.cancel();
+              const u = new SpeechSynthesisUtterance(message);
+              u.rate = 1.0;
+              window.speechSynthesis.speak(u);
+            }
+          } catch (_) {}
+        }
+        try {
+          setStatus("Timer", "idle");
+        } catch (_) {}
+      }, delay);
+      console.info("[timer_client_extend_success]", {
+        timer_id: id || veraLastWorkModeTimerClientId,
+        duration_delta_seconds: wm.duration_delta_seconds ?? null,
+        fire_at_epoch_ms: fireMs,
+      });
+    } catch (err) {
+      try {
+        console.warn("[timer_client_extend_failed]", {
+          reason: String(err && err.message ? err.message : err),
+        });
+      } catch (_) {}
+    }
+    return;
+  }
   if (id && id === veraLastWorkModeTimerClientId) return;
   clearVeraWorkModeClientTimer();
   veraLastWorkModeTimerClientId = id || String(fireMs);
@@ -5588,10 +5650,27 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
     music.skip_prev_available = transportEl.prev;
   }
 
+  const timerFireMs = Number(veraWorkModeTimerFireAtMs);
+  const timerHasFireAt = Number.isFinite(timerFireMs);
+  const timerExpired = Boolean(veraWorkModeTimerExpired);
+  const timerActive = timerHasFireAt && !timerExpired;
+  const timerRemainingSeconds = timerActive
+    ? Math.max(0, Math.round((timerFireMs - Date.now()) / 1000))
+    : 0;
+
   return {
     mode: inWorkMode ? "work" : "flow",
     app: prefix,
     music,
+    timer: inWorkMode
+      ? {
+          active: timerActive,
+          expired: timerHasFireAt && timerExpired,
+          fire_at_epoch_ms: timerHasFireAt ? timerFireMs : null,
+          remaining_seconds: timerRemainingSeconds,
+          timer_id: veraLastWorkModeTimerClientId || null,
+        }
+      : null,
     checklist: inWorkMode
       ? {
           ongoing_count: ongoing.length,
