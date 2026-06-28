@@ -10225,6 +10225,8 @@ const _WMC_TIMER_FAMILY_RE =
   /\b(?:set|start|create|make|begin)\s+(?:a\s+|an\s+|the\s+|another\s+|my\s+)?(?:[\w'-]+\s+){0,5}timer\b|\btimer\s+for\b|\bcancel\s+(?:the\s+|that\s+|my\s+)?timer\b|\berase\s+(?:the\s+|that\s+|my\s+)?timer\b/i;
 const _WMC_SEARCH_FAMILY_RE =
   /\b(?:search(?:\s+the\s+web)?\s+for|look\s+up|google)\b/i;
+const _WMC_CHECKLIST_PLAN_FAMILY_RE =
+  /\b(?:help\s+me\s+)?(?:plan|planning|prioriti[sz]e|break\s*(?:it\s*)?down|organi[sz]e)\b.{0,80}?\b(?:check\s*list|checklist|to-?do|todo|task\s*list|tasks?)\b|\bplan\s+(?:using|with|from)\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\b/i;
 const _WMC_CHECKLIST_FAMILY_RE =
   /\b(?:add|put|remove|delete|cross\s+off|check\s+off|complete|mark)\b[^.?!]{0,40}\b(?:checklist|plan|todo|to[-\s]?do|list)\b|\b(?:checklist|plan|to[-\s]?do(?:\s+list)?)\b[^.?!]{0,40}\b(?:add|remove|delete|complete|mark)\b|\bcross\s+off\s+the\s+(?:first|second|third|fourth|fifth|last)\b/i;
 
@@ -10248,6 +10250,7 @@ function detectCompoundActionFamilies(text) {
   if (_WMC_MUSIC_FAMILY_RE.test(s)) families.push("music");
   if (_WMC_TIMER_FAMILY_RE.test(s)) families.push("timer");
   if (_WMC_SEARCH_FAMILY_RE.test(s)) families.push("search");
+  if (_WMC_CHECKLIST_PLAN_FAMILY_RE.test(s)) families.push("checklist_plan");
   if (_WMC_CHECKLIST_FAMILY_RE.test(s)) families.push("checklist");
   /* Also count implicit "in panel N" as a panel family — covers
      "explain X in panel 2" which the backend planner rewrites into
@@ -17937,78 +17940,17 @@ async function maybeHandleWorkChecklistSyncShortcut(text, opts = {}) {
 }
 
 async function runWorkChecklistHelpPlan({ signal, isVoice, source, userText } = {}) {
-  if (!isVeraWorkModeOn()) return false;
-  if (workChecklistPlanRequestInFlight) return true;
-  const validation =
-    typeof validateChecklistPlanRequest === "function"
-      ? validateChecklistPlanRequest()
-      : { ok: collectWorkChecklistOngoingTexts().length > 0, context: null, message: "Add text to at least one ongoing item first." };
-  if (!validation.ok) {
-    flashWorkChecklistPlanHint(validation.message);
-    if (isVoice) {
-      finalizeWorkChecklistPlanBlockedTurn({
-        transcript: userText || "plan my checklist",
-        source: source || "voice_or_typed_shortcut",
-        isVoice: true,
-        message: validation.message
-      });
-    }
-    return true;
-  }
-  const planContext = validation.context;
-  const text = buildWorkChecklistHelpPlanUserMessage(planContext);
-  const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
-  workChecklistPlanRequestInFlight = true;
-  if (helpPlanBtn instanceof HTMLButtonElement) helpPlanBtn.disabled = true;
-  try {
-    const reasoningScroll = getActiveReasoningScrollEl();
-    if (reasoningScroll instanceof HTMLElement) {
-      reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
-    const turnContext = createWorkModeFrozenTurnContext({
-      userText: text,
-      source: isVoice ? "voice" : "keyboard"
-    });
-    await streamWorkModeReasoningComposer(text, signal, { turnContext });
-    const mdAfterHelp = getLatestWorkModeReasoningMarkdown();
-    if (mdAfterHelp && /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdAfterHelp)) {
-      const rows = buildChecklistProposalFromMarkdown(mdAfterHelp);
-      const activeLaneId = getActiveDomReasoningLaneId();
-      const panelMeta = getPlanSyncPanelMetaForLane(activeLaneId);
-      workChecklistSyncPlanVersion += 1;
-      workChecklistSyncPendingMarkdown = mdAfterHelp;
-      workChecklistSyncPendingPlanMeta = {
-        ...panelMeta,
-        source: "checklist_help_plan",
-        created_at: Date.now()
-      };
-      logPlanSyncDebug("created", {
-        lane_id: panelMeta.lane_id || null,
-        panel_id: panelMeta.panel_id || null,
-        panel_title: panelMeta.panel_title || "",
-        active_panel_id: panelMeta.active_panel_id || null,
-        is_plan_detected: true,
-        syncable: rows.length > 0,
-        has_sync_metadata: true,
-        sync_candidate_count: rows.length,
-        sync_candidates_preview: planSyncPreviewRows(rows),
-        reason_if_not_syncable: rows.length ? "" : "no_checklist_candidates_extracted",
-        response_kind: "sync_checklist_markdown",
-        route_kind: "checklist_help_plan",
-        source: "checklist_shortcut"
-      });
-      syncWorkChecklistSyncPlanButton();
-    }
-  } finally {
-    workChecklistPlanRequestInFlight = false;
-    syncWorkChecklistHelpPlanButton();
-  }
-  return true;
+  if (typeof executeChecklistPlanAction !== "function") return false;
+  const result = await executeChecklistPlanAction({ signal, isVoice, source, userText });
+  return result?.ok !== false || result?.reason === "already_in_flight";
 }
 
 async function maybeHandleWorkChecklistPlanShortcut(text, opts) {
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
   if (!isWorkChecklistPlanShortcutIntent(text)) return false;
+  if (typeof shouldDeferChecklistPlanShortcut === "function" && shouldDeferChecklistPlanShortcut(text)) {
+    return false;
+  }
   const signal = opts instanceof AbortSignal ? opts : opts?.signal;
   const isVoice = Boolean(opts && typeof opts === "object" && !(opts instanceof AbortSignal) && opts.isVoice);
   const source =
@@ -18183,7 +18125,7 @@ function wireWorkModeChecklistAndComposer() {
     helpPlanBtn.dataset.wiredHelpPlan = "1";
     helpPlanBtn.addEventListener("click", async () => {
       try {
-        await runWorkChecklistHelpPlan();
+        await executeChecklistPlanAction({ source: "button", isVoice: false, userText: "plan my checklist" });
       } catch (err) {
         console.warn("[WorkMode] help me plan", err);
       }
@@ -19982,6 +19924,28 @@ async function applyActionPayload(data, seqCtx = {}) {
       }
     });
     _usageTrackActionExecuted(payload, data, seqCtx);
+    return;
+  }
+
+  if (payload?.panel_type === "checklist_plan" && payload?.op === "run") {
+    try {
+      console.info("[checklist_plan_client_action_received]", {
+        source: payload.source || null,
+        main_count: payload.main_count ?? null,
+      });
+      if (typeof executeChecklistPlanAction === "function") {
+        await executeChecklistPlanAction({
+          source: payload.source || "voice",
+          isVoice: Boolean(seqCtx?.isVoice),
+          userText: data?.transcript || data?.user_text || "",
+        });
+      }
+      _usageTrackActionExecuted(payload, data, seqCtx);
+    } catch (err) {
+      console.warn("[checklist_plan_client_action_failed]", {
+        reason: String(err?.message || err || "").slice(0, 200),
+      });
+    }
     return;
   }
 

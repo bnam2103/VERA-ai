@@ -2955,7 +2955,139 @@ function isWorkChecklistPlanShortcutIntent(text) {
   const hasPlanVerb = /\b(plan|planning|roadmap|prioriti[sz]e|break\s*(it\s*)?down|organi[sz]e)\b/.test(t);
   const hasChecklistNoun = /\b(check\s*list|checklist|to-?do|todo|task list|tasks?)\b/.test(t);
   const directPhrase = /\b(help me plan|can you help me plan)\b/.test(t);
-  return (hasPlanVerb && hasChecklistNoun) || (directPhrase && hasChecklistNoun);
+  const planUsingChecklist = /\bplan\s+(?:using|with|from)\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\b/.test(t);
+  return (hasPlanVerb && hasChecklistNoun) || (directPhrase && hasChecklistNoun) || planUsingChecklist;
+}
+
+/** Defer the frontend plan shortcut when the utterance is compound (plan + music/timer/etc.). */
+function shouldDeferChecklistPlanShortcut(text) {
+  if (!isWorkChecklistPlanShortcutIntent(text)) return false;
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (typeof detectCompoundActionFamilies === "function") {
+    const compound = detectCompoundActionFamilies(t);
+    if (compound.isCompound) {
+      logChecklistPlanDebug("shortcut_deferred", {
+        reason: "compound_action",
+        raw_text: t.slice(0, 240),
+        families: compound.families || [],
+      });
+      return true;
+    }
+  }
+  const hasConnector = /\b(?:and|then|also|plus|next)\b/i.test(t);
+  if (
+    hasConnector &&
+    /\b(?:play|pause|resume|skip|start|set|cancel|sync|switch|go\s+to|open|close|navigate|jump)\b/i.test(t)
+  ) {
+    logChecklistPlanDebug("shortcut_deferred", {
+      reason: "connector_with_secondary_action",
+      raw_text: t.slice(0, 240),
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Shared checklist.plan execution (Plan button, voice shortcut, planner ui_payload).
+ * Returns { ok, reason?, message? }.
+ */
+async function executeChecklistPlanAction({ signal, isVoice, source, userText } = {}) {
+  const raw = String(userText || "").trim();
+  const src = String(source || (isVoice ? "voice" : "typed"));
+  logChecklistPlanDebug("action_detected", { raw_text: raw.slice(0, 240), source: src });
+  if (!isVeraWorkModeOn()) return { ok: false, reason: "not_work_mode" };
+  if (workChecklistPlanRequestInFlight) return { ok: true, reason: "already_in_flight" };
+  const validation =
+    typeof validateChecklistPlanRequest === "function"
+      ? validateChecklistPlanRequest()
+      : { ok: collectWorkChecklistOngoingTexts().length > 0, context: null, message: "Add text to at least one ongoing item first." };
+  logChecklistPlanDebug("context", {
+    main_count: validation.context?.main_count ?? validation.main_count ?? null,
+    subitem_count: validation.context?.subitem_count ?? null,
+    ok: validation.ok,
+  });
+  if (!validation.ok) {
+    if (validation.reason === "too_many_main_items") {
+      logChecklistPlanDebug("limit_exceeded", {
+        main_count: validation.main_count,
+        limit: WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+      });
+    }
+    flashWorkChecklistPlanHint(validation.message);
+    if (isVoice) {
+      finalizeWorkChecklistPlanBlockedTurn({
+        transcript: raw || "plan my checklist",
+        source: src,
+        isVoice: true,
+        message: validation.message,
+      });
+    }
+    return { ok: false, reason: validation.reason || "validation_failed", message: validation.message };
+  }
+  const planContext = validation.context;
+  const text = buildWorkChecklistHelpPlanUserMessage(planContext);
+  const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
+  workChecklistPlanRequestInFlight = true;
+  if (helpPlanBtn instanceof HTMLButtonElement) helpPlanBtn.disabled = true;
+  logChecklistPlanDebug("action_start", { source: src, main_count: planContext?.main_count ?? null });
+  try {
+    const reasoningScroll = getActiveReasoningScrollEl();
+    if (reasoningScroll instanceof HTMLElement) {
+      reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+    const turnContext = createWorkModeFrozenTurnContext({
+      userText: text,
+      source: isVoice ? "voice" : "keyboard",
+    });
+    await streamWorkModeReasoningComposer(text, signal, { turnContext });
+    const mdAfterHelp = getLatestWorkModeReasoningMarkdown();
+    if (mdAfterHelp && /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdAfterHelp)) {
+      const rows = buildChecklistProposalFromMarkdown(mdAfterHelp);
+      const activeLaneId = getActiveDomReasoningLaneId();
+      const panelMeta = getPlanSyncPanelMetaForLane(activeLaneId);
+      workChecklistSyncPlanVersion += 1;
+      workChecklistSyncPendingMarkdown = mdAfterHelp;
+      workChecklistSyncPendingPlanMeta = {
+        ...panelMeta,
+        source: "checklist_help_plan",
+        created_at: Date.now(),
+      };
+      logPlanSyncDebug("created", {
+        lane_id: panelMeta.lane_id || null,
+        panel_id: panelMeta.panel_id || null,
+        panel_title: panelMeta.panel_title || "",
+        active_panel_id: panelMeta.active_panel_id || null,
+        is_plan_detected: true,
+        syncable: rows.length > 0,
+        has_sync_metadata: true,
+        sync_candidate_count: rows.length,
+        sync_candidates_preview: planSyncPreviewRows(rows),
+        reason_if_not_syncable: rows.length ? "" : "no_checklist_candidates_extracted",
+        response_kind: "sync_checklist_markdown",
+        route_kind: "checklist_help_plan",
+        source: src,
+      });
+      syncWorkChecklistSyncPlanButton();
+    }
+    logChecklistPlanDebug("action_done", {
+      success: true,
+      source: src,
+      panel_lane: getActiveDomReasoningLaneId?.() || null,
+    });
+    return { ok: true };
+  } catch (err) {
+    logChecklistPlanDebug("action_done", {
+      success: false,
+      source: src,
+      error: String(err?.message || err || "").slice(0, 200),
+    });
+    throw err;
+  } finally {
+    workChecklistPlanRequestInFlight = false;
+    syncWorkChecklistHelpPlanButton();
+  }
 }
 
 /** Voice/typed: sync checklist from latest reasoning plan (## SYNC CHECKLIST etc.). Checked before plan shortcut. */
