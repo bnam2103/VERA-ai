@@ -5325,6 +5325,83 @@ function shouldForceReasoningActiveLaneContentFollowUp(trimmed, priorThreadAncho
 }
 
 /**
+ * True when the user is asking advice about a visible plan/schedule/checklist block
+ * (e.g. "is gym at 9:20 too late?") — stay on Voice /infer with panel context,
+ * not reasoning reroute or venue search.
+ */
+function isWorkModePlanOrScheduleFollowUp(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  const low = raw.toLowerCase();
+  if (/\b(?:near\s+me|nearby|around\s+here|find\s+(?:a\s+)?(?:gym|gyms|coffee|restaurant|restaurants))\b/i.test(low)) {
+    return false;
+  }
+  const timeRef =
+    /\b(?:at|by|around)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/i.test(low) ||
+    /\b\d{1,2}:\d{2}\s*(?:am|pm)?\b/i.test(low);
+  const adviceRef =
+    /\b(?:too\s+(?:late|early)|move\s+(?:it|that|this|gym)?\s*(?:earlier|later)|should\s+i\b|realistic|doable|feasible|enough\s+time|what(?:'s|s|\s+is)\s+next|what\s+should\s+i\s+do|(?:first|next)\s+(?:on|in)\s+(?:the\s+)?(?:plan|schedule|checklist))\b/i.test(
+      low
+    );
+  const planRef =
+    /\b(?:the\s+)?(?:plan|schedule|checklist|time\s*block)\b/i.test(low) ||
+    /\b(?:this|that)\s+(?:too\s+)?(?:late|early)\b/i.test(low);
+  const question = /^\s*(?:is|are|was|were|will|would|should|can|could|do|does|what|when)\b/i.test(low);
+  if (timeRef && (adviceRef || question)) return true;
+  if (planRef && question) return true;
+  if (adviceRef && question && (low.match(/\S+/g) || []).length <= 20) return true;
+  return false;
+}
+
+function logVoiceContextSnapshot(snapshot, text) {
+  const snap = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const reasoning = snap.reasoning && typeof snap.reasoning === "object" ? snap.reasoning : {};
+  const checklist = snap.checklist && typeof snap.checklist === "object" ? snap.checklist : {};
+  try {
+    console.info("[voice_context_snapshot]", {
+      raw_text: String(text || "").slice(0, 240),
+      has_reasoning_context: Boolean(String(reasoning.recent_problem_excerpt || "").trim()),
+      has_checklist_context: Boolean(Array.isArray(checklist.items) && checklist.items.length),
+      active_panel_label: String(reasoning.active_panel_label || "").slice(0, 120),
+      reasoning_excerpt_chars: String(reasoning.recent_problem_excerpt || "").length,
+      checklist_item_count: Array.isArray(checklist.items) ? checklist.items.length : 0,
+      schedule_followup: isWorkModePlanOrScheduleFollowUp(text),
+    });
+  } catch (_) {}
+}
+
+function logVoiceRouteDecision(text, meta = {}) {
+  try {
+    console.info("[voice_route_decision]", {
+      text: String(text || "").slice(0, 240),
+      ...meta,
+    });
+  } catch (_) {}
+}
+
+function logVoiceReplyStart(text, meta = {}) {
+  try {
+    console.info("[voice_reply_start]", { text: String(text || "").slice(0, 240), ...meta });
+  } catch (_) {}
+}
+
+function logVoiceReplyDone(text, meta = {}) {
+  try {
+    console.info("[voice_reply_done]", { text: String(text || "").slice(0, 240), ...meta });
+  } catch (_) {}
+}
+
+function logVoiceReplyDropped(text, reason, meta = {}) {
+  try {
+    console.info("[voice_reply_dropped]", {
+      text: String(text || "").slice(0, 240),
+      reason: String(reason || "unknown"),
+      ...meta,
+    });
+  } catch (_) {}
+}
+
+/**
  * True → keep this turn on the main Voice /infer path and reuse snapshot context instead of
  * spawning /work_mode/reasoning_stream. Default: short deictic / continuation turns stay on the
  * active task unless the user clearly starts something new (see negative checks).
@@ -5345,6 +5422,8 @@ function isGeneralWorkModeFollowUpContinuingTask(trimmed, priorThreadAnchor) {
     anchor.length >= 6 || reasoningPeek.length >= 40 || hasAssistantVoice;
 
   if (!hasContinuableContext) return false;
+
+  if (isWorkModePlanOrScheduleFollowUp(raw)) return true;
 
   if (
     /\b(new\s+(problem|question|topic|homework|assignment)|different\s+(question|problem)|unrelated|start\s+over|forget\s+(about\s+)?(that|this)|switch\s+topics?)\b/i.test(
@@ -23597,7 +23676,9 @@ async function finalizeMainBrowserTranscript(text) {
   formData.append("use_browser_asr", "1");
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
-  formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
+  const voiceContextSnap = buildClientContextSnapshot();
+  formData.append("context_snapshot", JSON.stringify(voiceContextSnap));
+  logVoiceContextSnapshot(voiceContextSnap, trimmed);
   // 2026-05-29 — multi-action planner: voice/mic path stays SHADOW only.
   formData.append("input_source", "continuous");
   formData.append("typed", "0");
@@ -23665,6 +23746,11 @@ async function finalizeMainBrowserTranscript(text) {
       bumpWorkModeVoiceInferTurnSeq();
       const ttsTurn = workModeTtsMetaFromTurnContext(turnContext);
       const prep = attachWorkModeTtsTurnAfterPrep(await prepP, ttsTurn, trimmed);
+      logVoiceRouteDecision(trimmed, {
+        reasoning_routed: Boolean(prep?.voiceTwoStage?.reasoningRouted),
+        schedule_followup: isWorkModePlanOrScheduleFollowUp(trimmed),
+        route_reason: prep?.voiceTwoStage?.reasoningRouted ? "reasoning_panel" : "voice_ui",
+      });
       if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
       if (prep?.voiceTwoStage?.reasoningRouted) {
         const stage1P = maybePlayWorkModeReasoningStage1FromPrep(prep, pipelineSig, trimmed);
@@ -24644,6 +24730,12 @@ function _readInferFormDataTranscript(formData) {
 }
 
 async function runInferMainPipeline(formData, opts = {}) {
+  const inferUserTextEarly = inferTranscriptFromFormData(formData);
+  logVoiceReplyStart(inferUserTextEarly, {
+    path: opts.path || "main",
+    tts_stage: opts.ttsStage ?? 2,
+    schedule_followup: isWorkModePlanOrScheduleFollowUp(inferUserTextEarly),
+  });
   // Earliest possible point inside the pipeline — fires BEFORE the network
   // round-trip when the caller pushed a transcript into FormData (browser
   // ASR + typed work-mode + interrupt voice). For server-ASR audio uploads
@@ -24856,6 +24948,14 @@ async function runInferMainPipeline(formData, opts = {}) {
                     { ...done, reply: effectiveReply },
                     streamReplyState
                   );
+                  if (!effectiveReply) {
+                    logVoiceReplyDropped(inferUserText, "empty_ndjson_reply", { path: "main-ndjson" });
+                  } else {
+                    logVoiceReplyDone(inferUserText, {
+                      path: "main-ndjson",
+                      reply_chars: effectiveReply.length,
+                    });
+                  }
                   if (isWmStage2Voice && effectiveReply) {
                     const bubble = ensureStage2VoiceBubble(
                       inferPrep,
