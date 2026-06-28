@@ -10338,6 +10338,111 @@ function detectCompoundActionFamilies(text) {
 
 try { window.detectCompoundActionFamilies = detectCompoundActionFamilies; } catch (_) {}
 
+/**
+ * True when the utterance is a compound executable command that must NOT be
+ * swallowed by the explicit-panel reasoning gate (music+explain in panel N, etc.).
+ */
+function shouldBlockExplicitPanelRouteForCompoundExecutable(text, opts = {}) {
+  if (opts && opts.__reasoningGateForceRoute === "reasoning_panel") {
+    return { blocked: false, reason: "caller_forced_reasoning_panel" };
+  }
+  const s = String(text || "").trim();
+  if (!s) return { blocked: false, reason: "empty" };
+  const compound = detectCompoundActionFamilies(s);
+  if (!compound.isCompound) {
+    return { blocked: false, reason: compound.reason || "not_compound", compound };
+  }
+  const explicitRef = isExplicitReasoningPanelReference(s);
+  if (explicitRef.matched) {
+    try {
+      console.info("[explicit_panel_route_detected]", {
+        raw_text: s.slice(0, 240),
+        target_panel: explicitRef.targetPanel ?? null,
+      });
+      console.info("[explicit_panel_route_blocked_for_compound]", {
+        reason: "other_executable_family",
+        families: compound.families,
+        raw_text: s.slice(0, 240),
+        target_panel: explicitRef.targetPanel ?? null,
+      });
+    } catch (_) {}
+  }
+  return {
+    blocked: true,
+    reason: compound.reason || "compound_executable",
+    compound,
+    explicitRef,
+  };
+}
+
+function deferReasoningGateToCompoundPlanner(trimmed, opts, noRouteMeta) {
+  const callerForcedReasoning =
+    Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel");
+  if (callerForcedReasoning) return false;
+  const block = shouldBlockExplicitPanelRouteForCompoundExecutable(trimmed, opts);
+  if (!block.blocked) return false;
+  const _compound = block.compound || detectCompoundActionFamilies(trimmed);
+  logReasoningRouteDebug({
+    raw_text: String(trimmed || "").slice(0, 240),
+    reasoning_gate_called: true,
+    reasoning_gate_result: "voice_ui",
+    reasoning_gate_reason: "compound_defer_to_backend_planner",
+    explicit_panel_reference: Boolean(block.explicitRef?.matched),
+    simple_definition_detected: false,
+    brief_explanation_detected: false,
+    broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+    complex_task_detected: false,
+    active_work_mode: true,
+    prior_topic_used: false,
+    resolved_topic: null,
+    route_source: "frontend_compound_defer_to_backend",
+    final_panel_target: block.explicitRef?.targetPanel ?? null,
+    final_route: "chat",
+    final_route_reasoning: false,
+    backend_classify_route: null,
+    backend_category: null,
+    backend_confidence: null,
+    heuristic_reasoning: false,
+    personal_statement_veto: false,
+    venting_signals: [],
+    venting_score: 0,
+    explicit_artifact_intent: false,
+    artifact_signals: [],
+    force_active_lane: false,
+    task_follow_up_continuing: false,
+    planning_intent: false,
+    reason: _compound.reason,
+    compound_action_families_detected: _compound.families,
+    math_router_enabled: MATH_ROUTER_ENABLED,
+    arithmetic_fast_path_match: false
+  });
+  try {
+    console.info("[reasoning_gate_skip]", {
+      reason: "multi_action_executable",
+      raw_transcript: String(trimmed || "").slice(0, 240),
+      compound_action_families_detected: _compound.families,
+    });
+    console.info("[reasoning_gate_deferred_to_compound_planner]", {
+      raw_transcript: String(trimmed || "").slice(0, 240),
+      compound_action_families_detected: _compound.families,
+      clean_reasoning_span_if_available: null,
+    });
+    console.info("[reasoning_fallback_blocked]", {
+      reason: "compound_actions",
+      families: _compound.families,
+    });
+    console.info("[compound_route_to_planner]", {
+      reason: _compound.reason,
+      raw_preview: String(trimmed || "").slice(0, 240),
+      explicit_panel_deferred: Boolean(block.explicitRef?.matched),
+    });
+  } catch (_) {}
+  if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
+  return true;
+}
+
+try { window.shouldBlockExplicitPanelRouteForCompoundExecutable = shouldBlockExplicitPanelRouteForCompoundExecutable; } catch (_) {}
+
 
 function isExplicitWorkModePanelNavigationIntent(text) {
   const s = String(text ?? "").trim();
@@ -15712,10 +15817,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
 
+  /* Compound executable commands (music + explain in panel N, timer + homework,
+     etc.) MUST reach the backend multi-action planner BEFORE any explicit-panel
+     reasoning shortcut. Otherwise the gate sets __reasoningGateForceRoute and
+     streams the full raw utterance into Work Mode. */
+  if (deferReasoningGateToCompoundPlanner(trimmed, opts, noRouteMeta)) {
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
+
   /* ------------------------------------------------------------------------
    * 2026-05-29 reasoning-gate deterministic short-circuits.
    *
    * Priority (matches CHAT_REASONING.classify_route_reasoning):
+   *   0. Compound executable families            → defer to planner (above)
    *   1. Explicit panel/reasoning wording          → reasoning_panel (force)
    *   2. Brief/quick/short/tl;dr modifier          → voice_ui (force)
    *   3. Simple definition / who-is / what-is      → voice_ui (force)
@@ -15740,6 +15854,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const _briefModifier = isBriefExplanationModifier(trimmed);
   const _simpleDefinition = isSimpleDefinitionQuestion(trimmed);
   if (_explicitPanelRef.matched) {
+    if (shouldBlockExplicitPanelRouteForCompoundExecutable(trimmed, opts).blocked) {
+      if (deferReasoningGateToCompoundPlanner(trimmed, opts, noRouteMeta)) {
+        return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+      }
+    }
     const _panelTopicResolve = resolveExplicitPanelStreamTask(trimmed, _explicitPanelRef);
     let resolvedTopic = _panelTopicResolve.task || null;
     if (resolvedTopic && _panelTopicResolve.source !== "deictic_compose") {
@@ -15750,6 +15869,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         _panelTopicResolve.source === "deictic_compose"
     );
     try {
+      console.info("[explicit_panel_route_detected]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        target_panel: _explicitPanelRef.targetPanel ?? null,
+      });
       console.info("[explicit_panel_target_detected]", {
         raw_text: String(trimmed || "").slice(0, 240),
         target_panel_number: _explicitPanelRef.targetPanel ?? null,
@@ -15984,80 +16107,6 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       math_router_enabled: MATH_ROUTER_ENABLED,
       arithmetic_fast_path_match: false
     });
-    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
-    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
-  }
-
-  /* 2026-05-29 spec PART 5 — compound-command defer.
-   *
-   * If the transcript references multiple action families (panel +
-   * reasoning + music, panel + reasoning, music + reasoning, etc.), do
-   * NOT open `/work_mode/reasoning_stream` from this gate with the full
-   * unsegmented transcript. Instead, return no-route so the turn flows
-   * straight to /infer, where the backend deterministic planner segments
-   * the transcript and emits one `work_mode_reasoning open_and_stream`
-   * payload per planned `reasoning.request` action — each carrying ONLY
-   * the cleaned reasoning span.
-   *
-   * Without this defer the reasoning model would receive prompts like
-   * "Can you go to panel 2, explain the Vietnam War and play the lo-fi
-   * mix?" and waste compute trying to "explain" the panel/music tokens
-   * — exactly the failing case the spec calls out.
-   */
-  const _compound = detectCompoundActionFamilies(trimmed);
-  const gateForcedAfterExplicitPanel =
-    Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel");
-  if (_compound.isCompound && !callerForcedReasoning && !gateForcedAfterExplicitPanel) {
-    logReasoningRouteDebug({
-      raw_text: String(trimmed || "").slice(0, 240),
-      reasoning_gate_called: true,
-      reasoning_gate_result: "voice_ui",
-      reasoning_gate_reason: "compound_defer_to_backend_planner",
-      explicit_panel_reference: false,
-      simple_definition_detected: false,
-      brief_explanation_detected: false,
-      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
-      complex_task_detected: false,
-      active_work_mode: true,
-      prior_topic_used: false,
-      resolved_topic: null,
-      route_source: "frontend_compound_defer_to_backend",
-      final_panel_target: null,
-      final_route: "chat",
-      final_route_reasoning: false,
-      backend_classify_route: null,
-      backend_category: null,
-      backend_confidence: null,
-      heuristic_reasoning: false,
-      personal_statement_veto: false,
-      venting_signals: [],
-      venting_score: 0,
-      explicit_artifact_intent: false,
-      artifact_signals: [],
-      force_active_lane: false,
-      task_follow_up_continuing: false,
-      planning_intent: false,
-      reason: _compound.reason,
-      compound_action_families_detected: _compound.families,
-      math_router_enabled: MATH_ROUTER_ENABLED,
-      arithmetic_fast_path_match: false
-    });
-    try {
-      console.info("[reasoning_gate_skip]", {
-        reason: "multi_action_executable",
-        raw_transcript: String(trimmed || "").slice(0, 240),
-        compound_action_families_detected: _compound.families,
-      });
-      console.info("[reasoning_gate_deferred_to_compound_planner]", {
-        raw_transcript: String(trimmed || "").slice(0, 240),
-        compound_action_families_detected: _compound.families,
-        clean_reasoning_span_if_available: null, // planner produces the span server-side
-      });
-      console.info("[reasoning_fallback_blocked]", {
-        reason: "compound_actions",
-        families: _compound.families,
-      });
-    } catch (_) {}
     if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
@@ -19443,6 +19492,20 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
 
   if (!promptClean) return;
 
+  try {
+    console.info("[reasoning_task_cleaned]", {
+      raw_text: String(data?.transcript || data?.user_text || "").slice(0, 240),
+      cleaned_task: promptClean.slice(0, 240),
+      target_panel_index_1based: target1based,
+    });
+    console.info("[reasoning_stream_start]", {
+      task: promptClean.slice(0, 240),
+      target_panel_index_1based: target1based,
+      target_panel_index_0based: resolvedIdx0,
+      source: "open_and_stream_dispatcher",
+    });
+  } catch (_) {}
+
   /* Submit the clean prompt as a typed Work Mode turn — fire-and-forget.
      The recursive turn:
        - sees a single-action utterance ("explain the Vietnam War"), so
@@ -19602,6 +19665,12 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
     return { op, transportProvider: activeForPause };
   }
   if (op === "resume") {
+    try {
+      console.info("[music_resume_dispatch]", {
+        source: seqCtx?.source || data?.type || "music_control_payload",
+        request_id: data?.request_id || null,
+      });
+    } catch (_) {}
     const activeForResume = resolveMusicTransportProvider(prefix, seqCtx);
     if (activeForResume === "builtin") {
       const free = document.getElementById(`${prefix}-free-music-audio`);
@@ -19610,11 +19679,20 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
           freeMusicSyncNowFromAudio(prefix);
           spotifySyncPlayButtonUi(prefix);
         });
+        try {
+          console.info("[music_resume_execute_done]", { transport_provider: "builtin", success: true });
+        } catch (_) {}
         return { op, transportProvider: "builtin" };
       }
     }
     const resume = window.VeraSpotify?.resumePlayback;
     if (typeof resume === "function") await Promise.resolve(resume());
+    try {
+      console.info("[music_resume_execute_done]", {
+        transport_provider: activeForResume,
+        success: true,
+      });
+    } catch (_) {}
     return { op, transportProvider: activeForResume };
   }
   if (op === "volume_delta") {
