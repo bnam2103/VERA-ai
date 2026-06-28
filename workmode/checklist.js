@@ -676,6 +676,14 @@ async function hydrateWorkChecklistFromServer(force = false) {
 function _looksLikeChecklistCommand(text) {
   const t = String(text || "").toLowerCase();
   if (!t) return false;
+  /* Explicit reasoning-panel subject wins over ordinal+remove heuristics
+     ("remove the fourth panel" is panel.close, not checklist.remove). */
+  if (
+    /\b(?:remove|delete|close|clear|hide|dismiss|get\s+rid\s+of)\b/.test(t) &&
+    /\b(?:reasoning\s+(?:panel|tab|space|lane|page)s?|panels?|tabs?|reasoning\s+space|reasoning\s+lane|reasoning)\b/.test(t)
+  ) {
+    return false;
+  }
   /* "remove/delete/mark/check ... item/task/bullet/checklist ..." */
   if (/\b(?:remove|delete|cross\s+off|check\s+off|uncheck|tick|check|mark)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)?\s*(?:and\s+(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)\s*)?(?:item|task|bullet|checklist|to[- ]?do|todo|step)s?\b/.test(t)) {
     return true;
@@ -908,6 +916,13 @@ function detectChecklistActionIntent(opts = {}) {
     recentChecklistContext
   };
   if (!latest) return { ...base, reason: "empty_text" };
+
+  if (
+    /\b(?:remove|delete|close|clear|hide|dismiss|get\s+rid\s+of)\b/.test(lower) &&
+    /\b(?:reasoning\s+(?:panel|tab|space|lane|page)s?|panels?|tabs?|reasoning\s+space|reasoning\s+lane|reasoning)\b/.test(lower)
+  ) {
+    return { ...base, reason: "explicit_reasoning_panel_close_subject" };
+  }
 
   if (CHECKLIST_STATUS_REVIEW_RE.test(latest)) {
     return { ...base, reason: "checklist_status_review" };

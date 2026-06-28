@@ -8722,61 +8722,13 @@ function acquireWorkModeReasoningLane(_forTopicText = "") {
   });
 }
 
-function ensureReasoningPanelIndexExists(targetIdx0) {
-  const want = Number(targetIdx0);
-  if (!Number.isFinite(want) || want < 0) return false;
-  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  if (!panelsRoot || typeof addReasoningTab !== "function") return false;
-  const panelElsBefore = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
-  const beforeCount = panelElsBefore.length;
-  const laneIdsBefore = panelElsBefore.map((p) => String(p.dataset.laneId || "").trim()).filter(Boolean);
-  let panelEl = panelsRoot.querySelector(`.vera-reasoning-tab-panel[data-tab-index="${want}"]`);
-  if (panelEl) {
-    try {
-      console.info("[panel_ensure_exists]", {
-        requested_index: want,
-        before_count: beforeCount,
-        after_count: beforeCount,
-        created_count: 0,
-        exists: true,
-        lane_ids: laneIdsBefore,
-        reused_lane_id: String(panelEl.dataset.laneId || "").trim() || null,
-      });
-    } catch (_) {}
-    return true;
+function ensureReasoningPanelIndexExists(visualIndex0Based) {
+  const visual1 = Number(visualIndex0Based) + 1;
+  if (!Number.isFinite(visual1) || visual1 < 1) return false;
+  if (typeof ensureReasoningPanelVisualIndexExists === "function") {
+    return ensureReasoningPanelVisualIndexExists(visual1, { source: "legacy_visual_index_wrapper" }) != null;
   }
-  let guard = 0;
-  while (!panelEl && guard < (typeof REASONING_TABS_MAX === "number" ? REASONING_TABS_MAX : 8)) {
-    const opened = addReasoningTab({ source: "explicit_panel_voice_target" });
-    if (!opened) break;
-    panelEl = panelsRoot.querySelector(`.vera-reasoning-tab-panel[data-tab-index="${want}"]`);
-    guard += 1;
-  }
-  const panelElsAfter = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
-  const afterCount = panelElsAfter.length;
-  const laneIdsAfter = panelElsAfter.map((p) => String(p.dataset.laneId || "").trim()).filter(Boolean);
-  try {
-    console.info("[panel_ensure_exists]", {
-      requested_index: want,
-      before_count: beforeCount,
-      after_count: afterCount,
-      created_count: Math.max(0, afterCount - beforeCount),
-      exists: Boolean(panelEl),
-      lane_ids: laneIdsAfter,
-      lane_ids_before: laneIdsBefore,
-    });
-    console.info("[panel_registry_state]", {
-      count: afterCount,
-      titles: panelElsAfter.map((p) => String(p.dataset.laneLabel || "").trim() || `Panel ${Number(p.dataset.tabIndex) + 1}`),
-      lane_ids: laneIdsAfter,
-    });
-  } catch (_) {}
-  if (typeof repairDuplicateReasoningPanelDisplayTitles === "function") {
-    try {
-      repairDuplicateReasoningPanelDisplayTitles({ source: "panel_ensure_exists" });
-    } catch (_) {}
-  }
-  return Boolean(panelEl);
+  return false;
 }
 
 function acquireWorkModeReasoningLaneForIndex(desiredLaneIdx) {
@@ -10236,7 +10188,7 @@ const _WMC_PANEL_FAMILY_RE =
    by a determiner/possessive token so "follow the plan" / "the plan"
    noun usages don't pollute the family detector. */
 const _WMC_REASONING_FAMILY_RE =
-  /\b(?:explain|describe|tell\s+me\s+about|summari[sz]e|analy[sz]e|solve|prove|derive|write|draft|compose|outline|compare|teach\s+me|walk\s+me\s+through|break\s+down|step[-\s]*by[-\s]*step|in\s+detail|deep\s*dive|thorough\s+(?:overview|explanation|analysis)|help\s+me\s+(?:plan|draft|outline|brainstorm|write|solve|understand|with)|plan\s+(?:out\s+)?(?:my|an?|the|this|that)\b)/i;
+  /\b(?:explain|describe|tell\s+me\s+about|summari[sz]e|analy[sz]e|solve|prove|derive|write|draft|compose|outline|compare|teach\s+me|walk\s+me\s+through|break\s+down|step[-\s]*by[-\s]*step|in\s+detail|deep\s*dive|thorough\s+(?:overview|explanation|analysis)|help\s+me\s+(?:plan|draft|outline|brainstorm|write|solve|understand|with|do\b)|plan\s+(?:out\s+)?(?:my|an?|the|this|that)\b)/i;
 const _WMC_MUSIC_FAMILY_RE =
   /\b(?:play|pause|stop|resume|mute|unmute|unpause|skip(?:\s+(?:to\s+the\s+)?(?:next|previous|forward|back))?|next\s+(?:song|track)|previous\s+(?:song|track))\b|\b(?:turn|raise|lower|crank)\s+(?:up\s+|down\s+)?(?:the\s+)?(?:music|volume)\b/i;
 const _WMC_TIMER_FAMILY_RE =
@@ -10247,6 +10199,55 @@ const _WMC_CHECKLIST_PLAN_FAMILY_RE =
   /\b(?:help\s+me\s+)?(?:plan|planning|prioriti[sz]e|break\s*(?:it\s*)?down|organi[sz]e)\b.{0,80}?\b(?:check\s*list|checklist|to-?do|todo|task\s*list|tasks?)\b|\bplan\s+(?:using|with|from)\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\b/i;
 const _WMC_CHECKLIST_FAMILY_RE =
   /\b(?:add|put|remove|delete|cross\s+off|check\s+off|complete|mark)\b[^.?!]{0,40}\b(?:checklist|plan|todo|to[-\s]?do|list)\b|\b(?:checklist|plan|to[-\s]?do(?:\s+list)?)\b[^.?!]{0,40}\b(?:add|remove|delete|complete|mark)\b|\bcross\s+off\s+the\s+(?:first|second|third|fourth|fifth|last)\b/i;
+
+function _hasImplicitChecklistMutationFamily(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  const low = t.toLowerCase();
+  if (/\b(?:checklist|to-?do(?:\s+list)?)\b/.test(low)) return false;
+  if (/\b(?:remove|delete|close|clear|hide|dismiss)\s+(?:the\s+)?(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|\d+(?:st|nd|rd|th)?)\s+)?(?:reasoning\s+)?(?:panel|tab)\b/.test(low)) {
+    return false;
+  }
+  if (/\b(?:remove|delete|cross\s+off|check\s+off)\s+\S/.test(low)) return true;
+  if (/\b(?:complete|mark)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|last|\d+)\b/.test(low)) return true;
+  return false;
+}
+
+function _familiesForCompoundClause(clause) {
+  const s = String(clause || "").trim();
+  if (!s) return [];
+  const families = [];
+  if (_WMC_PANEL_FAMILY_RE.test(s)) families.push("panel");
+  if (_WMC_REASONING_FAMILY_RE.test(s)) families.push("reasoning");
+  if (_WMC_MUSIC_FAMILY_RE.test(s)) families.push("music");
+  if (_WMC_TIMER_FAMILY_RE.test(s)) families.push("timer");
+  if (_WMC_SEARCH_FAMILY_RE.test(s)) families.push("search");
+  if (_WMC_CHECKLIST_PLAN_FAMILY_RE.test(s)) families.push("checklist_plan");
+  if (_WMC_CHECKLIST_FAMILY_RE.test(s) || _hasImplicitChecklistMutationFamily(s)) families.push("checklist");
+  if (!families.includes("panel") && /\bin\s+(?:the\s+)?panel\s+\d+\b/i.test(s)) families.push("panel");
+  if (!families.includes("panel") && _REASONING_PANEL_IN_RE.test(s)) families.push("panel");
+  if (
+    !families.includes("panel") &&
+    /\b(?:remove|delete|close|clear|hide|dismiss)\b[^.?!]{0,40}\b(?:reasoning\s+)?(?:panel|tab)s?\b/i.test(s)
+  ) {
+    families.push("panel");
+  }
+  return families;
+}
+
+function _connectorClauseCompoundDetection(text) {
+  const raw = String(text || "").trim();
+  if (!raw || !/\s+(?:and|then|also)\s+|,\s+/i.test(raw)) return null;
+  const clauses = raw.split(/\s*,\s*|\s+(?:and|then|also)\s+/i).map((c) => c.trim()).filter(Boolean);
+  if (clauses.length < 2) return null;
+  const perClause = clauses.map(_familiesForCompoundClause).filter((f) => f.length);
+  if (perClause.length < 2) return null;
+  const union = [...new Set(perClause.flat())];
+  if (union.length >= 2) {
+    return { isCompound: true, families: union, reason: "connector_clause_multi_family" };
+  }
+  return null;
+}
 
 function _countDistinctPanelSubIntents(text) {
   const low = String(text || "").toLowerCase();
@@ -10262,6 +10263,20 @@ function _countDistinctPanelSubIntents(text) {
 function detectCompoundActionFamilies(text) {
   const s = String(text || "").trim();
   if (!s) return { isCompound: false, families: [], reason: "empty" };
+  const connectorCompound = _connectorClauseCompoundDetection(s);
+  if (connectorCompound) {
+    try {
+      console.info("[compound_family_detected]", {
+        families: connectorCompound.families,
+        reason: connectorCompound.reason,
+      });
+      console.info("[compound_route_to_planner]", {
+        reason: connectorCompound.reason,
+        raw_preview: s.slice(0, 240),
+      });
+    } catch (_) {}
+    return connectorCompound;
+  }
   const families = [];
   if (_WMC_PANEL_FAMILY_RE.test(s)) families.push("panel");
   if (_WMC_REASONING_FAMILY_RE.test(s)) families.push("reasoning");
@@ -10270,6 +10285,7 @@ function detectCompoundActionFamilies(text) {
   if (_WMC_SEARCH_FAMILY_RE.test(s)) families.push("search");
   if (_WMC_CHECKLIST_PLAN_FAMILY_RE.test(s)) families.push("checklist_plan");
   if (_WMC_CHECKLIST_FAMILY_RE.test(s)) families.push("checklist");
+  if (!families.includes("checklist") && _hasImplicitChecklistMutationFamily(s)) families.push("checklist");
   /* Also count implicit "in panel N" as a panel family — covers
      "explain X in panel 2" which the backend planner rewrites into
      panel.navigate + reasoning.request. */
@@ -10311,6 +10327,12 @@ function detectCompoundActionFamilies(text) {
   const reason = isCompound
     ? `compound_${families.join("_")}`
     : (families.length === 1 ? `single_family_${families[0]}` : "no_action_families");
+  if (isCompound) {
+    try {
+      console.info("[compound_family_detected]", { families, reason });
+      console.info("[compound_route_to_planner]", { reason, raw_preview: s.slice(0, 240) });
+    } catch (_) {}
+  }
   return { isCompound, families, reason };
 }
 
@@ -16031,6 +16053,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         compound_action_families_detected: _compound.families,
         clean_reasoning_span_if_available: null, // planner produces the span server-side
       });
+      console.info("[reasoning_fallback_blocked]", {
+        reason: "compound_actions",
+        families: _compound.families,
+      });
     } catch (_) {}
     if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
@@ -16479,12 +16505,18 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     const targetPanel1Based = Number(opts && opts.__reasoningGateTargetPanel);
     if (Number.isFinite(targetPanel1Based) && targetPanel1Based >= 1) {
       explicitTargetPanel1Based = targetPanel1Based;
-      const targetIdx0 = targetPanel1Based - 1;
-      ensureReasoningPanelIndexExists(targetIdx0);
-      const idxs = typeof getReasoningPanelIndices === "function" ? getReasoningPanelIndices() : [];
-      const candidate = Array.isArray(idxs) ? idxs[targetIdx0] : undefined;
-      if (Number.isFinite(candidate)) {
-        explicitTargetLaneIdx = Number(candidate);
+      if (typeof ensureReasoningPanelVisualIndexExists === "function") {
+        ensureReasoningPanelVisualIndexExists(targetPanel1Based, {
+          source: "reasoning_gate_explicit_panel",
+        });
+      } else {
+        ensureReasoningPanelIndexExists(targetPanel1Based - 1);
+      }
+      const order =
+        typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+      const entry = Array.isArray(order) ? order[targetPanel1Based - 1] : null;
+      if (entry && Number.isFinite(entry.tabIndex)) {
+        explicitTargetLaneIdx = Number(entry.tabIndex);
       }
     }
   } catch (_) {}
@@ -19341,8 +19373,13 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
     }
   }
   if (panelsRoot && resolvedIdx0 != null) {
-    if (typeof ensureReasoningPanelIndexExists === "function") {
-      ensureReasoningPanelIndexExists(resolvedIdx0);
+    const explicitVisual1 = Number.isFinite(target1based) ? target1based : null;
+    if (explicitVisual1 != null && typeof ensureReasoningPanelVisualIndexExists === "function") {
+      const tabIdx = ensureReasoningPanelVisualIndexExists(explicitVisual1, {
+        source: "open_and_stream_dispatcher",
+        requestId: newPanelRequestId || actionPlanId,
+      });
+      if (Number.isFinite(tabIdx)) resolvedIdx0 = tabIdx;
     }
     const panelEl = panelsRoot.querySelector(
       `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
@@ -20218,22 +20255,47 @@ async function applyActionPayload(data, seqCtx = {}) {
         });
         return;
       }
-      const parsedRaw = payload.parsed && typeof payload.parsed === "object"
-        ? payload.parsed
-        : parseCloseReasoningPanelsCommand(userTextForClose, getReasoningPanelOrder().length);
+      const panelCount = getReasoningPanelOrder().length;
+      const parsedFromText = parseCloseReasoningPanelsCommand(userTextForClose, panelCount);
+      const parsedRaw =
+        payload.parsed && typeof payload.parsed === "object" ? payload.parsed : null;
+      let parsedFull = parsedFromText;
+      if (
+        parsedRaw?.intent === "close_reasoning_panels" &&
+        parsedFromText.intent !== "close_reasoning_panels" &&
+        (Array.isArray(parsedRaw.indices) || parsedRaw.closeScope)
+      ) {
+        parsedFull = {
+          ...parsedFromText,
+          intent: "close_reasoning_panels",
+          closeScope: parsedRaw.closeScope || "specific_indices",
+          parsedRangeType: parsedRaw.closeScope || parsedFromText.parsedRangeType,
+          indices: Array.isArray(parsedRaw.indices) ? parsedRaw.indices.slice() : parsedFromText.indices,
+          titleQuery: parsedRaw.titleQuery || parsedFromText.titleQuery || "",
+          refillToMinimum: parsedRaw.refillToMinimum !== false,
+          reason: "backend_parsed_fallback",
+        };
+      } else if (parsedRaw && parsedRaw.allCloseSpans) {
+        parsedFull = parsedRaw;
+      }
       /* Backend "parsed" shape is the minimal subset; rerun the parser on
          the user text so we get the full scan/rank metadata and avoid
          losing the close-span deduplication logic. */
-      const parsedFull = (parsedRaw && parsedRaw.allCloseSpans)
-        ? parsedRaw
-        : parseCloseReasoningPanelsCommand(userTextForClose, getReasoningPanelOrder().length);
-      /* Use backend-provided slot if it carries info the user text doesn't
-         expose (e.g. by_title where title came from LLM extraction). */
       const parsed = {
         ...parsedFull,
         ...(parsedRaw && parsedRaw.titleQuery ? { titleQuery: parsedRaw.titleQuery } : {}),
         ...(parsedRaw && (parsedRaw.closeScope === "by_title" || parsedRaw.closeScope === "reopen_last")
           ? { closeScope: parsedRaw.closeScope, parsedRangeType: parsedRaw.closeScope }
+          : {}),
+        ...(parsedRaw &&
+        parsedRaw.intent === "close_reasoning_panels" &&
+        Array.isArray(parsedRaw.indices) &&
+        parsedRaw.indices.length
+          ? {
+              intent: "close_reasoning_panels",
+              closeScope: parsedRaw.closeScope || parsedFull.closeScope || "specific_indices",
+              indices: parsedRaw.indices.slice(),
+            }
           : {}),
       };
       const exec = executeCloseReasoningPanelsCommand(parsed, {
@@ -23917,6 +23979,13 @@ function maybePlayWorkModeReasoningStage1FromPrep(prep, abortSignal, userTranscr
 
 async function finalizeMainBrowserTranscript(text) {
   const trimmed = (text || "").trim();
+  try {
+    console.info("[turn_route_start]", {
+      raw_text: String(text || "").slice(0, 240),
+      normalized: trimmed.slice(0, 240),
+      path: "main-browser-asr",
+    });
+  } catch (_) {}
   if (inputMuted) {
     stopAllBrowserSpeechRecognizers();
     processing = false;
@@ -26260,6 +26329,13 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
 
   const modeBeforeSubmit = appModePrefix();
   const workModeBeforeSubmit = isVeraWorkModeOn();
+  try {
+    console.info("[turn_route_start]", {
+      raw_text: rawText.slice(0, 240),
+      normalized: trimmed.slice(0, 240),
+      path: path || "work-typed",
+    });
+  } catch (_) {}
   const hardWorkLimit = VERA_SAFETY_LIMITS.charLimits.workReasoning;
   if (!fromQueue && !fromPanelQueue && rawText.length > hardWorkLimit) {
     logInputLimitDebug({
