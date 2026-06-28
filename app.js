@@ -8608,8 +8608,24 @@ function ensureReasoningPanelIndexExists(targetIdx0) {
   if (!Number.isFinite(want) || want < 0) return false;
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot || typeof addReasoningTab !== "function") return false;
-  const beforeCount = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length;
+  const panelElsBefore = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  const beforeCount = panelElsBefore.length;
+  const laneIdsBefore = panelElsBefore.map((p) => String(p.dataset.laneId || "").trim()).filter(Boolean);
   let panelEl = panelsRoot.querySelector(`.vera-reasoning-tab-panel[data-tab-index="${want}"]`);
+  if (panelEl) {
+    try {
+      console.info("[panel_ensure_exists]", {
+        requested_index: want,
+        before_count: beforeCount,
+        after_count: beforeCount,
+        created_count: 0,
+        exists: true,
+        lane_ids: laneIdsBefore,
+        reused_lane_id: String(panelEl.dataset.laneId || "").trim() || null,
+      });
+    } catch (_) {}
+    return true;
+  }
   let guard = 0;
   while (!panelEl && guard < (typeof REASONING_TABS_MAX === "number" ? REASONING_TABS_MAX : 8)) {
     const opened = addReasoningTab({ source: "explicit_panel_voice_target" });
@@ -8617,7 +8633,9 @@ function ensureReasoningPanelIndexExists(targetIdx0) {
     panelEl = panelsRoot.querySelector(`.vera-reasoning-tab-panel[data-tab-index="${want}"]`);
     guard += 1;
   }
-  const afterCount = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length;
+  const panelElsAfter = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  const afterCount = panelElsAfter.length;
+  const laneIdsAfter = panelElsAfter.map((p) => String(p.dataset.laneId || "").trim()).filter(Boolean);
   try {
     console.info("[panel_ensure_exists]", {
       requested_index: want,
@@ -8625,8 +8643,20 @@ function ensureReasoningPanelIndexExists(targetIdx0) {
       after_count: afterCount,
       created_count: Math.max(0, afterCount - beforeCount),
       exists: Boolean(panelEl),
+      lane_ids: laneIdsAfter,
+      lane_ids_before: laneIdsBefore,
+    });
+    console.info("[panel_registry_state]", {
+      count: afterCount,
+      titles: panelElsAfter.map((p) => String(p.dataset.laneLabel || "").trim() || `Panel ${Number(p.dataset.tabIndex) + 1}`),
+      lane_ids: laneIdsAfter,
     });
   } catch (_) {}
+  if (typeof repairDuplicateReasoningPanelDisplayTitles === "function") {
+    try {
+      repairDuplicateReasoningPanelDisplayTitles({ source: "panel_ensure_exists" });
+    } catch (_) {}
+  }
   return Boolean(panelEl);
 }
 
@@ -10135,12 +10165,18 @@ function detectCompoundActionFamilies(text) {
       reason: "multi_panel_sub_intents",
     };
   }
-  /* Panel phrase as routing destination (substantive topic + "in this panel")
-     is a single reasoning intent — not a compound panel+reasoning command. */
+  /* Panel phrase as routing destination (substantive topic + "in panel N")
+     is a single reasoning intent — not a compound panel+reasoning command.
+     Do NOT collapse when other executable families (music, timer, search,
+     checklist) are also present — those must defer to the backend planner. */
+  const _nonPanelReasoningFamilies = families.filter(
+    (f) => f !== "panel" && f !== "reasoning"
+  );
   if (
     families.length >= 2 &&
     families.includes("panel") &&
     families.includes("reasoning") &&
+    _nonPanelReasoningFamilies.length === 0 &&
     extractSubstantiveTopicBeforePanelPhrase(s)
   ) {
     return {
@@ -15493,30 +15529,6 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const _conversationalCheck = detectWorkModeConversationalCheck(trimmed);
   const _briefModifier = isBriefExplanationModifier(trimmed);
   const _simpleDefinition = isSimpleDefinitionQuestion(trimmed);
-  /* Numeric "in panel N" with an inline topic is owned by the backend
-     planner's open_and_stream path. Running the frontend gate too creates
-     duplicate panels and double reasoning streams. Deictic panel routing
-     ("write that in panel 3") still uses the frontend gate. */
-  if (
-    !callerForcedReasoning &&
-    !(opts && opts.__skipMultiActionPlanner) &&
-    _explicitPanelRef.matched &&
-    Number.isFinite(_explicitPanelRef.targetPanel) &&
-    _explicitPanelRef.targetPanel >= 1 &&
-    !_explicitPanelRef.wasPronoun &&
-    (extractSubstantiveTopicBeforePanelPhrase(trimmed) ||
-      Boolean(resolveExplicitPanelStreamTask(trimmed, _explicitPanelRef).task))
-  ) {
-    try {
-      console.info("[reasoning_gate_deferred_to_backend_planner]", {
-        raw_transcript: String(trimmed || "").slice(0, 240),
-        target_panel_number: _explicitPanelRef.targetPanel,
-        reason: "explicit_in_panel_number_backend_open_and_stream",
-      });
-    } catch (_) {}
-    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
-    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
-  }
   if (_explicitPanelRef.matched) {
     const _panelTopicResolve = resolveExplicitPanelStreamTask(trimmed, _explicitPanelRef);
     let resolvedTopic = _panelTopicResolve.task || null;

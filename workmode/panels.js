@@ -299,6 +299,9 @@ function isDefaultWorkModeReasoningPanelLaneLabel(label) {
 ========================= */
 
 function renderReasoningTabStrip() {
+  try {
+    repairDuplicateReasoningPanelDisplayTitles({ source: "render_tab_strip" });
+  } catch (_) {}
   const tabsEl = document.getElementById("vera-reasoning-tabs");
   const addBtn = document.getElementById("vera-reasoning-tab-add");
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
@@ -605,6 +608,16 @@ function addReasoningTab(opts) {
     });
   } catch (_) {}
 
+  try {
+    console.info("[panel_create]", {
+      lane_id: newLaneId,
+      title: String(panel.dataset.laneLabel || `Panel ${idx + 1}`),
+      index: idx,
+      source,
+      panel_open_request_id: requestId || null,
+    });
+  } catch (_) {}
+
   return { laneId: newLaneId, tabIndex: idx };
 }
 
@@ -868,6 +881,58 @@ function readPersistedReasoningPanelTitlesForDebug() {
    content AND has a generic auto-renamable title, rewrite its title to
    "Panel <visual+1>". Meaningful titles (English Essay Plan, etc.) are
    preserved. Returns {before, after, renamedCount}. */
+function repairDuplicateReasoningPanelDisplayTitles(opts = {}) {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return { before_titles: [], after_titles: [], repaired: false };
+  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  const before_titles = panels.map((p) => getReasoningTabTopicLabel(p));
+  const seen = new Map();
+  let repaired = false;
+  panels.forEach((panel, visualIdx) => {
+    let label = String(panel.dataset.laneLabel || getReasoningTabTopicLabel(panel) || "").trim();
+    if (!label) label = `Panel ${visualIdx + 1}`;
+    const key = label.toLowerCase();
+    const prior = seen.get(key) || 0;
+    seen.set(key, prior + 1);
+    if (prior === 0) return;
+    const isGeneric = _isGenericBlankReasoningPanelLabel(label);
+    const newLabel = isGeneric ? `Panel ${visualIdx + 1}` : `${label} ${prior + 1}`;
+    try {
+      console.info("[panel_duplicate_detected]", {
+        title: label,
+        lane_ids: [String(panel.dataset.laneId || "").trim()].filter(Boolean),
+        new_label: newLabel,
+        source: String(opts.source || "repair"),
+      });
+    } catch (_) {}
+    panel.dataset.laneLabel = newLabel;
+    if (!panel.dataset.tabTopic || _isGenericBlankReasoningPanelLabel(panel.dataset.tabTopic)) {
+      panel.dataset.tabTopic = isGeneric ? REASONING_UNTITLED_TAB_NAME : newLabel;
+    }
+    repaired = true;
+  });
+  if (repaired) {
+    _normalizeBlankPanelNamesInOrder();
+  }
+  const after_titles = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")].map((p) =>
+    getReasoningTabTopicLabel(p)
+  );
+  if (repaired) {
+    try {
+      console.info("[panel_registry_repair]", {
+        before_titles,
+        after_titles,
+        source: String(opts.source || "repair"),
+      });
+    } catch (_) {}
+  }
+  return { before_titles, after_titles, repaired };
+}
+
+try {
+  window.repairDuplicateReasoningPanelDisplayTitles = repairDuplicateReasoningPanelDisplayTitles;
+} catch (_) {}
+
 function _normalizeBlankPanelNamesInOrder() {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return { before: [], after: [], renamedCount: 0 };
