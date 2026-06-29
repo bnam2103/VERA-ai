@@ -28697,6 +28697,24 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   }
 }
 
+/**
+ * Pure gate for non–work-mode keyboard `/text` submit (smoke-tested).
+ * Returns a block reason string, or "" when the normal `/text` path may proceed.
+ */
+function normalFlowKeyboardSubmitBlockReason({
+  text,
+  inVeraWorkMode,
+  consecutiveUserTail,
+  serverPipelineBusy
+} = {}) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return "empty_text";
+  if (inVeraWorkMode) return "work_mode_branch";
+  if (Number(consecutiveUserTail) >= 3) return "consecutive_user_tail";
+  if (serverPipelineBusy) return "server_pipeline_busy";
+  return "";
+}
+
 async function sendTextMessage() {
   const textInput = uiEl("text-input");
   const statusLine = uiEl("status");
@@ -28811,45 +28829,55 @@ async function sendTextMessage() {
     interruptAssistantPipelineForTypedMessage();
   }
 
-  if (isServerPipelineBusy()) return;
+  if (isServerPipelineBusy()) {
+    setStatus("Wait for VERA to finish — send again to interrupt", "idle");
+    try {
+      console.warn("[Keyboard] blocked: server pipeline busy", {
+        requestInFlight,
+        processing,
+        ttsPlaying: isMainTtsOrHtmlAudioPlaying()
+      });
+    } catch (_) {}
+    return;
+  }
   if (textInput) textInput.value = "";
 
-  beginTextUxTurn();
-  listening = false;
-  processing = true;
-  requestInFlight = true;
-  waveState = "idle";
+  try {
+    beginTextUxTurn();
+    listening = false;
+    processing = true;
+    requestInFlight = true;
+    waveState = "idle";
 
-  setStatus("Thinking", "thinking");
+    setStatus("Thinking", "thinking");
 
-  addBubble(text, "user", { path: "typed-text" });
-  ensureChatStartedLayout();
-  // PART 14 (2026-05-28): emit the structured frontend route log on every
-  // typed turn so the browser console shows our route classification side
-  // by side with the backend's matching [news_router_route] line. Pure
-  // instrumentation; backend remains the authoritative router.
-  try {
-    if (typeof classifyVeraTurnRoute === "function" && typeof logNewsRouterRouteFrontend === "function") {
-      const _veraTurnRouteClassification = classifyVeraTurnRoute(text);
-      logNewsRouterRouteFrontend(text, _veraTurnRouteClassification);
-    }
-  } catch (_) {}
-  // 2026-05-28 PART 1 — emit the info-tool router classification too. The
-  // backend is the authoritative router; this is purely instrumentation so
-  // the browser console shows our intended dispatch side by side with the
-  // backend's matching [info_tool_route] line.
-  try {
-    if (typeof classifyInfoTool === "function" && typeof logInfoToolRouteFrontend === "function") {
-      const _infoToolClassification = classifyInfoTool(text);
-      logInfoToolRouteFrontend(text, _infoToolClassification);
-    }
-  } catch (_) {}
-  // Show "Searching news…" immediately for likely Serper-backed requests.
-  // Cancelled when a real reply arrives via applyAssistantReplyAndPanels /
-  // applyNdjsonStreamingReplySoFar / finalizeNdjsonStreamingReply, and
-  // replaced with the failure message on network/server errors or timeout.
-  armPendingNewsStatusBubble(text);
-  try {
+    addBubble(text, "user", { path: "typed-text" });
+    ensureChatStartedLayout();
+    // PART 14 (2026-05-28): emit the structured frontend route log on every
+    // typed turn so the browser console shows our route classification side
+    // by side with the backend's matching [news_router_route] line. Pure
+    // instrumentation; backend remains the authoritative router.
+    try {
+      if (typeof classifyVeraTurnRoute === "function" && typeof logNewsRouterRouteFrontend === "function") {
+        const _veraTurnRouteClassification = classifyVeraTurnRoute(text);
+        logNewsRouterRouteFrontend(text, _veraTurnRouteClassification);
+      }
+    } catch (_) {}
+    // 2026-05-28 PART 1 — emit the info-tool router classification too. The
+    // backend is the authoritative router; this is purely instrumentation so
+    // the browser console shows our intended dispatch side by side with the
+    // backend's matching [info_tool_route] line.
+    try {
+      if (typeof classifyInfoTool === "function" && typeof logInfoToolRouteFrontend === "function") {
+        const _infoToolClassification = classifyInfoTool(text);
+        logInfoToolRouteFrontend(text, _infoToolClassification);
+      }
+    } catch (_) {}
+    // Show "Searching news…" immediately for likely Serper-backed requests.
+    // Cancelled when a real reply arrives via applyAssistantReplyAndPanels /
+    // applyNdjsonStreamingReplySoFar / finalizeNdjsonStreamingReply, and
+    // replaced with the failure message on network/server errors or timeout.
+    armPendingNewsStatusBubble(text);
     await flushWorkChecklistSyncBeforeCommand();
     const textFetchStart = performance.now();
     /* PART 10/11: attach a client-side request_id so the dev console can
@@ -28957,7 +28985,15 @@ async function sendTextMessage() {
             }
           });
         } catch (e) {
-          if (e?.name !== "AbortError") console.warn(e);
+          if (e?.name === "AbortError") return;
+          console.warn(e);
+          requestInFlight = false;
+          processing = false;
+          textUxTurn = null;
+          setStatus("Ready", "idle");
+          if (!failPendingNewsStatusBubble("ndjson_text_stream_error")) {
+            void veraSurfaceLlmFetchFailure({ feature: "text_endpoint", error: e });
+          }
         }
       })();
       return;
@@ -29242,18 +29278,30 @@ document.addEventListener("visibilitychange", () => {
   }, 280);
 });
 
-if (!IS_MOBILE) {
+function wireNormalKeyboardSubmitHandlers() {
   ["vera", "bmo"].forEach((prefix) => {
     const sendTextBtn = document.getElementById(`${prefix}-send-text`);
     const textInput = document.getElementById(`${prefix}-text-input`);
-    sendTextBtn?.addEventListener("click", sendTextMessage);
-    textInput?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        sendTextMessage();
-      }
-    });
+    const wireKey = `${prefix}-keyboard-submit`;
+    if (!sendTextBtn && !textInput) return;
+    if (sendTextBtn?.dataset.veraKeyboardSubmitWired === wireKey) return;
+    if (sendTextBtn) {
+      sendTextBtn.dataset.veraKeyboardSubmitWired = wireKey;
+      sendTextBtn.addEventListener("click", () => {
+        void sendTextMessage();
+      });
+    }
+    if (textInput) {
+      textInput.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" || e.shiftKey) return;
+        e.preventDefault();
+        void sendTextMessage();
+      });
+    }
   });
 }
+window.wireNormalKeyboardSubmitHandlers = wireNormalKeyboardSubmitHandlers;
+wireNormalKeyboardSubmitHandlers();
 
 /* =========================
    FEEDBACK
