@@ -3070,29 +3070,28 @@ function maybeHandleWorkModePanelNavigationShortcut(text, opts = {}) {
   }
 
   if (typeof renderReasoningCloseAssistantConfirmation === "function") {
-    const lifecycle =
-      opts.isVoice && typeof finalizeReasoningCloseVoiceUserTurn === "function"
-        ? finalizeReasoningCloseVoiceUserTurn(text, {
-            ...opts,
-            source,
-            path: parsed.intent === "panel_open_new" ? "open-reasoning-panel-user" : "panel-navigation-user",
-          })
-        : null;
     renderReasoningCloseAssistantConfirmation(reply, {
       path: parsed.intent === "panel_open_new" ? "open-reasoning-panel" : "panel-navigation",
       source,
       isVoice: opts.isVoice,
       stage: exec.ok ? "shortcut_nav_success" : "shortcut_nav_failed",
       resumeListeningAfter: Boolean(opts.isVoice),
-      lifecycle,
     });
   } else if (typeof addBubble === "function") {
     addBubble(reply, "vera");
-    if (opts.isVoice && typeof finishReasoningCloseVoiceTurnAfterAssistant === "function") {
-      window.setTimeout(() => {
-        finishReasoningCloseVoiceTurnAfterAssistant({ lifecycle: null, source });
-      }, 0);
-    }
+  }
+
+  if (opts.isVoice) {
+    processing = false;
+    requestInFlight = false;
+    voiceUxTurn = null;
+    waveState = "idle";
+    try {
+      setStatus("Ready", "idle");
+    } catch (_) {}
+    try {
+      updateMuteInputButton();
+    } catch (_) {}
   }
 
   return true;
