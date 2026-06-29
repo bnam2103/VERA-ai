@@ -1,4 +1,22 @@
 /* =========================
+   BUILD VERSION + DEBUG FLAGS — must run at parse time (top-level).
+   window.__VERA_APP_VERSION__ is the canonical boot marker for cache verification.
+========================= */
+window.__VERA_APP_VERSION__ = "127";
+window.__VERA_DEBUG_FLAGS__ = {
+  reasoningUnavailableDebug: true,
+  turnPolicyDebug: true
+};
+try {
+  console.info("[vera_app_boot]", {
+    version: window.__VERA_APP_VERSION__,
+    loaded_at: new Date().toISOString(),
+    current_script: document.currentScript?.src || null,
+    location: location.href
+  });
+} catch (_) {}
+
+/* =========================
    STARTUP BANNER — proves this build of app.js actually loaded.
    If you do NOT see this line in DevTools console after a hard refresh,
    the browser is still serving an older cached copy (check Network tab:
@@ -451,6 +469,7 @@ async function veraSurfaceLlmFetchFailure({
   });
   const unavailable = emitReasoningUnavailableMessage({
     cause: `veraSurfaceLlmFetchFailure:${feature}`,
+    source_function: `veraSurfaceLlmFetchFailure:${feature}`,
     feature: "llm_failure",
     actionId: turnId,
     turn_id: turnId,
@@ -593,6 +612,9 @@ function classifyWorkModeVoiceTurnRouting(userText) {
 }
 
 function beginVoiceTurnRoutingGuard(userText, turnId) {
+  /* Abort any deferred stage-2 infer from a prior reasoning turn so it cannot
+     surface stale failure copy during the new voice turn (e.g. checklist add). */
+  resetWorkModeDeferredStage2AbortController();
   const guard = {
     ...classifyWorkModeVoiceTurnRouting(userText),
     turn_id: turnId != null ? String(turnId) : null,
@@ -661,20 +683,53 @@ function logReasoningUnavailableEmit(shown, cause, extra = {}) {
 function emitReasoningUnavailableMessage(opts = {}) {
   const message = String(opts.message || VERA_SAFETY_LIMITS.messages.llmFailure);
   const cause = String(opts.cause || "unknown");
+  const sourceFunction = String(opts.source_function || opts.cause || "unknown");
   const asBubble = opts.asBubble !== false;
+  const failureTurnId = opts.turn_id != null ? String(opts.turn_id) : null;
+  const guard = _currentVoiceTurnRoutingGuard;
   const suppress = shouldSuppressReasoningUnavailableMessage(opts);
+  const willEmit = !suppress.suppress;
+  const emitAttemptRow = {
+    message,
+    cause,
+    source_function: sourceFunction,
+    current_turn_id: guard?.turn_id ?? null,
+    failure_turn_id: failureTurnId,
+    current_turn_kind: guard?.turn_intent ?? null,
+    current_turn_action_only: Boolean(guard?.action_only),
+    reasoning_stream_started_for_current_turn: Boolean(guard?.reasoning_stream_started),
+    suppress_reason: suppress.reason,
+    will_emit: willEmit,
+    as_bubble: asBubble
+  };
+  try {
+    if (window.__VERA_DEBUG_FLAGS__?.reasoningUnavailableDebug !== false) {
+      console.warn("[reasoning_unavailable_message_emit_attempt]", emitAttemptRow);
+    }
+  } catch (_) {}
   if (suppress.suppress) {
+    try {
+      console.info("[reasoning_unavailable_message_suppressed]", {
+        cause,
+        source_function: sourceFunction,
+        current_turn_id: guard?.turn_id ?? null,
+        failure_turn_id: failureTurnId,
+        suppress_reason: suppress.reason
+      });
+    } catch (_) {}
     logReasoningUnavailableEmit(false, cause, {
       suppress_reason: suppress.reason,
-      turn_id: opts.turn_id ?? _currentVoiceTurnRoutingGuard?.turn_id ?? null,
-      action_family: _currentVoiceTurnRoutingGuard?.action_family ?? null,
+      turn_id: failureTurnId ?? guard?.turn_id ?? null,
+      action_family: guard?.action_family ?? null,
       feature: opts.feature || null,
+      source_function: sourceFunction,
     });
     try {
       console.info("[reasoning_stream_request_skipped]", {
         reason: suppress.reason,
         cause,
-        turn_id: opts.turn_id ?? null,
+        source_function: sourceFunction,
+        turn_id: failureTurnId ?? null,
       });
     } catch (_) {}
     return { shown: false, suppressed: true, reason: suppress.reason, message: null };
@@ -682,25 +737,54 @@ function emitReasoningUnavailableMessage(opts = {}) {
   try {
     console.info("[reasoning_stream_request_failed]", {
       cause,
-      turn_id: opts.turn_id ?? null,
+      source_function: sourceFunction,
+      turn_id: failureTurnId ?? null,
       feature: opts.feature || null,
     });
   } catch (_) {}
   if (asBubble) {
     const shown = veraShowCapabilityFailureBubble(opts.feature || "llm_failure", message, {
-      actionId: opts.actionId,
+      actionId: opts.actionId ?? failureTurnId,
       minIntervalMs: opts.minIntervalMs,
     });
+    if (shown) {
+      try {
+        console.warn("[reasoning_unavailable_message_emit]", {
+          cause,
+          source_function: sourceFunction,
+          current_turn_id: guard?.turn_id ?? null,
+          failure_turn_id: failureTurnId,
+          current_turn_kind: guard?.turn_intent ?? null,
+          current_turn_action_only: Boolean(guard?.action_only),
+          reasoning_stream_started_for_current_turn: Boolean(guard?.reasoning_stream_started),
+          via: "capability_failure_bubble"
+        });
+      } catch (_) {}
+    }
     logReasoningUnavailableEmit(shown, cause, {
       feature: opts.feature || "llm_failure",
-      turn_id: opts.turn_id ?? null,
+      turn_id: failureTurnId ?? null,
       via: "capability_failure_bubble",
+      source_function: sourceFunction,
     });
     return { shown, suppressed: false, reason: null, message: shown ? message : null };
   }
+  try {
+    console.warn("[reasoning_unavailable_message_emit]", {
+      cause,
+      source_function: sourceFunction,
+      current_turn_id: guard?.turn_id ?? null,
+      failure_turn_id: failureTurnId,
+      current_turn_kind: guard?.turn_intent ?? null,
+      current_turn_action_only: Boolean(guard?.action_only),
+      reasoning_stream_started_for_current_turn: Boolean(guard?.reasoning_stream_started),
+      via: "reply_text"
+    });
+  } catch (_) {}
   logReasoningUnavailableEmit(true, cause, {
-    turn_id: opts.turn_id ?? null,
+    turn_id: failureTurnId ?? null,
     via: "reply_text",
+    source_function: sourceFunction,
   });
   return { shown: true, suppressed: false, reason: null, message };
 }
@@ -15029,15 +15113,17 @@ async function fetchWorkModeGroundedVoiceFinalBrief(prep, panelPack, signal) {
     signal
   });
   if (!res.ok) {
-    void veraSurfaceLlmFetchFailure({ feature: "voice_final_brief", response: res });
+    void veraSurfaceLlmFetchFailure({
+      feature: "voice_final_brief",
+      response: res,
+      extra: { turn_id: prep?.turnContext?.turn_id || null }
+    });
     return { brief: "", skipped: true, skip_reason: "http_error" };
   }
   return res.json();
 }
 
 function resolveGroundedStage2BriefText(prep, generatedBrief) {
-  const generated = String(generatedBrief || "").trim();
-  if (!generated) return "";
   const finalStatus = getWorkModeReasoningFinalStatus(prep);
   const finalStatusName = String(finalStatus?.status || "").trim().toLowerCase();
   if (finalStatusName === "cancelled" || finalStatusName === "user_stopped") {
@@ -15046,12 +15132,15 @@ function resolveGroundedStage2BriefText(prep, generatedBrief) {
   if (finalStatusName && /failed|error|timed_out/.test(finalStatusName)) {
     const unavailable = emitReasoningUnavailableMessage({
       cause: "resolveGroundedStage2BriefText:reasoning_failed",
+      source_function: "resolveGroundedStage2BriefText",
       turn_id: prep?.turnContext?.turn_id || null,
       asBubble: false,
     });
     if (unavailable.suppressed) return "";
-    return unavailable.message || VERA_SAFETY_LIMITS.messages.llmFailure;
+    return unavailable.message || "";
   }
+  const generated = String(generatedBrief || "").trim();
+  if (!generated) return "";
   storeEffectiveStage2ReplyOnPrep(prep, {
     effective_stage2_reply: generated,
     generated_stage2_text: generated,
@@ -15130,6 +15219,25 @@ async function playWorkModeGroundedStage2Brief(prep, briefText, inferOpts = {}) 
 async function runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, inferOpts = {}) {
   const p = prep || {};
   const vs = p.voiceTwoStage || {};
+  const guard = _currentVoiceTurnRoutingGuard;
+  const prepTurnId = p?.turnContext?.turn_id != null ? String(p.turnContext.turn_id) : null;
+  if (
+    guard?.action_only &&
+    !guard.reasoning_stream_started &&
+    prepTurnId &&
+    guard.turn_id &&
+    prepTurnId !== guard.turn_id
+  ) {
+    try {
+      console.info("[reasoning_stream_request_skipped]", {
+        reason: "stale_grounded_voice_final_during_action_turn",
+        prep_turn_id: prepTurnId,
+        current_turn_id: guard.turn_id,
+        action_family: guard.action_family || null,
+      });
+    } catch (_) {}
+    return;
+  }
   if (!vs.reasoningRouted) {
     await p.chain;
     return;
@@ -15157,7 +15265,16 @@ async function runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, i
     return;
   }
   if (finalStatusName && /failed|error|timed_out/.test(finalStatusName)) {
-    const failed = resolveGroundedStage2BriefText(p, VERA_SAFETY_LIMITS.messages.llmFailure);
+    const failed = resolveGroundedStage2BriefText(p, "");
+    if (!failed) {
+      try {
+        console.info("[reasoning_stream_request_skipped]", {
+          reason: "grounded_voice_final_failure_suppressed",
+          turn_id: p?.turnContext?.turn_id || null,
+        });
+      } catch (_) {}
+      return;
+    }
     await playWorkModeGroundedStage2Brief(p, failed, inferOpts);
     return;
   }
@@ -16513,13 +16630,11 @@ function resolveEffectiveStage2Reply(prep, generatedReply, ttsStage) {
   if (finalStatusName && /failed|error|timed_out/.test(finalStatusName)) {
     const unavailable = emitReasoningUnavailableMessage({
       cause: "resolveEffectiveStage2Reply:reasoning_failed",
+      source_function: "resolveEffectiveStage2Reply",
       turn_id: prep?.turnContext?.turn_id || null,
       asBubble: false,
     });
-    const failed =
-      unavailable.suppressed
-        ? ""
-        : unavailable.message || VERA_SAFETY_LIMITS.messages.llmFailure;
+    const failed = unavailable.suppressed ? "" : unavailable.message || "";
     logStage2ReasoningStatus(prep, finalStatus, failed, false, "reasoning_failed");
     return {
       effective_stage2_reply: failed,
@@ -18327,6 +18442,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             });
             emitReasoningUnavailableMessage({
               cause: "reasoning_stream.error_chunk",
+              source_function: "reasoning_stream.error_chunk",
               feature: "llm_failure",
               actionId: turnContext?.turn_id || null,
               turn_id: turnContext?.turn_id || null,
