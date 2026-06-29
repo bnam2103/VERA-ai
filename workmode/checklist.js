@@ -3146,19 +3146,7 @@ function shouldDeferChecklistPlanShortcut(text) {
   const t = String(text || "").trim();
   if (!t) return false;
   if (typeof detectCompoundActionFamilies === "function") {
-    let compound;
-    try {
-      compound = detectCompoundActionFamilies(t);
-    } catch (err) {
-      try {
-        console.warn("[checklist_plan_route_blocked]", {
-          reason: "compound_detection_error",
-          raw_text: t.slice(0, 240),
-          error_message: String(err?.message || err || "").slice(0, 200),
-        });
-      } catch (_) {}
-      return false;
-    }
+    const compound = detectCompoundActionFamilies(t);
     let families = Array.isArray(compound.families) ? [...compound.families] : [];
     if (
       typeof collapseFalseReasoningFamilyForChecklistPlan === "function" &&
