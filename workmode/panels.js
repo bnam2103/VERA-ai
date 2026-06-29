@@ -299,6 +299,9 @@ function isDefaultWorkModeReasoningPanelLaneLabel(label) {
 ========================= */
 
 function renderReasoningTabStrip() {
+  try {
+    repairDuplicateReasoningPanelDisplayTitles({ source: "render_tab_strip" });
+  } catch (_) {}
   const tabsEl = document.getElementById("vera-reasoning-tabs");
   const addBtn = document.getElementById("vera-reasoning-tab-add");
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
@@ -405,6 +408,17 @@ function activateReasoningTab(index, opts = {}) {
       _isGenericBlankReasoningPanelLabel(selectedTitleBefore) &&
       !_isGenericBlankReasoningPanelLabel(selectedTitleAfter),
   });
+  try {
+    const laneId = String(afterPanel?.laneId || beforePanel?.laneId || "");
+    window.veraUsageOnReasoningPanelFocused?.({
+      lane_id: laneId,
+      panel_index: idx,
+      from_panel_index:
+        beforePanel?.visualIndex != null ? Number(beforePanel.visualIndex) - 1 : undefined,
+      source: String(opts.resolvedFrom || "ui").slice(0, 32),
+    });
+  } catch (_) {}
+  _queueWorkModeWorkspaceCloudSync();
 }
 
 /* =====================================================================
@@ -583,6 +597,25 @@ function addReasoningTab(opts) {
       panel_open_request_id: requestId || null,
       panel_count_after: panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length,
     }));
+  } catch (_) {}
+
+  try {
+    window.veraUsageOnReasoningPanelOpened?.({
+      lane_id: newLaneId,
+      panel_index: idx,
+      source,
+      request_id: requestId || undefined,
+    });
+  } catch (_) {}
+
+  try {
+    console.info("[panel_create]", {
+      lane_id: newLaneId,
+      title: String(panel.dataset.laneLabel || `Panel ${idx + 1}`),
+      index: idx,
+      source,
+      panel_open_request_id: requestId || null,
+    });
   } catch (_) {}
 
   return { laneId: newLaneId, tabIndex: idx };
@@ -848,6 +881,58 @@ function readPersistedReasoningPanelTitlesForDebug() {
    content AND has a generic auto-renamable title, rewrite its title to
    "Panel <visual+1>". Meaningful titles (English Essay Plan, etc.) are
    preserved. Returns {before, after, renamedCount}. */
+function repairDuplicateReasoningPanelDisplayTitles(opts = {}) {
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot) return { before_titles: [], after_titles: [], repaired: false };
+  const panels = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")];
+  const before_titles = panels.map((p) => getReasoningTabTopicLabel(p));
+  const seen = new Map();
+  let repaired = false;
+  panels.forEach((panel, visualIdx) => {
+    let label = String(panel.dataset.laneLabel || getReasoningTabTopicLabel(panel) || "").trim();
+    if (!label) label = `Panel ${visualIdx + 1}`;
+    const key = label.toLowerCase();
+    const prior = seen.get(key) || 0;
+    seen.set(key, prior + 1);
+    if (prior === 0) return;
+    const isGeneric = _isGenericBlankReasoningPanelLabel(label);
+    const newLabel = isGeneric ? `Panel ${visualIdx + 1}` : `${label} ${prior + 1}`;
+    try {
+      console.info("[panel_duplicate_detected]", {
+        title: label,
+        lane_ids: [String(panel.dataset.laneId || "").trim()].filter(Boolean),
+        new_label: newLabel,
+        source: String(opts.source || "repair"),
+      });
+    } catch (_) {}
+    panel.dataset.laneLabel = newLabel;
+    if (!panel.dataset.tabTopic || _isGenericBlankReasoningPanelLabel(panel.dataset.tabTopic)) {
+      panel.dataset.tabTopic = isGeneric ? REASONING_UNTITLED_TAB_NAME : newLabel;
+    }
+    repaired = true;
+  });
+  if (repaired) {
+    _normalizeBlankPanelNamesInOrder();
+  }
+  const after_titles = [...panelsRoot.querySelectorAll(".vera-reasoning-tab-panel")].map((p) =>
+    getReasoningTabTopicLabel(p)
+  );
+  if (repaired) {
+    try {
+      console.info("[panel_registry_repair]", {
+        before_titles,
+        after_titles,
+        source: String(opts.source || "repair"),
+      });
+    } catch (_) {}
+  }
+  return { before_titles, after_titles, repaired };
+}
+
+try {
+  window.repairDuplicateReasoningPanelDisplayTitles = repairDuplicateReasoningPanelDisplayTitles;
+} catch (_) {}
+
 function _normalizeBlankPanelNamesInOrder() {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return { before: [], after: [], renamedCount: 0 };
@@ -1010,6 +1095,102 @@ function refillReasoningPanelsToMinimum() {
     if (created > REASONING_TABS_MAX + 1) break;
   }
   return created;
+}
+
+/**
+ * Resolve user-facing panel number (1-based visible tab order) to the stable
+ * `data-tab-index` / lane slot for that panel. Returns null when out of range.
+ */
+function resolveReasoningPanelTabIndexFromVisual1(visualIndex1Based) {
+  const want = Number(visualIndex1Based);
+  if (!Number.isFinite(want) || want < 1) return null;
+  const order = getReasoningPanelOrder();
+  const entry = order[want - 1];
+  return entry && Number.isFinite(entry.tabIndex) ? entry.tabIndex : null;
+}
+
+/**
+ * Ensure a user-facing panel number exists in visible tab order. Creates panels
+ * at the end until `visualIndex1Based` is reachable — never hunts for sparse
+ * `data-tab-index` gaps (which caused runaway panel 7/8/9 creation).
+ * Returns the resolved stable tab index, or null on failure.
+ */
+function ensureReasoningPanelVisualIndexExists(visualIndex1Based, opts = {}) {
+  const want = Number(visualIndex1Based);
+  if (!Number.isFinite(want) || want < 1) return null;
+  const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
+  if (!panelsRoot || typeof addReasoningTab !== "function") return null;
+  const requestId = String(opts.requestId || opts.request_id || "").trim();
+  const beforeOrder = getReasoningPanelOrder();
+  const beforeCount = beforeOrder.length;
+  try {
+    console.info("[panel_ensure_index_start]", {
+      target_index: want,
+      existing_count: beforeCount,
+      request_id: requestId || null,
+    });
+  } catch (_) {}
+  let order = beforeOrder;
+  let guard = 0;
+  while (order.length < want && guard < REASONING_TABS_MAX) {
+    if (requestId && window.__veraPanelOpenRequestIds instanceof Map) {
+      const prev = window.__veraPanelOpenRequestIds.get(requestId);
+      if (prev && performance.now() - Number(prev.at || 0) < 30000) {
+        try {
+          console.info("[panel_create_blocked_duplicate]", {
+            reason: "panel_open_request_id_seen",
+            request_id: requestId,
+            lane_id: prev.laneId || null,
+            tab_index: prev.tabIndex ?? null,
+          });
+        } catch (_) {}
+        return Number.isFinite(prev.tabIndex) ? prev.tabIndex : null;
+      }
+    }
+    const opened = addReasoningTab({
+      source: String(opts.source || "ensure_visual_panel_index"),
+      requestId,
+    });
+    if (!opened) break;
+    if (requestId) {
+      try {
+        if (!window.__veraPanelOpenRequestIds || !(window.__veraPanelOpenRequestIds instanceof Map)) {
+          window.__veraPanelOpenRequestIds = new Map();
+        }
+        window.__veraPanelOpenRequestIds.set(requestId, {
+          at: performance.now(),
+          laneId: opened.laneId || "",
+          tabIndex: opened.tabIndex,
+        });
+      } catch (_) {}
+    }
+    order = getReasoningPanelOrder();
+    guard += 1;
+  }
+  const entry = getReasoningPanelOrder()[want - 1];
+  const tabIndex = entry && Number.isFinite(entry.tabIndex) ? entry.tabIndex : null;
+  const afterCount = getReasoningPanelOrder().length;
+  try {
+    console.info("[panel_ensure_index_done]", {
+      target_index: want,
+      lane_id: entry?.laneId || null,
+      tab_index: tabIndex,
+      created_count: Math.max(0, afterCount - beforeCount),
+      request_id: requestId || null,
+    });
+    console.info("[reasoning_request_target_resolved]", {
+      target_panel: want,
+      lane_id: entry?.laneId || null,
+      tab_index: tabIndex,
+      created_count: Math.max(0, afterCount - beforeCount),
+    });
+  } catch (_) {}
+  if (typeof repairDuplicateReasoningPanelDisplayTitles === "function") {
+    try {
+      repairDuplicateReasoningPanelDisplayTitles({ source: "panel_ensure_visual_index" });
+    } catch (_) {}
+  }
+  return tabIndex;
 }
 
 function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
@@ -1393,6 +1574,14 @@ function closeReasoningPanelsByVisualIndices(visualIndices1Based, opts = {}) {
     }));
   } catch (_) {}
 
+  try {
+    window.veraUsageOnReasoningPanelClosed?.({
+      lane_id: closedLaneIds[0] || undefined,
+      closed_count: targets.length,
+      source: reason,
+    });
+  } catch (_) {}
+
   return {
     ok: true,
     closedTitles,
@@ -1510,6 +1699,12 @@ function _countWordOrNumber(n) {
 function buildCloseReasoningPanelsVoiceReply(execResult, parsed) {
   if (!execResult) return "I couldn't close that reasoning panel.";
   if (!execResult.ok && execResult.failureReason === "all_indices_out_of_range") {
+    const requested = Array.isArray(parsed?.indices) && parsed.indices.length === 1
+      ? Number(parsed.indices[0])
+      : null;
+    if (parsed?.closeScope === "specific_indices" && Number.isFinite(requested)) {
+      return `I don't see a panel ${requested}.`;
+    }
     const n = Number(execResult.totalBefore);
     const count = Number.isFinite(n) && n >= 0 ? n : 0;
     return `I only see ${count} ${count === 1 ? "panel" : "panels"}.`;
@@ -1558,6 +1753,12 @@ function buildCloseReasoningPanelsVoiceReply(execResult, parsed) {
   }
   /* Failure paths. */
   if (execResult.failureReason === "all_indices_out_of_range") {
+    const requested = Array.isArray(parsed?.indices) && parsed.indices.length === 1
+      ? Number(parsed.indices[0])
+      : null;
+    if (parsed?.closeScope === "specific_indices" && Number.isFinite(requested)) {
+      return `I don't see a panel ${requested}.`;
+    }
     return `I only see ${execResult.totalBefore} reasoning panel${execResult.totalBefore === 1 ? "" : "s"}.`;
   }
   if (execResult.failureReason === "no_title_match") {
@@ -1743,6 +1944,9 @@ try {
     window.buildCloseReasoningPanelsVoiceReply = buildCloseReasoningPanelsVoiceReply;
     window.renderReasoningCloseAssistantConfirmation = renderReasoningCloseAssistantConfirmation;
     window.getReasoningPanelOrder = getReasoningPanelOrder;
+  window.resolveReasoningPanelTabIndexFromVisual1 = resolveReasoningPanelTabIndexFromVisual1;
+  window.ensureReasoningPanelVisualIndexExists = ensureReasoningPanelVisualIndexExists;
+  window._isExplicitReasoningPanelCloseCommand = _isExplicitReasoningPanelCloseCommand;
     window.getReasoningPanelDebugState = getReasoningPanelDebugState;
   }
 } catch (_) {}
@@ -1832,6 +2036,24 @@ const REASONING_CLOSE_COUNT_WORDS = new Map([
   ["one", 1], ["two", 2], ["three", 3], ["four", 4],
   ["five", 5], ["six", 6], ["seven", 7], ["eight", 8],
 ]);
+
+/* Shared close/remove/delete verb alt for panel-targeted commands. */
+const _PANEL_CLOSE_VERB_ALT =
+  "(?:close|clear|hide|dismiss|remove|delete|get\\s+rid\\s+of)";
+const _PANEL_CLOSE_VERB_RE = new RegExp(`\\b${_PANEL_CLOSE_VERB_ALT}\\b`, "i");
+
+function _isExplicitReasoningPanelCloseCommand(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  return _PANEL_CLOSE_VERB_RE.test(raw) && _hasReasoningCloseSubject(raw);
+}
+
+function _panelCloseVerbFromText(text) {
+  const m = String(text || "").match(
+    new RegExp(`\\b(${_PANEL_CLOSE_VERB_ALT})\\b`, "i")
+  );
+  return m ? String(m[1] || "").toLowerCase().replace(/\s+/g, " ") : null;
+}
 
 /* Spec PART 13: phrases that look like checklist mutations, not panel closes.
  * _looksLikeChecklistCommand moved to workmode/checklist.js
@@ -2047,7 +2269,10 @@ function _extractAllCloseSpans(text, panelCount) {
   };
 
   /* all_panels variants */
-  const allRe = /\b(?:close|clear)\s+(?:all\s+the\s+|all\s+|every\s+)?(?:reasoning\s+)?panels?\b/g;
+  const allRe = new RegExp(
+    `\\b(?:close|clear|remove|delete)\\s+(?:all\\s+the\\s+|all\\s+|every\\s+)?(?:reasoning\\s+)?panels?\\b`,
+    "g"
+  );
   let m;
   while ((m = allRe.exec(t)) !== null) {
     /* Filter out "all other" — that's other_panels, handled below. */
@@ -2063,7 +2288,10 @@ function _extractAllCloseSpans(text, panelCount) {
     push("other_panels", null, null, m[0], otherRe.lastIndex);
   }
   /* range "1 through 3" */
-  const rangeRe = /\bclose\s+(?:the\s+)?(?:reasoning\s+)?(?:panels?|tabs?)\s+(\d+)\s+(?:through|thru|to|-)\s+(\d+)\b/g;
+  const rangeRe = new RegExp(
+    `\\b(?:close|remove|delete)\\s+(?:the\\s+)?(?:reasoning\\s+)?(?:panels?|tabs?)\\s+(\\d+)\\s+(?:through|thru|to|-)\\s+(\\d+)\\b`,
+    "g"
+  );
   while ((m = rangeRe.exec(t)) !== null) {
     const a = parseInt(m[1], 10);
     const b = parseInt(m[2], 10);
@@ -2074,7 +2302,10 @@ function _extractAllCloseSpans(text, panelCount) {
     }
   }
   /* range_first_n */
-  const firstNRe = /\bclose\s+(?:the\s+)?first\s+(\d+|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
+  const firstNRe = new RegExp(
+    `\\b(?:close|remove|delete)\\s+(?:the\\s+)?first\\s+(\\d+|one|two|three|four|five|six|seven|eight)\\s+(?:reasoning\\s+)?(?:panels?|tabs?|spaces?|lanes?)\\b`,
+    "g"
+  );
   while ((m = firstNRe.exec(t)) !== null) {
     const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : (REASONING_CLOSE_COUNT_WORDS.get(m[1]) || 0);
     if (n > 0) {
@@ -2084,7 +2315,10 @@ function _extractAllCloseSpans(text, panelCount) {
     }
   }
   /* range_last_n */
-  const lastNRe = /\bclose\s+(?:the\s+)?last\s+(\d+|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
+  const lastNRe = new RegExp(
+    `\\b(?:close|remove|delete)\\s+(?:the\\s+)?last\\s+(\\d+|one|two|three|four|five|six|seven|eight)\\s+(?:reasoning\\s+)?(?:panels?|tabs?|spaces?|lanes?)\\b`,
+    "g"
+  );
   while ((m = lastNRe.exec(t)) !== null) {
     const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : (REASONING_CLOSE_COUNT_WORDS.get(m[1]) || 0);
     if (n > 0) {
@@ -2095,20 +2329,29 @@ function _extractAllCloseSpans(text, panelCount) {
       push("range_last_n", idx, n, m[0], lastNRe.lastIndex);
     }
   }
-  /* current_panel: "close this panel", "close current reasoning tab" */
-  const curRe = /\bclose\s+(?:this|the\s+current|current)\s+(?:reasoning\s+)?(?:panel|tab|space|lane)\b/g;
+  /* current_panel: "close/remove this panel", "close current reasoning tab" */
+  const curRe = new RegExp(
+    `\\b(?:close|remove|delete|clear|hide|dismiss)\\s+(?:this|the\\s+current|current)\\s+(?:reasoning\\s+)?(?:panel|tab|space|lane)\\b`,
+    "g"
+  );
   while ((m = curRe.exec(t)) !== null) {
     push("current_panel", null, null, m[0], curRe.lastIndex);
   }
   /* current_panel: bare local close commands like "close panel" / "close tab".
      Claim these before reasoning classification; otherwise local UI actions can
      fall through to Work Mode reasoning and show the generic unavailable bubble. */
-  const barePanelRe = /\bclose\s+(?:the\s+)?(?:reasoning\s+)?(?:panel|tab|space|lane)\b/g;
+  const barePanelRe = new RegExp(
+    `\\b(?:close|remove|delete|clear|hide|dismiss)\\s+(?:the\\s+)?(?:reasoning\\s+)?(?:panel|tab|space|lane)\\b`,
+    "g"
+  );
   while ((m = barePanelRe.exec(t)) !== null) {
     push("current_panel", null, null, m[0], barePanelRe.lastIndex);
   }
   /* specific_indices via ordinal words AND via "panel N" numerics */
-  const ordWordRe = /\bclose\s+(?:the\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)(?:\s+(?:and|or|,)\s+(?:the\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)){0,7}\s+(?:reasoning\s+)?(?:panels?|tabs?|spaces?|lanes?)\b/g;
+  const ordWordRe = new RegExp(
+    `\\b(?:close|remove|delete|clear|hide|dismiss)\\s+(?:the\\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)(?:\\s+(?:and|or|,\\s*)\\s*(?:the\\s+)?(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last)){0,7}\\s+(?:reasoning\\s+)?(?:panels?|tabs?|spaces?|lanes?)\\b`,
+    "g"
+  );
   while ((m = ordWordRe.exec(t)) !== null) {
     const phrase = m[0];
     const idx = [];
@@ -2126,7 +2369,10 @@ function _extractAllCloseSpans(text, panelCount) {
     const dedup = [...new Set(idx)].sort((a, b) => a - b);
     if (dedup.length) push("specific_indices", dedup, null, phrase, ordWordRe.lastIndex);
   }
-  const numRe = /\bclose\s+(?:the\s+)?(?:reasoning\s+)?(?:panels?|tabs?)\s+#?\s*(\d+(?:\s*(?:,\s*and|,\s*or|and|or|,|&)\s*\d+){0,8})\b/g;
+  const numRe = new RegExp(
+    `\\b(?:close|remove|delete|clear|hide|dismiss)\\s+(?:the\\s+)?(?:reasoning\\s+)?(?:panels?|tabs?)\\s+#?\\s*(\\d+(?:\\s*(?:,\\s*and|,\\s*or|and|or|,|&)\\s*\\d+){0,8})\\b`,
+    "g"
+  );
   while ((m = numRe.exec(t)) !== null) {
     const phrase = m[0];
     const nums = String(m[1]).split(/\s*(?:,\s*and|,\s*or|and|or|,|&)\s*/).map((x) => parseInt(x, 10)).filter(Number.isFinite);
@@ -2210,8 +2456,10 @@ function parseCloseReasoningPanelsCommand(text, panelCount) {
     return out;
   }
 
-  /* Spec PART 13: don't eat checklist commands. */
-  if (_looksLikeChecklistCommand(raw)) {
+  /* Spec PART 13: don't eat checklist commands — unless the user named an
+     explicit reasoning panel/tab subject (remove/delete panel N). */
+  const explicitPanelClose = _isExplicitReasoningPanelCloseCommand(raw);
+  if (_looksLikeChecklistCommand(raw) && !explicitPanelClose) {
     out.failureReason = "looks_like_checklist";
     out.reason = "checklist_pattern_match_blocks_panel_close";
     return out;
@@ -2282,13 +2530,33 @@ function parseCloseReasoningPanelsCommand(text, panelCount) {
       out.rawIndexPhrase = out.indices.join(",");
       if (!out.indices.length) {
         out.failureReason = "no_indices";
+      } else {
+        try {
+          console.info("[panel_close_parse]", {
+            raw_text: original.slice(0, 240),
+            verb: _panelCloseVerbFromText(raw),
+            requested_index: out.indices.length === 1 ? out.indices[0] : out.indices,
+            close_scope: out.closeScope,
+            explicit_panel_word: explicitPanelClose,
+          });
+          console.info("[panel_close_route_selected]", {
+            reason: explicitPanelClose ? "explicit_panel_word" : "ranked_close_span",
+            close_scope: out.closeScope,
+            requested_index: out.indices.length === 1 ? out.indices[0] : out.indices,
+          });
+        } catch (_) {}
       }
       return out;
     }
   }
 
-  /* "close the X panel" — by title */
-  const titleMatch = raw.match(/\bclose\s+(?:the\s+)?(.+?)\s+(?:reasoning\s+)?(?:panel|tab|space|lane)\b/i);
+  /* "close/remove/delete the X panel" — by title */
+  const titleMatch = raw.match(
+    new RegExp(
+      `\\b(?:close|remove|delete|clear|hide|dismiss)\\s+(?:the\\s+)?(.+?)\\s+(?:reasoning\\s+)?(?:panel|tab|space|lane)\\b`,
+      "i"
+    )
+  );
   if (titleMatch) {
     const candidate = String(titleMatch[1] || "").trim();
     /* Filter out generic words like "this/that/current/other/new/blank". */
@@ -2481,6 +2749,17 @@ function executeCloseReasoningPanelsCommand(parsed, opts = {}) {
     return { ok: false, failureReason: "no_valid_indices", invalidIndices, totalBefore: N };
   }
 
+  const resolvedLaneIds = indices
+    .map((vi) => order[vi - 1]?.laneId)
+    .filter(Boolean);
+  try {
+    console.info("[panel_close_request]", {
+      requested_index: indices.length === 1 ? indices[0] : indices,
+      resolved_lane_id: resolvedLaneIds.length === 1 ? resolvedLaneIds[0] : resolvedLaneIds,
+      panel_count_before: N,
+    });
+  } catch (_) {}
+
   const result = closeReasoningPanelsByVisualIndices(indices, {
     reason: opts.reason || "voice_or_text_command",
     closeScope,
@@ -2502,6 +2781,13 @@ function executeCloseReasoningPanelsCommand(parsed, opts = {}) {
      user-visible confirmation MUST use exec.confirmation — neither the
      bubble layer nor the voice layer should produce its own phrasing. */
   final.confirmation = buildCloseReasoningPanelsVoiceReply(final, parsed);
+  try {
+    console.info(final.ok ? "[panel_close_done]" : "[panel_close_failed]", {
+      closed_lane_id: Array.isArray(result.closedLaneIds) ? result.closedLaneIds : [],
+      remaining_count: getReasoningPanelOrder().length,
+      failure_reason: final.ok ? null : final.failureReason || null,
+    });
+  } catch (_) {}
   return final;
 }
 
@@ -2512,6 +2798,27 @@ function executeCloseReasoningPanelsCommand(parsed, opts = {}) {
  * → moved to workmode/panels.js (Stage 8, 2026-05-27). */
 
 /* Try to handle a voice/text command client-side. Returns true when handled. */
+function shouldDeferClosePanelShortcutForMultiAction(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  try {
+    if (typeof detectCompoundActionFamilies === "function") {
+      const compound = detectCompoundActionFamilies(s);
+      if (compound.isCompound) return true;
+    }
+  } catch (_) {}
+  const low = s.toLowerCase();
+  if (!/\b(?:close|remove|delete|clear|hide|dismiss)\b/.test(low) || !/\bpanel\b/.test(low)) return false;
+  return (
+    /\b(?:open|create|make|add)\s+(?:a|an|another|one\s+more|new)\s+(?:new\s+)?(?:reasoning\s+)?(?:panel|one)\b/.test(low) ||
+    /\b(?:switch|go|jump|navigate|move)\s+to\b/.test(low) ||
+    /\b(?:pause|play|stop|resume|unpause)\b/.test(low) ||
+    /\b(?:explain|describe|write|help\s+me)\b/.test(low) ||
+    /\b(?:set|start|cancel)\b[^.?!]{0,20}\btimer\b/.test(low) ||
+    /\bchecklist\b/.test(low)
+  );
+}
+
 function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   if (!text) return false;
   const source = opts.reason || "client_shortcut";
@@ -2532,6 +2839,26 @@ function maybeHandleCloseReasoningPanelShortcut(text, opts = {}) {
   const gatePassed = Boolean(_gateWorkMode && _gateModePrefix === "vera");
   const hasReasoningPanelDom = order.length > 0;
   if (closePanelIntentDetected) {
+    if (shouldDeferClosePanelShortcutForMultiAction(text)) {
+      try {
+        console.info("[close_panel_shortcut_deferred] " + JSON.stringify({
+          raw_text: String(text || "").slice(0, 240),
+          input_source: inputSource,
+          source,
+          reason: "multi_action_planner",
+        }));
+      } catch (_) {}
+      return false;
+    }
+    if (_isExplicitReasoningPanelCloseCommand(text)) {
+      try {
+        console.info("[panel_close_suppressed_other_routes] " + JSON.stringify({
+          checklist_remove: false,
+          reasoning_fallback: true,
+          raw_text: String(text || "").slice(0, 240),
+        }));
+      } catch (_) {}
+    }
     try {
       console.info("[close_panel_route_called] " + JSON.stringify({
         raw_text: String(text || ""),
@@ -2798,6 +3125,9 @@ try {
   window.reopenLastClosedReasoningPanel = reopenLastClosedReasoningPanel;
   window.findReasoningPanelIndicesByTitleQuery = findReasoningPanelIndicesByTitleQuery;
   window.getReasoningPanelOrder = getReasoningPanelOrder;
+  window.resolveReasoningPanelTabIndexFromVisual1 = resolveReasoningPanelTabIndexFromVisual1;
+  window.ensureReasoningPanelVisualIndexExists = ensureReasoningPanelVisualIndexExists;
+  window._isExplicitReasoningPanelCloseCommand = _isExplicitReasoningPanelCloseCommand;
   window.maybeHandleCloseReasoningPanelShortcut = maybeHandleCloseReasoningPanelShortcut;
 } catch (_) {}
 /* =========================================================================
@@ -3544,6 +3874,14 @@ function ensureFixedReasoningLanePanels(savedByIdx = new Map(), activeIdx = 0) {
  * (Stage 8, 2026-05-27). */
 
 /** Snapshot reasoning tabs to localStorage — call only on page unload (see wireReasoningTabStrip). */
+function _queueWorkModeWorkspaceCloudSync() {
+  try {
+    if (typeof queueWorkModeWorkspaceSync === "function") {
+      queueWorkModeWorkspaceSync();
+    }
+  } catch (_) {}
+}
+
 function persistReasoningTabsState() {
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot) return;
@@ -3563,6 +3901,7 @@ function persistReasoningTabsState() {
   try {
     localStorage.setItem(getReasoningTabsStateStorageKey(), JSON.stringify(payload));
   } catch (_) {}
+  _queueWorkModeWorkspaceCloudSync();
 }
 
 function restoreReasoningTabsState() {

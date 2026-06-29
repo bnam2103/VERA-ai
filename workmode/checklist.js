@@ -18,7 +18,8 @@
  *        * parent-child nesting depth capped at 1,
  *    - same SYNC CHECKLIST markdown parser (heading detection,
  *      time-title bullet preference, planish-fallback heuristic,
- *      24-item help-plan cap, 12000-char preview cap, 80-row proposal
+ *      5 main-item help-plan cap (subitems excluded), 12000-char preview
+ *      cap, 80-row proposal
  *      cap, sub-item-count-by-top cap of 3),
  *    - same plan-sync preview lifecycle (Edit/Lock toggle, Apply,
  *      preview-already-empty messaging),
@@ -194,12 +195,194 @@
 
 const WORK_CHECKLIST_STORAGE_KEY = "vera_wm_checklist_v1";
 const WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY = "vera_wm_checklist_completed_collapsed_v1";
+const WORK_CHECKLIST_ANON_STORAGE_KEY_PREFIX = "vera_checklist_state:anon:";
+const WORK_CHECKLIST_ANON_COLLAPSED_KEY_PREFIX = "vera_checklist_state:anon_collapsed:";
 const WORK_CHECKLIST_PLACEHOLDER_LABEL = "List item";
 const WORK_CHECKLIST_UI_PLACEHOLDER_ID = "__vera_wm_checklist_placeholder__";
 let workChecklistSyncTimer = null;
 let workChecklistHydrationPromise = null;
 let workChecklistLocalMutationVersion = 0;
 let workChecklistSyncInFlight = null;
+/** Bumped on logout so in-flight account PUTs cannot overwrite Supabase with cleared/local rows. */
+let _checklistAuthWriteGeneration = 0;
+let _checklistSbHydratePromise = null;
+
+function _checklistUsesAccountLocalStorage() {
+  return (
+    typeof isSupabaseUserAuthenticated === "function" &&
+    isSupabaseUserAuthenticated()
+  );
+}
+
+function getAnonymousChecklistStorageKey() {
+  const sid = typeof getSessionId === "function" ? getSessionId() : "default";
+  return `${WORK_CHECKLIST_ANON_STORAGE_KEY_PREFIX}${sid}`;
+}
+
+function getAnonymousChecklistCollapsedStorageKey() {
+  const sid = typeof getSessionId === "function" ? getSessionId() : "default";
+  return `${WORK_CHECKLIST_ANON_COLLAPSED_KEY_PREFIX}${sid}`;
+}
+
+function _getActiveChecklistItemsStorageKey() {
+  return _checklistUsesAccountLocalStorage()
+    ? WORK_CHECKLIST_STORAGE_KEY
+    : getAnonymousChecklistStorageKey();
+}
+
+function _getActiveChecklistCollapsedStorageKey() {
+  return _checklistUsesAccountLocalStorage()
+    ? WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY
+    : getAnonymousChecklistCollapsedStorageKey();
+}
+
+function _serializeAnonymousChecklistBundle(items) {
+  const sid = typeof getSessionId === "function" ? getSessionId() : "default";
+  return JSON.stringify({
+    auth_mode: "anonymous",
+    session_id: sid,
+    saved_at: Date.now(),
+    items: stripChecklistPlaceholdersForPersist(items),
+  });
+}
+
+function _parseAnonymousChecklistStorageRaw(raw) {
+  if (!raw) return { ok: true, items: [], reason: "empty" };
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return {
+        ok: true,
+        items: stripChecklistPlaceholdersForPersist(parsed),
+        reason: "legacy_array",
+      };
+    }
+    if (parsed && typeof parsed === "object") {
+      if (parsed.auth_mode && parsed.auth_mode !== "anonymous") {
+        return { ok: false, items: [], reason: "account_snapshot_while_logged_out" };
+      }
+      const sid = typeof getSessionId === "function" ? getSessionId() : "";
+      if (parsed.session_id && sid && parsed.session_id !== sid) {
+        return { ok: false, items: [], reason: "session_id_mismatch" };
+      }
+      const items = stripChecklistPlaceholdersForPersist(
+        Array.isArray(parsed.items) ? parsed.items : []
+      );
+      return { ok: true, items, reason: "anonymous_bundle" };
+    }
+  } catch (_) {
+    return { ok: false, items: [], reason: "parse_error" };
+  }
+  return { ok: false, items: [], reason: "unsupported_shape" };
+}
+
+function _readAnonymousChecklistItemsForRestore() {
+  const raw = localStorage.getItem(getAnonymousChecklistStorageKey());
+  const parsed = _parseAnonymousChecklistStorageRaw(raw);
+  if (!parsed.ok) {
+    console.info("[checklist_restore_skipped]", { reason: parsed.reason });
+    return { items: [], completed_collapsed: false };
+  }
+  if (parsed.reason === "legacy_array") {
+    try {
+      const accountRaw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+      if (accountRaw) {
+        const accountItems = stripChecklistPlaceholdersForPersist(JSON.parse(accountRaw));
+        if (
+          accountItems.length > 0 &&
+          JSON.stringify(parsed.items) === JSON.stringify(accountItems)
+        ) {
+          console.info("[checklist_restore_skipped]", {
+            reason: "account_snapshot_while_logged_out",
+          });
+          return { items: [], completed_collapsed: false };
+        }
+      }
+    } catch (_) {}
+  }
+  const completed_collapsed =
+    localStorage.getItem(getAnonymousChecklistCollapsedStorageKey()) === "1";
+  return { items: parsed.items, completed_collapsed };
+}
+
+function readAnonymousChecklistBundle() {
+  return _readAnonymousChecklistItemsForRestore();
+}
+
+function _scrubPollutedAnonymousChecklistStorage() {
+  try {
+    const anonKey = getAnonymousChecklistStorageKey();
+    const raw = localStorage.getItem(anonKey);
+    if (!raw) return;
+    const parsed = _parseAnonymousChecklistStorageRaw(raw);
+    if (!parsed.ok) {
+      localStorage.setItem(anonKey, _serializeAnonymousChecklistBundle([]));
+      return;
+    }
+    if (parsed.reason !== "legacy_array" || parsed.items.length === 0) return;
+    const accountRaw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+    if (!accountRaw) return;
+    const accountItems = stripChecklistPlaceholdersForPersist(JSON.parse(accountRaw));
+    if (
+      accountItems.length > 0 &&
+      JSON.stringify(parsed.items) === JSON.stringify(accountItems)
+    ) {
+      localStorage.setItem(anonKey, _serializeAnonymousChecklistBundle([]));
+      console.info("[checklist_restore_skipped]", {
+        reason: "account_snapshot_while_logged_out",
+      });
+    }
+  } catch (_) {}
+}
+
+function restoreAnonymousChecklistFromLocalStorage() {
+  console.info("[checklist_restore_start]", {
+    auth_mode: "anonymous",
+    logged_in: _checklistUsesAccountLocalStorage(),
+  });
+  if (_checklistUsesAccountLocalStorage()) return false;
+  _scrubPollutedAnonymousChecklistStorage();
+  if (typeof loadWorkChecklistItems === "function") {
+    loadWorkChecklistItems();
+  }
+  if (typeof applyWorkChecklistCompletedCollapseFromStorage === "function") {
+    applyWorkChecklistCompletedCollapseFromStorage();
+  }
+  const itemCount = readChecklistItemsFromStorage().length;
+  console.info("[checklist_anon_restore_done]", { item_count: itemCount });
+  return true;
+}
+
+function _checklistCancelPendingAccountSync() {
+  if (workChecklistSyncTimer) {
+    window.clearTimeout(workChecklistSyncTimer);
+    workChecklistSyncTimer = null;
+  }
+}
+
+function _checklistBlockAccountWrites() {
+  _checklistAuthWriteGeneration += 1;
+  _checklistCancelPendingAccountSync();
+  _checklistSbHydratePromise = null;
+  try {
+    localStorage.removeItem("vera_wm_checklist_supabase_unsynced_v1");
+  } catch (_) {}
+  try {
+    if (typeof _setChecklistSupabaseSyncStatus === "function") {
+      _setChecklistSupabaseSyncStatus("synced");
+    }
+  } catch (_) {}
+}
+
+function clearChecklistAfterLogout() {
+  _checklistBlockAccountWrites();
+  _scrubPollutedAnonymousChecklistStorage();
+  restoreAnonymousChecklistFromLocalStorage();
+  console.info("[checklist_logout_cleanup_done]", {
+    anonymous_item_count: readChecklistItemsFromStorage().length,
+    anonymous_storage_key: getAnonymousChecklistStorageKey(),
+  });
+}
 
 function markWorkChecklistLocalMutation() {
   workChecklistLocalMutationVersion += 1;
@@ -235,20 +418,32 @@ function stripChecklistPlaceholdersForPersist(items) {
 function _persistChecklistItemsToStorage(items) {
   const stripped = stripChecklistPlaceholdersForPersist(items);
   markWorkChecklistLocalMutation();
-  localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+  if (_checklistUsesAccountLocalStorage()) {
+    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+  } else {
+    localStorage.setItem(getAnonymousChecklistStorageKey(), _serializeAnonymousChecklistBundle(stripped));
+  }
   queueWorkChecklistSyncToServer();
   return stripped;
 }
 
 function sanitizeChecklistStorageInPlace() {
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    if (!raw) return false;
-    const items = JSON.parse(raw);
-    if (!Array.isArray(items)) return false;
-    const stripped = stripChecklistPlaceholdersForPersist(items);
-    if (JSON.stringify(stripped) === JSON.stringify(items)) return false;
-    localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+    if (_checklistUsesAccountLocalStorage()) {
+      const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
+      if (!raw) return false;
+      const items = JSON.parse(raw);
+      if (!Array.isArray(items)) return false;
+      const stripped = stripChecklistPlaceholdersForPersist(items);
+      if (JSON.stringify(stripped) === JSON.stringify(items)) return false;
+      localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(stripped));
+      queueWorkChecklistSyncToServer();
+      return true;
+    }
+    const bundle = _readAnonymousChecklistItemsForRestore();
+    const stripped = stripChecklistPlaceholdersForPersist(bundle.items);
+    if (JSON.stringify(stripped) === JSON.stringify(bundle.items)) return false;
+    localStorage.setItem(getAnonymousChecklistStorageKey(), _serializeAnonymousChecklistBundle(stripped));
     queueWorkChecklistSyncToServer();
     return true;
   } catch (_) {
@@ -263,6 +458,14 @@ function commitWorkChecklistFromPlaceholderText(text) {
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   items.push({ id, text: normalized, done: false, parent_id: null });
   _persistChecklistItemsToStorage(items);
+  try {
+    window.veraUsageOnChecklistMutation?.({
+      op: "add",
+      item_count: 1,
+      source: "ui",
+      client_key: id,
+    });
+  } catch (_) {}
   return true;
 }
 
@@ -277,6 +480,9 @@ function focusWorkChecklistUiPlaceholder() {
 }
 
 function readChecklistItemsFromStorage() {
+  if (!_checklistUsesAccountLocalStorage()) {
+    return _readAnonymousChecklistItemsForRestore().items;
+  }
   try {
     const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
     const parsed = JSON.parse(raw);
@@ -286,8 +492,252 @@ function readChecklistItemsFromStorage() {
   }
 }
 
+function readChecklistItemsFromStorageSafe() {
+  return readChecklistItemsFromStorage();
+}
+
+/** Normalize server/voice full-state checklist rows for canonical local storage. */
+function normalizeChecklistControlItems(items) {
+  if (!Array.isArray(items)) return [];
+  return stripChecklistPlaceholdersForPersist(
+    items
+      .filter((row) => row && typeof row === "object")
+      .map((row) => ({
+        id: String(row.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+        text: String(row.text || "").trim(),
+        done: Boolean(row.done),
+        parent_id:
+          row.parent_id == null || String(row.parent_id || "").trim() === ""
+            ? null
+            : String(row.parent_id)
+      }))
+      .filter((row) => String(row.text || "").trim())
+  );
+}
+
+const CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY = "vera_checklist_undo_snapshot_v1";
+const CHECKLIST_UNDO_TTL_MS = 120000;
+
+function _checklistUndoItemTitles(items) {
+  return (items || [])
+    .map((row) => String(row?.text || "").trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function isChecklistUndoFollowupIntent(text) {
+  const q = String(text || "").trim().toLowerCase();
+  if (!q) return false;
+  if (
+    /^(?:the\s+)?(?:check\s*list|checklist|to-?do(?:\s+list)?|my\s+(?:check\s*list|checklist)|tasks?|list)\.?$/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(?:^|[\s,.!?;:])(?:you\s+)?(?:can\s+(?:you|u)\s+)?(?:please\s+)?(?:undo|restore|revert)\b/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:undo|restore|revert|bring\s+(?:it|them|that|those)\s+back|bring\s+back|put\s+(?:it|them|that|those)\s+back|get\s+(?:it|them|that|those)\s+back|restore\s+(?:the\s+)?(?:checklist|list|tasks?))\b/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function readChecklistUndoSnapshotFromStorage() {
+  try {
+    const raw = sessionStorage.getItem(CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const items = normalizeChecklistControlItems(parsed.items);
+    if (!items.length) return null;
+    const createdMs = Number(parsed.created_at_ms || parsed.created_at || 0);
+    if (createdMs > 0 && Date.now() - createdMs > CHECKLIST_UNDO_TTL_MS) {
+      sessionStorage.removeItem(CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY);
+      return null;
+    }
+    return {
+      snapshot_id: String(parsed.snapshot_id || ""),
+      items,
+      completed_collapsed: Boolean(parsed.completed_collapsed),
+      created_at_ms: createdMs || Date.now(),
+      source: String(parsed.source || "checklist.clear"),
+      valid: true,
+      expires_at_ms: Number(parsed.expires_at_ms || createdMs + CHECKLIST_UNDO_TTL_MS)
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function clearChecklistUndoSnapshot() {
+  try {
+    sessionStorage.removeItem(CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY);
+  } catch (_) {}
+}
+
+function armChecklistUndoSnapshotFromItems(items, source = "checklist.clear") {
+  const normalized = normalizeChecklistControlItems(items);
+  if (!normalized.length) return null;
+  const createdAtMs = Date.now();
+  const snapshot = {
+    snapshot_id: `cu-${createdAtMs}-${Math.abs(getSessionId?.()?.length || 0) % 100000}`,
+    items: normalized,
+    completed_collapsed:
+      localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1",
+    created_at_ms: createdAtMs,
+    source,
+    valid: true,
+    expires_at_ms: createdAtMs + CHECKLIST_UNDO_TTL_MS
+  };
+  try {
+    sessionStorage.setItem(CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY, JSON.stringify(snapshot));
+  } catch (_) {
+    return null;
+  }
+  try {
+    console.info("[checklist_undo_snapshot_created]", {
+      session_id: String(getSessionId?.() || "").slice(0, 64),
+      snapshot_id: snapshot.snapshot_id,
+      snapshot_item_count: normalized.length,
+      snapshot_titles: _checklistUndoItemTitles(normalized),
+      created_at_ms: createdAtMs,
+      expires_at_ms: snapshot.expires_at_ms
+    });
+    console.info("[checklist_undo_context_set]", {
+      session_id: String(getSessionId?.() || "").slice(0, 64),
+      snapshot_id: snapshot.snapshot_id,
+      snapshot_item_count: normalized.length,
+      ttl_ms: CHECKLIST_UNDO_TTL_MS
+    });
+  } catch (_) {}
+  return snapshot;
+}
+
+/**
+ * Apply backend checklist_control voice payload to canonical storage + UI.
+ * @returns {{ ok: boolean, beforeCount: number, afterCount: number, reason: string }}
+ */
+function applyChecklistControlVoicePayload(payload = {}) {
+  const op = String(payload.op || payload.action || "checklist_control").trim();
+  const before = readChecklistItemsFromStorage();
+  const beforeCount = before.filter((x) => String(x?.text || "").trim()).length;
+  const isClearOp = /\bclear_all\b/i.test(op);
+  const isUndoOp = /\bundo_clear\b/i.test(op);
+  if (isClearOp && beforeCount > 0) {
+    try {
+      console.info("[checklist_clear_requested]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        mode: isVeraWorkModeOn?.() ? "work" : "flow",
+        item_count_before_clear: beforeCount,
+        item_titles_before_clear: _checklistUndoItemTitles(before)
+      });
+    } catch (_) {}
+    armChecklistUndoSnapshotFromItems(before, "checklist.clear");
+  }
+  try {
+    console.info("[checklist_client_mutation_start]", {
+      action: op,
+      before_count: beforeCount,
+      payload_item_count: Array.isArray(payload.items) ? payload.items.length : 0
+    });
+  } catch (_) {}
+
+  if (!Array.isArray(payload.items)) {
+    try {
+      console.warn("[checklist_client_mutation_missing]", {
+        reason: "missing_items_array",
+        action: op
+      });
+    } catch (_) {}
+    return { ok: false, beforeCount, afterCount: beforeCount, reason: "missing_items_array" };
+  }
+
+  const normalized = normalizeChecklistControlItems(payload.items);
+  _persistChecklistItemsToStorage(normalized);
+  if (typeof payload.completed_collapsed === "boolean") {
+    try {
+      localStorage.setItem(
+        _getActiveChecklistCollapsedStorageKey(),
+        payload.completed_collapsed ? "1" : "0"
+      );
+      queueWorkChecklistSyncToServer();
+    } catch (_) {}
+  }
+  loadWorkChecklistItems();
+  applyWorkChecklistCompletedCollapseFromStorage();
+  syncWorkChecklistEraseButton();
+  syncWorkChecklistHelpPlanButton();
+  scheduleSyncPlanButtonRefresh(0);
+
+  const after = readChecklistItemsFromStorage();
+  const afterCount = after.filter((x) => String(x?.text || "").trim()).length;
+  let ongoingDom = 0;
+  try {
+    const ongoingUl = document.getElementById("vera-wm-checklist-ongoing");
+    ongoingDom = ongoingUl
+      ? [...ongoingUl.querySelectorAll(":scope > li")].filter(
+          (el) => el.dataset.id !== WORK_CHECKLIST_UI_PLACEHOLDER_ID
+        ).length
+      : 0;
+  } catch (_) {}
+  try {
+    console.info("[checklist_client_mutation_done]", {
+      action: op,
+      before_count: beforeCount,
+      after_count: afterCount
+    });
+    console.info("[checklist_render_after_voice_action]", {
+      action: op,
+      stored_count: afterCount,
+      ongoing_dom_count: ongoingDom
+    });
+  } catch (_) {}
+
+  if (isClearOp) {
+    try {
+      console.info("[checklist_cleared]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        item_count_after_clear: afterCount
+      });
+    } catch (_) {}
+  }
+  if (isUndoOp && afterCount > 0) {
+    clearChecklistUndoSnapshot();
+    try {
+      console.info("[checklist_undo_restored]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        restored_item_count: afterCount,
+        restored_titles: _checklistUndoItemTitles(after)
+      });
+    } catch (_) {}
+  }
+
+  const changed = JSON.stringify(before) !== JSON.stringify(after);
+  if (!changed && op && !/undo|clear/i.test(op)) {
+    try {
+      console.warn("[checklist_client_mutation_missing]", {
+        reason: "no_state_change",
+        action: op
+      });
+    } catch (_) {}
+    return { ok: false, beforeCount, afterCount, reason: "no_state_change" };
+  }
+  return { ok: true, beforeCount, afterCount, reason: "" };
+}
+
 function queueWorkChecklistSyncToServer() {
   markWorkChecklistLocalMutation();
+  if (!_checklistUsesAccountLocalStorage()) return;
   if (workChecklistSyncTimer) window.clearTimeout(workChecklistSyncTimer);
   workChecklistSyncTimer = window.setTimeout(async () => {
     workChecklistSyncTimer = null;
@@ -296,12 +746,14 @@ function queueWorkChecklistSyncToServer() {
 }
 
 async function syncWorkChecklistToServerNow() {
+  if (!_checklistUsesAccountLocalStorage()) return;
   if (workChecklistSyncInFlight) return workChecklistSyncInFlight;
   workChecklistSyncInFlight = (async () => {
     try {
       /* Session/voice-planner checklist (per tab session_id). Not account durable storage. */
       const items = readChecklistItemsFromStorage();
-      const completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
+      const completedCollapsed =
+        localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1";
       const sessionPut = authFetch(authApiUrl("/api/work-mode/checklist"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -338,43 +790,169 @@ async function flushWorkChecklistSyncBeforeCommand() {
 
 async function hydrateWorkChecklistFromServer(force = false) {
   if (
-    !force &&
     typeof isSupabaseUserAuthenticated === "function" &&
     isSupabaseUserAuthenticated()
   ) {
     return;
   }
   if (!force && workChecklistHydrationPromise) return workChecklistHydrationPromise;
-  const startVersion = workChecklistLocalMutationVersion;
   workChecklistHydrationPromise = (async () => {
     try {
-      const res = await authFetch(
-        `${authApiUrl("/api/work-mode/checklist")}?session_id=${encodeURIComponent(getSessionId())}`,
-        { method: "GET" }
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !Array.isArray(data.items)) return;
-      if (!force && startVersion !== workChecklistLocalMutationVersion) return;
-      if (data.items.length === 0) {
-        const local = readChecklistItemsFromStorage();
-        const hasStoredContent = local.some((item) => !isChecklistPlaceholderItem(item));
-        if (hasStoredContent) return;
-      }
-      const hydrated = stripChecklistPlaceholdersForPersist(data.items);
-      localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(hydrated));
-      if (typeof data.completed_collapsed === "boolean") {
-        localStorage.setItem(
-          WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
-          data.completed_collapsed ? "1" : "0"
-        );
-      }
-      loadWorkChecklistItems();
+      restoreAnonymousChecklistFromLocalStorage();
     } catch (_) {
       /* keep local storage fallback */
+    } finally {
+      workChecklistHydrationPromise = null;
     }
   })();
   await workChecklistHydrationPromise;
 }
+
+/* =========================
+   IMPLICIT CHECKLIST MUTATION DETECTION
+   Route checklist edits by mutation verb + item-like targets without
+   requiring the literal word "checklist". Conservative blocklist keeps
+   timer / panel / reasoning-refinement phrasing out of checklist routing.
+========================= */
+
+const CHECKLIST_IMPLICIT_BLOCK_RES = [
+  /\b(?:add|append)\s+\d+\s*(?:minutes?|mins?|hours?|hrs?|seconds?|secs?)\s+to\s+(?:the\s+)?timer\b/i,
+  /\b(?:add|append)\s+(?:more\s+)?(?:detail|details|evidence|context|information|depth)\b/i,
+  /\b(?:remove|delete|close|clear|hide|dismiss)\s+(?:the\s+)?(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|\d+(?:st|nd|rd|th)?)\s+)?(?:reasoning\s+)?(?:panel|tab)s?\b/i,
+  /\bcomplete\s+(?:this|the|that)\s+(?:explanation|answer|response|essay|draft|paragraph|section|problem|question)\b/i,
+  /\b(?:add|put|move|place)\s+(?:this|that|it|the\s+(?:answer|explanation|evidence|response|content))\s+(?:to|in|into)\s+(?:the\s+)?(?:panel|reasoning)\b/i,
+  /\b(?:add|append)\s+.+\s+in\s+(?:the\s+)?panel\s+\d+\b/i,
+  /\bmark\s+(?:this|the|that)\s+(?:paragraph|sentence|section|line|page|word)\b/i,
+  /\b(?:add|turn\s+up|increase)\s+(?:the\s+)?volume\b/i,
+];
+
+function _stripChecklistCommandPoliteness(text) {
+  return String(text || "")
+    .trim()
+    .replace(/^\s*(?:please\s+|pls\s+|kindly\s+)+/i, "")
+    .replace(/^\s*(?:can|could|would|will)\s+you\b[\s,]+/i, "")
+    .replace(/^\s*(?:hey\s+vera|hey|ok|okay|alright)\b[\s,]+/i, "")
+    .trim();
+}
+
+function _detectChecklistNonObjectCollision(text) {
+  const latest = String(text || "");
+  const nonMatch = CHECKLIST_NON_OBJECT_NOUN_RE.exec(latest);
+  if (!nonMatch) return null;
+  if (CHECKLIST_NOUN_RE.test(latest)) return null;
+  return nonMatch[0].toLowerCase();
+}
+
+function _isBlockedImplicitChecklistCommand(text) {
+  const t = String(text || "").trim();
+  if (!t) return { blocked: true, reason: "empty" };
+  for (const re of CHECKLIST_IMPLICIT_BLOCK_RES) {
+    if (re.test(t)) return { blocked: true, reason: re.source.slice(0, 48) };
+  }
+  const collision = _detectChecklistNonObjectCollision(t);
+  if (collision) return { blocked: true, reason: `non_checklist_object:${collision}` };
+  return { blocked: false, reason: "" };
+}
+
+function _classifyImplicitChecklistMutationClause(clause) {
+  const raw = _stripChecklistCommandPoliteness(clause);
+  if (!raw) return null;
+  const low = raw.toLowerCase();
+  const block = _isBlockedImplicitChecklistCommand(raw);
+  if (block.blocked) return null;
+
+  if (
+    /\b(?:add|append|insert)\b/.test(low) &&
+    !/\bto\s+the\s+timer\b/.test(low) &&
+    !/\b(?:to|in|into)\s+(?:the\s+)?(?:panel|reasoning)\b/.test(low)
+  ) {
+    const m = raw.match(/\b(?:add|append|insert)\s+(?:the\s+)?(.+?)\s*$/i);
+    const body = String(m?.[1] || "").trim().replace(/[?.!]+$/, "").trim();
+    if (body && !/\b(?:panel|tab|timer|volume|minute|minutes|detail|evidence)\b/i.test(body)) {
+      return { action: "add", clause: raw, reason: "implicit_add_verb_with_item_target" };
+    }
+  }
+
+  if (
+    (/\b(?:mark|complete|check\s+off|tick\s+off)\b/i.test(raw) &&
+      /\b(?:complete|completed|done)\b/i.test(raw)) ||
+    /\bmark\s+.+\s+(?:complete|completed|done)\b/i.test(raw) ||
+    /\b(?:check\s+off|tick\s+off)\s+\S/i.test(raw)
+  ) {
+    return { action: "complete", clause: raw, reason: "implicit_complete_verb_with_item_target" };
+  }
+
+  if (
+    /\b(?:remove|delete|cross\s+off)\b/i.test(raw) &&
+    !/\b(?:panel|tab|reasoning)\b/i.test(raw)
+  ) {
+    return { action: "remove", clause: raw, reason: "implicit_remove_verb_with_item_target" };
+  }
+
+  if (CHECKLIST_UNCOMPLETE_VERB_RE.test(raw)) {
+    return { action: "uncomplete", clause: raw, reason: "implicit_uncomplete_verb_with_item_target" };
+  }
+
+  return null;
+}
+
+function _splitImplicitChecklistClauses(text) {
+  const s = String(text || "").trim();
+  if (!s) return [];
+  const parts = [];
+  let cursor = 0;
+  const re = /\s+(?:and|then|also)\s+/gi;
+  let match;
+  while ((match = re.exec(s)) != null) {
+    const before = s.slice(cursor, match.index).trim();
+    const after = s.slice(match.index + match[0].length).trim();
+    if (!before || !after) continue;
+    const rhsHit = _classifyImplicitChecklistMutationClause(after);
+    if (!rhsHit) continue;
+    parts.push(before);
+    cursor = match.index + match[0].length;
+  }
+  const tail = s.slice(cursor).trim();
+  if (tail) parts.push(tail);
+  return parts.length ? parts : [s];
+}
+
+function detectImplicitChecklistMutation(text) {
+  const raw = String(text || "").trim();
+  const empty = { detected: false, mutations: [], count: 0, reason: "empty" };
+  if (!raw) return empty;
+  const block = _isBlockedImplicitChecklistCommand(raw);
+  if (block.blocked) return { ...empty, reason: block.reason };
+
+  const scan = _splitImplicitChecklistClauses(raw);
+  const mutations = [];
+  const seen = new Set();
+  for (const clause of scan) {
+    const hit = _classifyImplicitChecklistMutationClause(clause);
+    if (!hit) continue;
+    const key = `${hit.action}:${hit.clause.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    mutations.push(hit);
+  }
+  if (!mutations.length) return { ...empty, reason: "no_implicit_mutation" };
+  try {
+    console.info("[checklist_implicit_action_detected]", {
+      raw_text: raw.slice(0, 240),
+      reason: mutations.length > 1 ? "multi_implicit_checklist_mutation" : mutations[0].reason,
+      actions: mutations.map((m) => m.action),
+      mutation_count: mutations.length,
+    });
+  } catch (_) {}
+  return {
+    detected: true,
+    mutations,
+    count: mutations.length,
+    reason: mutations.length > 1 ? "multi_implicit_checklist_mutation" : mutations[0].reason,
+  };
+}
+
+try { window.detectImplicitChecklistMutation = detectImplicitChecklistMutation; } catch (_) {}
 
 /* =========================
    CLOSE-PANEL DISAMBIGUATION HELPER (Spec PART 13)
@@ -384,8 +962,17 @@ async function hydrateWorkChecklistFromServer(force = false) {
 function _looksLikeChecklistCommand(text) {
   const t = String(text || "").toLowerCase();
   if (!t) return false;
+  if (detectImplicitChecklistMutation(text).detected) return true;
+  /* Explicit reasoning-panel subject wins over ordinal+remove heuristics
+     ("remove the fourth panel" is panel.close, not checklist.remove). */
+  if (
+    /\b(?:remove|delete|close|clear|hide|dismiss|get\s+rid\s+of)\b/.test(t) &&
+    /\b(?:reasoning\s+(?:panel|tab|space|lane|page)s?|panels?|tabs?|reasoning\s+space|reasoning\s+lane|reasoning)\b/.test(t)
+  ) {
+    return false;
+  }
   /* "remove/delete/mark/check ... item/task/bullet/checklist ..." */
-  if (/\b(?:remove|delete|cross\s+off|check\s+off|uncheck|mark)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)?\s*(?:and\s+(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)\s*)?(?:item|task|bullet|checklist|to[- ]?do|todo|step)s?\b/.test(t)) {
+  if (/\b(?:remove|delete|cross\s+off|check\s+off|uncheck|tick|check|mark)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)?\s*(?:and\s+(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)\s*)?(?:item|task|bullet|checklist|to[- ]?do|todo|step)s?\b/.test(t)) {
     return true;
   }
   if (/\b(?:remove|delete)\s+items?\s+\d+/.test(t)) return true;
@@ -432,9 +1019,23 @@ const CHECKLIST_ORDINAL_WORD_RE_FRAG =
 const CHECKLIST_REMOVAL_VERB_RE =
   /\b(?:remove|delete|erase|take\s+out|get\s+rid\s+of|clear|drop)\b/i;
 const CHECKLIST_ADD_VERB_RE = /\b(?:add|append|create|insert)\b/i;
-const CHECKLIST_COMPLETE_VERB_RE =
-  /\b(?:complete|completed|done|finish|finished|mark|check\s+off|tick\s+off)\b/i;
+const CHECKLIST_COMPLETE_AUX_RE =
+  /\b(?:complete|completed|finish|finished|check\s+off|tick\s+off|mark\s+complete)\b/i;
+const CHECKLIST_UNCOMPLETE_VERB_RE =
+  /\b(?:uncheck|undo\s+complete|mark\b.*\bincomplete\b|move\b.*\bongoing\b|mark\b.*\bnot\s+done\b)/i;
+const CHECKLIST_STATUS_REVIEW_RE =
+  /\bcheck\s+(?:my|the|our|this|that)?\s*(?:check\s*list|checklist|to-?do(?:\s+list)?|list|plan)\b|\bcheck\s+(?:if|whether)\b|\bcheck\s+(?:what|how\s+many)\b/i;
 const CHECKLIST_UPDATE_VERB_RE = /\b(?:update|replace|rename|change)\b/i;
+
+function _isChecklistCompleteVerb(text, hasItemTarget) {
+  const latest = String(text || "");
+  if (!latest.trim() || CHECKLIST_STATUS_REVIEW_RE.test(latest)) return false;
+  if (CHECKLIST_COMPLETE_AUX_RE.test(latest)) return true;
+  if (/\bmark\b/i.test(latest) && /\b(?:complete|completed|done)\b/i.test(latest)) return true;
+  if (hasItemTarget && /\b(?:tick|check)\b/i.test(latest)) return true;
+  if (hasItemTarget && /\bdone\b/i.test(latest)) return true;
+  return false;
+}
 
 const CHECKLIST_NOUN_RE =
   /\b(?:checklist|check\s+list|to-?do(?:\s+list)?|task\s*list|item|items|task|tasks|bullet|bullets|row|rows|step|steps|sub-?item|sub-?items|sub-?bullet|sub-?bullets)\b/i;
@@ -563,11 +1164,7 @@ function _checklistDomState() {
     const completedItems = completedUl ? completedUl.querySelectorAll(":scope > li").length : 0;
     exists = ongoingItems + completedItems > 0;
     if (!exists) {
-      try {
-        const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-        const items = raw ? JSON.parse(raw) : [];
-        exists = Array.isArray(items) && items.length > 0;
-      } catch (_) {}
+      exists = readChecklistItemsFromStorage().length > 0;
     }
   } catch (_) {}
   return { exists, visible };
@@ -607,6 +1204,32 @@ function detectChecklistActionIntent(opts = {}) {
   };
   if (!latest) return { ...base, reason: "empty_text" };
 
+  if (
+    /\b(?:remove|delete|close|clear|hide|dismiss|get\s+rid\s+of)\b/.test(lower) &&
+    /\b(?:reasoning\s+(?:panel|tab|space|lane|page)s?|panels?|tabs?|reasoning\s+space|reasoning\s+lane|reasoning)\b/.test(lower)
+  ) {
+    return { ...base, reason: "explicit_reasoning_panel_close_subject" };
+  }
+
+  if (CHECKLIST_STATUS_REVIEW_RE.test(latest)) {
+    return { ...base, reason: "checklist_status_review" };
+  }
+
+  const implicitMutation = detectImplicitChecklistMutation(latest);
+  if (implicitMutation.detected) {
+    const primary = implicitMutation.mutations[0];
+    return {
+      ...base,
+      isChecklistAction: true,
+      action: primary?.action || "add",
+      indices: [],
+      scope: "top_level",
+      confidence: implicitMutation.count >= 2 ? 0.9 : 0.8,
+      reason: implicitMutation.reason,
+      detectedObjectType: "checklist_item",
+    };
+  }
+
   const nonChecklistMatch = CHECKLIST_NON_OBJECT_NOUN_RE.exec(latest);
   const checklistNounMatch = CHECKLIST_NOUN_RE.exec(latest);
   if (nonChecklistMatch && !checklistNounMatch) {
@@ -620,9 +1243,11 @@ function detectChecklistActionIntent(opts = {}) {
 
   const removalVerb = CHECKLIST_REMOVAL_VERB_RE.test(latest);
   const addVerb = CHECKLIST_ADD_VERB_RE.test(latest);
-  const completeVerb = CHECKLIST_COMPLETE_VERB_RE.test(latest);
-  const updateVerb = CHECKLIST_UPDATE_VERB_RE.test(latest);
   const indices = parseChecklistOrdinals(latest);
+  const hasItemTarget = indices.length >= 1;
+  const completeVerb = _isChecklistCompleteVerb(latest, hasItemTarget);
+  const uncompleteVerb = CHECKLIST_UNCOMPLETE_VERB_RE.test(latest);
+  const updateVerb = CHECKLIST_UPDATE_VERB_RE.test(latest);
   const wholeSection = CHECKLIST_WHOLE_SECTION_RE.test(latest);
   const subItem = CHECKLIST_SUB_ITEM_RE.test(latest);
   const scope = wholeSection ? "whole_section" : (subItem ? "sub_item" : (indices.length || checklistNounMatch ? "top_level" : "unknown"));
@@ -691,6 +1316,19 @@ function detectChecklistActionIntent(opts = {}) {
       scope,
       confidence: explicitChecklistWord ? 0.85 : 0.65,
       reason: explicitChecklistWord ? "add_verb_plus_checklist_word" : "add_verb_plus_checklist_noun_with_context",
+      detectedObjectType: "checklist_item"
+    };
+  }
+
+  if (uncompleteVerb && (explicitChecklistWord || (checklistNounMatch && hasContext) || indices.length >= 1)) {
+    return {
+      ...base,
+      isChecklistAction: true,
+      action: "uncomplete",
+      indices,
+      scope,
+      confidence: explicitChecklistWord ? 0.85 : 0.7,
+      reason: explicitChecklistWord ? "uncomplete_verb_plus_checklist_word" : "uncomplete_verb_plus_context",
       detectedObjectType: "checklist_item"
     };
   }
@@ -779,16 +1417,6 @@ function createWorkChecklistDragHandle() {
 const WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX = 26;
 let workChecklistDragSession = { id: "", startX: 0, lastX: 0 };
 
-function readChecklistItemsFromStorageSafe() {
-  try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 function writeChecklistItemsToStorageSafe(items) {
   try {
     _persistChecklistItemsToStorage(items);
@@ -867,11 +1495,8 @@ function persistWorkChecklistOrderFromDom() {
     .filter((id) => id && id !== WORK_CHECKLIST_UI_PLACEHOLDER_ID);
   const completedIds = [...completedUl.querySelectorAll(":scope > li")].map((el) => el.dataset.id).filter(Boolean);
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
-    const map = new Map(items.map((x) => [String(x.id), x]));
-    const persisted = stripChecklistPlaceholdersForPersist(items);
+    const map = new Map(readChecklistItemsFromStorage().map((x) => [String(x.id), x]));
+    const persisted = stripChecklistPlaceholdersForPersist([...map.values()]);
     const next = stripChecklistPlaceholdersForPersist(
       [...ongoingIds, ...completedIds].map((id) => map.get(id)).filter(Boolean)
     );
@@ -886,7 +1511,7 @@ function applyWorkChecklistCompletedCollapseFromStorage() {
   if (!pane || !btn || pane.classList.contains("vera-wm-checklist-pane--ongoing-only")) return;
   let collapsed = false;
   try {
-    collapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
+    collapsed = localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1";
   } catch (_) {}
   pane.classList.toggle("vera-wm-checklist-pane--completed-collapsed", collapsed);
   btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -903,7 +1528,7 @@ function wireWorkChecklistCompletedCollapse() {
     pane.classList.toggle("vera-wm-checklist-pane--completed-collapsed", collapsed);
     btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     try {
-      localStorage.setItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY, collapsed ? "1" : "0");
+      localStorage.setItem(_getActiveChecklistCollapsedStorageKey(), collapsed ? "1" : "0");
       queueWorkChecklistSyncToServer();
     } catch (_) {}
   });
@@ -1335,9 +1960,7 @@ function loadWorkChecklistItems() {
 
 function persistWorkChecklistToggle(id, done) {
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
+    let items = readChecklistItemsFromStorage();
     items = items.map((x) =>
       String(x.id) === id ? { ...x, done: Boolean(done) } : x
     );
@@ -1371,9 +1994,7 @@ function persistWorkChecklistToggleWithSubtree(id, done) {
   try {
     const sid = String(id || "");
     if (!sid) return;
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
+    let items = readChecklistItemsFromStorage();
 
     const target = items.find((x) => String(x?.id || "") === sid);
     const wantDone = Boolean(done);
@@ -1403,6 +2024,15 @@ function persistWorkChecklistToggleWithSubtree(id, done) {
       idsToToggle.has(String(x?.id || "")) ? { ...x, done: wantDone } : x
     );
     _persistChecklistItemsToStorage(items);
+    try {
+      window.veraUsageOnChecklistMutation?.({
+        op: wantDone ? "complete" : "uncomplete",
+        item_count: idsToToggle.size,
+        batch_size: idsToToggle.size,
+        source: "ui",
+        client_key: sid,
+      });
+    } catch (_) {}
   } catch (_) {}
 }
 
@@ -1412,9 +2042,7 @@ function persistWorkChecklistUpdateText(id, text) {
       if (commitWorkChecklistFromPlaceholderText(text)) loadWorkChecklistItems();
       return;
     }
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
+    let items = readChecklistItemsFromStorage();
     items = items.map((x) => (String(x.id) === id ? { ...x, text: String(text) } : x));
     _persistChecklistItemsToStorage(items);
   } catch (_) {}
@@ -1423,11 +2051,17 @@ function persistWorkChecklistUpdateText(id, text) {
 function persistWorkChecklistRemove(id) {
   try {
     if (String(id) === WORK_CHECKLIST_UI_PLACEHOLDER_ID) return;
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    let items = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(items)) items = [];
+    let items = readChecklistItemsFromStorage();
     items = items.filter((x) => String(x.id) !== id);
     _persistChecklistItemsToStorage(items);
+    try {
+      window.veraUsageOnChecklistMutation?.({
+        op: "delete",
+        item_count: 1,
+        source: "ui",
+        client_key: String(id || ""),
+      });
+    } catch (_) {}
   } catch (_) {}
 }
 
@@ -1440,6 +2074,7 @@ function persistWorkChecklistRemove(id) {
 ========================= */
 
 const WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS = 24;
+const WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT = 5;
 const WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS = 12000;
 let workChecklistSyncPreviewEditing = false;
 /** Bumps when reasoning finishes with a checklist-capable plan (see onDone). */
@@ -1602,11 +2237,7 @@ function veraDebugSyncStateSnapshot() {
   const previewPanel = document.getElementById("vera-wm-checklist-sync-preview");
   let checklistCount = 0;
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    const items = raw ? JSON.parse(raw) : [];
-    checklistCount = Array.isArray(items)
-      ? items.filter((x) => x && String(x.text || "").trim()).length
-      : 0;
+    checklistCount = readChecklistItemsFromStorage().filter((x) => x && String(x.text || "").trim()).length;
   } catch (_) {}
   const snapshot = {
     timestamp: new Date().toISOString(),
@@ -1685,25 +2316,126 @@ function describePlanSyncActiveContext() {
   };
 }
 
-function collectWorkChecklistOngoingTexts() {
-  const ul = document.getElementById("vera-wm-checklist-ongoing");
-  if (!ul) return [];
-  const out = [];
-  for (const li of ul.querySelectorAll(":scope > li")) {
-    const inp = li.querySelector(".vera-wm-checklist-task-input");
-    if (inp instanceof HTMLInputElement) {
-      const t = inp.value.trim();
-      if (t) out.push(t);
-    }
+function logChecklistPlanDebug(kind, payload) {
+  try {
+    console.info(`[checklist_plan_${kind}]`, payload || {});
+  } catch (_) {}
+}
+
+function buildChecklistPlanHierarchyFromStorage() {
+  let items = [];
+  try {
+    items = readChecklistItemsFromStorage();
+  } catch (_) {
+    items = [];
   }
-  return out;
+  const ongoing = items.filter(
+    (x) =>
+      x &&
+      !Boolean(x.done) &&
+      String(x.text || "").trim() &&
+      !isChecklistPlaceholderItem(x) &&
+      String(x.id || "") !== WORK_CHECKLIST_UI_PLACEHOLDER_ID
+  );
+  const mainById = new Map();
+  const orderedMain = [];
+  for (const row of ongoing) {
+    const pid =
+      row.parent_id == null || String(row.parent_id || "").trim() === ""
+        ? null
+        : String(row.parent_id);
+    if (pid) continue;
+    const id = String(row.id || "");
+    const main = {
+      id,
+      text: String(row.text || "").trim(),
+      done: false,
+      children: [],
+    };
+    mainById.set(id, main);
+    orderedMain.push(main);
+  }
+  for (const row of ongoing) {
+    const pid =
+      row.parent_id == null || String(row.parent_id || "").trim() === ""
+        ? null
+        : String(row.parent_id);
+    if (!pid || !mainById.has(pid)) continue;
+    mainById.get(pid).children.push({
+      id: String(row.id || ""),
+      text: String(row.text || "").trim(),
+      done: false,
+    });
+  }
+  const subitemCount = orderedMain.reduce((n, m) => n + (m.children?.length || 0), 0);
+  const hierarchyLog = orderedMain.map((m) => ({
+    parent_id: null,
+    text: m.text.slice(0, 80),
+    child_count: m.children.length,
+  }));
+  logChecklistPlanDebug("hierarchy", hierarchyLog);
+  return {
+    main_items: orderedMain,
+    main_count: orderedMain.length,
+    subitem_count: subitemCount,
+  };
+}
+
+function getChecklistPlanLimitMessage(mainCount) {
+  const n = Number(mainCount) || 0;
+  return `I can make a plan for up to ${WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT} main checklist items. You currently have ${n}. Please remove or group a few first.`;
+}
+
+function validateChecklistPlanRequest(planContext) {
+  const ctx =
+    planContext && Array.isArray(planContext.main_items)
+      ? planContext
+      : buildChecklistPlanHierarchyFromStorage();
+  logChecklistPlanDebug("build", {
+    main_count: ctx.main_count,
+    subitem_count: ctx.subitem_count,
+  });
+  logChecklistPlanDebug("context", {
+    main_items_preview: (ctx.main_items || []).slice(0, 8).map((m) => ({
+      text: m.text,
+      child_count: (m.children || []).length,
+      children: (m.children || []).slice(0, 4).map((c) => c.text),
+    })),
+  });
+  if (!ctx.main_count) {
+    return {
+      ok: false,
+      reason: "no_main_items",
+      message: "Add text to at least one ongoing item first.",
+      main_count: 0,
+    };
+  }
+  if (ctx.main_count > WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT) {
+    logChecklistPlanDebug("limit_exceeded", {
+      main_count: ctx.main_count,
+      limit: WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+    });
+    logChecklistPlanDebug("request_blocked", {
+      reason: "too_many_main_items",
+      main_count: ctx.main_count,
+    });
+    return {
+      ok: false,
+      reason: "too_many_main_items",
+      message: getChecklistPlanLimitMessage(ctx.main_count),
+      main_count: ctx.main_count,
+    };
+  }
+  return { ok: true, context: ctx };
+}
+
+function collectWorkChecklistOngoingTexts() {
+  return buildChecklistPlanHierarchyFromStorage().main_items.map((m) => m.text);
 }
 
 function workChecklistHasAnyStoredItems() {
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    const items = raw ? JSON.parse(raw) : [];
-    return Array.isArray(items) && items.length > 0;
+    return readChecklistItemsFromStorage().length > 0;
   } catch {
     return false;
   }
@@ -1718,7 +2450,7 @@ function syncWorkChecklistEraseButton() {
 function syncWorkChecklistHelpPlanButton() {
   const btn = document.getElementById("vera-wm-checklist-help-plan");
   if (!btn) return;
-  btn.disabled = collectWorkChecklistOngoingTexts().length === 0;
+  btn.disabled = buildChecklistPlanHierarchyFromStorage().main_count === 0;
 }
 
 function planSyncPanelGenerationInfo(panel) {
@@ -2067,11 +2799,22 @@ function buildChecklistProposalFromMarkdown(markdown) {
     full.match(
       /(?:^|\n)\s*(?:SYNC CHECKLIST|Checklist|Plan checklist|Tasks)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:#{1,6}\s+|[A-Z][A-Z0-9 \-/]{2,}:?\s*\n)|\s*$)/i
     );
-  const source = syncBlockMatch ? syncBlockMatch[1] : full;
   const hasExplicitSyncBlock = Boolean(syncBlockMatch);
-  const planishMarkdown = /\b(plan|schedule|outline|essay|draft|revise|revision|research|write|study|prepare|time\s*block|hour|deadline|due)\b/i.test(
-    full.slice(0, 5000)
-  );
+  const hasTimePlanBullets =
+    /\[\s*(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|[a-z]+)\s*-\s*(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|[a-z]+)\s*\]\s*:/i.test(
+      full
+    );
+  const planishMarkdown =
+    hasExplicitSyncBlock ||
+    /\b(?:study\s+plan|task\s+list|to-?do\s+list|plan\s+checklist|sync\s+checklist)\b/i.test(full.slice(0, 5000)) ||
+    (hasTimePlanBullets &&
+      /\b(plan|schedule|outline|deadline|time\s*block)\b/i.test(full.slice(0, 5000)));
+  const source = syncBlockMatch
+    ? syncBlockMatch[1]
+    : planishMarkdown && (hasExplicitSyncBlock || hasTimePlanBullets)
+      ? full
+      : "";
+  if (!source.trim()) return [];
   const rawLines = source.split("\n");
   const proposals = [];
   let currentTop = "";
@@ -2107,12 +2850,9 @@ function buildChecklistProposalFromMarkdown(markdown) {
         proposals.push({ depth: 1, text });
         subCountByTopText.set(topKey, cur + 1);
       } else {
-        // Preferred plan output has `[time-time]: task` top-level bullets, but
-        // real planning turns sometimes produce normal bullets. If the markdown
-        // is explicitly a sync block, or the saved pending turn is clearly a
-        // plan, accept practical top-level bullets so the Sync button does not
-        // disappear after a useful plan.
-        if (!hasExplicitSyncBlock && !timeTitlePattern.test(text) && !planishMarkdown) continue;
+        // Accept top-level bullets only from explicit sync blocks, time-titled
+        // plan rows, or clearly plan-shaped markdown — not general explanatory lists.
+        if (!hasExplicitSyncBlock && !timeTitlePattern.test(text)) continue;
         proposals.push({ depth: 0, text });
         currentTop = text;
         subCountByTopText.set(text.toLowerCase(), 0);
@@ -2128,7 +2868,7 @@ function buildChecklistProposalFromMarkdown(markdown) {
     seen.add(key);
     cleaned.push(row);
   }
-  if (!cleaned.length && planishMarkdown) {
+  if (!cleaned.length && planishMarkdown && hasExplicitSyncBlock) {
     const fallbackRows = [];
     const fallbackSeen = new Set();
     for (const raw of rawLines) {
@@ -2159,6 +2899,23 @@ function formatChecklistProposalText(rows) {
     .join("\n");
 }
 
+function materializeChecklistItemsFromProposalRows(rows) {
+  const out = [];
+  let parentId = null;
+  for (const row of rows) {
+    const text = normalizeChecklistRowText(row?.text);
+    if (!text || isChecklistPlaceholderLabel(text)) continue;
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (Number(row?.depth) > 0) {
+      out.push({ id, text, done: false, parent_id: parentId });
+    } else {
+      parentId = id;
+      out.push({ id, text, done: false, parent_id: null });
+    }
+  }
+  return out;
+}
+
 function parseChecklistProposalText(text) {
   const lines = String(text || "")
     .replace(/\r/g, "")
@@ -2173,26 +2930,7 @@ function parseChecklistProposalText(text) {
     if (!clean) continue;
     rows.push({ depth: indent >= 2 ? 1 : 0, text: clean });
   }
-  if (!rows.length) return [];
-  const out = [];
-  let parentId = null;
-  for (const row of rows) {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    if (row.depth === 0) parentId = id;
-    out.push({
-      id,
-      text: row.text,
-      done: false,
-      parent_id: row.depth > 0 ? parentId : null
-    });
-  }
-  out.push({
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    text: "",
-    done: false,
-    parent_id: null
-  });
-  return out;
+  return materializeChecklistItemsFromProposalRows(rows);
 }
 
 function setWorkChecklistSyncPreviewEditing(editing) {
@@ -2306,6 +3044,16 @@ function applyWorkChecklistSyncPreview() {
     workChecklistSyncPendingPlanMeta = null;
     syncWorkChecklistSyncPlanButton();
     flashWorkChecklistPlanHint("Checklist updated from plan.");
+    try {
+      window.veraUsageOnChecklistMutation?.({
+        op: "sync",
+        item_count: insertedCount,
+        batch_size: insertedCount,
+        source: "ui",
+        sync_kind: "plan",
+        client_key: `plan_apply_${workChecklistSyncConsumedPlanVersion}`,
+      });
+    } catch (_) {}
     return true;
   } catch (err) {
     logPlanSyncDebug("accept_apply", {
@@ -2330,6 +3078,11 @@ function eraseEntireWorkChecklist() {
     "Erase the entire checklist? All ongoing and completed items will be removed. This cannot be undone."
   );
   if (!ok) return;
+  const beforeErase = readChecklistItemsFromStorage();
+  const beforeEraseCount = beforeErase.filter((x) => String(x?.text || "").trim()).length;
+  if (beforeEraseCount > 0) {
+    armChecklistUndoSnapshotFromItems(beforeErase, "checklist.clear");
+  }
   try {
     _persistChecklistItemsToStorage([]);
     hideWorkChecklistSyncPreview();
@@ -2488,31 +3241,313 @@ function flashWorkChecklistPlanHint(message) {
   }, 4500);
 }
 
-function buildWorkChecklistHelpPlanUserMessage(lines) {
-  const cap = lines.slice(0, WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS);
-  const body = cap.map((t, i) => `${i + 1}. ${t}`).join("\n");
-  const more =
-    lines.length > WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS
-      ? `\n… (${lines.length - WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS} more items not shown)\n`
-      : "";
+function buildWorkChecklistHelpPlanUserMessage(planContext) {
+  const ctx =
+    planContext && Array.isArray(planContext.main_items)
+      ? planContext
+      : buildChecklistPlanHierarchyFromStorage();
+  const cap = (ctx.main_items || []).slice(0, WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT);
+  const bodyParts = [];
+  for (let i = 0; i < cap.length; i += 1) {
+    const main = cap[i];
+    bodyParts.push(`${i + 1}. ${main.text}`);
+    for (const child of main.children || []) {
+      bodyParts.push(`   - ${child.text}`);
+    }
+  }
+  const body = bodyParts.join("\n");
   return (
     workModePlanningTimeInjectionPrefix() +
     "[Planning help. Be detailed in your reasoning output. First provide a concise plan explanation and practical tips. Then include a dedicated markdown heading exactly: '## SYNC CHECKLIST'. Under that heading, output checklist-ready bullets only with strict format: top-level bullet must be [time-time]: specific task title, and each top-level task must have 1 to 3 indented substeps (never 0, never more than 3). Substeps should be concrete and short, like focused work chunks. Schedule only at or after CURRENT LOCAL TIME unless the user implies otherwise. In the SYNC CHECKLIST section do NOT include questions, question sections, or question marks.]\n\n" +
-    "Ongoing checklist (in order):\n" +
-    body +
-    more
+    "CHECKLIST HIERARCHY RULES:\n" +
+    "- Top-level items below are the MAIN tasks for scheduling (max one time block per main task).\n" +
+    "- Indented sub-items are details, constraints, or substeps of their parent — NOT separate main tasks.\n" +
+    "- Do NOT give sub-items their own top-level time blocks unless the user explicitly asked to split them out.\n" +
+    "- When planning, combine parent + sub-items in wording (e.g. 'English homework — Odyssey essay').\n\n" +
+    "Ongoing checklist (main items with sub-details):\n" +
+    body
   );
 }
 
 let workChecklistPlanRequestInFlight = false;
+let activeChecklistPlanContext = null;
+
+function resetActiveChecklistPlanContext() {
+  activeChecklistPlanContext = null;
+}
+
+function beginActiveChecklistPlanContext({ source, userText, isVoice } = {}) {
+  activeChecklistPlanContext = {
+    requested: true,
+    accepted: false,
+    rendered: false,
+    validationFailed: false,
+    suppressGenericUnavailable: false,
+    userFacingMessage: "",
+    isVoice: Boolean(isVoice),
+    source: String(source || ""),
+    userText: String(userText || "").slice(0, 240),
+  };
+  try {
+    console.info("[checklist_plan_requested]", {
+      source: activeChecklistPlanContext.source,
+      is_voice: activeChecklistPlanContext.isVoice,
+      raw_text: activeChecklistPlanContext.userText,
+    });
+  } catch (_) {}
+  return activeChecklistPlanContext;
+}
+
+function markChecklistPlanAccepted() {
+  if (!activeChecklistPlanContext) return;
+  activeChecklistPlanContext.accepted = true;
+  activeChecklistPlanContext.suppressGenericUnavailable = true;
+}
+
+function markChecklistPlanRendered() {
+  if (!activeChecklistPlanContext) return;
+  activeChecklistPlanContext.rendered = true;
+  activeChecklistPlanContext.suppressGenericUnavailable = true;
+}
+
+function markChecklistPlanValidationFailed(message) {
+  if (!activeChecklistPlanContext) return;
+  activeChecklistPlanContext.validationFailed = true;
+  activeChecklistPlanContext.suppressGenericUnavailable = true;
+  activeChecklistPlanContext.userFacingMessage = String(message || "").slice(0, 400);
+  try {
+    console.info("[checklist_plan_validation_failed]", {
+      message: activeChecklistPlanContext.userFacingMessage,
+      raw_text: activeChecklistPlanContext.userText,
+    });
+  } catch (_) {}
+}
+
+function shouldSuppressChecklistPlanGenericUnavailable() {
+  const ctx = activeChecklistPlanContext;
+  if (!ctx) return false;
+  if (ctx.validationFailed) return true;
+  if (ctx.rendered) return true;
+  if (ctx.accepted && ctx.suppressGenericUnavailable) return true;
+  return false;
+}
+
+/** Voice/typed checklist help-plan (same intent family as backend checklist.plan). */
+const WORK_CHECKLIST_PLAN_SHORTCUT_RE =
+  /(?:\b(?:help\s+me\s+)?(?:can\s+you\s+|could\s+you\s+|will\s+you\s+|please\s+)?(?:plan|planning|roadmap|prioriti[sz]e|break\s*(?:it\s*)?down|organi[sz]e|make\s+a\s+plan|create\s+a\s+plan)\b.{0,80}?\b(?:check\s*list|checklist|to-?do|todo|task\s*list|tasks?)\b|\bplan\s+(?:using|with|from)\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\b|\b(?:help\s+me\s+)?plan\s+my\s+(?:check\s*list|checklist|to-?do|todo|tasks?)\b|\buse\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\s+to\s+(?:make|create)\s+a\s+plan\b)/i;
 
 function isWorkChecklistPlanShortcutIntent(text) {
-  const t = String(text || "").toLowerCase().trim();
-  if (!t) return false;
-  const hasPlanVerb = /\b(plan|planning|roadmap|prioriti[sz]e|break\s*(it\s*)?down|organi[sz]e)\b/.test(t);
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  if (/\bsync\s+(?:the\s+)?(?:plan|checklist|list|reasoning(?:\s+plan)?)\b/i.test(raw)) return false;
+  if (WORK_CHECKLIST_PLAN_SHORTCUT_RE.test(raw)) return true;
+  const t = raw.toLowerCase();
+  const hasPlanVerb = /\b(plan|planning|roadmap|prioriti[sz]e|break\s*(it\s*)?down|organi[sz]e|make\s+a\s+plan|create\s+a\s+plan)\b/.test(t);
   const hasChecklistNoun = /\b(check\s*list|checklist|to-?do|todo|task list|tasks?)\b/.test(t);
-  const directPhrase = /\b(help me plan|can you help me plan)\b/.test(t);
-  return (hasPlanVerb && hasChecklistNoun) || (directPhrase && hasChecklistNoun);
+  return hasPlanVerb && hasChecklistNoun;
+}
+
+/** Defer the frontend plan shortcut when the utterance is compound (plan + music/timer/etc.). */
+function shouldDeferChecklistPlanShortcut(text) {
+  if (!isWorkChecklistPlanShortcutIntent(text)) return false;
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (typeof detectCompoundActionFamilies === "function") {
+    const compound = detectCompoundActionFamilies(t);
+    if (compound.isCompound) {
+      const families = Array.isArray(compound.families) ? compound.families : [];
+      const deferFamilies = families.filter((f) => f !== "checklist_plan" && f !== "reasoning");
+      if (!deferFamilies.length) {
+        return false;
+      }
+      logChecklistPlanDebug("shortcut_deferred", {
+        reason: "compound_action",
+        raw_text: t.slice(0, 240),
+        families,
+        defer_families: deferFamilies,
+      });
+      return true;
+    }
+  }
+  const hasConnector = /\b(?:and|then|also|plus|next)\b/i.test(t);
+  if (
+    hasConnector &&
+    /\b(?:play|pause|resume|skip|start|set|cancel|sync|switch|go\s+to|open|close|navigate|jump)\b/i.test(t)
+  ) {
+    logChecklistPlanDebug("shortcut_deferred", {
+      reason: "connector_with_secondary_action",
+      raw_text: t.slice(0, 240),
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Shared checklist.plan execution (Plan button, voice shortcut, planner ui_payload).
+ * Returns { ok, reason?, message? }.
+ */
+async function executeChecklistPlanAction({ signal, isVoice, source, userText } = {}) {
+  const raw = String(userText || "").trim();
+  const src = String(source || (isVoice ? "voice" : "typed"));
+  beginActiveChecklistPlanContext({ source: src, userText: raw, isVoice });
+  logChecklistPlanDebug("action_detected", { raw_text: raw.slice(0, 240), source: src });
+  if (!isVeraWorkModeOn()) {
+    resetActiveChecklistPlanContext();
+    return { ok: false, reason: "not_work_mode" };
+  }
+  if (workChecklistPlanRequestInFlight) {
+    resetActiveChecklistPlanContext();
+    return { ok: true, reason: "already_in_flight" };
+  }
+  const validation =
+    typeof validateChecklistPlanRequest === "function"
+      ? validateChecklistPlanRequest()
+      : { ok: collectWorkChecklistOngoingTexts().length > 0, context: null, message: "Add text to at least one ongoing item first." };
+  logChecklistPlanDebug("context", {
+    main_count: validation.context?.main_count ?? validation.main_count ?? null,
+    subitem_count: validation.context?.subitem_count ?? null,
+    ok: validation.ok,
+  });
+  if (!validation.ok) {
+    if (validation.reason === "too_many_main_items") {
+      logChecklistPlanDebug("limit_exceeded", {
+        main_count: validation.main_count,
+        limit: WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+      });
+    }
+    markChecklistPlanValidationFailed(validation.message);
+    flashWorkChecklistPlanHint(validation.message);
+    if (isVoice) {
+      finalizeWorkChecklistPlanBlockedTurn({
+        transcript: raw || "plan my checklist",
+        source: src,
+        isVoice: true,
+        message: validation.message,
+      });
+    } else {
+      resetActiveChecklistPlanContext();
+    }
+    return { ok: false, reason: validation.reason || "validation_failed", message: validation.message };
+  }
+  const planContext = validation.context;
+  const text = buildWorkChecklistHelpPlanUserMessage(planContext);
+  const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
+  workChecklistPlanRequestInFlight = true;
+  if (helpPlanBtn instanceof HTMLButtonElement) helpPlanBtn.disabled = true;
+  markChecklistPlanAccepted();
+  const ackText =
+    typeof getChecklistPlanStage1AckText === "function"
+      ? getChecklistPlanStage1AckText(raw || "plan my checklist")
+      : "Let me lay out a plan from your checklist.";
+  try {
+    console.info("[checklist_plan_ack_selected]", {
+      ack_text: ackText,
+      source: src,
+      is_voice: Boolean(isVoice),
+      main_count: planContext?.main_count ?? null,
+    });
+    console.info("[checklist_plan_reasoning_started]", {
+      source: src,
+      is_voice: Boolean(isVoice),
+      main_count: planContext?.main_count ?? null,
+    });
+  } catch (_) {}
+  logChecklistPlanDebug("action_start", { source: src, main_count: planContext?.main_count ?? null });
+  try {
+    if (isVoice && typeof beginChecklistPlanVoiceTurn === "function") {
+      await beginChecklistPlanVoiceTurn({
+        transcript: raw || "plan my checklist",
+        source: src,
+        ackText,
+        signal,
+      });
+    }
+    const reasoningScroll = getActiveReasoningScrollEl();
+    if (reasoningScroll instanceof HTMLElement) {
+      reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+    const turnContext = createWorkModeFrozenTurnContext({
+      userText: text,
+      source: isVoice ? "voice" : "keyboard",
+    });
+    await streamWorkModeReasoningComposer(text, signal, {
+      turnContext,
+      isChecklistPlanRequest: true,
+    });
+    const mdAfterHelp = getLatestWorkModeReasoningMarkdown();
+    if (mdAfterHelp && /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdAfterHelp)) {
+      markChecklistPlanRendered();
+      const rows = buildChecklistProposalFromMarkdown(mdAfterHelp);
+      const activeLaneId = getActiveDomReasoningLaneId();
+      const panelMeta = getPlanSyncPanelMetaForLane(activeLaneId);
+      workChecklistSyncPlanVersion += 1;
+      workChecklistSyncPendingMarkdown = mdAfterHelp;
+      workChecklistSyncPendingPlanMeta = {
+        ...panelMeta,
+        source: "checklist_help_plan",
+        created_at: Date.now(),
+      };
+      logPlanSyncDebug("created", {
+        lane_id: panelMeta.lane_id || null,
+        panel_id: panelMeta.panel_id || null,
+        panel_title: panelMeta.panel_title || "",
+        active_panel_id: panelMeta.active_panel_id || null,
+        is_plan_detected: true,
+        syncable: rows.length > 0,
+        has_sync_metadata: true,
+        sync_candidate_count: rows.length,
+        sync_candidates_preview: planSyncPreviewRows(rows),
+        reason_if_not_syncable: rows.length ? "" : "no_checklist_candidates_extracted",
+        response_kind: "sync_checklist_markdown",
+        route_kind: "checklist_help_plan",
+        source: src,
+      });
+      syncWorkChecklistSyncPlanButton();
+    }
+    logChecklistPlanDebug("action_done", {
+      success: true,
+      source: src,
+      panel_lane: getActiveDomReasoningLaneId?.() || null,
+    });
+    if (!isVoice) {
+      resetActiveChecklistPlanContext();
+    }
+    return { ok: true };
+  } catch (err) {
+    logChecklistPlanDebug("action_done", {
+      success: false,
+      source: src,
+      error: String(err?.message || err || "").slice(0, 200),
+    });
+    try {
+      console.info("[checklist_plan_failed]", {
+        source: src,
+        is_voice: Boolean(isVoice),
+        error: String(err?.message || err || "").slice(0, 200),
+      });
+    } catch (_) {}
+    const failMsg =
+      typeof CHECKLIST_PLAN_FAILURE_MESSAGE === "string"
+        ? CHECKLIST_PLAN_FAILURE_MESSAGE
+        : "I couldn't create the checklist plan. Please try again.";
+    if (isVoice && typeof finalizeChecklistPlanVoiceTurn === "function") {
+      finalizeChecklistPlanVoiceTurn({
+        transcript: raw || "plan my checklist",
+        source: src,
+        isVoice: true,
+        success: false,
+        message: failMsg,
+      });
+    } else {
+      flashWorkChecklistPlanHint(failMsg);
+      resetActiveChecklistPlanContext();
+    }
+    return { ok: false, reason: "planner_failed", message: failMsg };
+  } finally {
+    workChecklistPlanRequestInFlight = false;
+    syncWorkChecklistHelpPlanButton();
+  }
 }
 
 /** Voice/typed: sync checklist from latest reasoning plan (## SYNC CHECKLIST etc.). Checked before plan shortcut. */
@@ -2575,19 +3610,16 @@ function getChecklistDebugState() {
   let completedStoredCount = 0;
   let completedCollapsed = false;
   try {
-    const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY);
-    const items = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(items)) {
-      storedItemCount = items.length;
-      for (const it of items) {
-        if (!it || typeof it.text !== "string") continue;
-        if (String(it.text).trim()) nonBlankStoredCount += 1;
-        if (it.done) completedStoredCount += 1;
-      }
+    const items = readChecklistItemsFromStorage();
+    storedItemCount = items.length;
+    for (const it of items) {
+      if (!it || typeof it.text !== "string") continue;
+      if (String(it.text).trim()) nonBlankStoredCount += 1;
+      if (it.done) completedStoredCount += 1;
     }
   } catch (_) {}
   try {
-    completedCollapsed = localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1";
+    completedCollapsed = localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1";
   } catch (_) {}
   let ongoingDomCount = 0;
   let completedDomCount = 0;
@@ -2598,9 +3630,12 @@ function getChecklistDebugState() {
     completedDomCount = completedUl ? completedUl.querySelectorAll(":scope > li").length : 0;
   } catch (_) {}
   return {
-    storage_key: WORK_CHECKLIST_STORAGE_KEY,
-    completed_collapsed_key: WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
+    storage_key: _getActiveChecklistItemsStorageKey(),
+    completed_collapsed_key: _getActiveChecklistCollapsedStorageKey(),
+    account_storage_key: WORK_CHECKLIST_STORAGE_KEY,
+    anonymous_storage_key: getAnonymousChecklistStorageKey(),
     help_plan_max_items: WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS,
+    help_plan_max_main_items: WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
     sync_preview_max_chars: WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS,
     subitem_indent_threshold_px: WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX,
     stored_item_count: storedItemCount,
@@ -2646,7 +3681,6 @@ console.info("[checklist_supabase_sync_loaded]");
 
 const WORK_CHECKLIST_SUPABASE_UNSYNCED_KEY = "vera_wm_checklist_supabase_unsynced_v1";
 const WORK_CHECKLIST_SB_RETRY_INTERVAL_MS = 45000;
-let _checklistSbHydratePromise = null;
 let _checklistSbSaveInFlight = null;
 let _checklistSbRetryInFlight = false;
 let _checklistSbRetryTimer = null;
@@ -2672,7 +3706,15 @@ async function _checklistSbAwaitAuthToken(maxWaitMs = 4000) {
 
 function _readLocalChecklistBundleForSupabase() {
   return {
-    items: readChecklistItemsFromStorage(),
+    items: (() => {
+      try {
+        const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
+        const parsed = JSON.parse(raw);
+        return stripChecklistPlaceholdersForPersist(Array.isArray(parsed) ? parsed : []);
+      } catch (_) {
+        return [];
+      }
+    })(),
     completed_collapsed: localStorage.getItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY) === "1",
   };
 }
@@ -2796,8 +3838,8 @@ function isWorkChecklistSupabaseUnsynced() {
 }
 
 function _applyChecklistBundleToLocalForSupabase(items, completed_collapsed) {
+  if (!_checklistSbIsLoggedIn()) return false;
   const rows = stripChecklistPlaceholdersForPersist(Array.isArray(items) ? items : []);
-  console.info("[checklist_apply_local]", { item_count: rows.length });
   try {
     localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(rows));
     if (typeof completed_collapsed === "boolean") {
@@ -2811,6 +3853,7 @@ function _applyChecklistBundleToLocalForSupabase(items, completed_collapsed) {
   }
   loadWorkChecklistItems();
   applyWorkChecklistCompletedCollapseFromStorage();
+  console.info("[checklist_account_hydrate_done]", { item_count: rows.length });
   return true;
 }
 
@@ -2818,15 +3861,25 @@ async function syncWorkChecklistToSupabaseNow() {
   if (!_checklistSbIsLoggedIn()) return false;
   if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
 
+  const writeGen = _checklistAuthWriteGeneration;
   const token = await _checklistSbAwaitAuthToken();
-  if (!token) {
-    console.warn("[VERA][CHECKLIST] supabase PUT skipped — no auth token");
-    _markChecklistSupabaseUnsynced(true);
+  if (!token || writeGen !== _checklistAuthWriteGeneration || !_checklistSbIsLoggedIn()) {
+    if (token && _checklistSbIsLoggedIn()) _markChecklistSupabaseUnsynced(true);
     return false;
   }
 
   const bundle = _readLocalChecklistBundleForSupabase();
+  const itemCount = Array.isArray(bundle.items) ? bundle.items.length : 0;
+  try {
+    window.veraUsageOnChecklistMutation?.({
+      op: "sync_start",
+      sync_kind: "supabase",
+      item_count: itemCount,
+      source: "sync",
+    });
+  } catch (_) {}
   const run = async () => {
+    if (writeGen !== _checklistAuthWriteGeneration || !_checklistSbIsLoggedIn()) return false;
     try {
       const res = await authFetch(authApiUrl("/api/checklist"), {
         method: "PUT",
@@ -2837,6 +3890,17 @@ async function syncWorkChecklistToSupabaseNow() {
       if (!res.ok) {
         console.warn("[VERA][CHECKLIST] supabase PUT failed", data);
         _markChecklistSupabaseUnsynced(true);
+        try {
+          window.veraUsageOnChecklistMutation?.({
+            op: "sync_done",
+            sync_kind: "supabase",
+            item_count: itemCount,
+            source: "sync",
+            success: false,
+            error_code: String(data?.detail || res.status).slice(0, 64),
+            client_key: getSessionId(),
+          });
+        } catch (_) {}
         return false;
       }
       console.info("[checklist_put]", {
@@ -2846,10 +3910,31 @@ async function syncWorkChecklistToSupabaseNow() {
         auth_present: true,
       });
       _markChecklistSupabaseUnsynced(false);
+      try {
+        window.veraUsageOnChecklistMutation?.({
+          op: "sync_done",
+          sync_kind: "supabase",
+          item_count: itemCount,
+          source: "sync",
+          success: true,
+          client_key: getSessionId(),
+        });
+      } catch (_) {}
       return true;
     } catch (err) {
       console.warn("[VERA][CHECKLIST] supabase PUT error", err);
       _markChecklistSupabaseUnsynced(true);
+      try {
+        window.veraUsageOnChecklistMutation?.({
+          op: "sync_done",
+          sync_kind: "supabase",
+          item_count: itemCount,
+          source: "sync",
+          success: false,
+          error_code: String(err?.message || err || "sync_error").slice(0, 64),
+          client_key: getSessionId(),
+        });
+      } catch (_) {}
       return false;
     }
   };
@@ -2879,10 +3964,11 @@ async function hydrateChecklistMergeOnLogin() {
         return false;
       }
 
-      const local = _readLocalChecklistBundleForSupabase();
+      const local = readAnonymousChecklistBundle();
       console.info("[checklist_hydrate]", {
         phase: "request",
         local_count: local.items.length,
+        merge_source: "anonymous_local_snapshot",
       });
 
       const res = await authFetch(authApiUrl("/api/checklist/merge"), {
@@ -2932,6 +4018,12 @@ try {
   window.retryChecklistSupabaseSyncIfUnsynced = retryChecklistSupabaseSyncIfUnsynced;
   window.isWorkChecklistSupabaseUnsynced = isWorkChecklistSupabaseUnsynced;
   window.wireChecklistSupabaseRetryListeners = wireChecklistSupabaseRetryListeners;
+  window.clearChecklistAfterLogout = clearChecklistAfterLogout;
+  window.getAnonymousChecklistStorageKey = getAnonymousChecklistStorageKey;
+  window.shouldSuppressChecklistPlanGenericUnavailable = shouldSuppressChecklistPlanGenericUnavailable;
+  window.resetActiveChecklistPlanContext = resetActiveChecklistPlanContext;
+  window.markChecklistPlanValidationFailed = markChecklistPlanValidationFailed;
+  window.markChecklistPlanRendered = markChecklistPlanRendered;
   if (isWorkChecklistSupabaseUnsynced()) {
     _setChecklistSupabaseSyncStatus("unsynced");
   }

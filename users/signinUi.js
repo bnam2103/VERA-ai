@@ -116,7 +116,7 @@ function localBackendBase() {
     return "http://127.0.0.1:8000";
   }
   const remote = String(API_URL).replace(/\/$/, "");
-  return remote || "";
+  return remote || "https://vera-api.vera-api-ned.workers.dev";
 }
 
 function authApiBase() {
@@ -128,7 +128,7 @@ function authApiUrl(path) {
   const p = path.startsWith("/") ? path : `/${path}`;
   let base = localBackendBase();
   if (!base || !String(base).trim()) {
-    base = String(API_URL).replace(/\/$/, "");
+    base = String(API_URL).replace(/\/$/, "") || "https://vera-api.vera-api-ned.workers.dev";
   }
   const root = String(base).replace(/\/$/, "");
   return new URL(p, `${root}/`).href;
@@ -184,9 +184,9 @@ function setVeraActiveUserLabel(usernameOrNull) {
   el.removeAttribute("hidden");
 }
 
-async function refreshVeraActiveUserLabel() {
+async function refreshVeraActiveUserLabel(opts = {}) {
   if (typeof refreshSupabaseAccountLabel === "function") {
-    const supabaseHandled = await refreshSupabaseAccountLabel();
+    const supabaseHandled = await refreshSupabaseAccountLabel(opts);
     if (supabaseHandled) return;
   }
   const tabUser = sessionStorage.getItem(VERA_TAB_ACTIVE_USER_KEY) || "";
@@ -206,18 +206,22 @@ async function refreshVeraActiveUserLabel() {
   try {
     /* PART 7: include session_id so the backend returns THIS session's
        active user, not whatever was last set process-wide. */
+    console.info("[boot] user active start");
     const res = await fetch(
       authApiUrl(`/api/user/active?session_id=${encodeURIComponent(getSessionId())}`),
       { method: "GET" }
     );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      console.warn("[boot] user active fail", { status: res.status });
       setVeraActiveUserLabel(null);
       return;
     }
     const activeName = data.username != null && data.username !== "" ? String(data.username) : tabUser;
     setVeraActiveUserLabel(activeName || null);
-  } catch {
+    console.info("[boot] user active done");
+  } catch (err) {
+    console.error("[boot] user active fail", err);
     setVeraActiveUserLabel(tabUser || null);
   }
 }
