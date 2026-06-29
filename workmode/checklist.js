@@ -3133,7 +3133,11 @@ function isWorkChecklistPlanShortcutIntent(text) {
   const hasChecklistNoun = /\b(check\s*list|checklist|to-?do|todo|task list|tasks?)\b/.test(t);
   const directPhrase = /\b(help me plan|can you help me plan)\b/.test(t);
   const planUsingChecklist = /\bplan\s+(?:using|with|from)\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\b/.test(t);
-  return (hasPlanVerb && hasChecklistNoun) || (directPhrase && hasChecklistNoun) || planUsingChecklist;
+  const useChecklistToPlan =
+    /\buse\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\b.{0,48}\b(?:to\s+)?(?:make|create|build)\s+(?:a\s+)?plan\b/.test(
+      t
+    );
+  return (hasPlanVerb && hasChecklistNoun) || (directPhrase && hasChecklistNoun) || planUsingChecklist || useChecklistToPlan;
 }
 
 /** Defer the frontend plan shortcut when the utterance is compound (plan + music/timer/etc.). */
@@ -3142,25 +3146,61 @@ function shouldDeferChecklistPlanShortcut(text) {
   const t = String(text || "").trim();
   if (!t) return false;
   if (typeof detectCompoundActionFamilies === "function") {
-    const compound = detectCompoundActionFamilies(t);
-    if (compound.isCompound) {
-      logChecklistPlanDebug("shortcut_deferred", {
+    let compound;
+    try {
+      compound = detectCompoundActionFamilies(t);
+    } catch (err) {
+      try {
+        console.warn("[checklist_plan_route_blocked]", {
+          reason: "compound_detection_error",
+          raw_text: t.slice(0, 240),
+          error_message: String(err?.message || err || "").slice(0, 200),
+        });
+      } catch (_) {}
+      return false;
+    }
+    let families = Array.isArray(compound.families) ? [...compound.families] : [];
+    if (
+      typeof collapseFalseReasoningFamilyForChecklistPlan === "function" &&
+      families.includes("checklist_plan") &&
+      families.includes("reasoning")
+    ) {
+      families = collapseFalseReasoningFamilyForChecklistPlan(t, families);
+    }
+    const isRealCompound = families.length >= 2;
+    if (isRealCompound) {
+      logChecklistPlanDebug("route_blocked", {
         reason: "compound_action",
         raw_text: t.slice(0, 240),
-        families: compound.families || [],
+        families,
       });
+      try {
+        console.info("[checklist_plan_route_blocked]", {
+          reason: "compound_action",
+          raw_text: t.slice(0, 240),
+          families,
+        });
+      } catch (_) {}
       return true;
     }
   }
   const hasConnector = /\b(?:and|then|also|plus|next)\b/i.test(t);
   if (
     hasConnector &&
-    /\b(?:play|pause|resume|skip|start|set|cancel|sync|switch|go\s+to|open|close|navigate|jump)\b/i.test(t)
+    /\b(?:play|pause|resume|skip|start|set|cancel|sync|switch|go\s+to|open|close|navigate|jump|timer|music|lofi|lo-fi|rain\s+sounds?)\b/i.test(
+      t
+    )
   ) {
-    logChecklistPlanDebug("shortcut_deferred", {
+    logChecklistPlanDebug("route_blocked", {
       reason: "connector_with_secondary_action",
       raw_text: t.slice(0, 240),
     });
+    try {
+      console.info("[checklist_plan_route_blocked]", {
+        reason: "connector_with_secondary_action",
+        raw_text: t.slice(0, 240),
+      });
+    } catch (_) {}
     return true;
   }
   return false;
@@ -3174,6 +3214,9 @@ async function executeChecklistPlanAction({ signal, isVoice, source, userText } 
   const raw = String(userText || "").trim();
   const src = String(source || (isVoice ? "voice" : "typed"));
   logChecklistPlanDebug("action_detected", { raw_text: raw.slice(0, 240), source: src });
+  try {
+    console.info("[checklist_plan_executor_start]", { raw_text: raw.slice(0, 240), source: src });
+  } catch (_) {}
   if (!isVeraWorkModeOn()) return { ok: false, reason: "not_work_mode" };
   if (workChecklistPlanRequestInFlight) return { ok: true, reason: "already_in_flight" };
   const validation =
@@ -3253,6 +3296,9 @@ async function executeChecklistPlanAction({ signal, isVoice, source, userText } 
       source: src,
       panel_lane: getActiveDomReasoningLaneId?.() || null,
     });
+    try {
+      console.info("[checklist_plan_executor_done]", { success: true, source: src });
+    } catch (_) {}
     return { ok: true };
   } catch (err) {
     logChecklistPlanDebug("action_done", {
@@ -3260,6 +3306,13 @@ async function executeChecklistPlanAction({ signal, isVoice, source, userText } 
       source: src,
       error: String(err?.message || err || "").slice(0, 200),
     });
+    try {
+      console.info("[checklist_plan_executor_done]", {
+        success: false,
+        source: src,
+        error: String(err?.message || err || "").slice(0, 200),
+      });
+    } catch (_) {}
     throw err;
   } finally {
     workChecklistPlanRequestInFlight = false;
