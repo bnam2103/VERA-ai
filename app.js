@@ -9780,6 +9780,9 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
   const q = cleanWorkModeActionQueryUi(m[1]);
   if (!q || q.length < 2) return null;
   if (/^\d+$/.test(q)) return null;
+  const normalizedCandidate = _stripPanelSuffixFromTitleQuery(q);
+  if (_panelNavOrdinalTokenToVisual1(normalizedCandidate || q) != null) return null;
+  if (_isPanelNavigationOrdinalPhrase(s)) return null;
   const low = q.toLowerCase().trim();
   const stop = new Set([
     "sleep",
@@ -10749,9 +10752,116 @@ function _panelNavOrdinalTokenToVisual1(tok) {
   return null;
 }
 
+const _PANEL_NAV_VERB_PHRASE_RE =
+  "(?:go\\s+back\\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)";
+const _PANEL_NAV_POLITE_PREFIX_RE = "(?:can you|could you|please)\\s+";
+const _PANEL_NAV_ARTICLE_RE = "(?:the\\s+|a\\s+|my\\s+)?";
+const _PANEL_NAV_ORDINAL_TOKEN_RE =
+  "(first|second|third|fourth|fifth|sixth|seventh|eighth|one|two|three|four|five|six|seven|eight|\\d+)(?:st|nd|rd|th)?";
+const _PANEL_NAV_DEST_NOUN_RE = "(?:reasoning\\s+)?(?:panel|space|tab|page)";
+
+function _logPanelNavigationTargetParse(fields) {
+  try {
+    console.info("[panel_navigation_target_parse] " + JSON.stringify(fields));
+  } catch (_) {}
+}
+
+function _isPanelNavigationOrdinalPhrase(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  const low = s.toLowerCase();
+  if (
+    /\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(
+      low
+    )
+  ) {
+    return true;
+  }
+  if (/\b(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(low)) return true;
+  if (/\b\d+(?:st|nd|rd|th)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(low)) {
+    return true;
+  }
+  return false;
+}
+
+function _detectPanelNavigationOrdinalInText(text) {
+  const rawText = String(text || "").trim();
+  if (!rawText) return null;
+  const patterns = [
+    {
+      name: "polite_verb_ordinal_panel",
+      re: new RegExp(
+        "\\b" +
+          _PANEL_NAV_POLITE_PREFIX_RE +
+          _PANEL_NAV_VERB_PHRASE_RE +
+          "\\s+" +
+          _PANEL_NAV_ARTICLE_RE +
+          _PANEL_NAV_ORDINAL_TOKEN_RE +
+          "\\s+" +
+          _PANEL_NAV_DEST_NOUN_RE +
+          "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+    {
+      name: "verb_ordinal_panel",
+      re: new RegExp(
+        "\\b" +
+          _PANEL_NAV_VERB_PHRASE_RE +
+          "\\s+" +
+          _PANEL_NAV_ARTICLE_RE +
+          _PANEL_NAV_ORDINAL_TOKEN_RE +
+          "\\s+" +
+          _PANEL_NAV_DEST_NOUN_RE +
+          "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+    {
+      name: "panel_number",
+      re: /\b(?:panel|space|tab|page)\s*#?\s*(\d+)\b/i,
+      group: 1,
+    },
+  ];
+  for (const pat of patterns) {
+    const m = rawText.match(pat.re);
+    if (!m || !m[pat.group]) continue;
+    const token = m[pat.group];
+    const visual1 = _panelNavOrdinalTokenToVisual1(token);
+    if (!visual1) continue;
+    const ordinalValue = /^\d/.test(String(token)) ? null : String(token).toLowerCase();
+    const numericValue = /^\d/.test(String(token)) ? visual1 : null;
+    try {
+      console.info(
+        "[panel_navigation_ordinal_detected] " +
+          JSON.stringify({
+            raw_text: rawText.slice(0, 240),
+            normalized_text: rawText.toLowerCase().slice(0, 240),
+            matched_pattern: pat.name,
+            target_phrase: m[0].slice(0, 120),
+            ordinal_value: ordinalValue,
+            numeric_value: numericValue,
+            resolved_visual_index: visual1,
+          })
+      );
+    } catch (_) {}
+    return {
+      visualIndex1Based: visual1,
+      matchedPattern: pat.name,
+      targetPhrase: m[0],
+      ordinalValue,
+      numericValue,
+    };
+  }
+  return null;
+}
+
 function _stripPanelSuffixFromTitleQuery(q) {
   return String(q || "")
     .trim()
+    .replace(/^\s*the\s+/i, "")
     .replace(/\s+(?:reasoning\s+)?(?:panel|space|tab|page)\s*$/i, "")
     .trim();
 }
@@ -10824,22 +10934,27 @@ function parseWorkModePanelNavigationTarget(text) {
     };
   }
 
-  const ordNav =
-    s.match(
-      /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|\d+)(?:st|nd|rd|th)?\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i
-    ) ||
-    s.match(
-      /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|\d+)(?:st|nd|rd|th)?\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i
-    );
-  if (ordNav && ordNav[1]) {
-    const visual1 = _panelNavOrdinalTokenToVisual1(ordNav[1]);
-    if (visual1) return _resolvePanelNavigationSwitchFromVisual1(visual1);
-  }
-
-  const panelNum = s.match(/\b(?:panel|space|tab|page)\s*#?\s*(\d+)\b/i);
-  if (panelNum && panelNum[1]) {
-    const visual1 = parseInt(panelNum[1], 10);
-    if (Number.isFinite(visual1)) return _resolvePanelNavigationSwitchFromVisual1(visual1);
+  const ordHit = _detectPanelNavigationOrdinalInText(s);
+  if (ordHit?.visualIndex1Based) {
+    const resolved = _resolvePanelNavigationSwitchFromVisual1(ordHit.visualIndex1Based);
+    _logPanelNavigationTargetParse({
+      raw_text: s.slice(0, 240),
+      normalized_text: low.slice(0, 240),
+      matched_pattern: ordHit.matchedPattern,
+      target_phrase: String(ordHit.targetPhrase || "").slice(0, 120),
+      ordinal_value: ordHit.ordinalValue,
+      numeric_value: ordHit.numericValue,
+      title_candidate: null,
+      resolved_visual_index: ordHit.visualIndex1Based,
+      resolved_panel_label: resolved?.label ?? null,
+      fallback_used: false,
+    });
+    return {
+      ...resolved,
+      matchedPattern: ordHit.matchedPattern,
+      ordinalValue: ordHit.ordinalValue,
+      numericValue: ordHit.numericValue,
+    };
   }
 
   const titleQ = goToReasoningPanelQueryHeuristicUi(s);
@@ -10847,16 +10962,78 @@ function parseWorkModePanelNavigationTarget(text) {
     const normalizedTitleQ = _stripPanelSuffixFromTitleQuery(titleQ);
     const ordFromTitle = _panelNavOrdinalTokenToVisual1(normalizedTitleQ || titleQ);
     if (ordFromTitle) {
-      return _resolvePanelNavigationSwitchFromVisual1(ordFromTitle);
+      const resolved = _resolvePanelNavigationSwitchFromVisual1(ordFromTitle);
+      _logPanelNavigationTargetParse({
+        raw_text: s.slice(0, 240),
+        normalized_text: low.slice(0, 240),
+        matched_pattern: "title_query_ordinal_fallback",
+        target_phrase: String(titleQ).slice(0, 120),
+        ordinal_value: normalizedTitleQ || titleQ,
+        numeric_value: null,
+        title_candidate: String(titleQ).slice(0, 120),
+        resolved_visual_index: ordFromTitle,
+        resolved_panel_label: resolved?.label ?? null,
+        fallback_used: true,
+      });
+      return resolved;
     }
     if (typeof findReasoningPanelIndicesByTitleQuery === "function") {
     const hits = findReasoningPanelIndicesByTitleQuery(normalizedTitleQ || titleQ);
     if (hits.length === 1) {
-      return _resolvePanelNavigationSwitchFromVisual1(hits[0]);
+      const resolved = _resolvePanelNavigationSwitchFromVisual1(hits[0]);
+      _logPanelNavigationTargetParse({
+        raw_text: s.slice(0, 240),
+        normalized_text: low.slice(0, 240),
+        matched_pattern: "title_match",
+        target_phrase: String(titleQ).slice(0, 120),
+        ordinal_value: null,
+        numeric_value: null,
+        title_candidate: String(normalizedTitleQ || titleQ).slice(0, 120),
+        resolved_visual_index: hits[0],
+        resolved_panel_label: resolved?.label ?? null,
+        fallback_used: true,
+      });
+      return resolved;
     }
     if (hits.length > 1) {
+      _logPanelNavigationTargetParse({
+        raw_text: s.slice(0, 240),
+        normalized_text: low.slice(0, 240),
+        matched_pattern: "title_ambiguous",
+        target_phrase: String(titleQ).slice(0, 120),
+        ordinal_value: null,
+        numeric_value: null,
+        title_candidate: String(normalizedTitleQ || titleQ).slice(0, 120),
+        resolved_visual_index: null,
+        resolved_panel_label: null,
+        fallback_used: true,
+      });
       return { kind: "switch", titleQuery: titleQ, error: "ambiguous_title", hits };
     }
+    try {
+      console.info(
+        "[panel_navigation_title_fallback] " +
+          JSON.stringify({
+            raw_text: s.slice(0, 240),
+            normalized_text: low.slice(0, 240),
+            title_candidate: String(normalizedTitleQ || titleQ).slice(0, 120),
+            resolved_visual_index: null,
+            fallback_used: true,
+          })
+      );
+    } catch (_) {}
+    _logPanelNavigationTargetParse({
+      raw_text: s.slice(0, 240),
+      normalized_text: low.slice(0, 240),
+      matched_pattern: "title_not_found",
+      target_phrase: String(titleQ).slice(0, 120),
+      ordinal_value: null,
+      numeric_value: null,
+      title_candidate: String(normalizedTitleQ || titleQ).slice(0, 120),
+      resolved_visual_index: null,
+      resolved_panel_label: null,
+      fallback_used: true,
+    });
     return { kind: "switch", titleQuery: titleQ, error: "no_title_match" };
     }
   }
@@ -11148,10 +11325,14 @@ function maybeHandleWorkModePanelNavigationShortcut(text, opts = {}) {
       console.info("[panel_navigation_target_not_found]", {
         raw_text: raw.slice(0, 240),
         normalized_text: normalizedText.slice(0, 240),
+        matched_pattern: target.matchedPattern || exec?.error || null,
         target_phrase: String(targetPhrase).slice(0, 120),
-        target_visual_index: target.visualIndex1Based ?? null,
-        visible_panel_count: orderBefore.length,
-        visible_panel_labels: orderBefore.map((p) => p.label),
+        ordinal_value: target.ordinalValue ?? null,
+        numeric_value: target.numericValue ?? target.visualIndex1Based ?? null,
+        title_candidate: target.titleQuery ? String(target.titleQuery).slice(0, 120) : null,
+        resolved_visual_index: target.visualIndex1Based ?? null,
+        resolved_panel_label: target.label ?? null,
+        fallback_used: Boolean(target.titleQuery),
         exec_error: exec?.error || null,
         input_source: inputSource,
       });
