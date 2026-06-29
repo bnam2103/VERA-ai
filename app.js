@@ -2,7 +2,7 @@
    BUILD VERSION + DEBUG FLAGS — must run at parse time (top-level).
    window.__VERA_APP_VERSION__ is the canonical boot marker for cache verification.
 ========================= */
-window.__VERA_APP_VERSION__ = "128";
+window.__VERA_APP_VERSION__ = "129";
 window.__VERA_DEBUG_FLAGS__ = {
   reasoningUnavailableDebug: true,
   turnPolicyDebug: true
@@ -447,9 +447,19 @@ async function veraSurfaceLlmFetchFailure({
     } catch (_) {}
     return "credit_cap";
   }
+  let serverMsg = "";
+  if (response?.status != null) {
+    try {
+      const body = await response.clone().json();
+      const detail = body?.detail;
+      serverMsg = String(
+        typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : body?.message || ""
+      ).trim();
+    } catch (_) {}
+  }
   const rawErrorMessage =
     response?.status != null
-      ? `HTTP ${response.status}`
+      ? `HTTP ${response.status}${serverMsg ? `: ${serverMsg}` : ""}`
       : error
         ? String(error.message || error)
         : "";
@@ -457,6 +467,7 @@ async function veraSurfaceLlmFetchFailure({
     status: status || null,
     error_name: error?.name || null,
     error_message: error ? String(error.message || error).slice(0, 200) : null,
+    server_message: serverMsg.slice(0, 200) || null,
     ...(extra || {})
   });
   logCapabilityFallbackDebug({
@@ -474,6 +485,11 @@ async function veraSurfaceLlmFetchFailure({
     actionId: turnId,
     turn_id: turnId,
     asBubble: true,
+    http_status: status || null,
+    raw_error_message: rawErrorMessage,
+    error_name: error?.name || null,
+    error_message: error ? String(error.message || error).slice(0, 240) : serverMsg.slice(0, 240) || null,
+    error_stack: error?.stack ? String(error.stack).slice(0, 800) : null,
   });
   if (unavailable.suppressed) return "suppressed_reasoning_unavailable";
   return "llm_failure";
@@ -697,11 +713,53 @@ function markVoiceTurnReasoningStreamStarted(turnId, extra = {}) {
   if (_currentVoiceTurnRoutingGuard && tid && _currentVoiceTurnRoutingGuard.turn_id === tid) {
     _currentVoiceTurnRoutingGuard.reasoning_stream_started = true;
   }
+  if (tid && extra?.lane_id) {
+    setWorkModeReasoningFinalStatus({
+      turnId: tid,
+      laneId: extra.lane_id,
+      status: "generating",
+      reason: "stream_start",
+    });
+  }
   try {
     console.info("[reasoning_stream_request_start]", {
       turn_id: tid,
       ...extra,
     });
+  } catch (_) {}
+}
+
+function logReasoningStreamRequestStart(row = {}) {
+  try {
+    console.info("[reasoning_stream_request_start]", row);
+  } catch (_) {}
+}
+
+function logReasoningStreamResponseStatus(turnId, response, extra = {}) {
+  try {
+    console.info("[reasoning_stream_response_status]", {
+      turn_id: turnId != null ? String(turnId) : null,
+      status: response?.status ?? null,
+      ok: Boolean(response?.ok),
+      content_type: response?.headers?.get?.("content-type") || null,
+      ...extra,
+    });
+  } catch (_) {}
+}
+
+function logReasoningStreamNdjsonChunk(turnId, type, extra = {}) {
+  try {
+    console.info("[reasoning_stream_ndjson_chunk]", {
+      turn_id: turnId != null ? String(turnId) : null,
+      type: String(type || ""),
+      ...extra,
+    });
+  } catch (_) {}
+}
+
+function logWorkModeReasoningRouteSelected(row = {}) {
+  try {
+    console.info("[workmode_reasoning_route_selected]", row);
   } catch (_) {}
 }
 
@@ -757,11 +815,22 @@ function emitReasoningUnavailableMessage(opts = {}) {
     reasoning_stream_started_for_current_turn: Boolean(guard?.reasoning_stream_started),
     suppress_reason: suppress.reason,
     will_emit: willEmit,
-    as_bubble: asBubble
+    as_bubble: asBubble,
+    http_status: opts.http_status ?? null,
+    raw_error_message: opts.raw_error_message ?? null,
+    error_name: opts.error_name ?? null,
+    error_message: opts.error_message ?? null,
   };
   try {
     if (window.__VERA_DEBUG_FLAGS__?.reasoningUnavailableDebug !== false) {
       console.warn("[reasoning_unavailable_message_emit_attempt]", emitAttemptRow);
+      if (opts.error_stack) {
+        console.warn("[reasoning_unavailable_message_emit_attempt_stack]", {
+          source_function: sourceFunction,
+          turn_id: failureTurnId,
+          stack: String(opts.error_stack).slice(0, 1200),
+        });
+      }
     }
   } catch (_) {}
   if (suppress.suppress) {
@@ -792,11 +861,16 @@ function emitReasoningUnavailableMessage(opts = {}) {
     return { shown: false, suppressed: true, reason: suppress.reason, message: null };
   }
   try {
-    console.info("[reasoning_stream_request_failed]", {
+    console.error("[reasoning_stream_request_failed]", {
       cause,
       source_function: sourceFunction,
       turn_id: failureTurnId ?? null,
       feature: opts.feature || null,
+      http_status: opts.http_status ?? null,
+      error_name: opts.error_name ?? null,
+      error_message: opts.error_message ?? null,
+      raw_error_message: opts.raw_error_message ?? null,
+      stack: opts.error_stack ? String(opts.error_stack).slice(0, 1200) : null,
     });
   } catch (_) {}
   if (asBubble) {
@@ -8914,11 +8988,19 @@ function getWorkModeReasoningFinalStatus(prep) {
   const turnId = String(prep?.turnContext?.turn_id || "").trim();
   const laneId = String(prep?.turnContext?.turn_lane_id || prep?.reasoningLaneId || "").trim();
   let row = (turnId && workModeReasoningFinalStatusByTurnId.get(turnId)) || null;
-  if (!row && laneId) row = workModeReasoningFinalStatusByLaneId.get(laneId) || null;
+  if (!row && laneId) {
+    const laneRow = workModeReasoningFinalStatusByLaneId.get(laneId) || null;
+    if (laneRow && (!turnId || !laneRow.turn_id || laneRow.turn_id === turnId)) {
+      row = laneRow;
+    }
+  }
   if (!row && laneId) {
     const panel = getReasoningPanelElementByLaneId(laneId);
     const st = String(panel?.dataset?.generationStatus || "").trim();
-    if (st) row = { turn_id: turnId, lane_id: laneId, status: st, reason: "panel_dataset", at: 0 };
+    const generating = panel?.dataset?.generating === "1";
+    if (st && !generating) {
+      row = { turn_id: turnId, lane_id: laneId, status: st, reason: "panel_dataset", at: 0 };
+    }
   }
   return row;
 }
@@ -18125,6 +18207,26 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     }),
     { source: "maybePrepareWorkModeReasoning", lane_id: reasoningLaneId }
   );
+  const reasoningRouteTurnContextPolicy = buildTurnContextPolicy({
+    userText: streamUserRequestForReasoning,
+    inputSource: reasoningInputSource,
+    inWorkMode: true,
+    routeReasoning: true,
+    isReasoningStream: true,
+    explicitPanelTarget: explicitTargetPanel1Based,
+    targetLaneId: reasoningLaneId,
+    activeLaneId: reasoningContextScope.active_lane_id,
+    topicAnchor: priorThreadAnchor,
+  });
+  logWorkModeReasoningRouteSelected({
+    turn_id: turnContext?.turn_id || null,
+    raw_text: String(trimmed || effectiveUserText || "").slice(0, 240),
+    target_panel: explicitTargetPanel1Based,
+    cleaned_task: String(streamUserRequestForReasoning || "").slice(0, 240),
+    routeReasoning: true,
+    should_stream_reasoning: true,
+    turn_context_policy: reasoningRouteTurnContextPolicy,
+  });
   const lanePriorOnTarget = getWorkModeLanePriorUserRequest(reasoningLaneId);
   const useGlobalPriorAnchor = !(
     reasoningContextScope.explicit_panel_target &&
@@ -18450,18 +18552,32 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           status: sr.status
         });
       } else {
+        const streamBody = {
+          session_id: getSessionId(),
+          text: streamReasoningText,
+          lane_id: laneId,
+          work_mode_lane_client_context: modelPrep.laneClientContext || "",
+          voice_to_panel_context: modelPrep.voiceToPanelContext || null,
+          turn_context_policy: modelPrep.turnContextPolicy || null
+        };
+        logReasoningStreamRequestStart({
+          turn_id: turnContext?.turn_id || null,
+          url: `${API_URL}/work_mode/reasoning_stream`,
+          target_panel: explicitTargetPanel1Based ?? null,
+          body_keys: Object.keys(streamBody),
+          has_turn_context_policy: streamBody.turn_context_policy != null,
+          lane_id: laneId,
+          source: opts?.__reasoningStreamSource || "maybePrepareWorkModeReasoning",
+        });
         sr = await authFetch(`${API_URL}/work_mode/reasoning_stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            session_id: getSessionId(),
-            text: streamReasoningText,
-            lane_id: laneId,
-            work_mode_lane_client_context: modelPrep.laneClientContext || "",
-            voice_to_panel_context: modelPrep.voiceToPanelContext || null,
-            turn_context_policy: modelPrep.turnContextPolicy || null
-          }),
+          body: JSON.stringify(streamBody),
           signal: laneAbortController.signal
+        });
+        logReasoningStreamResponseStatus(turnContext?.turn_id, sr, {
+          lane_id: laneId,
+          source: opts?.__reasoningStreamSource || "maybePrepareWorkModeReasoning",
         });
         if (!sr.ok || !sr.body) {
           safeReasoningLaneRelease("stream_http_error");
@@ -18477,6 +18593,15 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       if (reasoningUploadState) reasoningUploadState.failed = true;
       safeReasoningLaneRelease("fetch_throw");
       if (err?.name !== "AbortError") {
+        try {
+          console.error("[reasoning_stream_request_failed]", {
+            turn_id: turnContext?.turn_id || null,
+            error_name: err?.name || null,
+            error_message: String(err?.message || err || "").slice(0, 240),
+            stack: err?.stack ? String(err.stack).slice(0, 1200) : null,
+            source_function: "maybePrepareWorkModeReasoning.fetch",
+          });
+        } catch (_) {}
         void veraSurfaceLlmFetchFailure({
           feature: "reasoning_stream_throw",
           error: err,
@@ -18519,6 +18644,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             continue;
           }
           if (o.type === "error") {
+            logReasoningStreamNdjsonChunk(turnContext?.turn_id, "error", {
+              raw_error_message: String(o.message || "").slice(0, 240),
+              request_id: o.request_id || null,
+            });
             /* Suppress the "Reasoning is temporarily unavailable…" bubble
                on client-initiated cancellation (UI close button on the
                streaming panel, CANCEL button, programmatic ctl.abort()).
@@ -18559,6 +18688,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
               actionId: turnContext?.turn_id || null,
               turn_id: turnContext?.turn_id || null,
               asBubble: true,
+              raw_error_message: String(o.message || ""),
+              error_message: String(o.message || "").slice(0, 240),
             });
             break;
           }
@@ -18971,18 +19102,45 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
     });
   } catch (_) {}
   try {
+    const streamBody = {
+      session_id: getSessionId(),
+      text,
+      lane_id: laneId,
+      work_mode_lane_client_context: modelPrep.laneClientContext || "",
+      voice_to_panel_context: modelPrep.voiceToPanelContext || null,
+      turn_context_policy: modelPrep.turnContextPolicy || null
+    };
+    logWorkModeReasoningRouteSelected({
+      turn_id: turnContext?.turn_id || null,
+      raw_text: String(text || "").slice(0, 240),
+      target_panel: composerContextScope.target_panel ?? null,
+      cleaned_task: String(streamUserRequest || "").slice(0, 240),
+      routeReasoning: true,
+      should_stream_reasoning: true,
+      turn_context_policy: modelPrep.turnContextPolicy || null,
+    });
+    logReasoningStreamRequestStart({
+      turn_id: turnContext?.turn_id || null,
+      url: `${API_URL}/work_mode/reasoning_stream`,
+      target_panel: composerContextScope.target_panel ?? null,
+      body_keys: Object.keys(streamBody),
+      has_turn_context_policy: streamBody.turn_context_policy != null,
+      lane_id: laneId,
+      source: "streamWorkModeReasoningComposer",
+    });
+    markVoiceTurnReasoningStreamStarted(turnContext?.turn_id, {
+      lane_id: laneId,
+      source: "streamWorkModeReasoningComposer",
+    });
     const sr = await authFetch(`${API_URL}/work_mode/reasoning_stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: getSessionId(),
-        text,
-        lane_id: laneId,
-        work_mode_lane_client_context: modelPrep.laneClientContext || "",
-        voice_to_panel_context: modelPrep.voiceToPanelContext || null,
-        turn_context_policy: modelPrep.turnContextPolicy || null
-      }),
+      body: JSON.stringify(streamBody),
       signal: laneAbortController.signal
+    });
+    logReasoningStreamResponseStatus(turnContext?.turn_id, sr, {
+      lane_id: laneId,
+      source: "streamWorkModeReasoningComposer",
     });
     if (!sr.ok) {
       let msg = `Reasoning failed (${sr.status})`;
@@ -19033,7 +19191,34 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
           } catch {
             continue;
           }
+          if (o.type === "error") {
+            logReasoningStreamNdjsonChunk(turnContext?.turn_id, "error", {
+              raw_error_message: String(o.message || "").slice(0, 240),
+              request_id: o.request_id || null,
+            });
+            if (laneAbortController.signal.aborted) {
+              safeComposerLaneRelease("cancelled");
+              return;
+            }
+            emitReasoningUnavailableMessage({
+              cause: "reasoning_stream.error_chunk",
+              source_function: "streamWorkModeReasoningComposer.error_chunk",
+              feature: "llm_failure",
+              turn_id: turnContext?.turn_id || null,
+              asBubble: true,
+              raw_error_message: String(o.message || ""),
+              error_message: String(o.message || "").slice(0, 240),
+            });
+            safeComposerLaneRelease("stream_error_chunk");
+            return;
+          }
+          if (o.type === "done") {
+            logReasoningStreamNdjsonChunk(turnContext?.turn_id, "done", {
+              request_id: o.request_id || null,
+            });
+          }
           if (o.type === "summary" && o.text) {
+            logReasoningStreamNdjsonChunk(turnContext?.turn_id, "summary");
             summaryText = normalizeWorkModeReasoningSummary(String(o.text), laneLabel, {
               outputLaneIdx: laneIdx,
               focusLaneIdx: reasoningUserFocusLaneIdx
@@ -19043,6 +19228,7 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
             maybeReasoningScrollToLatest(scrollEl);
           }
           if (o.type === "markdown" && o.text) {
+            logReasoningStreamNdjsonChunk(turnContext?.turn_id, "markdown");
             if (!workModeTurnLaneGuard(turnContext, streamLaneId, "reasoning_chunk_append")) {
               continue;
             }
