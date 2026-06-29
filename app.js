@@ -10639,9 +10639,21 @@ function isExplicitWorkModePanelNavigationIntent(text) {
 }
 
 function _panelNavOrdinalTokenToVisual1(tok) {
-  const t = String(tok || "").toLowerCase().replace(/(?:st|nd|rd|th)$/i, "");
+  const t = String(tok || "").toLowerCase().trim();
+  if (!t) return null;
+  if (_REASONING_PANEL_ORD_MAP[t] != null) return _REASONING_PANEL_ORD_MAP[t];
+  if (/^\d+(?:st|nd|rd|th)$/i.test(t)) {
+    return parseInt(t.replace(/(?:st|nd|rd|th)$/i, ""), 10);
+  }
   if (/^\d+$/.test(t)) return parseInt(t, 10);
-  return _REASONING_PANEL_ORD_MAP[t] != null ? _REASONING_PANEL_ORD_MAP[t] : null;
+  return null;
+}
+
+function _stripPanelSuffixFromTitleQuery(q) {
+  return String(q || "")
+    .trim()
+    .replace(/\s+(?:reasoning\s+)?(?:panel|space|tab|page)\s*$/i, "")
+    .trim();
 }
 
 function _resolvePanelNavigationSwitchFromVisual1(visual1) {
@@ -10732,12 +10744,13 @@ function parseWorkModePanelNavigationTarget(text) {
 
   const titleQ = goToReasoningPanelQueryHeuristicUi(s);
   if (titleQ) {
-    const ordFromTitle = _panelNavOrdinalTokenToVisual1(titleQ);
+    const normalizedTitleQ = _stripPanelSuffixFromTitleQuery(titleQ);
+    const ordFromTitle = _panelNavOrdinalTokenToVisual1(normalizedTitleQ || titleQ);
     if (ordFromTitle) {
       return _resolvePanelNavigationSwitchFromVisual1(ordFromTitle);
     }
     if (typeof findReasoningPanelIndicesByTitleQuery === "function") {
-    const hits = findReasoningPanelIndicesByTitleQuery(titleQ);
+    const hits = findReasoningPanelIndicesByTitleQuery(normalizedTitleQ || titleQ);
     if (hits.length === 1) {
       return _resolvePanelNavigationSwitchFromVisual1(hits[0]);
     }
@@ -10849,6 +10862,8 @@ function maybeHandleWorkModePanelNavigationShortcut(text, opts = {}) {
   if (!raw) return false;
   const isVoice = Boolean(opts.isVoice);
   const source = opts.reason || opts.source || (isVoice ? "voice_panel_navigation" : "typed_panel_navigation");
+  const inputSource = isVoice ? "voice" : "typed";
+  const normalizedText = raw.toLowerCase();
 
   if (
     !isExplicitWorkModePanelNavigationIntent(raw) &&
@@ -10857,11 +10872,33 @@ function maybeHandleWorkModePanelNavigationShortcut(text, opts = {}) {
     return false;
   }
 
+  const orderBefore = (() => {
+    try {
+      return typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    } catch (_) {
+      return [];
+    }
+  })();
+  const activeBefore = (() => {
+    try {
+      const idx =
+        typeof getActiveReasoningLaneIndex === "function" ? getActiveReasoningLaneIndex() : null;
+      return orderBefore.find((p) => p.tabIndex === idx) || null;
+    } catch (_) {
+      return null;
+    }
+  })();
+
   try {
     console.info("[panel_navigation_detected]", {
       raw_text: raw.slice(0, 240),
+      normalized_text: normalizedText.slice(0, 240),
       source,
+      input_source: inputSource,
       is_voice: isVoice,
+      visible_panel_count: orderBefore.length,
+      visible_panel_labels: orderBefore.map((p) => p.label),
+      active_before: activeBefore?.label || null,
     });
   } catch (_) {}
 
@@ -10882,13 +10919,7 @@ function maybeHandleWorkModePanelNavigationShortcut(text, opts = {}) {
       return false;
     }
   })();
-  const hasPanels = (() => {
-    try {
-      return getReasoningPanelOrder().length > 0;
-    } catch (_) {
-      return false;
-    }
-  })();
+  const hasPanels = orderBefore.length > 0;
 
   if (!gatePassed && !hasPanels && !_REASONING_PANEL_IMPERATIVE_RE.test(raw)) {
     return false;
@@ -10905,6 +10936,26 @@ function maybeHandleWorkModePanelNavigationShortcut(text, opts = {}) {
     return false;
   }
 
+  const targetPhrase =
+    target.titleQuery ||
+    (Number.isFinite(target.visualIndex1Based) ? `panel ${target.visualIndex1Based}` : target.kind || "");
+
+  try {
+    console.info("[panel_navigation_target_resolved]", {
+      raw_text: raw.slice(0, 240),
+      normalized_text: normalizedText.slice(0, 240),
+      target_phrase: String(targetPhrase).slice(0, 120),
+      target_visual_index: target.visualIndex1Based ?? null,
+      visible_panel_count: orderBefore.length,
+      visible_panel_labels: orderBefore.map((p) => p.label),
+      resolved_panel_label: target.label ?? null,
+      active_before: activeBefore?.label || null,
+      input_source: inputSource,
+      target_kind: target.kind,
+      target_error: target.error || null,
+    });
+  } catch (_) {}
+
   try {
     console.info("[panel_navigation_blocked_reasoning]", {
       raw_text: raw.slice(0, 240),
@@ -10913,24 +10964,100 @@ function maybeHandleWorkModePanelNavigationShortcut(text, opts = {}) {
     });
   } catch (_) {}
 
+  const lifecycle = isVoice
+    ? finalizeReasoningCloseVoiceUserTurn(raw, {
+        source,
+        reason: source,
+        path: "panel-navigation-user",
+        isVoice: true,
+      })
+    : null;
+
   const exec = executeWorkModePanelNavigation(target);
   const reply = buildPanelNavigationVoiceReply(target, exec);
+
+  const orderAfter = (() => {
+    try {
+      return typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    } catch (_) {
+      return [];
+    }
+  })();
+  const activeAfter = (() => {
+    try {
+      const idx =
+        typeof getActiveReasoningLaneIndex === "function" ? getActiveReasoningLaneIndex() : null;
+      return orderAfter.find((p) => p.tabIndex === idx) || null;
+    } catch (_) {
+      return null;
+    }
+  })();
+
+  if (!exec?.ok) {
+    try {
+      console.info("[panel_navigation_target_not_found]", {
+        raw_text: raw.slice(0, 240),
+        normalized_text: normalizedText.slice(0, 240),
+        target_phrase: String(targetPhrase).slice(0, 120),
+        target_visual_index: target.visualIndex1Based ?? null,
+        visible_panel_count: orderBefore.length,
+        visible_panel_labels: orderBefore.map((p) => p.label),
+        exec_error: exec?.error || null,
+        input_source: inputSource,
+      });
+    } catch (_) {}
+  }
 
   try {
     console.info("[panel_navigation_dispatched]", {
       raw_text: raw.slice(0, 240),
+      normalized_text: normalizedText.slice(0, 240),
       target_kind: target.kind,
-      visual_index: target.visualIndex1Based ?? null,
+      target_visual_index: target.visualIndex1Based ?? null,
+      resolved_panel_label: exec?.label || target.label || null,
+      active_before: activeBefore?.label || null,
+      active_after: activeAfter?.label || null,
       exec_ok: exec?.ok,
       reply_preview: reply.slice(0, 120),
+      input_source: inputSource,
+      should_resume_listening: Boolean(lifecycle?.shouldResumeListening),
+      transcript_rendered: Boolean(lifecycle?.userBubbleFinalized),
     });
   } catch (_) {}
+
+  if (isVoice && lifecycle) {
+    try {
+      console.info("[panel_navigation_voice_lifecycle_preserved]", {
+        raw_text: raw.slice(0, 240),
+        input_source: inputSource,
+        should_resume_listening: Boolean(lifecycle.shouldResumeListening),
+        transcript_rendered: Boolean(lifecycle.userBubbleFinalized),
+      });
+      if (lifecycle.userBubbleFinalized) {
+        console.info("[panel_navigation_transcript_rendered]", {
+          raw_text: raw.slice(0, 240),
+          finalized_bubble_id: lifecycle.finalizedBubbleId,
+          input_source: inputSource,
+        });
+      }
+      if (lifecycle.shouldResumeListening) {
+        console.info("[panel_navigation_listening_resume]", {
+          raw_text: raw.slice(0, 240),
+          input_source: inputSource,
+        });
+      }
+    } catch (_) {}
+  }
 
   if (typeof renderReasoningCloseAssistantConfirmation === "function") {
     renderReasoningCloseAssistantConfirmation(reply, {
       source,
       isVoice,
       path: "panel-navigation",
+      lifecycle,
+      resumeListeningAfter: isVoice,
+      closeActionCompleted: Boolean(exec?.ok),
+      stage: "panel_navigation",
     });
   } else if (typeof addBubble === "function") {
     addBubble(reply, "vera", { path: "panel-navigation" });
@@ -16934,7 +17061,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
       const codeProblemWords =
         /\b(code|coding|program|debug|bug|error|exception|stack trace|traceback|refactor|compile|build|runtime|test failing|unit test|integration test|typescript|javascript|python|java|c\+\+|sql|api endpoint|null pointer|undefined)\b/;
-      const multiPart = /(\b(step by step|in detail|deep dive|from scratch)\b)|([,:;].+[,:;])/;
+      const multiPart = /\b(step\s+by\s+step|in\s+detail|deep\s+dive|from\s+scratch)\b/i;
       const writingTask =
         /\b(write|draft|compose|polish|rewrite)\b/.test(t) &&
         /\b(email|essay|script|speech|letter|cover letter|proposal|statement|outline)\b/.test(t);
@@ -16992,19 +17119,35 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     _routeDebugArtifactIntent = hasExplicitWorkArtifactIntent(trimmed);
     _routeDebugVentingSignals = looksLikePersonalStatementOrVenting(trimmed);
     const _isRequestShape = isLikelyRequestShape(trimmed);
+    const explicitWorkModeTarget =
+      Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel") ||
+      Boolean(opts && opts.__explicitPanelDestinationConsumed);
 
     /* Adjusted venting score: if the message has no request shape at all,
        declarative-personal status is even stronger evidence for veto. */
     const _adjustedVentingScore = _routeDebugVentingSignals.score + (_isRequestShape ? 0 : 1);
     const _adjustedIsVenting = _adjustedVentingScore >= 2;
+    let _routeDebugVentReasoningVeto = false;
+    let _blockedReasoningReason = null;
+
+    if (_adjustedIsVenting && !_routeDebugArtifactIntent.hasIntent && !explicitWorkModeTarget) {
+      try {
+        console.info("[voice_support_detected]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          venting_signals: _routeDebugVentingSignals.matched,
+          venting_score: _routeDebugVentingSignals.score,
+          adjusted_venting_score: _adjustedVentingScore,
+        });
+      } catch (_) {}
+    }
 
     let effectiveClassifyRoute = classifyRoute;
     const personalAdviceVeto =
       effectiveClassifyRoute === true &&
-      heuristicReasoning === false &&
       !forceActiveLaneReasoningContent &&
       _adjustedIsVenting &&
-      !_routeDebugArtifactIntent.hasIntent;
+      !_routeDebugArtifactIntent.hasIntent &&
+      !explicitWorkModeTarget;
     if (personalAdviceVeto) {
       _routeDebugPersonalAdviceVeto = true;
       effectiveClassifyRoute = false;
@@ -17041,6 +17184,56 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       : ((effectiveClassifyRoute || heuristicReasoning || forceActiveLaneReasoningContent) &&
          !taskFollowUpContinuing);
 
+    const ventBlocksReasoning =
+      !gateForcedReasoning &&
+      !forceActiveLaneReasoningContent &&
+      _adjustedIsVenting &&
+      !_routeDebugArtifactIntent.hasIntent &&
+      !explicitWorkModeTarget;
+    if (ventBlocksReasoning && routeReasoning) {
+      _routeDebugVentReasoningVeto = true;
+      _routeDebugPersonalAdviceVeto = true;
+      _blockedReasoningReason = "emotional_vent_no_task_intent";
+      routeReasoning = false;
+      effectiveClassifyRoute = false;
+      try {
+        console.info("[reasoning_gate_blocked_for_vent]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          blocked_reasoning_reason: _blockedReasoningReason,
+          heuristic_reasoning: Boolean(heuristicReasoning),
+          backend_classify_route: Boolean(classifyRoute),
+        });
+        console.info("[reasoning_gate_blocked]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          reason: _blockedReasoningReason,
+        });
+      } catch (_) {}
+    } else if (routeReasoning) {
+      try {
+        const _regexHits = [];
+        const _tGate = String(trimmed || "").toLowerCase();
+        if (/\b(step\s+by\s+step|in\s+detail|deep\s+dive|from\s+scratch)\b/i.test(_tGate)) {
+          _regexHits.push("complexity_cue");
+        }
+        if (_regexHits.length) {
+          console.info("[reasoning_gate_regex_match]", {
+            raw_text: String(trimmed || "").slice(0, 240),
+            matched: _regexHits,
+          });
+        }
+        console.info("[reasoning_gate_allowed]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          reason: gateForcedReasoning
+            ? (opts && opts.__reasoningGateReason) || "forced_reasoning_panel"
+            : heuristicReasoning
+              ? "heuristic_reasoning"
+              : effectiveClassifyRoute
+                ? "backend_classifier"
+                : "force_active_lane_followup",
+        });
+      } catch (_) {}
+    }
+
     if (gateForcedReasoning && !(effectiveClassifyRoute || heuristicReasoning)) {
       try {
         console.warn("[routing_override]", {
@@ -17063,8 +17256,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     if (gateForcedReasoning) {
       _routeDebugReason =
         (opts && opts.__reasoningGateReason) || "forced_reasoning_panel";
-    } else if (personalAdviceVeto) {
-      _routeDebugReason = "personal_statement_veto";
+    } else if (_routeDebugVentReasoningVeto || personalAdviceVeto) {
+      _routeDebugReason = "emotional_vent_no_task_intent";
     } else if (_routeDebugNewsLookupVeto) {
       _routeDebugReason = "news_lookup_veto";
     } else if (taskFollowUpContinuing) {
@@ -17107,7 +17300,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       backend_target_panel: classifyBackendTargetPanel,
       backend_source: classifyBackendSource,
       heuristic_reasoning: _routeDebugHeuristicReasoning,
-      personal_statement_veto: _routeDebugPersonalAdviceVeto,
+      personal_statement_veto: Boolean(_routeDebugPersonalAdviceVeto || _routeDebugVentReasoningVeto),
+      vent_reasoning_veto: Boolean(_routeDebugVentReasoningVeto),
+      blocked_reasoning_reason: _blockedReasoningReason,
       news_lookup_veto: _routeDebugNewsLookupVeto,
       venting_signals: _routeDebugVentingSignals.matched,
       venting_score: _routeDebugVentingSignals.score,
@@ -25020,15 +25215,6 @@ async function finalizeMainBrowserTranscript(text) {
     return;
   }
   if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "main-browser-asr", isVoice: true })) {
-    processing = false;
-    requestInFlight = false;
-    voiceUxTurn = null;
-    waveState = "idle";
-    setStatus("Ready", "idle");
-    updateMuteInputButton();
-    if (listeningMode === "continuous" && listening && !inputMuted) {
-      startListening();
-    }
     return;
   }
   /* PART 3: close-reasoning-panel client shortcut. Runs BEFORE /infer so
@@ -27132,11 +27318,6 @@ async function handleUtterance() {
         return;
       }
       if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
-        requestInFlight = false;
-        processing = false;
-        voiceUxTurn = null;
-        setStatus("Ready", "idle");
-        updateMuteInputButton();
         return;
       }
       if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
@@ -28347,8 +28528,6 @@ async function onPttClick() {
       return;
     }
     if (maybeHandleWorkModePanelNavigationShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
-      setStatus("Ready", "idle");
-      updateMuteInputButton();
       return;
     }
     if (maybeHandleCloseReasoningPanelShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
