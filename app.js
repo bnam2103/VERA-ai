@@ -11177,24 +11177,24 @@ function shouldDeferPanelOpenShortcutForMultiAction(text) {
   if (!isCompoundActionUtterance(s)) return false;
   const clauses = detectPanelShortcutClauses(s);
   const panelActions = clauses.filter(isSinglePanelShortcutActionClause);
-  if (panelActions.length >= 2 || _countDistinctPanelSubIntents(s) >= 2) {
-    try {
-      console.info(
-        "[panel_open_deferred_compound] " +
-          JSON.stringify({
-            raw_text: s.slice(0, 240),
-            normalized_text: s.toLowerCase().slice(0, 240),
-            is_compound: true,
-            route_selected: "backend_multi_action_planner",
-            reason: "compound_panel_actions",
-            clauses: clauses.map((c) => c.slice(0, 120)),
-            panel_action_clauses: panelActions.map((c) => c.slice(0, 120)),
-          })
-      );
-    } catch (_) {}
-    return true;
-  }
-  return false;
+  const compound = detectCompoundActionFamilies(s);
+  try {
+    console.info(
+      "[panel_open_deferred_compound] " +
+        JSON.stringify({
+          raw_text: s.slice(0, 240),
+          normalized_text: s.toLowerCase().slice(0, 240),
+          is_compound: true,
+          route_selected: "backend_multi_action_planner",
+          reason: compound.reason || "compound_action_utterance",
+          clauses: clauses.map((c) => c.slice(0, 120)),
+          panel_action_clauses: panelActions.map((c) => c.slice(0, 120)),
+          consumed_locally: false,
+          defer_to_backend: true,
+        })
+    );
+  } catch (_) {}
+  return true;
 }
 
 function maybeHandleWorkModePanelOpenShortcut(text, opts = {}) {
