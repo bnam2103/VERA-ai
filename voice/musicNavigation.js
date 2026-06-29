@@ -9,6 +9,8 @@ const MUSIC_NAV_ACTION_ID_TTL_MS = 30000;
 const MUSIC_NAV_SOURCE_DIRECTION_DEDUPE_MS = 450;
 const MUSIC_NAV_TIMESTAMP_FALLBACK_MS = 400;
 const FREE_MUSIC_ENDED_SUPPRESS_MS = 700;
+/** Per-request music transport (skip/volume) — survives NDJSON meta→done gap. */
+const MUSIC_TRANSPORT_ACTION_ID_TTL_MS = 30000;
 
 function musicNavigationDirectionLabel(delta) {
   return Number(delta) >= 0 ? "next" : "previous";
@@ -113,6 +115,8 @@ function isFreeMusicEndedNavigationSuppressed(state, nowMs) {
 }
 
 function buildMusicNavigationActionId(payload, data, op) {
+  const id = buildMusicTransportActionId(payload, data, op);
+  if (id) return id;
   const fromPayload =
     payload?.navigation_action_id ||
     payload?.action_plan_id ||
@@ -122,6 +126,69 @@ function buildMusicNavigationActionId(payload, data, op) {
   const base = String(fromPayload || "").trim();
   if (!base) return "";
   return `${base}:${String(op || "").trim()}`;
+}
+
+function ensureAppliedMusicTransportIds() {
+  if (typeof window === "undefined") return new Map();
+  if (!window.__veraAppliedMusicTransportIds || !(window.__veraAppliedMusicTransportIds instanceof Map)) {
+    window.__veraAppliedMusicTransportIds = new Map();
+  }
+  return window.__veraAppliedMusicTransportIds;
+}
+
+function pruneAppliedMusicTransportIds(nowMs) {
+  const store = ensureAppliedMusicTransportIds();
+  for (const [id, expiresAt] of store.entries()) {
+    if (nowMs >= expiresAt) store.delete(id);
+  }
+}
+
+function wasMusicTransportActionApplied(actionId, nowMs) {
+  const id = String(actionId || "").trim();
+  if (!id) return false;
+  const now = Number(nowMs) || 0;
+  pruneAppliedMusicTransportIds(now);
+  const expiresAt = ensureAppliedMusicTransportIds().get(id);
+  return Boolean(expiresAt && now < expiresAt);
+}
+
+function markMusicTransportActionApplied(actionId, nowMs) {
+  const id = String(actionId || "").trim();
+  if (!id) return;
+  const now = Number(nowMs) || 0;
+  pruneAppliedMusicTransportIds(now);
+  ensureAppliedMusicTransportIds().set(id, now + MUSIC_TRANSPORT_ACTION_ID_TTL_MS);
+}
+
+/**
+ * Stable per-turn id for music skip/volume dedupe across NDJSON meta, done,
+ * and finalize paths. Returns "" when no request/plan context (caller may
+ * fall back to short-window op dedupe).
+ */
+function buildMusicTransportActionId(payload, data, op) {
+  const opName = String(op || "").trim();
+  if (!opName) return "";
+  const req = String(
+    data?.request_id || data?.client_request_id || data?.requestId || ""
+  ).trim();
+  const planId = String(
+    payload?.navigation_action_id ||
+      payload?.action_id ||
+      payload?.action_plan_id ||
+      data?.action_plan_id ||
+      ""
+  ).trim();
+  const base = req || planId;
+  if (!base) return "";
+  const seqIdx = Number.isFinite(Number(payload?.planner_action_index))
+    ? Number(payload.planner_action_index)
+    : 0;
+  if (opName === "volume_delta") {
+    const rawDelta = Number((payload && payload.delta) || 0);
+    const dir = rawDelta > 0 ? "+1" : rawDelta < 0 ? "-1" : "0";
+    return `${base}:music_transport:volume_delta:${dir}:${seqIdx}`;
+  }
+  return `${base}:music_transport:${opName}:${seqIdx}`;
 }
 
 function wireMusicTransportButtonOnce(btn, buttonName, handler) {
@@ -150,5 +217,10 @@ if (typeof window !== "undefined") {
   window.isFreeMusicEndedNavigationSuppressed = isFreeMusicEndedNavigationSuppressed;
   window.logMusicNavigation = logMusicNavigation;
   window.buildMusicNavigationActionId = buildMusicNavigationActionId;
+  window.buildMusicTransportActionId = buildMusicTransportActionId;
+  window.ensureAppliedMusicTransportIds = ensureAppliedMusicTransportIds;
+  window.wasMusicTransportActionApplied = wasMusicTransportActionApplied;
+  window.markMusicTransportActionApplied = markMusicTransportActionApplied;
+  window.MUSIC_TRANSPORT_ACTION_ID_TTL_MS = MUSIC_TRANSPORT_ACTION_ID_TTL_MS;
   window.wireMusicTransportButtonOnce = wireMusicTransportButtonOnce;
 }

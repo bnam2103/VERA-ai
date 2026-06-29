@@ -19984,40 +19984,64 @@ function isRecentSameMusicPlay(payload, op) {
 }
 
 /**
- * Collapse NDJSON double ``applyActionPayload`` (finalize + first audio).
- * Applies to non-idempotent music controls only:
- *   - ``skip_next`` / ``skip_previous`` — each call advances/rewinds a track.
- *   - ``volume_delta`` — each call adds ``payload.delta`` to volume, so the
- *     double-dispatch path was actually doubling the user's "turn up / turn
- *     down the music" command (+10% per turn instead of +5%). Keyed by
- *     sign-of-delta so that "volume up then volume down" within the dedupe
- *     window still applies both directions.
- *
- * ``pause`` / ``resume`` are idempotent (calling pause on an already-paused
- * stream is a no-op) so we don't dedupe them.
- *
- * 900 ms window is short enough that legitimate consecutive commands still
- * fire — humans don't realistically issue the same transport command twice
- * within a second.
+ * Collapse duplicate music transport dispatch within one assistant turn.
+ * Uses per-request ``action_id`` (30s) when ``data.request_id`` is present
+ * so NDJSON ``meta`` (onPlayStart) + ``done``/finalize cannot double-skip.
+ * Falls back to a 900 ms op-key window when no request context (UI buttons).
  */
-function shouldApplyMusicTransportAction(payload, op) {
-  let key;
-  if (op === "skip_next" || op === "skip_previous") {
-    key = `music_transport:${op}`;
-  } else if (op === "volume_delta") {
-    const rawDelta = Number((payload && payload.delta) || 0);
-    if (!Number.isFinite(rawDelta) || rawDelta === 0) return true;
-    const dir = rawDelta > 0 ? "+1" : "-1";
-    key = `music_transport:volume_delta:${dir}`;
-  } else {
+function shouldApplyMusicTransportAction(payload, op, data = null) {
+  const opName = String(op || "").trim();
+  if (opName !== "skip_next" && opName !== "skip_previous" && opName !== "volume_delta") {
     return true;
   }
+  if (opName === "volume_delta") {
+    const rawDelta = Number((payload && payload.delta) || 0);
+    if (!Number.isFinite(rawDelta) || rawDelta === 0) return true;
+  }
   const now = performance.now();
+  const actionId =
+    typeof buildMusicTransportActionId === "function"
+      ? buildMusicTransportActionId(payload, data, opName)
+      : "";
+  if (actionId && typeof wasMusicTransportActionApplied === "function") {
+    if (wasMusicTransportActionApplied(actionId, now)) {
+      try {
+        console.info("[music_transport_duplicate_blocked]", {
+          action_name: opName,
+          action_id: actionId,
+          request_id: data?.request_id || data?.client_request_id || null,
+          source: data?.type || null,
+          frontend_prehandled: true,
+          backend_action_received: true,
+          apply_count: 2,
+        });
+      } catch (_) {}
+      if (opName === "skip_previous") {
+        console.log("[MUSIC][SKIP_PREV] dedupe-drop", { action_id: actionId, reason: "request_scoped" });
+      } else if (opName === "volume_delta") {
+        console.log("[MUSIC][VOLUME] dedupe-drop", {
+          action_id: actionId,
+          reason: "request_scoped",
+          delta: Number((payload && payload.delta) || 0),
+        });
+      }
+      return false;
+    }
+  }
+
+  let shortKey;
+  if (opName === "skip_next" || opName === "skip_previous") {
+    shortKey = `music_transport:${opName}`;
+  } else {
+    const rawDelta = Number((payload && payload.delta) || 0);
+    const dir = rawDelta > 0 ? "+1" : "-1";
+    shortKey = `music_transport:volume_delta:${dir}`;
+  }
   const prev = window.__veraMusicTransportDedupe;
-  if (prev && prev.key === key && now - prev.at < 900) {
-    if (op === "skip_previous") {
+  if (prev && prev.key === shortKey && now - prev.at < 900) {
+    if (opName === "skip_previous") {
       console.log("[MUSIC][SKIP_PREV] dedupe-drop", { delta_ms: Math.round(now - prev.at) });
-    } else if (op === "volume_delta") {
+    } else if (opName === "volume_delta") {
       console.log("[MUSIC][VOLUME] dedupe-drop", {
         delta_ms: Math.round(now - prev.at),
         delta: Number((payload && payload.delta) || 0),
@@ -20025,7 +20049,21 @@ function shouldApplyMusicTransportAction(payload, op) {
     }
     return false;
   }
-  window.__veraMusicTransportDedupe = { key, at: now };
+  window.__veraMusicTransportDedupe = { key: shortKey, at: now };
+  if (actionId && typeof markMusicTransportActionApplied === "function") {
+    markMusicTransportActionApplied(actionId, now);
+  }
+  try {
+    console.info("[music_transport_execute_once]", {
+      action_name: opName,
+      action_id: actionId || shortKey,
+      request_id: data?.request_id || data?.client_request_id || null,
+      source: data?.type || null,
+      frontend_prehandled: false,
+      backend_action_received: true,
+      apply_count: 1,
+    });
+  } catch (_) {}
   return true;
 }
 
@@ -21207,12 +21245,44 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
   }
   const transportProvider = resolveMusicTransportProvider(prefix, seqCtx);
   if (op === "skip_next" || op === "skip_previous") {
-    if (!shouldApplyMusicTransportAction(payload, op)) return;
+    try {
+      console.info("[music_transport_intent_detected]", {
+        raw_text: String(data?.transcript || data?.user_text || "").slice(0, 240),
+        action_name: op,
+        request_id: data?.request_id || null,
+        source: seqCtx?.source || data?.type || "music_control_payload",
+        player_mode: transportProvider === "builtin" ? "builtin" : "spotify",
+      });
+      console.info("[music_transport_backend_action_received]", {
+        action_name: op,
+        request_id: data?.request_id || null,
+        source: seqCtx?.source || data?.type || "music_control_payload",
+      });
+    } catch (_) {}
+    if (!shouldApplyMusicTransportAction(payload, op, data)) return;
     const delta = op === "skip_previous" ? -1 : 1;
     const actionId =
-      typeof buildMusicNavigationActionId === "function"
-        ? buildMusicNavigationActionId(payload, data, op)
-        : "";
+      typeof buildMusicTransportActionId === "function"
+        ? buildMusicTransportActionId(payload, data, op)
+        : typeof buildMusicNavigationActionId === "function"
+          ? buildMusicNavigationActionId(payload, data, op)
+          : "";
+    try {
+      console.info("[music_transport_apply_action_payload]", {
+        action_name: op,
+        action_id: actionId || null,
+        request_id: data?.request_id || null,
+        source: seqCtx?.source || data?.type || "music_control_payload",
+        player_mode: transportProvider === "builtin" ? "builtin" : "spotify",
+      });
+      console.info("[music_transport_frontend_execute]", {
+        action_name: op,
+        action_id: actionId || null,
+        request_id: data?.request_id || null,
+        source: seqCtx?.source || data?.type || "music_control_payload",
+        player_mode: transportProvider === "builtin" ? "builtin" : "spotify",
+      });
+    } catch (_) {}
     if (typeof logMusicNavigation === "function") {
       logMusicNavigation("payload", {
         action_id: actionId || null,
@@ -21291,7 +21361,7 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
     return { op, transportProvider: activeForResume };
   }
   if (op === "volume_delta") {
-    if (!shouldApplyMusicTransportAction(payload, op)) return;
+    if (!shouldApplyMusicTransportAction(payload, op, data)) return;
     const cur = typeof window.VeraSpotify?.getVolume === "function"
       ? window.VeraSpotify.getVolume()
       : spotifyGetVolume();
@@ -21625,6 +21695,34 @@ function _usageSkipFinalizeActionApply(payload, merged) {
   if (panelType === "checklist_control") return true;
   const planned = Array.isArray(merged?.action_payloads) ? merged.action_payloads.filter(Boolean) : [];
   if (planned.length >= 1) return true;
+  const op = String(payload?.op || "");
+  if (
+    panelType === "music_control" &&
+    (op === "skip_next" || op === "skip_previous" || op === "volume_delta")
+  ) {
+    const actionId =
+      typeof buildMusicTransportActionId === "function"
+        ? buildMusicTransportActionId(payload, merged, op)
+        : "";
+    if (
+      actionId &&
+      typeof wasMusicTransportActionApplied === "function" &&
+      wasMusicTransportActionApplied(actionId, performance.now())
+    ) {
+      try {
+        console.info("[music_transport_duplicate_blocked]", {
+          action_name: op,
+          action_id: actionId,
+          request_id: merged?.request_id || null,
+          source: "finalize_ndjson_streaming_reply",
+          frontend_prehandled: true,
+          backend_action_received: true,
+          apply_count: 2,
+        });
+      } catch (_) {}
+      return true;
+    }
+  }
   return false;
 }
 
@@ -22291,9 +22389,11 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   }
   const pay = merged?.action_payload;
   const op = pay?.op;
+  /* Music transport is applied once via applyNdjsonActionPayloadEvent (meta/done).
+     Do not pre-apply here — finalize used to double-skip when TTS lasted >900ms. */
   if (
     pay?.panel_type === "music_control" &&
-    (op === "skip_next" || op === "skip_previous" || op === "play_builtin")
+    op === "play_builtin"
   ) {
     applyActionPayload(merged);
   }
