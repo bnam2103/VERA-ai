@@ -259,6 +259,9 @@ function _wmpDetectActionType(segment) {
   ) {
     return "panel.select";
   }
+  if (/^(?:open(?:\s+up)?|create|make|add)\s+(?:(?:\d{1,2}|a|an|one|two|three|four|five|six|seven|eight)\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panels?|spaces?|tabs?|pages?)\b/i.test(s)) {
+    return "panel.open";
+  }
   if (/^(?:open|create|make|add|new)\s+(?:a\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(s)) {
     return "panel.open";
   }

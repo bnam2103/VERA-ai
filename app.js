@@ -9767,6 +9767,7 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
   const s = String(userText ?? "").trim();
   if (!s) return null;
   if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return null;
+  if (isPureWorkModePanelOpenRequest(s)) return null;
   const lowered = s.toLowerCase();
   let m = s.match(
     /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
@@ -10369,7 +10370,7 @@ function _connectorClauseCompoundDetection(text) {
 function _countDistinctPanelSubIntents(text) {
   const low = String(text || "").toLowerCase();
   let count = 0;
-  if (/\b(?:open|create|make|add)\s+(?:a|an|another|one\s+more|new)\s+(?:new\s+)?(?:reasoning\s+)?(?:panel|one)\b/.test(low)) {
+  if (parseWorkModePanelOpenRequest(text) || /\b(?:open|create|make|add)\s+(?:a|an|another|one\s+more|new)\s+(?:new\s+)?(?:reasoning\s+)?(?:panel|one)\b/.test(low)) {
     count += 1;
   }
   if (/\bclose\b[^.?!]{0,48}\bpanel\b/.test(low)) count += 1;
@@ -10397,6 +10398,7 @@ function isSinglePanelShortcutActionClause(clause) {
     return false;
   }
   if (_REASONING_PANEL_IMPERATIVE_RE.test(c)) return true;
+  if (parseWorkModePanelOpenRequest(c)) return true;
   if (/\bclose\b[^.?!]{0,48}\bpanel\b/i.test(c)) return true;
   if (isExplicitWorkModePanelNavigationIntent(c)) return true;
   return false;
@@ -10666,6 +10668,7 @@ try { window.shouldBlockExplicitPanelRouteForCompoundExecutable = shouldBlockExp
 function isExplicitWorkModePanelNavigationIntent(text) {
   const s = String(text ?? "").trim();
   if (!s) return false;
+  if (isPureWorkModePanelOpenRequest(s)) return false;
   if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return false;
   if (_REASONING_PANEL_PUT_RE.test(s)) return false;
   const low = s.toLowerCase();
@@ -11039,6 +11042,283 @@ function parseWorkModePanelNavigationTarget(text) {
   }
 
   return null;
+}
+
+const _PANEL_OPEN_VERB_PHRASE_RE = "(?:open(?:\\s+up)?|create|make|add)";
+const _PANEL_OPEN_POLITE_PREFIX_RE = "(?:can you|could you|please)\\s+";
+const _PANEL_OPEN_COUNT_TOKEN_RE =
+  "(\\d{1,2}|a|an|one|two|three|four|five|six|seven|eight)";
+const _PANEL_OPEN_DEST_NOUN_RE = "(?:reasoning\\s+)?(?:panels?|spaces?|tabs?|pages?|lanes?)";
+
+function _panelOpenCountTokenToNumber(tok) {
+  const t = String(tok || "").toLowerCase().trim();
+  if (!t) return 1;
+  if (t === "a" || t === "an") return 1;
+  if (_REASONING_PANEL_ORD_MAP[t] != null) return _REASONING_PANEL_ORD_MAP[t];
+  if (/^\d{1,2}$/.test(t)) {
+    const n = parseInt(t, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return null;
+}
+
+function _isPanelOpenDeicticOrReasoningTarget(text) {
+  const s = String(text || "").trim();
+  if (!s) return true;
+  if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return true;
+  if (_REASONING_PANEL_PUT_RE.test(s)) return true;
+  if (/\b(?:this|that|it|them)\b/i.test(s) && _REASONING_PANEL_IN_RE.test(s)) return true;
+  const low = s.toLowerCase();
+  if (
+    /\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|an?\s+explanation)\b/i.test(
+      low
+    ) &&
+    _REASONING_PANEL_IN_RE.test(s)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function parseWorkModePanelOpenRequest(text) {
+  const rawText = String(text || "").trim();
+  if (!rawText || _isPanelOpenDeicticOrReasoningTarget(rawText)) return null;
+  const patterns = [
+    {
+      name: "polite_verb_count_new_panel",
+      re: new RegExp(
+        "\\b" +
+          _PANEL_OPEN_POLITE_PREFIX_RE +
+          _PANEL_OPEN_VERB_PHRASE_RE +
+          "\\s+(?:" +
+          _PANEL_OPEN_COUNT_TOKEN_RE +
+          "\\s+)?(?:new\\s+)?" +
+          _PANEL_OPEN_DEST_NOUN_RE +
+          "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+    {
+      name: "verb_count_new_panel",
+      re: new RegExp(
+        "\\b" +
+          _PANEL_OPEN_VERB_PHRASE_RE +
+          "\\s+(?:" +
+          _PANEL_OPEN_COUNT_TOKEN_RE +
+          "\\s+)?(?:new\\s+)?" +
+          _PANEL_OPEN_DEST_NOUN_RE +
+          "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+    {
+      name: "new_count_panel",
+      re: new RegExp(
+        "\\bnew\\s+(?:" + _PANEL_OPEN_COUNT_TOKEN_RE + "\\s+)?" + _PANEL_OPEN_DEST_NOUN_RE + "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+  ];
+  for (const pat of patterns) {
+    const m = rawText.match(pat.re);
+    if (!m) continue;
+    const count = _panelOpenCountTokenToNumber(m[pat.group]);
+    if (!count) continue;
+    const optionalNewDetected = /\bnew\b/i.test(m[0]);
+    try {
+      console.info(
+        "[panel_open_parse_candidate] " +
+          JSON.stringify({
+            raw_text: rawText.slice(0, 240),
+            normalized_text: rawText.toLowerCase().slice(0, 240),
+            matched_pattern: pat.name,
+            count,
+            optional_new_detected: optionalNewDetected,
+            target_phrase: m[0].slice(0, 120),
+          })
+      );
+    } catch (_) {}
+    return {
+      count,
+      matchedPattern: pat.name,
+      targetPhrase: m[0],
+      optionalNewDetected,
+    };
+  }
+  return null;
+}
+
+function isPureWorkModePanelOpenRequest(text) {
+  return parseWorkModePanelOpenRequest(text) != null;
+}
+
+function buildPanelOpenVoiceReply(requested, allowed) {
+  const req = Math.max(1, Number(requested) || 1);
+  const allow = Math.max(0, Number(allowed) || 0);
+  if (allow <= 0) {
+    return `You already have the maximum of ${REASONING_TABS_MAX} reasoning spaces.`;
+  }
+  if (req > 3 && allow < req) {
+    return `I can open up to 3 reasoning panels at once, so I opened ${allow}.`;
+  }
+  if (allow < req) {
+    return `I opened ${allow} reasoning panel${allow === 1 ? "" : "s"}; that is all the room available.`;
+  }
+  if (allow === 1) return "Opening a new reasoning panel.";
+  return `Opening ${allow} new reasoning spaces.`;
+}
+
+function shouldDeferPanelOpenShortcutForMultiAction(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  if (!isCompoundActionUtterance(s)) return false;
+  const clauses = detectPanelShortcutClauses(s);
+  const panelActions = clauses.filter(isSinglePanelShortcutActionClause);
+  if (panelActions.length >= 2 || _countDistinctPanelSubIntents(s) >= 2) {
+    try {
+      console.info(
+        "[panel_open_deferred_compound] " +
+          JSON.stringify({
+            raw_text: s.slice(0, 240),
+            normalized_text: s.toLowerCase().slice(0, 240),
+            is_compound: true,
+            route_selected: "backend_multi_action_planner",
+            reason: "compound_panel_actions",
+            clauses: clauses.map((c) => c.slice(0, 120)),
+            panel_action_clauses: panelActions.map((c) => c.slice(0, 120)),
+          })
+      );
+    } catch (_) {}
+    return true;
+  }
+  return false;
+}
+
+function maybeHandleWorkModePanelOpenShortcut(text, opts = {}) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  const parsed = parseWorkModePanelOpenRequest(raw);
+  if (!parsed) {
+    if (
+      /\b(?:open|create|make|add)\b/i.test(raw) &&
+      /\b(?:panels?|spaces?|tabs?|pages?|lanes?)\b/i.test(raw) &&
+      !_isPanelOpenDeicticOrReasoningTarget(raw)
+    ) {
+      try {
+        console.info(
+          "[panel_open_missed_phrase] " +
+            JSON.stringify({
+              raw_text: raw.slice(0, 240),
+              normalized_text: raw.toLowerCase().slice(0, 240),
+              route_selected: "not_matched",
+              reason: "panel_open_shape_unparsed",
+            })
+        );
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  const isVoice = Boolean(opts.isVoice);
+  const source = opts.reason || opts.source || (isVoice ? "voice_panel_open" : "typed_panel_open");
+  const inputSource = isVoice ? "voice" : "typed";
+  const normalizedText = raw.toLowerCase();
+
+  if (shouldDeferPanelOpenShortcutForMultiAction(raw)) {
+    return false;
+  }
+
+  const orderBefore =
+    typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+  const cap = REASONING_TABS_MAX;
+  const current = orderBefore.length;
+  const requested = Math.max(1, Number(parsed.count) || 1);
+  const maxPerRequest = 3;
+  const allowed = Math.min(requested, maxPerRequest, Math.max(0, cap - current));
+
+  try {
+    console.info(
+      "[panel_open_count_resolved] " +
+        JSON.stringify({
+          raw_text: raw.slice(0, 240),
+          normalized_text: normalizedText.slice(0, 240),
+          matched_pattern: parsed.matchedPattern,
+          count: requested,
+          optional_new_detected: Boolean(parsed.optionalNewDetected),
+          allowed_count: allowed,
+          visible_panel_count: current,
+          route_selected: "local_panel_open_shortcut",
+        })
+    );
+  } catch (_) {}
+
+  const gatePassed = (() => {
+    try {
+      return Boolean(isVeraWorkModeOn()) && appModePrefix() === "vera";
+    } catch (_) {
+      return false;
+    }
+  })();
+  if (!gatePassed && current <= 0) {
+    return false;
+  }
+
+  const lifecycle = isVoice
+    ? finalizeReasoningCloseVoiceUserTurn(raw, {
+        source,
+        reason: source,
+        path: "panel-open-user",
+        isVoice: true,
+      })
+    : null;
+
+  let opened = 0;
+  if (typeof addReasoningTab === "function" && allowed > 0) {
+    for (let i = 0; i < allowed; i += 1) {
+      const panel = addReasoningTab({ source: "panel_open_shortcut" });
+      if (panel) opened += 1;
+    }
+  }
+
+  const reply = buildPanelOpenVoiceReply(requested, opened || allowed);
+
+  try {
+    console.info(
+      "[panel_open_shortcut_dispatched] " +
+        JSON.stringify({
+          raw_text: raw.slice(0, 240),
+          normalized_text: normalizedText.slice(0, 240),
+          matched_pattern: parsed.matchedPattern,
+          count: requested,
+          optional_new_detected: Boolean(parsed.optionalNewDetected),
+          opened_count: opened,
+          is_compound: false,
+          route_selected: "local_panel_open_shortcut",
+          reason: "pure_panel_open",
+          input_source: inputSource,
+          reply_preview: reply.slice(0, 120),
+        })
+    );
+  } catch (_) {}
+
+  if (typeof renderReasoningCloseAssistantConfirmation === "function") {
+    renderReasoningCloseAssistantConfirmation(reply, {
+      source,
+      isVoice,
+      path: "panel-open",
+      lifecycle,
+      resumeListeningAfter: isVoice,
+      closeActionCompleted: opened > 0,
+      stage: "panel_open",
+    });
+  } else if (typeof addBubble === "function") {
+    addBubble(reply, "vera", { path: "panel-open" });
+  }
+
+  return true;
 }
 
 function shouldDeferPanelNavigationShortcutForMultiAction(text) {
@@ -16933,6 +17213,16 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       console.info("[panel_navigation_blocked_reasoning]", {
         raw_text: String(trimmed || "").slice(0, 240),
         path: "maybePrepareWorkModeReasoning",
+      });
+    } catch (_) {}
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
+  if (isPureWorkModePanelOpenRequest(trimmed)) {
+    try {
+      console.info("[panel_open_blocked_reasoning]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        path: "maybePrepareWorkModeReasoning",
+        route_selected: "panel_open_not_reasoning",
       });
     } catch (_) {}
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
@@ -26043,6 +26333,9 @@ async function finalizeMainBrowserTranscript(text) {
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed, { isVoice: true, source: "main-browser-asr" })) {
     return;
   }
+  if (maybeHandleWorkModePanelOpenShortcut(trimmed, { reason: "main-browser-asr", isVoice: true })) {
+    return;
+  }
   if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "main-browser-asr", isVoice: true })) {
     return;
   }
@@ -26814,6 +27107,9 @@ async function maybeRunInterruptionClientShortcuts(routedText, originalText) {
         handled: true
       });
       return true;
+    }
+    if (maybeHandleWorkModePanelOpenShortcut(routedText, { reason: "voice_interruption", isVoice: true })) {
+      return;
     }
     if (maybeHandleWorkModePanelNavigationShortcut(routedText, { reason: "voice_interruption", isVoice: true })) {
       logInterruptTranscriptDebug("routed_to_normal_user_turn", {
@@ -28159,6 +28455,9 @@ async function handleUtterance() {
         updateMuteInputButton();
         return;
       }
+      if (maybeHandleWorkModePanelOpenShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
+        return;
+      }
       if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
         return;
       }
@@ -28427,6 +28726,13 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
      is not a reasoning request; if we let it fall through, the user can see
      the generic "Reasoning is temporarily unavailable" bubble. */
   if (!fromQueue && !fromPanelQueue &&
+      maybeHandleWorkModePanelOpenShortcut(trimmed, {
+        reason: path || "work-typed-preflight",
+        isVoice: Boolean(opts?.isVoice),
+      })) {
+    return;
+  }
+  if (!fromQueue && !fromPanelQueue &&
       maybeHandleWorkModePanelNavigationShortcut(trimmed, {
         reason: path || "work-typed-preflight",
         isVoice: Boolean(opts?.isVoice),
@@ -28600,6 +28906,9 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     });
   }
 
+  if (maybeHandleWorkModePanelOpenShortcut(trimmed, { reason: path || "work-typed", isVoice: false })) {
+    return;
+  }
   if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: path || "work-typed", isVoice: false })) {
     return;
   }
@@ -29024,6 +29333,9 @@ async function sendTextMessage() {
       updateMuteInputButton();
       return;
     }
+    if (maybeHandleWorkModePanelOpenShortcut(text, { reason: "main-work-text-input", isVoice: false })) {
+      return;
+    }
     if (maybeHandleWorkModePanelNavigationShortcut(text, { reason: "main-work-text-input", isVoice: false })) {
       if (textInput) textInput.value = "";
       setStatus("Ready", "idle");
@@ -29416,6 +29728,9 @@ async function onPttClick() {
     if (await maybeHandleWorkChecklistPlanShortcut(text, { isVoice: true, source: "ptt-browser-asr" })) {
       setStatus("Ready", "idle");
       updateMuteInputButton();
+      return;
+    }
+    if (maybeHandleWorkModePanelOpenShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
       return;
     }
     if (maybeHandleWorkModePanelNavigationShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
