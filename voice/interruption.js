@@ -174,22 +174,8 @@ function logVeraInterruptDebug(payload, opts = {}) {
       if (nowMs - last < minMs) return;
       _veraInterruptDebugLastAt.set(opts.throttleKey, nowMs);
     }
-    const ev = payload?.event;
-    if (ev) {
-      const { event: _ev, tag: _tag, ...rest } = payload;
-      console.info("[interrupt_debug]", ev, rest);
-    } else {
-      console.info(`[${tag}]`, payload);
-    }
+    console.info(`[${tag}]`, payload);
   } catch (_) {}
-}
-
-/** Structured Whisper/interrupt chain logs (gated by VERA_DEBUG_INTERRUPT). */
-function logInterruptChain(event, fields, opts) {
-  logVeraInterruptDebug(
-    { tag: "interrupt_debug", event, ...(fields && typeof fields === "object" ? fields : {}) },
-    opts || {}
-  );
 }
 
 /* =========================
@@ -628,71 +614,30 @@ function interruptSpeech() {
     ...(extra || {})
   });
 
-  const asrMode = (function () {
-    try { return getVeraAsrMode(); } catch (_) { return null; }
-  })();
-
+  if (listeningMode !== "continuous") {
+    logVeraInterruptDebug(_dbgEntry({ outcome: "early_return", reasonIfReturn: "not_continuous" }));
+    return;
+  }
+  const useBrowserAsr = browserAsrPreferred();
+  if (!interruptRecording && !useBrowserAsr) {
+    logVeraInterruptDebug(_dbgEntry({
+      outcome: "early_return",
+      reasonIfReturn: "interrupt_recording_false_single_asr",
+      useBrowserAsr,
+    }));
+    return;
+  }
   const a = getAudioEl();
   const htmlPlaying = a && !a.paused;
   const webTtsPlaying =
     activeMainTtsBufferSources.length > 0 || mainTtsPlaybackActive;
-  const ttsPlaying = Boolean(htmlPlaying || webTtsPlaying);
-
-  logInterruptChain("interrupt_speech_entry", {
-    asrMode,
-    ttsPlaying,
-    interruptRecording,
-    hasInterruptRecorder: (function () {
-      try {
-        return Boolean(interruptRecorder);
-      } catch (_) {
-        return null;
-      }
-    })(),
-    recorderState: (function () {
-      try {
-        return interruptRecorder?.state ?? null;
-      } catch (_) {
-        return null;
-      }
-    })(),
-  });
-
-  if (listeningMode !== "continuous") {
-    logInterruptChain("interrupt_early_return", { reason: "not_continuous", asrMode });
-    logVeraInterruptDebug(_dbgEntry({ outcome: "early_return", reasonIfReturn: "not_continuous" }));
-    return;
-  }
-
-  if (!ttsPlaying) {
-    logInterruptChain("interrupt_early_return", { reason: "no_tts_playing", asrMode });
+  if (!htmlPlaying && !webTtsPlaying) {
     logVeraInterruptDebug(_dbgEntry({
       outcome: "early_return",
       reasonIfReturn: "no_tts_playing",
       htmlPlaying: Boolean(htmlPlaying),
       webTtsPlaying: Boolean(webTtsPlaying),
     }));
-    return;
-  }
-
-  const useBrowserAsr = browserAsrPreferred();
-  if (!interruptRecording && !useBrowserAsr) {
-    /* Whisper path: prearm may have finished after the sync TTS-start arm, or
-       the mic stream was stale — commit prearm / start recorder now. */
-    try { startInterruptCapture(); } catch (_) {}
-  }
-  if (!interruptRecording && !useBrowserAsr) {
-    logInterruptChain("interrupt_early_return", {
-      reason: "interrupt_recording_false_whisper_no_capture",
-      asrMode,
-    });
-    logVeraInterruptDebug(_dbgEntry({
-      outcome: "audio_only_cancel",
-      reasonIfReturn: "interrupt_recording_false_single_asr",
-      useBrowserAsr,
-    }));
-    _veraTtsCancelSource = "interrupt_speech_audio_only_no_capture";
-    cancelBrowserInterruptTtsOnly();
     return;
   }
 
@@ -779,9 +724,6 @@ try {
      * either, so this is purely additive. */
     window.resetVadFastStopState = resetVadFastStopState;
     window.isVeraInterruptDebugEnabled = isVeraInterruptDebugEnabled;
-    window.logInterruptChain = logInterruptChain;
-    window.evaluateWhisperInterruptTranscriptConfirmation =
-      evaluateWhisperInterruptTranscriptConfirmation;
   }
 } catch (_) {}
 
@@ -894,111 +836,6 @@ function classifyInterruptionTranscript(text) {
     normalizedCommandText: raw,
     leadingCancelStripped: false,
     reason: "normal_command"
-  };
-}
-
-/* =========================
-   WHISPER INTERRUPT TRANSCRIPT CONFIRMATION (stage 2)
-
-   VAD is candidate-only for Whisper barge-in. After Whisper ASR returns,
-   accept only transcripts that look like intentional speech/commands.
-========================= */
-
-const WHISPER_INTERRUPT_KEYWORD_RE =
-  /\b(wait|stop|hold\s+on|actually|no|cancel|pause)\b/i;
-
-const WHISPER_INTERRUPT_FILLER_ONLY_RE =
-  /^(?:uh+|um+|ah+|er+|hmm+|hm+|mm+|mhm+|uh[\s-]*huh|ahem|hem|tsk|psst|shh+|huh+|cough|clears?\s+throat)\.?$/i;
-
-const WHISPER_INTERRUPT_ARTIFACT_RES = [
-  /^\[.*\]$/i,
-  /^\(.*\)$/,
-  /^\.+$/,
-  /^,+$/,
-  /^(?:subtitle|caption)s?\b/i,
-  /^(?:thank\s*you|thanks)(?:\s+for\s+watching)?\.?$/i,
-  /^(?:you|the|a|an|it|oh|well|so|like|okay|ok)\.?$/i,
-];
-
-function normalizeWhisperInterruptTranscript(text) {
-  return String(text || "")
-    .replace(/\u200b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function countWhisperInterruptWords(text) {
-  const normalized = normalizeWhisperInterruptTranscript(text);
-  if (!normalized) return 0;
-  return normalized
-    .split(/\s+/)
-    .map((w) => w.replace(/^[^\w']+|[^\w']+$/g, ""))
-    .filter(Boolean)
-    .length;
-}
-
-/**
- * Second-stage confirmation for Whisper interrupt transcripts.
- * Returns { accepted, rejectReason, transcriptLen, wordCount }.
- */
-function evaluateWhisperInterruptTranscriptConfirmation(text) {
-  const normalized = normalizeWhisperInterruptTranscript(text);
-  const transcriptLen = normalized.length;
-  const wordCount = countWhisperInterruptWords(normalized);
-
-  if (!normalized) {
-    return {
-      accepted: false,
-      rejectReason: "empty_transcript",
-      transcriptLen,
-      wordCount,
-    };
-  }
-  if (transcriptLen < 3) {
-    return {
-      accepted: false,
-      rejectReason: "too_short",
-      transcriptLen,
-      wordCount,
-    };
-  }
-  if (/^[\s.,!?;:'"()[\]{}\-–—…]+$/u.test(normalized)) {
-    return {
-      accepted: false,
-      rejectReason: "likely_noise",
-      transcriptLen,
-      wordCount,
-    };
-  }
-  if (WHISPER_INTERRUPT_FILLER_ONLY_RE.test(normalized)) {
-    return {
-      accepted: false,
-      rejectReason: "likely_noise",
-      transcriptLen,
-      wordCount,
-    };
-  }
-  if (WHISPER_INTERRUPT_ARTIFACT_RES.some((re) => re.test(normalized))) {
-    return {
-      accepted: false,
-      rejectReason: "likely_noise",
-      transcriptLen,
-      wordCount,
-    };
-  }
-  if (wordCount >= 2 || WHISPER_INTERRUPT_KEYWORD_RE.test(normalized)) {
-    return {
-      accepted: true,
-      rejectReason: null,
-      transcriptLen,
-      wordCount,
-    };
-  }
-  return {
-    accepted: false,
-    rejectReason: "no_meaningful_words",
-    transcriptLen,
-    wordCount,
   };
 }
 
