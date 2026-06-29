@@ -515,6 +515,114 @@ function normalizeChecklistControlItems(items) {
   );
 }
 
+const CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY = "vera_checklist_undo_snapshot_v1";
+const CHECKLIST_UNDO_TTL_MS = 120000;
+
+function _checklistUndoItemTitles(items) {
+  return (items || [])
+    .map((row) => String(row?.text || "").trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function isChecklistUndoFollowupIntent(text) {
+  const q = String(text || "").trim().toLowerCase();
+  if (!q) return false;
+  if (
+    /^(?:the\s+)?(?:check\s*list|checklist|to-?do(?:\s+list)?|my\s+(?:check\s*list|checklist)|tasks?|list)\.?$/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(?:^|[\s,.!?;:])(?:you\s+)?(?:can\s+(?:you|u)\s+)?(?:please\s+)?(?:undo|restore|revert)\b/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:undo|restore|revert|bring\s+(?:it|them|that|those)\s+back|bring\s+back|put\s+(?:it|them|that|those)\s+back|get\s+(?:it|them|that|those)\s+back|restore\s+(?:the\s+)?(?:checklist|list|tasks?))\b/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function readChecklistUndoSnapshotFromStorage() {
+  try {
+    const raw = sessionStorage.getItem(CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const items = normalizeChecklistControlItems(parsed.items);
+    if (!items.length) return null;
+    const createdMs = Number(parsed.created_at_ms || parsed.created_at || 0);
+    if (createdMs > 0 && Date.now() - createdMs > CHECKLIST_UNDO_TTL_MS) {
+      sessionStorage.removeItem(CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY);
+      return null;
+    }
+    return {
+      snapshot_id: String(parsed.snapshot_id || ""),
+      items,
+      completed_collapsed: Boolean(parsed.completed_collapsed),
+      created_at_ms: createdMs || Date.now(),
+      source: String(parsed.source || "checklist.clear"),
+      valid: true,
+      expires_at_ms: Number(parsed.expires_at_ms || createdMs + CHECKLIST_UNDO_TTL_MS)
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function clearChecklistUndoSnapshot() {
+  try {
+    sessionStorage.removeItem(CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY);
+  } catch (_) {}
+}
+
+function armChecklistUndoSnapshotFromItems(items, source = "checklist.clear") {
+  const normalized = normalizeChecklistControlItems(items);
+  if (!normalized.length) return null;
+  const createdAtMs = Date.now();
+  const snapshot = {
+    snapshot_id: `cu-${createdAtMs}-${Math.abs(getSessionId?.()?.length || 0) % 100000}`,
+    items: normalized,
+    completed_collapsed:
+      localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1",
+    created_at_ms: createdAtMs,
+    source,
+    valid: true,
+    expires_at_ms: createdAtMs + CHECKLIST_UNDO_TTL_MS
+  };
+  try {
+    sessionStorage.setItem(CHECKLIST_UNDO_SNAPSHOT_SESSION_KEY, JSON.stringify(snapshot));
+  } catch (_) {
+    return null;
+  }
+  try {
+    console.info("[checklist_undo_snapshot_created]", {
+      session_id: String(getSessionId?.() || "").slice(0, 64),
+      snapshot_id: snapshot.snapshot_id,
+      snapshot_item_count: normalized.length,
+      snapshot_titles: _checklistUndoItemTitles(normalized),
+      created_at_ms: createdAtMs,
+      expires_at_ms: snapshot.expires_at_ms
+    });
+    console.info("[checklist_undo_context_set]", {
+      session_id: String(getSessionId?.() || "").slice(0, 64),
+      snapshot_id: snapshot.snapshot_id,
+      snapshot_item_count: normalized.length,
+      ttl_ms: CHECKLIST_UNDO_TTL_MS
+    });
+  } catch (_) {}
+  return snapshot;
+}
+
 /**
  * Apply backend checklist_control voice payload to canonical storage + UI.
  * @returns {{ ok: boolean, beforeCount: number, afterCount: number, reason: string }}
@@ -523,6 +631,19 @@ function applyChecklistControlVoicePayload(payload = {}) {
   const op = String(payload.op || payload.action || "checklist_control").trim();
   const before = readChecklistItemsFromStorage();
   const beforeCount = before.filter((x) => String(x?.text || "").trim()).length;
+  const isClearOp = /\bclear_all\b/i.test(op);
+  const isUndoOp = /\bundo_clear\b/i.test(op);
+  if (isClearOp && beforeCount > 0) {
+    try {
+      console.info("[checklist_clear_requested]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        mode: isVeraWorkModeOn?.() ? "work" : "flow",
+        item_count_before_clear: beforeCount,
+        item_titles_before_clear: _checklistUndoItemTitles(before)
+      });
+    } catch (_) {}
+    armChecklistUndoSnapshotFromItems(before, "checklist.clear");
+  }
   try {
     console.info("[checklist_client_mutation_start]", {
       action: op,
@@ -581,6 +702,25 @@ function applyChecklistControlVoicePayload(payload = {}) {
       ongoing_dom_count: ongoingDom
     });
   } catch (_) {}
+
+  if (isClearOp) {
+    try {
+      console.info("[checklist_cleared]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        item_count_after_clear: afterCount
+      });
+    } catch (_) {}
+  }
+  if (isUndoOp && afterCount > 0) {
+    clearChecklistUndoSnapshot();
+    try {
+      console.info("[checklist_undo_restored]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        restored_item_count: afterCount,
+        restored_titles: _checklistUndoItemTitles(after)
+      });
+    } catch (_) {}
+  }
 
   const changed = JSON.stringify(before) !== JSON.stringify(after);
   if (!changed && op && !/undo|clear/i.test(op)) {
@@ -2938,6 +3078,11 @@ function eraseEntireWorkChecklist() {
     "Erase the entire checklist? All ongoing and completed items will be removed. This cannot be undone."
   );
   if (!ok) return;
+  const beforeErase = readChecklistItemsFromStorage();
+  const beforeEraseCount = beforeErase.filter((x) => String(x?.text || "").trim()).length;
+  if (beforeEraseCount > 0) {
+    armChecklistUndoSnapshotFromItems(beforeErase, "checklist.clear");
+  }
   try {
     _persistChecklistItemsToStorage([]);
     hideWorkChecklistSyncPreview();
@@ -3125,6 +3270,67 @@ function buildWorkChecklistHelpPlanUserMessage(planContext) {
 }
 
 let workChecklistPlanRequestInFlight = false;
+let activeChecklistPlanContext = null;
+
+function resetActiveChecklistPlanContext() {
+  activeChecklistPlanContext = null;
+}
+
+function beginActiveChecklistPlanContext({ source, userText, isVoice } = {}) {
+  activeChecklistPlanContext = {
+    requested: true,
+    accepted: false,
+    rendered: false,
+    validationFailed: false,
+    suppressGenericUnavailable: false,
+    userFacingMessage: "",
+    isVoice: Boolean(isVoice),
+    source: String(source || ""),
+    userText: String(userText || "").slice(0, 240),
+  };
+  try {
+    console.info("[checklist_plan_requested]", {
+      source: activeChecklistPlanContext.source,
+      is_voice: activeChecklistPlanContext.isVoice,
+      raw_text: activeChecklistPlanContext.userText,
+    });
+  } catch (_) {}
+  return activeChecklistPlanContext;
+}
+
+function markChecklistPlanAccepted() {
+  if (!activeChecklistPlanContext) return;
+  activeChecklistPlanContext.accepted = true;
+  activeChecklistPlanContext.suppressGenericUnavailable = true;
+}
+
+function markChecklistPlanRendered() {
+  if (!activeChecklistPlanContext) return;
+  activeChecklistPlanContext.rendered = true;
+  activeChecklistPlanContext.suppressGenericUnavailable = true;
+}
+
+function markChecklistPlanValidationFailed(message) {
+  if (!activeChecklistPlanContext) return;
+  activeChecklistPlanContext.validationFailed = true;
+  activeChecklistPlanContext.suppressGenericUnavailable = true;
+  activeChecklistPlanContext.userFacingMessage = String(message || "").slice(0, 400);
+  try {
+    console.info("[checklist_plan_validation_failed]", {
+      message: activeChecklistPlanContext.userFacingMessage,
+      raw_text: activeChecklistPlanContext.userText,
+    });
+  } catch (_) {}
+}
+
+function shouldSuppressChecklistPlanGenericUnavailable() {
+  const ctx = activeChecklistPlanContext;
+  if (!ctx) return false;
+  if (ctx.validationFailed) return true;
+  if (ctx.rendered) return true;
+  if (ctx.accepted && ctx.suppressGenericUnavailable) return true;
+  return false;
+}
 
 /** Voice/typed checklist help-plan (same intent family as backend checklist.plan). */
 const WORK_CHECKLIST_PLAN_SHORTCUT_RE =
@@ -3184,9 +3390,16 @@ function shouldDeferChecklistPlanShortcut(text) {
 async function executeChecklistPlanAction({ signal, isVoice, source, userText } = {}) {
   const raw = String(userText || "").trim();
   const src = String(source || (isVoice ? "voice" : "typed"));
+  beginActiveChecklistPlanContext({ source: src, userText: raw, isVoice });
   logChecklistPlanDebug("action_detected", { raw_text: raw.slice(0, 240), source: src });
-  if (!isVeraWorkModeOn()) return { ok: false, reason: "not_work_mode" };
-  if (workChecklistPlanRequestInFlight) return { ok: true, reason: "already_in_flight" };
+  if (!isVeraWorkModeOn()) {
+    resetActiveChecklistPlanContext();
+    return { ok: false, reason: "not_work_mode" };
+  }
+  if (workChecklistPlanRequestInFlight) {
+    resetActiveChecklistPlanContext();
+    return { ok: true, reason: "already_in_flight" };
+  }
   const validation =
     typeof validateChecklistPlanRequest === "function"
       ? validateChecklistPlanRequest()
@@ -3203,6 +3416,7 @@ async function executeChecklistPlanAction({ signal, isVoice, source, userText } 
         limit: WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
       });
     }
+    markChecklistPlanValidationFailed(validation.message);
     flashWorkChecklistPlanHint(validation.message);
     if (isVoice) {
       finalizeWorkChecklistPlanBlockedTurn({
@@ -3211,6 +3425,8 @@ async function executeChecklistPlanAction({ signal, isVoice, source, userText } 
         isVoice: true,
         message: validation.message,
       });
+    } else {
+      resetActiveChecklistPlanContext();
     }
     return { ok: false, reason: validation.reason || "validation_failed", message: validation.message };
   }
@@ -3219,8 +3435,34 @@ async function executeChecklistPlanAction({ signal, isVoice, source, userText } 
   const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
   workChecklistPlanRequestInFlight = true;
   if (helpPlanBtn instanceof HTMLButtonElement) helpPlanBtn.disabled = true;
+  markChecklistPlanAccepted();
+  const ackText =
+    typeof getChecklistPlanStage1AckText === "function"
+      ? getChecklistPlanStage1AckText(raw || "plan my checklist")
+      : "Let me lay out a plan from your checklist.";
+  try {
+    console.info("[checklist_plan_ack_selected]", {
+      ack_text: ackText,
+      source: src,
+      is_voice: Boolean(isVoice),
+      main_count: planContext?.main_count ?? null,
+    });
+    console.info("[checklist_plan_reasoning_started]", {
+      source: src,
+      is_voice: Boolean(isVoice),
+      main_count: planContext?.main_count ?? null,
+    });
+  } catch (_) {}
   logChecklistPlanDebug("action_start", { source: src, main_count: planContext?.main_count ?? null });
   try {
+    if (isVoice && typeof beginChecklistPlanVoiceTurn === "function") {
+      await beginChecklistPlanVoiceTurn({
+        transcript: raw || "plan my checklist",
+        source: src,
+        ackText,
+        signal,
+      });
+    }
     const reasoningScroll = getActiveReasoningScrollEl();
     if (reasoningScroll instanceof HTMLElement) {
       reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -3229,9 +3471,13 @@ async function executeChecklistPlanAction({ signal, isVoice, source, userText } 
       userText: text,
       source: isVoice ? "voice" : "keyboard",
     });
-    await streamWorkModeReasoningComposer(text, signal, { turnContext });
+    await streamWorkModeReasoningComposer(text, signal, {
+      turnContext,
+      isChecklistPlanRequest: true,
+    });
     const mdAfterHelp = getLatestWorkModeReasoningMarkdown();
     if (mdAfterHelp && /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdAfterHelp)) {
+      markChecklistPlanRendered();
       const rows = buildChecklistProposalFromMarkdown(mdAfterHelp);
       const activeLaneId = getActiveDomReasoningLaneId();
       const panelMeta = getPlanSyncPanelMetaForLane(activeLaneId);
@@ -3264,6 +3510,9 @@ async function executeChecklistPlanAction({ signal, isVoice, source, userText } 
       source: src,
       panel_lane: getActiveDomReasoningLaneId?.() || null,
     });
+    if (!isVoice) {
+      resetActiveChecklistPlanContext();
+    }
     return { ok: true };
   } catch (err) {
     logChecklistPlanDebug("action_done", {
@@ -3271,7 +3520,30 @@ async function executeChecklistPlanAction({ signal, isVoice, source, userText } 
       source: src,
       error: String(err?.message || err || "").slice(0, 200),
     });
-    throw err;
+    try {
+      console.info("[checklist_plan_failed]", {
+        source: src,
+        is_voice: Boolean(isVoice),
+        error: String(err?.message || err || "").slice(0, 200),
+      });
+    } catch (_) {}
+    const failMsg =
+      typeof CHECKLIST_PLAN_FAILURE_MESSAGE === "string"
+        ? CHECKLIST_PLAN_FAILURE_MESSAGE
+        : "I couldn't create the checklist plan. Please try again.";
+    if (isVoice && typeof finalizeChecklistPlanVoiceTurn === "function") {
+      finalizeChecklistPlanVoiceTurn({
+        transcript: raw || "plan my checklist",
+        source: src,
+        isVoice: true,
+        success: false,
+        message: failMsg,
+      });
+    } else {
+      flashWorkChecklistPlanHint(failMsg);
+      resetActiveChecklistPlanContext();
+    }
+    return { ok: false, reason: "planner_failed", message: failMsg };
   } finally {
     workChecklistPlanRequestInFlight = false;
     syncWorkChecklistHelpPlanButton();
@@ -3748,6 +4020,10 @@ try {
   window.wireChecklistSupabaseRetryListeners = wireChecklistSupabaseRetryListeners;
   window.clearChecklistAfterLogout = clearChecklistAfterLogout;
   window.getAnonymousChecklistStorageKey = getAnonymousChecklistStorageKey;
+  window.shouldSuppressChecklistPlanGenericUnavailable = shouldSuppressChecklistPlanGenericUnavailable;
+  window.resetActiveChecklistPlanContext = resetActiveChecklistPlanContext;
+  window.markChecklistPlanValidationFailed = markChecklistPlanValidationFailed;
+  window.markChecklistPlanRendered = markChecklistPlanRendered;
   if (isWorkChecklistSupabaseUnsynced()) {
     _setChecklistSupabaseSyncStatus("unsynced");
   }
