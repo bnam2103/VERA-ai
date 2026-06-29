@@ -2,7 +2,7 @@
    BUILD VERSION + DEBUG FLAGS — must run at parse time (top-level).
    window.__VERA_APP_VERSION__ is the canonical boot marker for cache verification.
 ========================= */
-window.__VERA_APP_VERSION__ = "127";
+window.__VERA_APP_VERSION__ = "128";
 window.__VERA_DEBUG_FLAGS__ = {
   reasoningUnavailableDebug: true,
   turnPolicyDebug: true
@@ -554,6 +554,35 @@ function veraShowCapabilityFailureBubble(feature, message, opts = {}) {
 
 /** Per-voice-turn guard: action-only commands must never surface reasoning failures. */
 let _currentVoiceTurnRoutingGuard = null;
+/** Monotonic epoch — incremented on each new voice turn; stale deferred Stage-2 must not run after a newer turn starts. */
+let _voiceTurnRoutingEpoch = 0;
+
+function isActionOnlyVoiceTurnBlockingReasoning(guard = _currentVoiceTurnRoutingGuard) {
+  return Boolean(guard?.action_only && !guard?.reasoning_stream_started);
+}
+
+function shouldAllowStage2ForCurrentTurn(prep, source) {
+  const guard = _currentVoiceTurnRoutingGuard;
+  const prepTurnId = prep?.turnContext?.turn_id != null ? String(prep.turnContext.turn_id) : null;
+  const stale =
+    Boolean(guard?.turn_id && prepTurnId && prepTurnId !== guard.turn_id);
+  const blocked = isActionOnlyVoiceTurnBlockingReasoning(guard) || stale;
+  const allowed = !blocked;
+  try {
+    console.warn("[stage2_run_attempt]", {
+      source: String(source || "unknown"),
+      prep_turn_id: prepTurnId,
+      current_turn_id: guard?.turn_id ?? null,
+      current_turn_action_only: Boolean(guard?.action_only),
+      reasoning_stream_started_for_current_turn: Boolean(guard?.reasoning_stream_started),
+      stale,
+      allowed,
+      routing_epoch: _voiceTurnRoutingEpoch,
+      prep_routing_epoch: prep?.__routingEpoch ?? null,
+    });
+  } catch (_) {}
+  return { allowed, blocked, stale, reason: blocked ? (stale ? "stale_prep_turn" : "action_only_no_stage2") : null };
+}
 
 function classifyWorkModeVoiceTurnRouting(userText) {
   const s = String(userText || "").trim();
@@ -563,6 +592,7 @@ function classifyWorkModeVoiceTurnRouting(userText) {
     action_family: null,
     should_stream_reasoning: false,
     should_enter_work_mode: false,
+    should_schedule_stage2: true,
     reasoning_stream_started: false,
     user_text_preview: s.slice(0, 200),
   };
@@ -580,12 +610,16 @@ function classifyWorkModeVoiceTurnRouting(userText) {
     out.turn_intent = "action_command";
     out.action_only = true;
     out.action_family = actionFamily;
+    out.should_stream_reasoning = false;
+    out.should_schedule_stage2 = false;
     return out;
   }
   if (typeof isNavigationOnlyPanelCommand === "function" && isNavigationOnlyPanelCommand(s)) {
     out.turn_intent = "action_command";
     out.action_only = true;
     out.action_family = "panel.navigate";
+    out.should_stream_reasoning = false;
+    out.should_schedule_stage2 = false;
     return out;
   }
   if (
@@ -595,6 +629,8 @@ function classifyWorkModeVoiceTurnRouting(userText) {
     out.turn_intent = "action_command";
     out.action_only = true;
     out.action_family = "panel.open";
+    out.should_stream_reasoning = false;
+    out.should_schedule_stage2 = false;
     return out;
   }
   if (
@@ -606,6 +642,8 @@ function classifyWorkModeVoiceTurnRouting(userText) {
     out.turn_intent = "action_command";
     out.action_only = true;
     out.action_family = "checklist.plan";
+    out.should_stream_reasoning = false;
+    out.should_schedule_stage2 = false;
     return out;
   }
   return out;
@@ -614,20 +652,40 @@ function classifyWorkModeVoiceTurnRouting(userText) {
 function beginVoiceTurnRoutingGuard(userText, turnId) {
   /* Abort any deferred stage-2 infer from a prior reasoning turn so it cannot
      surface stale failure copy during the new voice turn (e.g. checklist add). */
-  resetWorkModeDeferredStage2AbortController();
+  let abortedDeferredStage2 = false;
+  try {
+    resetWorkModeDeferredStage2AbortController();
+    abortedDeferredStage2 = true;
+  } catch (_) {}
+  _voiceTurnRoutingEpoch += 1;
   const guard = {
     ...classifyWorkModeVoiceTurnRouting(userText),
     turn_id: turnId != null ? String(turnId) : null,
     reasoning_stream_started: false,
+    routing_epoch: _voiceTurnRoutingEpoch,
   };
   _currentVoiceTurnRoutingGuard = guard;
+  try {
+    console.info("[voice_turn_routing_guard_start]", {
+      turn_id: guard.turn_id,
+      raw_text: guard.user_text_preview,
+      action_only: Boolean(guard.action_only),
+      action_family: guard.action_family,
+      should_stream_reasoning: Boolean(guard.should_stream_reasoning),
+      should_schedule_stage2: Boolean(guard.should_schedule_stage2),
+      aborted_deferred_stage2: abortedDeferredStage2,
+      routing_epoch: guard.routing_epoch,
+    });
+  } catch (_) {}
   if (guard.action_only && String(guard.action_family || "").startsWith("checklist")) {
     try {
       console.info("[checklist_action_detected]", {
+        turn_id: guard.turn_id,
         raw_text: guard.user_text_preview,
         action_family: guard.action_family,
-        turn_id: guard.turn_id,
-        turn_intent: guard.turn_intent,
+        action_only: true,
+        should_stream_reasoning: false,
+        should_schedule_stage2: false,
       });
     } catch (_) {}
   }
@@ -650,8 +708,7 @@ function markVoiceTurnReasoningStreamStarted(turnId, extra = {}) {
 function shouldSuppressReasoningUnavailableMessage(opts = {}) {
   const failTurnId = opts.turn_id != null ? String(opts.turn_id) : null;
   const guard = _currentVoiceTurnRoutingGuard;
-  if (!guard) return { suppress: false, reason: null };
-  if (guard.action_only && !guard.reasoning_stream_started) {
+  if (isActionOnlyVoiceTurnBlockingReasoning(guard)) {
     return {
       suppress: true,
       reason:
@@ -797,7 +854,9 @@ try { window.evaluateHeuristicReasoningMatch = evaluateHeuristicReasoningMatch; 
 try { window.hasExplicitWorkArtifactIntent = hasExplicitWorkArtifactIntent; } catch (_) {}
 try { window.hasExplicitWorkModeTarget = hasExplicitWorkModeTarget; } catch (_) {}
 try { window.looksLikePersonalAdviceOrVenting = looksLikePersonalAdviceOrVenting; } catch (_) {}
-try { window.simulateReasoningGateVentDecision = simulateReasoningGateVentDecision; } catch (_) {}
+try { window.isActionOnlyVoiceTurnBlockingReasoning = isActionOnlyVoiceTurnBlockingReasoning; } catch (_) {}
+try { window.shouldAllowStage2ForCurrentTurn = shouldAllowStage2ForCurrentTurn; } catch (_) {}
+try { window._voiceTurnRoutingEpoch = () => _voiceTurnRoutingEpoch; } catch (_) {}
 
 /* NEWS_EVENT_CLUE_RE, NEWS_NAMED_ENTITY_RE moved to news/newsRouter.js
  * (Stage 10, 2026-05-27). */
@@ -15219,21 +15278,29 @@ async function playWorkModeGroundedStage2Brief(prep, briefText, inferOpts = {}) 
 async function runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, inferOpts = {}) {
   const p = prep || {};
   const vs = p.voiceTwoStage || {};
-  const guard = _currentVoiceTurnRoutingGuard;
-  const prepTurnId = p?.turnContext?.turn_id != null ? String(p.turnContext.turn_id) : null;
-  if (
-    guard?.action_only &&
-    !guard.reasoning_stream_started &&
-    prepTurnId &&
-    guard.turn_id &&
-    prepTurnId !== guard.turn_id
-  ) {
+  if (p.__routingEpoch != null && p.__routingEpoch !== _voiceTurnRoutingEpoch) {
+    try {
+      console.warn("[stage2_run_attempt]", {
+        source: "runWorkModeGroundedVoiceFinalAfterReasoningPrep",
+        prep_turn_id: p?.turnContext?.turn_id ?? null,
+        current_turn_id: _currentVoiceTurnRoutingGuard?.turn_id ?? null,
+        current_turn_action_only: Boolean(_currentVoiceTurnRoutingGuard?.action_only),
+        stale: true,
+        allowed: false,
+        reason: "routing_epoch_mismatch",
+        prep_routing_epoch: p.__routingEpoch,
+        routing_epoch: _voiceTurnRoutingEpoch,
+      });
+    } catch (_) {}
+    return;
+  }
+  const stage2Gate = shouldAllowStage2ForCurrentTurn(p, "runWorkModeGroundedVoiceFinalAfterReasoningPrep");
+  if (!stage2Gate.allowed) {
     try {
       console.info("[reasoning_stream_request_skipped]", {
-        reason: "stale_grounded_voice_final_during_action_turn",
-        prep_turn_id: prepTurnId,
-        current_turn_id: guard.turn_id,
-        action_family: guard.action_family || null,
+        reason: stage2Gate.reason || "stage2_blocked_for_action_turn",
+        prep_turn_id: p?.turnContext?.turn_id ?? null,
+        current_turn_id: _currentVoiceTurnRoutingGuard?.turn_id ?? null,
       });
     } catch (_) {}
     return;
@@ -17043,7 +17110,41 @@ function enqueueWorkModeAssistantTtsPlayback(
  */
 function scheduleWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtStage1End }) {
   if (!prep?.voiceTwoStage?.reasoningRouted) return;
+  const guard = _currentVoiceTurnRoutingGuard;
+  const scheduleEpoch = _voiceTurnRoutingEpoch;
+  prep.__routingEpoch = scheduleEpoch;
+  const allowed = !isActionOnlyVoiceTurnBlockingReasoning(guard);
+  try {
+    console.warn("[stage2_schedule_attempt]", {
+      turn_id: prep?.turnContext?.turn_id ?? null,
+      source: "scheduleWorkModeDeferredReasoningStageTwoInfer",
+      current_turn_id: guard?.turn_id ?? null,
+      current_turn_action_only: Boolean(guard?.action_only),
+      should_schedule_stage2: guard?.should_schedule_stage2 !== false,
+      routing_epoch: scheduleEpoch,
+      allowed,
+    });
+  } catch (_) {}
+  if (!allowed) return;
   void (async () => {
+    if (prep.__routingEpoch !== _voiceTurnRoutingEpoch) {
+      try {
+        console.warn("[stage2_run_attempt]", {
+          source: "scheduleWorkModeDeferredReasoningStageTwoInfer",
+          prep_turn_id: prep?.turnContext?.turn_id ?? null,
+          current_turn_id: _currentVoiceTurnRoutingGuard?.turn_id ?? null,
+          current_turn_action_only: Boolean(_currentVoiceTurnRoutingGuard?.action_only),
+          stale: true,
+          allowed: false,
+          reason: "routing_epoch_mismatch",
+          prep_routing_epoch: prep.__routingEpoch ?? null,
+          routing_epoch: _voiceTurnRoutingEpoch,
+        });
+      } catch (_) {}
+      return;
+    }
+    const stage2Gate = shouldAllowStage2ForCurrentTurn(prep, "deferred_stage2_start");
+    if (!stage2Gate.allowed) return;
     try {
       logStage2Debug(prep, {
         transcript: _readInferFormDataTranscript(formData),
@@ -17054,6 +17155,9 @@ function scheduleWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtS
         stage2_tts_suppressed_due_to_mute: getWorkModeStage2TtsDecision("(pending-stage2-text)").tts_muted
       });
       const also = workModeVoiceInferTurnSeq > seqAtStage1End;
+      if (prep.__routingEpoch !== _voiceTurnRoutingEpoch) return;
+      const stage2GateMid = shouldAllowStage2ForCurrentTurn(prep, "deferred_stage2_before_infer");
+      if (!stage2GateMid.allowed) return;
       const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prep, {
         signal: workModeDeferredStage2AbortController.signal,
         skipPreInferPlaybackReset: true,
@@ -17095,6 +17199,14 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         else if (det?.action === "remove") actionFamily = "checklist.remove";
         else if (det?.action === "toggle") actionFamily = "checklist.complete";
       }
+      console.info("[checklist_action_detected]", {
+        turn_id: turnContext?.turn_id || null,
+        raw_text: String(trimmed || "").slice(0, 240),
+        action_family: actionFamily,
+        action_only: true,
+        should_stream_reasoning: false,
+        should_schedule_stage2: false,
+      });
       console.info("[checklist_action_blocked_reasoning]", {
         raw_text: String(trimmed || "").slice(0, 240),
         action_family: actionFamily,
@@ -25599,6 +25711,10 @@ async function runInferAfterWorkModeReasoningPrep(formData, prep, inferOpts = {}
   }
   if (p.reasoningUploadState?.failed) return "reasoning-upload-failed";
   if (p?.voiceTwoStage?.reasoningRouted) {
+    const stage2Gate = shouldAllowStage2ForCurrentTurn(p, "runInferAfterWorkModeReasoningPrep");
+    if (!stage2Gate.allowed) {
+      return "stage2-blocked-action-turn";
+    }
     await runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, inferOpts);
     return;
   }
@@ -26986,7 +27102,11 @@ async function runInferMainPipeline(formData, opts = {}) {
       processing = false;
       requestInFlight = false;
       if (!failPendingNewsStatusBubble("infer_main_http")) {
-        void veraSurfaceLlmFetchFailure({ feature: "infer_main", response: res });
+        void veraSurfaceLlmFetchFailure({
+          feature: "infer_main",
+          response: res,
+          extra: { turn_id: inferPrep?.turnContext?.turn_id || null },
+        });
       }
       return;
     }
