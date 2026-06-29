@@ -449,11 +449,14 @@ async function veraSurfaceLlmFetchFailure({
     source_function: `veraSurfaceLlmFetchFailure:${feature}`,
     raw_error_message: rawErrorMessage
   });
-  veraShowCapabilityFailureBubble(
-    "llm_failure",
-    VERA_SAFETY_LIMITS.messages.llmFailure,
-    { actionId: turnId }
-  );
+  const unavailable = emitReasoningUnavailableMessage({
+    cause: `veraSurfaceLlmFetchFailure:${feature}`,
+    feature: "llm_failure",
+    actionId: turnId,
+    turn_id: turnId,
+    asBubble: true,
+  });
+  if (unavailable.suppressed) return "suppressed_reasoning_unavailable";
   return "llm_failure";
 }
 
@@ -530,9 +533,187 @@ function veraShowCapabilityFailureBubble(feature, message, opts = {}) {
   return true;
 }
 
-/* =========================
-   PENDING STATUS BUBBLES (slow external/tool requests)
-   ========================= */
+/** Per-voice-turn guard: action-only commands must never surface reasoning failures. */
+let _currentVoiceTurnRoutingGuard = null;
+
+function classifyWorkModeVoiceTurnRouting(userText) {
+  const s = String(userText || "").trim();
+  const out = {
+    turn_intent: "general_chat",
+    action_only: false,
+    action_family: null,
+    should_stream_reasoning: false,
+    should_enter_work_mode: false,
+    reasoning_stream_started: false,
+    user_text_preview: s.slice(0, 200),
+  };
+  if (!s || !isVeraWorkModeOn()) return out;
+  if (typeof isLikelyWorkChecklistEditIntent === "function" && isLikelyWorkChecklistEditIntent(s)) {
+    let actionFamily = "checklist.edit";
+    try {
+      if (typeof detectChecklistActionIntent === "function") {
+        const det = detectChecklistActionIntent({ latestUserText: s });
+        if (det?.action === "add") actionFamily = "checklist.add";
+        else if (det?.action === "remove") actionFamily = "checklist.remove";
+        else if (det?.action === "toggle") actionFamily = "checklist.complete";
+      }
+    } catch (_) {}
+    out.turn_intent = "action_command";
+    out.action_only = true;
+    out.action_family = actionFamily;
+    return out;
+  }
+  if (typeof isNavigationOnlyPanelCommand === "function" && isNavigationOnlyPanelCommand(s)) {
+    out.turn_intent = "action_command";
+    out.action_only = true;
+    out.action_family = "panel.navigate";
+    return out;
+  }
+  if (
+    typeof isPanelOpenNewReasoningPanelCommand === "function" &&
+    isPanelOpenNewReasoningPanelCommand(s)
+  ) {
+    out.turn_intent = "action_command";
+    out.action_only = true;
+    out.action_family = "panel.open";
+    return out;
+  }
+  if (
+    typeof isWorkChecklistPlanShortcutIntent === "function" &&
+    isWorkChecklistPlanShortcutIntent(s) &&
+    typeof shouldDeferChecklistPlanShortcut === "function" &&
+    !shouldDeferChecklistPlanShortcut(s)
+  ) {
+    out.turn_intent = "action_command";
+    out.action_only = true;
+    out.action_family = "checklist.plan";
+    return out;
+  }
+  return out;
+}
+
+function beginVoiceTurnRoutingGuard(userText, turnId) {
+  const guard = {
+    ...classifyWorkModeVoiceTurnRouting(userText),
+    turn_id: turnId != null ? String(turnId) : null,
+    reasoning_stream_started: false,
+  };
+  _currentVoiceTurnRoutingGuard = guard;
+  if (guard.action_only && String(guard.action_family || "").startsWith("checklist")) {
+    try {
+      console.info("[checklist_action_detected]", {
+        raw_text: guard.user_text_preview,
+        action_family: guard.action_family,
+        turn_id: guard.turn_id,
+        turn_intent: guard.turn_intent,
+      });
+    } catch (_) {}
+  }
+  return guard;
+}
+
+function markVoiceTurnReasoningStreamStarted(turnId, extra = {}) {
+  const tid = turnId != null ? String(turnId) : null;
+  if (_currentVoiceTurnRoutingGuard && tid && _currentVoiceTurnRoutingGuard.turn_id === tid) {
+    _currentVoiceTurnRoutingGuard.reasoning_stream_started = true;
+  }
+  try {
+    console.info("[reasoning_stream_request_start]", {
+      turn_id: tid,
+      ...extra,
+    });
+  } catch (_) {}
+}
+
+function shouldSuppressReasoningUnavailableMessage(opts = {}) {
+  const failTurnId = opts.turn_id != null ? String(opts.turn_id) : null;
+  const guard = _currentVoiceTurnRoutingGuard;
+  if (!guard) return { suppress: false, reason: null };
+  if (guard.action_only && !guard.reasoning_stream_started) {
+    return {
+      suppress: true,
+      reason:
+        failTurnId && guard.turn_id && failTurnId !== guard.turn_id
+          ? "stale_reasoning_failure_during_action_turn"
+          : "action_only_no_reasoning_stream",
+    };
+  }
+  return { suppress: false, reason: null };
+}
+
+function logReasoningUnavailableEmit(shown, cause, extra = {}) {
+  try {
+    console.info(
+      shown ? "[reasoning_unavailable_message_emit]" : "[reasoning_unavailable_message_suppressed]",
+      {
+        cause: String(cause || "unknown"),
+        ...extra,
+      }
+    );
+    console.info("[reasoning_unavailable_cause]", {
+      cause: String(cause || "unknown"),
+      shown: Boolean(shown),
+      ...extra,
+    });
+  } catch (_) {}
+}
+
+function emitReasoningUnavailableMessage(opts = {}) {
+  const message = String(opts.message || VERA_SAFETY_LIMITS.messages.llmFailure);
+  const cause = String(opts.cause || "unknown");
+  const asBubble = opts.asBubble !== false;
+  const suppress = shouldSuppressReasoningUnavailableMessage(opts);
+  if (suppress.suppress) {
+    logReasoningUnavailableEmit(false, cause, {
+      suppress_reason: suppress.reason,
+      turn_id: opts.turn_id ?? _currentVoiceTurnRoutingGuard?.turn_id ?? null,
+      action_family: _currentVoiceTurnRoutingGuard?.action_family ?? null,
+      feature: opts.feature || null,
+    });
+    try {
+      console.info("[reasoning_stream_request_skipped]", {
+        reason: suppress.reason,
+        cause,
+        turn_id: opts.turn_id ?? null,
+      });
+    } catch (_) {}
+    return { shown: false, suppressed: true, reason: suppress.reason, message: null };
+  }
+  try {
+    console.info("[reasoning_stream_request_failed]", {
+      cause,
+      turn_id: opts.turn_id ?? null,
+      feature: opts.feature || null,
+    });
+  } catch (_) {}
+  if (asBubble) {
+    const shown = veraShowCapabilityFailureBubble(opts.feature || "llm_failure", message, {
+      actionId: opts.actionId,
+      minIntervalMs: opts.minIntervalMs,
+    });
+    logReasoningUnavailableEmit(shown, cause, {
+      feature: opts.feature || "llm_failure",
+      turn_id: opts.turn_id ?? null,
+      via: "capability_failure_bubble",
+    });
+    return { shown, suppressed: false, reason: null, message: shown ? message : null };
+  }
+  logReasoningUnavailableEmit(true, cause, {
+    turn_id: opts.turn_id ?? null,
+    via: "reply_text",
+  });
+  return { shown: true, suppressed: false, reason: null, message };
+}
+
+try { window.beginVoiceTurnRoutingGuard = beginVoiceTurnRoutingGuard; } catch (_) {}
+try { window.shouldSuppressReasoningUnavailableMessage = shouldSuppressReasoningUnavailableMessage; } catch (_) {}
+try { window.classifyWorkModeVoiceTurnRouting = classifyWorkModeVoiceTurnRouting; } catch (_) {}
+try { window.emitReasoningUnavailableMessage = emitReasoningUnavailableMessage; } catch (_) {}
+try { window.evaluateHeuristicReasoningMatch = evaluateHeuristicReasoningMatch; } catch (_) {}
+try { window.hasExplicitWorkArtifactIntent = hasExplicitWorkArtifactIntent; } catch (_) {}
+try { window.hasExplicitWorkModeTarget = hasExplicitWorkModeTarget; } catch (_) {}
+try { window.looksLikePersonalAdviceOrVenting = looksLikePersonalAdviceOrVenting; } catch (_) {}
+try { window.simulateReasoningGateVentDecision = simulateReasoningGateVentDecision; } catch (_) {}
 
 /* NEWS_EVENT_CLUE_RE, NEWS_NAMED_ENTITY_RE moved to news/newsRouter.js
  * (Stage 10, 2026-05-27). */
@@ -10821,6 +11002,14 @@ function _veraWordCount(text) {
 function looksLikePersonalAdviceOrVenting(text) {
   const raw = String(text || "").trim();
   if (!raw) return { matched: [], score: 0, isVenting: false };
+
+  if (hasExplicitWorkArtifactIntent(raw).hasIntent) {
+    return { matched: [], score: 0, isVenting: false };
+  }
+  if (hasExplicitWorkModeTarget(raw)) {
+    return { matched: [], score: 0, isVenting: false };
+  }
+
   const low = raw.toLowerCase();
   const wc = _veraWordCount(low);
 
@@ -10851,6 +11040,10 @@ function looksLikePersonalAdviceOrVenting(text) {
   const passiveWorkloadMention =
     /\b(i\s+(?:have|got|got\s+a\s+lot\s+of|have\s+a\s+lot\s+of|have\s+so\s+much|am\s+swamped\s+with|am\s+drowning\s+in|am\s+dealing\s+with)|i'?ve\s+(?:got|been|got\s+a\s+lot\s+of)|i'?m\s+(?:dealing\s+with|drowning\s+in|swamped\s+with|behind\s+on|stuck\s+on))\s+(?:a\s+lot\s+of\s+|so\s+much\s+|tons?\s+of\s+|loads?\s+of\s+|a\s+ton\s+of\s+|an?\s+|the\s+|some\s+|my\s+)?(?:homework|assignments?|classes|class|exams?|tests?|projects?|essays?|papers?|readings?|midterms?|finals?|presentations?|deadlines?|coursework|schoolwork|work)\b/i;
 
+  /* Casual reactive / dismissive remarks without a task ask. */
+  const casualReaction =
+    /\b(?:that|this|it)\s+(?:doesn't|don't|didn't|won't|isn't|aren't|not)\s+(?:sound|seem|feel|look)\s+(?:very\s+|really\s+|that\s+)?(?:exciting|fun|great|good|interesting|worth\s+it|appealing)\b|\b(?:sounds?|seems?|feels?|looks?)\s+(?:kind\s+of\s+|pretty\s+|really\s+|so\s+)?(?:boring|dull|meh|blah|lame|rough|bad|awful|terrible|pointless|underwhelming)\b/i;
+
   let signals = 0;
   const matched = [];
   if (heavyFirstPerson) { signals += 1; matched.push("heavy_first_person"); }
@@ -10859,12 +11052,30 @@ function looksLikePersonalAdviceOrVenting(text) {
   if (narrativeOpeners.test(low)) { signals += 1; matched.push("narrative_opener"); }
   if (negativeLifeNouns.test(low) && anyFirstPerson) { signals += 1; matched.push("life_noun_plus_first_person"); }
   if (passiveWorkloadMention.test(low)) { signals += 2; matched.push("passive_workload_mention"); }
+  if (casualReaction.test(low)) { signals += 2; matched.push("casual_reaction"); }
 
   return { matched, score: signals, isVenting: signals >= 2 };
 }
 
 /** Alias for spec compatibility — same heuristic, friendlier name. */
 const looksLikePersonalStatementOrVenting = looksLikePersonalAdviceOrVenting;
+
+/** Explicit Work Mode panel / workmode destination (not comma-heuristic). */
+function hasExplicitWorkModeTarget(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  try {
+    if (typeof isExplicitReasoningPanelReference === "function" && isExplicitReasoningPanelReference(raw).matched) {
+      return true;
+    }
+  } catch (_) {}
+  if (/\b(?:open|use|switch\s+to|enter)\s+(?:work\s*mode|workmode)\b/i.test(raw)) return true;
+  if (/\bput\s+(?:this|that|it)\s+in\s+(?:the\s+)?(?:reasoning\s+)?panel\b/i.test(raw)) return true;
+  if (/\b(?:in|into)\s+(?:a|the|my)\s+(?:new\s+)?(?:reasoning\s+)?(?:panel|work\s*mode|workmode)\b/i.test(raw)) {
+    return true;
+  }
+  return false;
+}
 
 /**
  * Heuristic: explicit work-artifact verb that overrides the personal-advice
@@ -10875,6 +11086,21 @@ function hasExplicitWorkArtifactIntent(text) {
   if (!raw) return { matched: [], hasIntent: false };
   const low = raw.toLowerCase();
   const matched = [];
+
+  /* Passive reflection — not a structured task (e.g. "I was thinking about going home"). */
+  if (/\b(?:was|am|been|keep|kept|just)\s+thinking\s+about\b/i.test(low) && matched.length === 0) {
+    /* fall through — only block if nothing else matches below */
+  }
+
+  const decisionPlanTask =
+    /\b(?:help\s+me\s+(?:decide|choose)|think\s+through\s+(?:the\s+)?(?:pros\s+and\s+cons|options|trade-?offs?|trade-offs?)|(?:weigh|compare)\s+(?:the\s+)?(?:pros\s+and\s+cons|options)|pros\s+and\s+cons\s+(?:of|for|between)|make\s+a\s+plan\s+(?:for|about|on|if|when)|decide\s+whether)\b/i;
+  const homeworkTask =
+    /\b(?:help\s+me\s+with\s+(?:this\s+)?(?:homework|assignment)|explain\s+(?:this\s+)?(?:homework|assignment)\s+question|this\s+homework\s+question|homework\s+question)\b/i;
+  const projectDebugTask =
+    /\bdebug\s+(?:my|this|the)\s+(?:project|code|app|program|error|bug|issue)\b/i;
+  const planMyArtifact =
+    /\b(?:help\s+me\s+)?plan\s+(?:my|the|this)\s+(?:checklist|schedule|essay|paper|project|week|day)\b/i;
+  const breakDownTask = /\bbreak\s+(?:this|it|that|the\s+\w+)\s+down\b/i;
 
   const writeVerb =
     /\b(write|draft|compose|polish|rewrite|edit|proofread)\s+(?:a|an|the|my|me|us|some|this)?\s*(?:complaint|letter|email|appeal|essay|paper|report|memo|outline|cover\s*letter|proposal|statement|application|response|note|reply|review|paragraph|article|blog|script|speech|story|thesis|summary)?/i;
@@ -10891,8 +11117,13 @@ function hasExplicitWorkArtifactIntent(text) {
   const fileTask =
     /\b(?:upload(?:ed)?|attach(?:ed|ment)?|the\s+(?:pdf|file|image|screenshot|doc|document|spreadsheet))\b/i;
   const helpDoArtifact =
-    /\b(help\s+me\s+(?:write|draft|plan|organize|organise|prepare|build|make|create|do|solve|analy[sz]e|study|outline|debug|fix|figure\s+out|work\s+(?:through|on)|put\s+together)|i\s+need\s+(?:help|to)\s+(?:write|draft|plan|organize|prepare|build|make|create|outline)|can\s+you\s+(?:write|draft|plan|organize|prepare|build|make|create|outline|analy[sz]e|review))\b/i;
+    /\b(help\s+me\s+(?:write|draft|plan|organize|organise|prepare|build|make|create|do|solve|analy[sz]e|study|outline|debug|fix|figure\s+out|work\s+(?:through|on)|put\s+together|decide|choose)|i\s+need\s+(?:help|to)\s+(?:write|draft|plan|organize|prepare|build|make|create|outline)|can\s+you\s+(?:write|draft|plan|organize|prepare|build|make|create|outline|analy[sz]e|review|help\s+me\s+decide|think\s+through))\b/i;
 
+  if (decisionPlanTask.test(low)) matched.push("decision_plan_task");
+  if (homeworkTask.test(low)) matched.push("homework_task");
+  if (projectDebugTask.test(low)) matched.push("project_debug_task");
+  if (planMyArtifact.test(low)) matched.push("plan_my_artifact");
+  if (breakDownTask.test(low)) matched.push("break_down_task");
   if (writeVerb.test(low)) matched.push("write_artifact");
   if (planVerb.test(low)) matched.push("plan_verb");
   if (analyzeVerb.test(low)) matched.push("analyze_verb");
@@ -10902,7 +11133,156 @@ function hasExplicitWorkArtifactIntent(text) {
   if (fileTask.test(low)) matched.push("file_task");
   if (helpDoArtifact.test(low)) matched.push("help_do_artifact");
 
+  if (
+    matched.length === 0 &&
+    /\b(?:was|am|been|keep|kept|just)\s+thinking\s+about\b/i.test(low)
+  ) {
+    return { matched: [], hasIntent: false };
+  }
+
   return { matched, hasIntent: matched.length > 0 };
+}
+
+/**
+ * Local frontend heuristic signals for Work Mode reasoning (post-classifier path).
+ * Comma-rich prose alone must NOT trigger reasoning — only explicit complexity cues.
+ */
+function evaluateHeuristicReasoningMatch(trimmed, planningIntent) {
+  const t = String(trimmed || "").toLowerCase();
+  const raw = String(trimmed || "").trim();
+  if (!t) return { reasoning: false, matchedHeuristic: null, regexMatches: [] };
+  if (planningIntent) return { reasoning: true, matchedHeuristic: "planning_intent", regexMatches: ["planning_intent"] };
+
+  const regexMatches = [];
+  const conceptWords = /\b(explain|how does|how do|derive|proof|theorem|compare|trade-?off|framework|architecture|mechanism|intuition)\b/;
+  const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
+  const codeProblemWords =
+    /\b(code|coding|program|debug|bug|error|exception|stack trace|traceback|refactor|compile|build|runtime|test failing|unit test|integration test|typescript|javascript|python|java|c\+\+|sql|api endpoint|null pointer|undefined)\b/;
+  /* 2026-06-28 — removed comma/clause branch `([,:;].+[,:;])`; only explicit cues. */
+  const multiPartExplicit = /\b(step\s+by\s+step|in\s+detail|deep\s+dive|from\s+scratch)\b/i;
+  const writingTask =
+    /\b(write|draft|compose|polish|rewrite)\b/.test(t) &&
+    /\b(email|essay|script|speech|letter|cover letter|proposal|statement|outline)\b/.test(t);
+  const guideWritingTask =
+    /\b(guide|guidance|walk\s+me\s+through|coach\s+me(?:\s+on)?)\b/.test(t) &&
+    /\b(writ(?:e|ing|es|er|ten)?|essay|paper|draft|paragraph|piece|composition|story|article|blog|email|script|thesis|outline|proofread|edit)\b/.test(
+      t
+    );
+  const hasCodeSnippet =
+    /```/.test(t) ||
+    /\b(function|class|import|const|let|var|def|return)\b/.test(t) ||
+    /[{}();]{2,}/.test(t);
+  const wordCount = (t.match(/\S+/g) || []).length;
+  const isExplainStem = /\b(?:explain(?:s|ed|ing)?|explanation(?:s)?|explanatory)\b/.test(t);
+  const explainSafetyAllowed =
+    wordCount >= 3 && !/^\s*explain\s+(?:yourself|vera|this\s+app)\b/i.test(raw);
+  const explainComplexityBroad = Boolean(detectBroadComplexTopicFrontend(trimmed));
+  const explainComplexityDetailed = /\b(in\s+detail|detailed(?:ly)?|step[-\s]*by[-\s]*step|deep[-\s]*dive|deep\s+dive|thorough(?:ly)?|long[-\s]*form|long\s+form|full\s+breakdown|breakdown|exhaustive(?:ly)?|comprehensive(?:ly)?|from\s+scratch)\b/i.test(t);
+  const explainComplexityArtifact = /\b(solve|prove|derive|simulate|debug|refactor|compute|calculate|evaluate|analy[sz]e|outline|summari[sz]e|compare|review|draft|compose|polish|rewrite|write\s+(?:a|an|the|me|us|my|some|this|that))\b/i.test(t);
+  const explainReasoningAsk =
+    isExplainStem &&
+    explainSafetyAllowed &&
+    (explainComplexityBroad || explainComplexityDetailed || explainComplexityArtifact);
+
+  if (conceptWords.test(t) && domainWords.test(t)) regexMatches.push("concept_plus_domain");
+  if (domainWords.test(t)) regexMatches.push("domain_words");
+  if (codeProblemWords.test(t)) regexMatches.push("code_problem_words");
+  if (hasCodeSnippet) regexMatches.push("code_snippet");
+  if (multiPartExplicit.test(t)) regexMatches.push("multi_part_explicit_cue");
+  if (writingTask) regexMatches.push("writing_task");
+  if (guideWritingTask) regexMatches.push("guide_writing_task");
+  if (explainReasoningAsk) regexMatches.push("explain_reasoning_ask");
+
+  const reasoning = regexMatches.length > 0;
+  const matchedHeuristic = reasoning ? regexMatches[0] : null;
+  return { reasoning, matchedHeuristic, regexMatches };
+}
+
+function logReasoningGateDecision(payload = {}) {
+  const row = {
+    heuristic_reasoning: Boolean(payload.heuristicReasoning),
+    matched_heuristic_name: payload.matchedHeuristicName || null,
+    is_venting: Boolean(payload.isVenting),
+    has_explicit_work_artifact_intent: Boolean(payload.hasExplicitWorkArtifactIntent),
+    explicit_work_mode_target: Boolean(payload.explicitWorkModeTarget),
+    final_route_reasoning: Boolean(payload.routeReasoning),
+    blocked_reasoning_reason: payload.blockedReasoningReason || null,
+    venting_signals: payload.ventingSignals || [],
+    artifact_signals: payload.artifactSignals || [],
+    regex_matches: payload.regexMatches || [],
+    user_text_preview: String(payload.userText || "").slice(0, 200),
+  };
+  try {
+    if (Array.isArray(payload.regexMatches) && payload.regexMatches.length) {
+      for (const name of payload.regexMatches) {
+        console.info("[reasoning_gate_regex_match]", { name, user_text_preview: row.user_text_preview });
+      }
+    }
+    if (payload.isVenting && payload.routeReasoning === false && payload.blockedReasoningReason === "emotional_vent_no_task_intent") {
+      console.info("[reasoning_gate_blocked_for_vent]", row);
+      console.info("[voice_support_detected]", {
+        user_text_preview: row.user_text_preview,
+        venting_signals: row.venting_signals,
+      });
+    } else if (payload.routeReasoning) {
+      console.info("[reasoning_gate_allowed]", row);
+    } else {
+      console.info("[reasoning_gate_blocked]", row);
+    }
+    console.info("[turn_context_policy]", {
+      turn_intent: payload.routeReasoning ? "work_mode_reasoning" : payload.isVenting ? "voice_support" : "general_chat",
+      should_stream_reasoning: Boolean(payload.routeReasoning),
+      blocked_reasoning_reason: row.blocked_reasoning_reason,
+      user_text_preview: row.user_text_preview,
+    });
+  } catch (_) {}
+}
+
+/** Pure gate simulator for smoke tests — mirrors post-classifier vent veto. */
+function simulateReasoningGateVentDecision(text, opts = {}) {
+  const trimmed = String(text || "").trim();
+  const heuristicEval = evaluateHeuristicReasoningMatch(trimmed, Boolean(opts.planningIntent));
+  const artifact = hasExplicitWorkArtifactIntent(trimmed);
+  const venting = looksLikePersonalStatementOrVenting(trimmed);
+  const isRequestShape = isLikelyRequestShape(trimmed);
+  const adjustedScore = venting.score + (isRequestShape ? 0 : 1);
+  const isVenting = adjustedScore >= 2;
+  const explicitWorkModeTarget = hasExplicitWorkModeTarget(trimmed);
+  const classifyRoute = Boolean(opts.classifyRoute);
+  const forceActiveLane = Boolean(opts.forceActiveLaneReasoningContent);
+  const gateForced = Boolean(opts.gateForcedReasoning);
+  let routeReasoning = gateForced
+    ? true
+    : classifyRoute || heuristicEval.reasoning || forceActiveLane;
+  let blockedReasoningReason = null;
+  const ventBlocked =
+    !gateForced &&
+    !forceActiveLane &&
+    isVenting &&
+    !artifact.hasIntent &&
+    !explicitWorkModeTarget;
+  if (ventBlocked) {
+    routeReasoning = false;
+    blockedReasoningReason = "emotional_vent_no_task_intent";
+  }
+  const turnIntent = routeReasoning
+    ? "work_mode_reasoning"
+    : isVenting
+      ? "voice_support"
+      : "general_chat";
+  return {
+    routeReasoning,
+    turnIntent,
+    heuristicReasoning: heuristicEval.reasoning,
+    matchedHeuristicName: heuristicEval.matchedHeuristic,
+    regexMatches: heuristicEval.regexMatches,
+    isVenting,
+    hasExplicitWorkArtifactIntent: artifact.hasIntent,
+    explicitWorkModeTarget,
+    blockedReasoningReason,
+    artifactSignals: artifact.matched,
+    ventingSignals: venting.matched,
+  };
 }
 
 /**
@@ -12017,6 +12397,38 @@ function buildTurnContextPolicy(opts = {}) {
       blocked_context_sources: [],
       decision_reason: "checklist_plan_action_command",
       action_family: "checklist.plan",
+      should_stream_reasoning: false,
+      should_enter_work_mode: false,
+      user_text_preview: userText.slice(0, 200),
+    };
+  }
+
+  if (
+    inWorkMode &&
+    typeof isLikelyWorkChecklistEditIntent === "function" &&
+    isLikelyWorkChecklistEditIntent(userText)
+  ) {
+    let actionFamily = "checklist.edit";
+    try {
+      if (typeof detectChecklistActionIntent === "function") {
+        const det = detectChecklistActionIntent({ latestUserText: userText });
+        if (det?.action === "add") actionFamily = "checklist.add";
+        else if (det?.action === "remove") actionFamily = "checklist.remove";
+        else if (det?.action === "toggle") actionFamily = "checklist.complete";
+      }
+    } catch (_) {}
+    return {
+      turn_intent: "action_command",
+      enforce_mode: REASONING_CONTEXT_ENFORCE_LOG_ONLY,
+      input_source: inputSource,
+      work_mode_policy: null,
+      query_policy: null,
+      allowed_context_sources: [],
+      blocked_context_sources: [],
+      decision_reason: "checklist_edit_action_command",
+      action_family: actionFamily,
+      should_stream_reasoning: false,
+      should_enter_work_mode: false,
       user_text_preview: userText.slice(0, 200),
     };
   }
@@ -14632,7 +15044,13 @@ function resolveGroundedStage2BriefText(prep, generatedBrief) {
     return "I stopped that reasoning request.";
   }
   if (finalStatusName && /failed|error|timed_out/.test(finalStatusName)) {
-    return VERA_SAFETY_LIMITS.messages.llmFailure;
+    const unavailable = emitReasoningUnavailableMessage({
+      cause: "resolveGroundedStage2BriefText:reasoning_failed",
+      turn_id: prep?.turnContext?.turn_id || null,
+      asBubble: false,
+    });
+    if (unavailable.suppressed) return "";
+    return unavailable.message || VERA_SAFETY_LIMITS.messages.llmFailure;
   }
   storeEffectiveStage2ReplyOnPrep(prep, {
     effective_stage2_reply: generated,
@@ -16093,13 +16511,21 @@ function resolveEffectiveStage2Reply(prep, generatedReply, ttsStage) {
     };
   }
   if (finalStatusName && /failed|error|timed_out/.test(finalStatusName)) {
-    const failed = VERA_SAFETY_LIMITS.messages.llmFailure;
+    const unavailable = emitReasoningUnavailableMessage({
+      cause: "resolveEffectiveStage2Reply:reasoning_failed",
+      turn_id: prep?.turnContext?.turn_id || null,
+      asBubble: false,
+    });
+    const failed =
+      unavailable.suppressed
+        ? ""
+        : unavailable.message || VERA_SAFETY_LIMITS.messages.llmFailure;
     logStage2ReasoningStatus(prep, finalStatus, failed, false, "reasoning_failed");
     return {
       effective_stage2_reply: failed,
       generated_stage2_text,
       used_override: true,
-      override_reason: "reasoning_failed"
+      override_reason: unavailable.suppressed ? "reasoning_failed_suppressed" : "reasoning_failed"
     };
   }
   logStage2ReasoningStatus(prep, finalStatus, generated_stage2_text, true, "");
@@ -16545,8 +16971,29 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const turnContext = opts.turnContext || null;
   const noRouteMeta = { voiceTwoStage: { reasoningRouted: false }, turnContext };
   if (!isVeraWorkModeOn()) return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
-  if (isLikelyWorkChecklistEditIntent(trimmed))
+  if (isLikelyWorkChecklistEditIntent(trimmed)) {
+    try {
+      let actionFamily = "checklist.edit";
+      if (typeof detectChecklistActionIntent === "function") {
+        const det = detectChecklistActionIntent({ latestUserText: trimmed });
+        if (det?.action === "add") actionFamily = "checklist.add";
+        else if (det?.action === "remove") actionFamily = "checklist.remove";
+        else if (det?.action === "toggle") actionFamily = "checklist.complete";
+      }
+      console.info("[checklist_action_blocked_reasoning]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        action_family: actionFamily,
+        turn_id: turnContext?.turn_id || null,
+        reason: "checklist_edit_intent_no_reasoning_stream",
+      });
+      console.info("[reasoning_stream_request_skipped]", {
+        reason: "checklist_edit_intent",
+        turn_id: turnContext?.turn_id || null,
+        action_family: actionFamily,
+      });
+    } catch (_) {}
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
   if (
     typeof isWorkChecklistPlanShortcutIntent === "function" &&
     isWorkChecklistPlanShortcutIntent(trimmed) &&
@@ -17037,89 +17484,23 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       !planningIntent &&
       !forceActiveLaneReasoningContent &&
       isGeneralWorkModeFollowUpContinuingTask(trimmed, priorThreadAnchor);
-    const heuristicReasoning = (() => {
-      const t = String(trimmed || "").toLowerCase();
-      if (!t) return false;
-      if (planningIntent) return true;
-      const conceptWords = /\b(explain|how does|how do|derive|proof|theorem|compare|trade-?off|framework|architecture|mechanism|intuition)\b/;
-      const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
-      const codeProblemWords =
-        /\b(code|coding|program|debug|bug|error|exception|stack trace|traceback|refactor|compile|build|runtime|test failing|unit test|integration test|typescript|javascript|python|java|c\+\+|sql|api endpoint|null pointer|undefined)\b/;
-      const multiPart = /(\b(step by step|in detail|deep dive|from scratch)\b)|([,:;].+[,:;])/;
-      const writingTask =
-        /\b(write|draft|compose|polish|rewrite)\b/.test(t) &&
-        /\b(email|essay|script|speech|letter|cover letter|proposal|statement|outline)\b/.test(t);
-      const guideWritingTask =
-        /\b(guide|guidance|walk\s+me\s+through|coach\s+me(?:\s+on)?)\b/.test(t) &&
-        /\b(writ(?:e|ing|es|er|ten)?|essay|paper|draft|paragraph|piece|composition|story|article|blog|email|script|thesis|outline|proofread|edit)\b/.test(
-          t
-        );
-      const hasCodeSnippet =
-        /```/.test(t) ||
-        /\b(function|class|import|const|let|var|def|return)\b/.test(t) ||
-        /[{}();]{2,}/.test(t);
-      const wordCount = (t.match(/\S+/g) || []).length;
-      /* 2026-05-29: tighten `explainReasoningAsk`. Bare `explain X` is NO
-         LONGER enough on its own. We require at least one complexity signal:
-           - explicit panel wording (handled by isExplicitReasoningPanelReference)
-           - broad/complex topic noun
-           - detailed / step-by-step / deep-dive wording
-           - artifact verb (solve/write/analyze/code/file/table/plan)
-         Without any of these, "explain tennis" falls through to the LLM
-         classifier which is now prompted to default to Voice UI. */
-      const isExplainStem = /\b(?:explain(?:s|ed|ing)?|explanation(?:s)?|explanatory)\b/.test(t);
-      const explainSafetyAllowed =
-        wordCount >= 3 &&
-        !/^\s*explain\s+(?:yourself|vera|this\s+app)\b/i.test(String(trimmed || "").trim());
-      const explainComplexityBroad = Boolean(detectBroadComplexTopicFrontend(trimmed));
-      const explainComplexityDetailed = /\b(in\s+detail|detailed(?:ly)?|step[-\s]*by[-\s]*step|deep[-\s]*dive|deep\s+dive|thorough(?:ly)?|long[-\s]*form|long\s+form|full\s+breakdown|breakdown|exhaustive(?:ly)?|comprehensive(?:ly)?|from\s+scratch)\b/i.test(t);
-      const explainComplexityArtifact = /\b(solve|prove|derive|simulate|debug|refactor|compute|calculate|evaluate|analy[sz]e|outline|summari[sz]e|compare|review|draft|compose|polish|rewrite|write\s+(?:a|an|the|me|us|my|some|this|that))\b/i.test(t);
-      const explainReasoningAsk =
-        isExplainStem &&
-        explainSafetyAllowed &&
-        (explainComplexityBroad || explainComplexityDetailed || explainComplexityArtifact);
-      return (
-        (conceptWords.test(t) && domainWords.test(t)) ||
-        domainWords.test(t) ||
-        codeProblemWords.test(t) ||
-        hasCodeSnippet ||
-        multiPart.test(t) ||
-        writingTask ||
-        guideWritingTask ||
-        explainReasoningAsk
-      );
-    })();
-    _routeDebugHeuristicReasoning = Boolean(heuristicReasoning);
+    const heuristicEval = evaluateHeuristicReasoningMatch(trimmed, planningIntent);
+    const heuristicReasoning = Boolean(heuristicEval.reasoning);
+    _routeDebugHeuristicReasoning = heuristicReasoning;
 
-    /* Frontend safety veto for the over-broad backend classifier:
-       when classify says "reasoning" but the local heuristic disagrees AND
-       the message reads like personal venting / advice-seeking with no
-       explicit work-artifact verb, force chat. forceActiveLaneReasoningContent
-       is exempt — that path means we're continuing an already-open lane.
-       isLikelyRequestShape() is mixed in via the venting score: real requests
-       cancel one venting point so e.g. "should I file a complaint?" still has
-       its advice-seeking signal but pure declaratives like "I have a lot of
-       homework today" decisively veto. */
+    /* Frontend safety veto for emotional venting / personal reflection with no
+       explicit task intent. Applies to ALL reasoning paths (heuristic, backend
+       classifier, legacy multiPart-style signals) — not only when
+       heuristicReasoning === false. forceActiveLaneReasoningContent and
+       explicit panel force-route are exempt. */
     _routeDebugArtifactIntent = hasExplicitWorkArtifactIntent(trimmed);
     _routeDebugVentingSignals = looksLikePersonalStatementOrVenting(trimmed);
     const _isRequestShape = isLikelyRequestShape(trimmed);
-
-    /* Adjusted venting score: if the message has no request shape at all,
-       declarative-personal status is even stronger evidence for veto. */
     const _adjustedVentingScore = _routeDebugVentingSignals.score + (_isRequestShape ? 0 : 1);
     const _adjustedIsVenting = _adjustedVentingScore >= 2;
+    const _explicitWorkModeTarget = hasExplicitWorkModeTarget(trimmed);
 
     let effectiveClassifyRoute = classifyRoute;
-    const personalAdviceVeto =
-      effectiveClassifyRoute === true &&
-      heuristicReasoning === false &&
-      !forceActiveLaneReasoningContent &&
-      _adjustedIsVenting &&
-      !_routeDebugArtifactIntent.hasIntent;
-    if (personalAdviceVeto) {
-      _routeDebugPersonalAdviceVeto = true;
-      effectiveClassifyRoute = false;
-    }
 
     /* News-lookup veto: if the message looks like a news / external-search
        lookup (e.g. "any news today?", "what happened today?") AND has no
@@ -17152,6 +17533,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       : ((effectiveClassifyRoute || heuristicReasoning || forceActiveLaneReasoningContent) &&
          !taskFollowUpContinuing);
 
+    let blockedReasoningReason = null;
+    const ventBlockedReasoning =
+      !gateForcedReasoning &&
+      !forceActiveLaneReasoningContent &&
+      _adjustedIsVenting &&
+      !_routeDebugArtifactIntent.hasIntent &&
+      !_explicitWorkModeTarget;
+    if (ventBlockedReasoning) {
+      routeReasoning = false;
+      blockedReasoningReason = "emotional_vent_no_task_intent";
+      _routeDebugPersonalAdviceVeto = true;
+    }
+
     if (gateForcedReasoning && !(effectiveClassifyRoute || heuristicReasoning)) {
       try {
         console.warn("[routing_override]", {
@@ -17174,8 +17568,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     if (gateForcedReasoning) {
       _routeDebugReason =
         (opts && opts.__reasoningGateReason) || "forced_reasoning_panel";
-    } else if (personalAdviceVeto) {
-      _routeDebugReason = "personal_statement_veto";
+    } else if (ventBlockedReasoning) {
+      _routeDebugReason = "emotional_vent_no_task_intent";
     } else if (_routeDebugNewsLookupVeto) {
       _routeDebugReason = "news_lookup_veto";
     } else if (taskFollowUpContinuing) {
@@ -17204,6 +17598,20 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     let finalRouteForLog = finalRoute;
     if (!routeReasoning && _newsPlaceholderTriggered) finalRouteForLog = "news";
 
+    logReasoningGateDecision({
+      userText: trimmed,
+      heuristicReasoning,
+      matchedHeuristicName: heuristicEval.matchedHeuristic,
+      regexMatches: heuristicEval.regexMatches,
+      isVenting: _adjustedIsVenting,
+      hasExplicitWorkArtifactIntent: _routeDebugArtifactIntent.hasIntent,
+      explicitWorkModeTarget: _explicitWorkModeTarget,
+      routeReasoning,
+      blockedReasoningReason,
+      ventingSignals: _routeDebugVentingSignals.matched,
+      artifactSignals: _routeDebugArtifactIntent.matched,
+    });
+
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
       is_likely_request_shape: _isRequestShape,
@@ -17218,7 +17626,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       backend_target_panel: classifyBackendTargetPanel,
       backend_source: classifyBackendSource,
       heuristic_reasoning: _routeDebugHeuristicReasoning,
+      heuristic_matched_name: heuristicEval.matchedHeuristic,
+      heuristic_regex_matches: heuristicEval.regexMatches,
       personal_statement_veto: _routeDebugPersonalAdviceVeto,
+      emotional_vent_no_task_intent: Boolean(ventBlockedReasoning),
+      blocked_reasoning_reason: blockedReasoningReason,
+      explicit_work_mode_target: _explicitWorkModeTarget,
       news_lookup_veto: _routeDebugNewsLookupVeto,
       venting_signals: _routeDebugVentingSignals.matched,
       venting_score: _routeDebugVentingSignals.score,
@@ -17536,6 +17949,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       stream_lane_id: streamLaneId,
       source: opts?.__reasoningStreamSource || "maybePrepareWorkModeReasoning",
     });
+    markVoiceTurnReasoningStreamStarted(turnContext?.turn_id, {
+      lane_id: streamLaneId,
+      source: opts?.__reasoningStreamSource || "maybePrepareWorkModeReasoning",
+    });
     try {
       console.info("[reasoning_queue_start]", {
         turn_id: turnContext?.turn_id || null,
@@ -17782,12 +18199,14 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           if (sr.status >= 500) {
             void veraSurfaceLlmFetchFailure({
               feature: "reasoning_stream_upload",
-              response: sr
+              response: sr,
+              extra: { turn_id: turnContext?.turn_id || null }
             });
           } else if (sr.status === 413 || sr.status === 429) {
             void veraSurfaceLlmFetchFailure({
               feature: "reasoning_stream_upload",
-              response: sr
+              response: sr,
+              extra: { turn_id: turnContext?.turn_id || null }
             });
           }
           return "reasoning-upload-failed";
@@ -17821,7 +18240,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           safeReasoningLaneRelease("stream_http_error");
           void veraSurfaceLlmFetchFailure({
             feature: "reasoning_stream",
-            response: sr
+            response: sr,
+            extra: { turn_id: turnContext?.turn_id || null }
           });
           return;
         }
@@ -17832,7 +18252,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       if (err?.name !== "AbortError") {
         void veraSurfaceLlmFetchFailure({
           feature: "reasoning_stream_throw",
-          error: err
+          error: err,
+          extra: { turn_id: turnContext?.turn_id || null }
         });
       }
       throw err;
@@ -17904,11 +18325,13 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
               source_function: "reasoning_stream.error_chunk",
               raw_error_message: String(o.message || "")
             });
-            veraShowCapabilityFailureBubble(
-              "llm_failure",
-              VERA_SAFETY_LIMITS.messages.llmFailure,
-              { actionId: turnContext?.turn_id || null }
-            );
+            emitReasoningUnavailableMessage({
+              cause: "reasoning_stream.error_chunk",
+              feature: "llm_failure",
+              actionId: turnContext?.turn_id || null,
+              turn_id: turnContext?.turn_id || null,
+              asBubble: true,
+            });
             break;
           }
           if (o.type === "summary" && o.text) {
@@ -21207,6 +21630,11 @@ async function applyActionPayload(data, seqCtx = {}) {
         action: payload.op || null,
         payload_mode: payload.payload_mode || "full_state",
         payload_item_count: Array.isArray(payload.items) ? payload.items.length : 0
+      });
+      console.info("[checklist_action_dispatched]", {
+        action: payload.op || null,
+        source: seqCtx?.source || "action_payload",
+        item_count: Array.isArray(payload.items) ? payload.items.length : 0,
       });
       markWorkChecklistLocalMutation();
       const mutation =
@@ -25341,6 +25769,7 @@ async function finalizeMainBrowserTranscript(text) {
     userText: trimmed,
     source: voiceFiles.length ? "upload" : "voice"
   });
+  beginVoiceTurnRoutingGuard(trimmed, turnContext?.turn_id);
   appendWorkModeSubmissionLaneToFormData(formData, turnContext?.turn_lane_id);
 
   for (const f of voiceFiles) {
