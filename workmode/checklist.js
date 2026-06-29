@@ -3126,14 +3126,19 @@ function buildWorkChecklistHelpPlanUserMessage(planContext) {
 
 let workChecklistPlanRequestInFlight = false;
 
+/** Voice/typed checklist help-plan (same intent family as backend checklist.plan). */
+const WORK_CHECKLIST_PLAN_SHORTCUT_RE =
+  /(?:\b(?:help\s+me\s+)?(?:can\s+you\s+|could\s+you\s+|will\s+you\s+|please\s+)?(?:plan|planning|roadmap|prioriti[sz]e|break\s*(?:it\s*)?down|organi[sz]e|make\s+a\s+plan|create\s+a\s+plan)\b.{0,80}?\b(?:check\s*list|checklist|to-?do|todo|task\s*list|tasks?)\b|\bplan\s+(?:using|with|from)\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\b|\b(?:help\s+me\s+)?plan\s+my\s+(?:check\s*list|checklist|to-?do|todo|tasks?)\b|\buse\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\s+to\s+(?:make|create)\s+a\s+plan\b)/i;
+
 function isWorkChecklistPlanShortcutIntent(text) {
-  const t = String(text || "").toLowerCase().trim();
-  if (!t) return false;
-  const hasPlanVerb = /\b(plan|planning|roadmap|prioriti[sz]e|break\s*(it\s*)?down|organi[sz]e)\b/.test(t);
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  if (/\bsync\s+(?:the\s+)?(?:plan|checklist|list|reasoning(?:\s+plan)?)\b/i.test(raw)) return false;
+  if (WORK_CHECKLIST_PLAN_SHORTCUT_RE.test(raw)) return true;
+  const t = raw.toLowerCase();
+  const hasPlanVerb = /\b(plan|planning|roadmap|prioriti[sz]e|break\s*(it\s*)?down|organi[sz]e|make\s+a\s+plan|create\s+a\s+plan)\b/.test(t);
   const hasChecklistNoun = /\b(check\s*list|checklist|to-?do|todo|task list|tasks?)\b/.test(t);
-  const directPhrase = /\b(help me plan|can you help me plan)\b/.test(t);
-  const planUsingChecklist = /\bplan\s+(?:using|with|from)\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\b/.test(t);
-  return (hasPlanVerb && hasChecklistNoun) || (directPhrase && hasChecklistNoun) || planUsingChecklist;
+  return hasPlanVerb && hasChecklistNoun;
 }
 
 /** Defer the frontend plan shortcut when the utterance is compound (plan + music/timer/etc.). */
@@ -3144,10 +3149,16 @@ function shouldDeferChecklistPlanShortcut(text) {
   if (typeof detectCompoundActionFamilies === "function") {
     const compound = detectCompoundActionFamilies(t);
     if (compound.isCompound) {
+      const families = Array.isArray(compound.families) ? compound.families : [];
+      const deferFamilies = families.filter((f) => f !== "checklist_plan" && f !== "reasoning");
+      if (!deferFamilies.length) {
+        return false;
+      }
       logChecklistPlanDebug("shortcut_deferred", {
         reason: "compound_action",
         raw_text: t.slice(0, 240),
-        families: compound.families || [],
+        families,
+        defer_families: deferFamilies,
       });
       return true;
     }

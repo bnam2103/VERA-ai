@@ -10279,6 +10279,10 @@ function _familiesForCompoundClause(clause) {
   ) {
     families.push("panel");
   }
+  if (families.includes("checklist_plan")) {
+    const reasoningOnlyIdx = families.indexOf("reasoning");
+    if (reasoningOnlyIdx >= 0) families.splice(reasoningOnlyIdx, 1);
+  }
   return families;
 }
 
@@ -10371,6 +10375,13 @@ function detectCompoundActionFamilies(text) {
   }
   if (!families.includes("panel") && _REASONING_PANEL_IN_RE.test(s)) {
     families.push("panel");
+  }
+  /* Checklist help-plan ("plan using the checklist") also matches the
+     reasoning family's ``help me plan`` branch — treat as one family so
+     the frontend plan shortcut is not deferred to /infer chat. */
+  if (families.includes("checklist_plan")) {
+    const reasoningOnlyIdx = families.indexOf("reasoning");
+    if (reasoningOnlyIdx >= 0) families.splice(reasoningOnlyIdx, 1);
   }
   const panelSubIntents = _countDistinctPanelSubIntents(s);
   if (panelSubIntents >= 2) {
@@ -18417,18 +18428,49 @@ async function runWorkChecklistHelpPlan({ signal, isVoice, source, userText } = 
 }
 
 async function maybeHandleWorkChecklistPlanShortcut(text, opts) {
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
-  if (!isWorkChecklistPlanShortcutIntent(text)) return false;
-  if (typeof shouldDeferChecklistPlanShortcut === "function" && shouldDeferChecklistPlanShortcut(text)) {
-    return false;
-  }
+  const raw = String(text || "").trim();
   const signal = opts instanceof AbortSignal ? opts : opts?.signal;
   const isVoice = Boolean(opts && typeof opts === "object" && !(opts instanceof AbortSignal) && opts.isVoice);
   const source =
     opts && typeof opts === "object" && !(opts instanceof AbortSignal)
       ? opts.source || (isVoice ? "voice_or_typed_shortcut" : "keyboard")
       : "keyboard";
-  await runWorkChecklistHelpPlan({ signal, isVoice, source, userText: text });
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") {
+    try {
+      console.info("[checklist_plan_fell_through_to_voice_answer]", {
+        reason: "not_work_mode",
+        raw_text: raw.slice(0, 240),
+        source,
+      });
+    } catch (_) {}
+    return false;
+  }
+  if (!isWorkChecklistPlanShortcutIntent(raw)) return false;
+  try {
+    console.info("[checklist_plan_route_detected]", {
+      raw_text: raw.slice(0, 240),
+      source,
+      input_source: isVoice ? "voice" : "keyboard",
+    });
+  } catch (_) {}
+  if (typeof shouldDeferChecklistPlanShortcut === "function" && shouldDeferChecklistPlanShortcut(raw)) {
+    try {
+      console.info("[checklist_plan_fell_through_to_voice_answer]", {
+        reason: "deferred_to_compound_planner",
+        raw_text: raw.slice(0, 240),
+        source,
+      });
+    } catch (_) {}
+    return false;
+  }
+  try {
+    console.info("[checklist_plan_action_dispatched]", {
+      raw_text: raw.slice(0, 240),
+      source,
+      executor: "executeChecklistPlanAction",
+    });
+  } catch (_) {}
+  await runWorkChecklistHelpPlan({ signal, isVoice, source, userText: raw });
   return true;
 }
 
@@ -26965,6 +27007,23 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     return;
   }
 
+  if (
+    await maybeHandleWorkChecklistSyncShortcut(trimmed, {
+      source: path || "work-typed-preflight",
+      isVoice: Boolean(opts?.isVoice),
+    })
+  ) {
+    return;
+  }
+  if (
+    await maybeHandleWorkChecklistPlanShortcut(trimmed, {
+      source: path || "work-typed-preflight",
+      isVoice: Boolean(opts?.isVoice),
+    })
+  ) {
+    return;
+  }
+
   /* =========================
      WORK MODE MULTI-ACTION PLANNER GATE (legacy frontend planner)
      ----------------------------------------------------------------------
@@ -27099,17 +27158,6 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     });
   }
 
-  if (
-    await maybeHandleWorkChecklistSyncShortcut(trimmed, {
-      source: path || "work-typed",
-      isVoice: false
-    })
-  ) {
-    return;
-  }
-  if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
-    return;
-  }
   if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: path || "work-typed", isVoice: false })) {
     return;
   }
