@@ -10392,7 +10392,7 @@ function detectCompoundActionFamilies(text) {
     } catch (_) {}
     return connectorCompound;
   }
-  const families = [];
+  let families = [];
   if (_WMC_PANEL_FAMILY_RE.test(s)) families.push("panel");
   if (_WMC_REASONING_FAMILY_RE.test(s)) families.push("reasoning");
   if (_WMC_MUSIC_FAMILY_RE.test(s)) families.push("music");
@@ -10680,6 +10680,50 @@ function resolvePanelNavigationVisualIndexFromText(text) {
 try { window.isNavigationOnlyPanelCommand = isNavigationOnlyPanelCommand; } catch (_) {}
 try { window.isPanelOpenNewReasoningPanelCommand = isPanelOpenNewReasoningPanelCommand; } catch (_) {}
 try { window.resolvePanelNavigationVisualIndexFromText = resolvePanelNavigationVisualIndexFromText; } catch (_) {}
+
+/**
+ * Voice/typed guard: navigation-only panel commands must never fall through to
+ * /infer (which surfaces the generic "Reasoning is temporarily unavailable"
+ * bubble when the backend fails). Compound panel+action turns defer to planner.
+ */
+function maybeHandleWorkModePanelNavigationVoiceTurn(text, opts = {}) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+  try {
+    const compound = detectCompoundActionFamilies(trimmed);
+    if (compound.isCompound) return false;
+  } catch (_) {}
+  const navOnly =
+    typeof isNavigationOnlyPanelCommand === "function" && isNavigationOnlyPanelCommand(trimmed);
+  const openNew =
+    typeof isPanelOpenNewReasoningPanelCommand === "function" &&
+    isPanelOpenNewReasoningPanelCommand(trimmed);
+  if (!navOnly && !openNew) return false;
+  if (typeof maybeHandleWorkModePanelNavigationShortcut !== "function") {
+    try {
+      console.warn("[panel_navigation_fell_through_to_reasoning]", {
+        raw_text: trimmed.slice(0, 240),
+        reason: "navigation_shortcut_missing",
+      });
+    } catch (_) {}
+    return false;
+  }
+  const handled = maybeHandleWorkModePanelNavigationShortcut(trimmed, {
+    ...opts,
+    isVoice: opts.isVoice !== false,
+  });
+  if (!handled) {
+    try {
+      console.warn("[panel_navigation_fell_through_to_reasoning]", {
+        raw_text: trimmed.slice(0, 240),
+        reason: "navigation_shortcut_returned_false",
+      });
+    } catch (_) {}
+  }
+  return handled;
+}
+
+try { window.maybeHandleWorkModePanelNavigationVoiceTurn = maybeHandleWorkModePanelNavigationVoiceTurn; } catch (_) {}
 
 /** Multi-item planning / scheduling — route to reasoning and enable checklist Sync from markdown. */
 /**
@@ -11973,6 +12017,9 @@ function buildTurnContextPolicy(opts = {}) {
       blocked_context_sources: [],
       decision_reason: "checklist_plan_action_command",
       action_family: "checklist.plan",
+      should_stream_reasoning: false,
+      should_open_and_stream: false,
+      should_schedule_stage2: false,
       user_text_preview: userText.slice(0, 200),
     };
   }
@@ -18879,8 +18926,24 @@ async function runWorkChecklistHelpPlan({ signal, isVoice, source, userText } = 
   return result?.ok !== false || result?.reason === "already_in_flight";
 }
 
+function logChecklistPlanFellThroughToVoiceAnswer(text, reason, extra = {}) {
+  if (typeof isWorkChecklistPlanShortcutIntent !== "function" || !isWorkChecklistPlanShortcutIntent(text)) {
+    return;
+  }
+  try {
+    console.warn("[checklist_plan_fell_through_to_voice_answer]", {
+      raw_text: String(text || "").slice(0, 240),
+      reason: String(reason || "unknown"),
+      ...extra,
+    });
+  } catch (_) {}
+}
+
 async function maybeHandleWorkChecklistPlanShortcut(text, opts) {
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") {
+    logChecklistPlanFellThroughToVoiceAnswer(text, "work_mode_off_or_not_vera");
+    return false;
+  }
   if (!isWorkChecklistPlanShortcutIntent(text)) return false;
   if (typeof shouldDeferChecklistPlanShortcut === "function" && shouldDeferChecklistPlanShortcut(text)) {
     try {
@@ -24976,6 +25039,39 @@ function showDeferredMainBrowserUserBubbleIfNeeded(trimmed) {
 async function runInferAfterWorkModeReasoningPrep(formData, prep, inferOpts = {}) {
   const p = prep || {};
   await p.inferGate;
+  const inferUserTextEarly = inferTranscriptFromFormData(formData);
+  if (
+    isVeraWorkModeOn() &&
+    typeof isNavigationOnlyPanelCommand === "function" &&
+    isNavigationOnlyPanelCommand(inferUserTextEarly)
+  ) {
+    try {
+      console.warn("[panel_navigation_fell_through_to_reasoning]", {
+        raw_text: String(inferUserTextEarly || "").slice(0, 240),
+        reason: "blocked_infer_for_navigation_only",
+      });
+    } catch (_) {}
+    if (typeof maybeHandleWorkModePanelNavigationShortcut === "function") {
+      maybeHandleWorkModePanelNavigationShortcut(inferUserTextEarly, {
+        reason: "infer_blocked_navigation_fallback",
+        isVoice: Boolean(inferOpts?.isVoice ?? true),
+      });
+    }
+    processing = false;
+    requestInFlight = false;
+    voiceUxTurn = null;
+    waveState = "idle";
+    try {
+      setStatus("Ready", "idle");
+    } catch (_) {}
+    try {
+      updateMuteInputButton();
+    } catch (_) {}
+    if (listeningMode === "continuous" && listening && !inputMuted) {
+      startListening();
+    }
+    return "panel-navigation-skip-infer";
+  }
   if (p.reasoningUploadState?.failed) return "reasoning-upload-failed";
   if (p?.voiceTwoStage?.reasoningRouted) {
     await runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, inferOpts);
@@ -25090,7 +25186,19 @@ async function finalizeMainBrowserTranscript(text) {
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed, { isVoice: true, source: "main-browser-asr" })) {
     return;
   }
-  if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "main-browser-asr", isVoice: true })) {
+  if (
+    typeof isWorkChecklistPlanShortcutIntent === "function" &&
+    isWorkChecklistPlanShortcutIntent(trimmed) &&
+    !(
+      typeof shouldDeferChecklistPlanShortcut === "function" &&
+      shouldDeferChecklistPlanShortcut(trimmed)
+    )
+  ) {
+    logChecklistPlanFellThroughToVoiceAnswer(trimmed, "preflight_shortcut_not_handled", {
+      source: "main-browser-asr",
+    });
+  }
+  if (maybeHandleWorkModePanelNavigationVoiceTurn(trimmed, { reason: "main-browser-asr" })) {
     return;
   }
   /* PART 3: close-reasoning-panel client shortcut. Runs BEFORE /infer so
@@ -25862,7 +25970,7 @@ async function maybeRunInterruptionClientShortcuts(routedText, originalText) {
       });
       return true;
     }
-    if (maybeHandleWorkModePanelNavigationShortcut(routedText, { reason: "voice_interruption", isVoice: true })) {
+    if (maybeHandleWorkModePanelNavigationVoiceTurn(routedText, { reason: "voice_interruption" })) {
       logInterruptTranscriptDebug("routed_to_normal_user_turn", {
         original_transcript: String(originalText || "").slice(0, 120),
         normalized_command_text: routedText.slice(0, 120),
@@ -27200,7 +27308,7 @@ async function handleUtterance() {
         updateMuteInputButton();
         return;
       }
-      if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
+      if (maybeHandleWorkModePanelNavigationVoiceTurn(trimmed, { reason: "server-asr-preflight" })) {
         return;
       }
       if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
@@ -28412,7 +28520,7 @@ async function onPttClick() {
       updateMuteInputButton();
       return;
     }
-    if (maybeHandleWorkModePanelNavigationShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
+    if (maybeHandleWorkModePanelNavigationVoiceTurn(text, { reason: "ptt-browser-asr" })) {
       setStatus("Ready", "idle");
       updateMuteInputButton();
       return;
