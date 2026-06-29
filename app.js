@@ -10392,7 +10392,7 @@ function detectCompoundActionFamilies(text) {
     } catch (_) {}
     return connectorCompound;
   }
-  let families = [];
+  const families = [];
   if (_WMC_PANEL_FAMILY_RE.test(s)) families.push("panel");
   if (_WMC_REASONING_FAMILY_RE.test(s)) families.push("reasoning");
   if (_WMC_MUSIC_FAMILY_RE.test(s)) families.push("music");
@@ -12017,9 +12017,6 @@ function buildTurnContextPolicy(opts = {}) {
       blocked_context_sources: [],
       decision_reason: "checklist_plan_action_command",
       action_family: "checklist.plan",
-      should_stream_reasoning: false,
-      should_open_and_stream: false,
-      should_schedule_stage2: false,
       user_text_preview: userText.slice(0, 200),
     };
   }
@@ -18926,24 +18923,8 @@ async function runWorkChecklistHelpPlan({ signal, isVoice, source, userText } = 
   return result?.ok !== false || result?.reason === "already_in_flight";
 }
 
-function logChecklistPlanFellThroughToVoiceAnswer(text, reason, extra = {}) {
-  if (typeof isWorkChecklistPlanShortcutIntent !== "function" || !isWorkChecklistPlanShortcutIntent(text)) {
-    return;
-  }
-  try {
-    console.warn("[checklist_plan_fell_through_to_voice_answer]", {
-      raw_text: String(text || "").slice(0, 240),
-      reason: String(reason || "unknown"),
-      ...extra,
-    });
-  } catch (_) {}
-}
-
 async function maybeHandleWorkChecklistPlanShortcut(text, opts) {
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") {
-    logChecklistPlanFellThroughToVoiceAnswer(text, "work_mode_off_or_not_vera");
-    return false;
-  }
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
   if (!isWorkChecklistPlanShortcutIntent(text)) return false;
   if (typeof shouldDeferChecklistPlanShortcut === "function" && shouldDeferChecklistPlanShortcut(text)) {
     try {
@@ -25185,18 +25166,6 @@ async function finalizeMainBrowserTranscript(text) {
   }
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed, { isVoice: true, source: "main-browser-asr" })) {
     return;
-  }
-  if (
-    typeof isWorkChecklistPlanShortcutIntent === "function" &&
-    isWorkChecklistPlanShortcutIntent(trimmed) &&
-    !(
-      typeof shouldDeferChecklistPlanShortcut === "function" &&
-      shouldDeferChecklistPlanShortcut(trimmed)
-    )
-  ) {
-    logChecklistPlanFellThroughToVoiceAnswer(trimmed, "preflight_shortcut_not_handled", {
-      source: "main-browser-asr",
-    });
   }
   if (maybeHandleWorkModePanelNavigationVoiceTurn(trimmed, { reason: "main-browser-asr" })) {
     return;
