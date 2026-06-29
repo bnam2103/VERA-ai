@@ -4,6 +4,47 @@ function renderWeatherForecastPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
 
+  const workModeActive =
+    typeof isVeraWorkModeOn === "function" &&
+    isVeraWorkModeOn() &&
+    typeof appModePrefix === "function" &&
+    appModePrefix() === "vera";
+  const musicPanelExistsBefore =
+    sidePaneEl.dataset.sidePaneKind === "productivity" &&
+    Boolean(String(sidePaneEl.innerHTML || "").trim());
+
+  try {
+    console.info("[weather_panel_render_requested]", {
+      action_name: "weather.forecast",
+      work_mode_active: workModeActive,
+      target_container_id: sidePaneEl.id || "side-pane",
+      music_panel_exists_before: musicPanelExistsBefore,
+    });
+    console.info("[weather_panel_target_container]", {
+      target_container_id: sidePaneEl.id || "side-pane",
+      side_pane_kind: sidePaneEl.dataset.sidePaneKind || null,
+    });
+  } catch (_) {}
+
+  if (workModeActive && musicPanelExistsBefore) {
+    try {
+      console.info("[music_panel_overwrite_blocked]", {
+        action_name: "weather_forecast_panel",
+        work_mode_active: true,
+        target_container_id: sidePaneEl.id || "side-pane",
+        music_panel_exists_before: true,
+        music_panel_exists_after: true,
+        reason: "work_mode_productivity_pinned",
+      });
+      console.info("[music_panel_preserved]", {
+        action_name: "weather_forecast_panel",
+        music_panel_exists_after: true,
+        reason: "weather_forecast_deferred_from_music_slot",
+      });
+    } catch (_) {}
+    return;
+  }
+
   try {
     console.info("[weather_forecast_panel]", {
       stage: "frontend_render",

@@ -21135,6 +21135,77 @@ function _usageSkipFinalizeActionApply(payload, merged) {
   return false;
 }
 
+function _musicPanelExistsInSidePane(sidePaneEl) {
+  return Boolean(
+    sidePaneEl &&
+    sidePaneEl.dataset.sidePaneKind === "productivity" &&
+    String(sidePaneEl.innerHTML || "").trim()
+  );
+}
+
+const _INFO_PANEL_TYPES_THAT_MUST_NOT_REPLACE_MUSIC = new Set([
+  "media_tabs",
+  "news_results",
+  "finance_chart",
+  "product_results_panel",
+  "location_map_panel",
+  "weather_forecast_panel",
+]);
+
+/** Work Mode pins the productivity (music) surface in #side-pane; info panels must not replace it. */
+function _blockInfoPanelOverwriteMusicInWorkMode(payload) {
+  const panelType = String(payload?.panel_type || "");
+  if (!panelType) return false;
+  const workModeActive = isVeraWorkModeOn() && appModePrefix() === "vera";
+  if (!workModeActive) return false;
+  if (!_INFO_PANEL_TYPES_THAT_MUST_NOT_REPLACE_MUSIC.has(panelType)) return false;
+
+  const sidePaneEl = uiEl("side-pane");
+  const musicBefore = _musicPanelExistsInSidePane(sidePaneEl);
+
+  try {
+    console.info("[side_panel_replace_attempt]", {
+      action_name: panelType,
+      work_mode_active: workModeActive,
+      target_container_id: sidePaneEl?.id || "side-pane",
+      music_panel_exists_before: musicBefore,
+      blocked: true,
+      reason: "work_mode_music_panel_pinned",
+    });
+    console.info("[music_panel_preserve_check]", {
+      panel_type: panelType,
+      work_mode_active: workModeActive,
+      music_panel_exists_before: musicBefore,
+    });
+  } catch (_) {}
+
+  if (sidePaneEl) {
+    if (musicBefore) {
+      if (sidePaneEl.hidden) restoreProductivityPanel("vera");
+    } else {
+      renderProductivityPanel();
+    }
+  }
+
+  const musicAfter = _musicPanelExistsInSidePane(uiEl("side-pane"));
+  try {
+    console.info("[music_panel_overwrite_blocked]", {
+      action_name: panelType,
+      music_panel_exists_before: musicBefore,
+      music_panel_exists_after: musicAfter,
+      reason: "work_mode_music_panel_pinned",
+    });
+    if (musicAfter || musicBefore) {
+      console.info("[music_panel_preserved]", {
+        action_name: panelType,
+        music_panel_exists_after: musicAfter,
+      });
+    }
+  } catch (_) {}
+
+  return true;
+}
+
 async function applyActionPayload(data, seqCtx = {}) {
   // 2026-05-29 — multi-action planner pass-through.
   // When the backend executed a typed compound command, every action's
@@ -21170,27 +21241,8 @@ async function applyActionPayload(data, seqCtx = {}) {
     return;
   }
   const payload = data?.action_payload;
-  const lockToMusicPanel =
-    isVeraWorkModeOn() && appModePrefix() === "vera";
 
-  if (
-    lockToMusicPanel &&
-    (payload?.panel_type === "media_tabs" ||
-      payload?.panel_type === "news_results" ||
-      payload?.panel_type === "finance_chart" ||
-      payload?.panel_type === "product_results_panel" ||
-      payload?.panel_type === "location_map_panel")
-  ) {
-    const sidePaneEl = uiEl("side-pane");
-    if (sidePaneEl) {
-      const hasProductivityMarkup =
-        Boolean(sidePaneEl.innerHTML.trim()) && sidePaneEl.dataset.sidePaneKind === "productivity";
-      if (hasProductivityMarkup) {
-        if (sidePaneEl.hidden) restoreProductivityPanel("vera");
-      } else {
-        renderProductivityPanel();
-      }
-    }
+  if (_blockInfoPanelOverwriteMusicInWorkMode(payload)) {
     return;
   }
 
