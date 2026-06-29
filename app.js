@@ -9734,11 +9734,11 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
   if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return null;
   const lowered = s.toLowerCase();
   let m = s.match(
-    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
+    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
   );
   if (!m) {
     m = s.match(
-      /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
+      /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
     );
   }
   if (!m) return null;
@@ -9766,7 +9766,7 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
     return null;
   }
   const hadTabWord = /\b(?:reasoning|panel|tab|workspace|page)\b/i.test(lowered);
-  if (!hadTabWord && !/\b(?:go\s+back\s+to|go\s+to|jump\s+to|switch\s+to|change\s+to)\b/i.test(lowered)) {
+  if (!hadTabWord && !/\b(?:go\s+back\s+to|go\s+to|jump\s+to|switch\s+to|change\s+to|move\s+to)\b/i.test(lowered)) {
     return null;
   }
   if (!hadTabWord && q.length < 10) return null;
@@ -10007,8 +10007,22 @@ function isExplicitReasoningPanelReference(text) {
   const empty = { matched: false, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
   const s = String(text || "").trim();
   if (!s) return empty;
+  if (isExplicitWorkModePanelNavigationIntent(s)) {
+    try {
+      console.info("[explicit_panel_reasoning_target_blocked_for_navigation]", {
+        raw_text: s.slice(0, 240),
+      });
+    } catch (_) {}
+    return empty;
+  }
   const mPut = s.match(_REASONING_PANEL_PUT_RE);
   if (mPut) {
+    try {
+      console.info("[explicit_panel_reasoning_target_detected]", {
+        raw_text: s.slice(0, 240),
+        form: "put",
+      });
+    } catch (_) {}
     const pronoun = (mPut[1] || "").trim().toLowerCase() || null;
     const explicitTopic = (mPut[2] || "").trim() || null;
     const num = mPut[3] ? parseInt(mPut[3], 10) : null;
@@ -10026,6 +10040,12 @@ function isExplicitReasoningPanelReference(text) {
   }
   const mIn = s.match(_REASONING_PANEL_IN_RE);
   if (mIn) {
+    try {
+      console.info("[explicit_panel_reasoning_target_detected]", {
+        raw_text: s.slice(0, 240),
+        form: "in",
+      });
+    } catch (_) {}
     const preOrd = (mIn[1] || "").toLowerCase();
     const num = mIn[2] ? parseInt(mIn[2], 10) : null;
     const ord = (mIn[3] || preOrd || "").toLowerCase();
@@ -10049,7 +10069,10 @@ function isExplicitReasoningPanelReference(text) {
     };
   }
   if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
-    return { matched: true, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
+    if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|and\s+explain)\b/i.test(s)) {
+      return { matched: true, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
+    }
+    return empty;
   }
   return empty;
 }
@@ -10079,6 +10102,7 @@ function extractRawTopicBeforePanelPhrase(text) {
 function extractSubstantiveTopicBeforePanelPhrase(text) {
   const s = String(text || "").trim();
   if (!s) return "";
+  if (isExplicitWorkModePanelNavigationIntent(s)) return "";
   const panelM = s.match(_REASONING_PANEL_IN_RE);
   if (!panelM) return "";
   let before = s.slice(0, panelM.index ?? 0).trim().replace(/[?,;.]+\s*$/u, "").trim();
@@ -10215,7 +10239,7 @@ function rememberWorkModeSubstantiveUserText(text) {
  *     (single family; let existing music handler take it)
  */
 const _WMC_PANEL_FAMILY_RE =
-  /\b(?:go(?:\s+back)?\s+to|jump\s+to|switch\s+to|change\s+to|open|close|hide|dismiss|create|make|add|new|navigate\s+to|use|show|select)\s+(?:a\s+|the\s+|my\s+|all\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i;
+  /\b(?:go(?:\s+back)?\s+to|jump\s+to|switch\s+to|change\s+to|move\s+to|open|close|hide|dismiss|create|make|add|new|navigate\s+to|use|show|select)\s+(?:a\s+|the\s+|my\s+|all\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b|\b(?:next|previous|prior)\s+panel\b/i;
 /* 2026-06-01 — added "help me plan|draft|outline|brainstorm" and the
    bare ``plan <my|an|the|out>`` reasoning verb so compound utterances
    like "Open panel 2 and help me plan my essay there" register the
@@ -10540,40 +10564,379 @@ function isExplicitWorkModePanelNavigationIntent(text) {
   const s = String(text ?? "").trim();
   if (!s) return false;
   if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return false;
+  if (_REASONING_PANEL_PUT_RE.test(s)) return false;
   const low = s.toLowerCase();
+  if (/\b(?:this|that|it|them)\b/i.test(s) && _REASONING_PANEL_IN_RE.test(s)) return false;
+  if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|an?\s+explanation)\b/i.test(low) && _REASONING_PANEL_IN_RE.test(s)) {
+    return false;
+  }
+  if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
+    if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|and\s+explain)\b/i.test(low)) {
+      return false;
+    }
+    return true;
+  }
+  const _navVerb =
+    /(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)/i;
   if (
-    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(
+    _navVerb.test(low) &&
+    /\b(?:go\s+to\s+)?next\s+panel\b/i.test(low)
+  ) {
+    return true;
+  }
+  if (
+    _navVerb.test(low) &&
+    /\b(?:go\s+to\s+)?(?:previous|prior)\s+panel\b/i.test(low)
+  ) {
+    return true;
+  }
+  if (/\bgo\s+back\s+to\s+(?:the\s+)?(?:previous|prior|last)\s+panel\b/i.test(low)) {
+    return true;
+  }
+  if (
+    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(
       low
     )
   ) {
     return true;
   }
   if (
-    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(
+    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(
       low
     )
   ) {
     return true;
   }
   if (
-    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\b/i.test(low) &&
+    _navVerb.test(low) &&
     /\b(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(low)
   ) {
+    if (/\b(?:this|that|it|them)\b/i.test(low)) return false;
+    if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|an?\s+explanation)\b/i.test(low)) {
+      return false;
+    }
     return true;
   }
   if (
-    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\b/i.test(s) &&
+    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\b/i.test(s) &&
     /(?:reasoning\s+)?(?:panel|space|tab|page)\s*[?.!]*\s*$/i.test(s.trim())
   ) {
     return true;
   }
   if (
-    /^(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\b/i.test(s.trim()) &&
+    /^(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\b/i.test(s.trim()) &&
     /(?:reasoning\s+)?(?:panel|space|tab|page)\s*[?.!]*\s*$/i.test(s.trim())
   ) {
     return true;
+  }
+  if (/^\s*(?:next|previous|prior)\s+panel\s*[?.!]*\s*$/i.test(s)) {
+    return true;
+  }
+  if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|and\s+explain)\b/i.test(low)) {
+    return false;
   }
   return goToReasoningPanelQueryHeuristicUi(s) != null;
+}
+
+function _panelNavOrdinalTokenToVisual1(tok) {
+  const t = String(tok || "").toLowerCase().replace(/(?:st|nd|rd|th)$/i, "");
+  if (/^\d+$/.test(t)) return parseInt(t, 10);
+  return _REASONING_PANEL_ORD_MAP[t] != null ? _REASONING_PANEL_ORD_MAP[t] : null;
+}
+
+function _resolvePanelNavigationSwitchFromVisual1(visual1) {
+  const want = Number(visual1);
+  if (!Number.isFinite(want) || want < 1) return null;
+  const order =
+    typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+  const entry = order[want - 1];
+  if (!entry) return { kind: "switch", visualIndex1Based: want, error: "no_such_panel" };
+  const tabIdx =
+    typeof resolveReasoningPanelTabIndexFromVisual1 === "function"
+      ? resolveReasoningPanelTabIndexFromVisual1(want)
+      : entry.tabIndex;
+  return {
+    kind: "switch",
+    visualIndex1Based: want,
+    tabIndex: tabIdx,
+    label: entry.label,
+  };
+}
+
+function parseWorkModePanelNavigationTarget(text) {
+  const s = String(text || "").trim();
+  if (!s) return null;
+  const low = s.toLowerCase();
+
+  if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
+    return { kind: "open_new" };
+  }
+  if (!isExplicitWorkModePanelNavigationIntent(s)) return null;
+
+  if (/\b(?:go\s+to\s+)?next\s+panel\b/i.test(low)) {
+    const order =
+      typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    const activeTabIdx =
+      typeof getActiveReasoningLaneIndex === "function" ? getActiveReasoningLaneIndex() : null;
+    let cur = order.findIndex((p) => p.tabIndex === activeTabIdx);
+    if (cur < 0) cur = 0;
+    if (cur + 1 >= order.length) return { kind: "next", error: "no_next" };
+    const entry = order[cur + 1];
+    return {
+      kind: "switch",
+      visualIndex1Based: entry.visualIndex,
+      tabIndex: entry.tabIndex,
+      label: entry.label,
+      relative: "next",
+    };
+  }
+
+  if (
+    /\b(?:go\s+to\s+)?(?:previous|prior)\s+panel\b/i.test(low) ||
+    /\bgo\s+back\s+to\s+(?:the\s+)?(?:previous|prior|last)\s+panel\b/i.test(low)
+  ) {
+    const order =
+      typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    const activeTabIdx =
+      typeof getActiveReasoningLaneIndex === "function" ? getActiveReasoningLaneIndex() : null;
+    let cur = order.findIndex((p) => p.tabIndex === activeTabIdx);
+    if (cur < 0) cur = 0;
+    if (cur - 1 < 0) return { kind: "previous", error: "no_previous" };
+    const entry = order[cur - 1];
+    return {
+      kind: "switch",
+      visualIndex1Based: entry.visualIndex,
+      tabIndex: entry.tabIndex,
+      label: entry.label,
+      relative: "previous",
+    };
+  }
+
+  const ordNav =
+    s.match(
+      /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|\d+)(?:st|nd|rd|th)?\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i
+    ) ||
+    s.match(
+      /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|\d+)(?:st|nd|rd|th)?\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i
+    );
+  if (ordNav && ordNav[1]) {
+    const visual1 = _panelNavOrdinalTokenToVisual1(ordNav[1]);
+    if (visual1) return _resolvePanelNavigationSwitchFromVisual1(visual1);
+  }
+
+  const panelNum = s.match(/\b(?:panel|space|tab|page)\s*#?\s*(\d+)\b/i);
+  if (panelNum && panelNum[1]) {
+    const visual1 = parseInt(panelNum[1], 10);
+    if (Number.isFinite(visual1)) return _resolvePanelNavigationSwitchFromVisual1(visual1);
+  }
+
+  const titleQ = goToReasoningPanelQueryHeuristicUi(s);
+  if (titleQ) {
+    const ordFromTitle = _panelNavOrdinalTokenToVisual1(titleQ);
+    if (ordFromTitle) {
+      return _resolvePanelNavigationSwitchFromVisual1(ordFromTitle);
+    }
+    if (typeof findReasoningPanelIndicesByTitleQuery === "function") {
+    const hits = findReasoningPanelIndicesByTitleQuery(titleQ);
+    if (hits.length === 1) {
+      return _resolvePanelNavigationSwitchFromVisual1(hits[0]);
+    }
+    if (hits.length > 1) {
+      return { kind: "switch", titleQuery: titleQ, error: "ambiguous_title", hits };
+    }
+    return { kind: "switch", titleQuery: titleQ, error: "no_title_match" };
+    }
+  }
+
+  return null;
+}
+
+function shouldDeferPanelNavigationShortcutForMultiAction(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  try {
+    const compound = detectCompoundActionFamilies(s);
+    if (!compound.isCompound) return false;
+    const families = compound.families || [];
+    return families.some((f) => f !== "panel");
+  } catch (_) {}
+  return false;
+}
+
+function executeWorkModePanelNavigation(target) {
+  if (!target || typeof target !== "object") return { ok: false, error: "no_target" };
+  if (target.kind === "open_new") {
+    const panel =
+      typeof addReasoningTab === "function"
+        ? addReasoningTab({ source: "panel_navigation_open_new" })
+        : null;
+    return { ok: Boolean(panel), kind: "open_new" };
+  }
+  if (target.error === "no_next") {
+    return { ok: false, error: "no_next" };
+  }
+  if (target.error === "no_previous") {
+    return { ok: false, error: "no_previous" };
+  }
+  if (target.error === "no_such_panel") {
+    return { ok: false, error: "no_such_panel", visualIndex1Based: target.visualIndex1Based };
+  }
+  if (target.error === "ambiguous_title") {
+    return { ok: false, error: "ambiguous_title", hits: target.hits || [] };
+  }
+  if (target.error === "no_title_match") {
+    return { ok: false, error: "no_title_match", titleQuery: target.titleQuery || "" };
+  }
+  if (target.kind === "switch") {
+    let tabIdx = target.tabIndex;
+    if (tabIdx == null && target.visualIndex1Based != null) {
+      tabIdx =
+        typeof resolveReasoningPanelTabIndexFromVisual1 === "function"
+          ? resolveReasoningPanelTabIndexFromVisual1(target.visualIndex1Based)
+          : null;
+    }
+    if (tabIdx == null) {
+      return {
+        ok: false,
+        error: "no_such_panel",
+        visualIndex1Based: target.visualIndex1Based,
+      };
+    }
+    if (typeof activateReasoningTab === "function") {
+      activateReasoningTab(tabIdx, { source: "panel_navigation" });
+    }
+    const order =
+      typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    const entry =
+      order.find((p) => p.tabIndex === tabIdx) ||
+      order[(Number(target.visualIndex1Based) || 1) - 1];
+    return {
+      ok: true,
+      kind: "switch",
+      tabIndex: tabIdx,
+      visualIndex1Based: entry?.visualIndex ?? target.visualIndex1Based,
+      label: entry?.label || target.label || null,
+    };
+  }
+  return { ok: false, error: "unknown_target" };
+}
+
+function buildPanelNavigationVoiceReply(target, execResult) {
+  if (target?.kind === "open_new" && execResult?.ok) {
+    return "Opened a new reasoning panel.";
+  }
+  if (execResult?.error === "no_next") return "There is no next panel.";
+  if (execResult?.error === "no_previous") return "There is no previous panel.";
+  if (execResult?.error === "no_such_panel") {
+    const n = target?.visualIndex1Based;
+    return Number.isFinite(n) ? `I don't see panel ${n}.` : "I couldn't find that panel.";
+  }
+  if (execResult?.error === "no_title_match") return "I couldn't find that panel.";
+  if (execResult?.error === "ambiguous_title") return "Which reasoning panel do you mean?";
+  const label = String(execResult?.label || target?.label || "").trim();
+  if (label) {
+    const clean = label.replace(/\.$/, "");
+    return `Switching to ${clean}.`;
+  }
+  if (Number.isFinite(target?.visualIndex1Based)) {
+    return `Switching to panel ${target.visualIndex1Based}.`;
+  }
+  return "Switching panels.";
+}
+
+function maybeHandleWorkModePanelNavigationShortcut(text, opts = {}) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  const isVoice = Boolean(opts.isVoice);
+  const source = opts.reason || opts.source || (isVoice ? "voice_panel_navigation" : "typed_panel_navigation");
+
+  if (
+    !isExplicitWorkModePanelNavigationIntent(raw) &&
+    !_REASONING_PANEL_IMPERATIVE_RE.test(raw)
+  ) {
+    return false;
+  }
+
+  try {
+    console.info("[panel_navigation_detected]", {
+      raw_text: raw.slice(0, 240),
+      source,
+      is_voice: isVoice,
+    });
+  } catch (_) {}
+
+  if (shouldDeferPanelNavigationShortcutForMultiAction(raw)) {
+    try {
+      console.info("[panel_navigation_fell_through_to_reasoning]", {
+        reason: "deferred_to_compound_planner",
+        raw_text: raw.slice(0, 240),
+      });
+    } catch (_) {}
+    return false;
+  }
+
+  const gatePassed = (() => {
+    try {
+      return Boolean(isVeraWorkModeOn()) && appModePrefix() === "vera";
+    } catch (_) {
+      return false;
+    }
+  })();
+  const hasPanels = (() => {
+    try {
+      return getReasoningPanelOrder().length > 0;
+    } catch (_) {
+      return false;
+    }
+  })();
+
+  if (!gatePassed && !hasPanels && !_REASONING_PANEL_IMPERATIVE_RE.test(raw)) {
+    return false;
+  }
+
+  const target = parseWorkModePanelNavigationTarget(raw);
+  if (!target) {
+    try {
+      console.info("[panel_navigation_fell_through_to_reasoning]", {
+        reason: "unparsed_navigation_target",
+        raw_text: raw.slice(0, 240),
+      });
+    } catch (_) {}
+    return false;
+  }
+
+  try {
+    console.info("[panel_navigation_blocked_reasoning]", {
+      raw_text: raw.slice(0, 240),
+      target_kind: target.kind,
+      visual_index: target.visualIndex1Based ?? null,
+    });
+  } catch (_) {}
+
+  const exec = executeWorkModePanelNavigation(target);
+  const reply = buildPanelNavigationVoiceReply(target, exec);
+
+  try {
+    console.info("[panel_navigation_dispatched]", {
+      raw_text: raw.slice(0, 240),
+      target_kind: target.kind,
+      visual_index: target.visualIndex1Based ?? null,
+      exec_ok: exec?.ok,
+      reply_preview: reply.slice(0, 120),
+    });
+  } catch (_) {}
+
+  if (typeof renderReasoningCloseAssistantConfirmation === "function") {
+    renderReasoningCloseAssistantConfirmation(reply, {
+      source,
+      isVoice,
+      path: "panel-navigation",
+    });
+  } else if (typeof addBubble === "function") {
+    addBubble(reply, "vera", { path: "panel-navigation" });
+  }
+
+  return true;
 }
 
 /** Multi-item planning / scheduling — route to reasoning and enable checklist Sync from markdown. */
@@ -16107,6 +16470,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   if (isLikelyWorkChecklistEditIntent(trimmed))
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   if (isExplicitWorkModePanelNavigationIntent(trimmed)) {
+    try {
+      console.info("[panel_navigation_blocked_reasoning]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        path: "maybePrepareWorkModeReasoning",
+      });
+    } catch (_) {}
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
 
@@ -24650,6 +25019,18 @@ async function finalizeMainBrowserTranscript(text) {
   if (await maybeHandleWorkChecklistPlanShortcut(trimmed, { isVoice: true, source: "main-browser-asr" })) {
     return;
   }
+  if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "main-browser-asr", isVoice: true })) {
+    processing = false;
+    requestInFlight = false;
+    voiceUxTurn = null;
+    waveState = "idle";
+    setStatus("Ready", "idle");
+    updateMuteInputButton();
+    if (listeningMode === "continuous" && listening && !inputMuted) {
+      startListening();
+    }
+    return;
+  }
   /* PART 3: close-reasoning-panel client shortcut. Runs BEFORE /infer so
      "close panel 2" / "close the first two panels" / "undo close" feel
      instant. The shortcut already filters out checklist/news/music/settings
@@ -25402,6 +25783,21 @@ async function maybeRunInterruptionClientShortcuts(routedText, originalText) {
         original_transcript: String(originalText || "").slice(0, 120),
         normalized_command_text: routedText.slice(0, 120),
         shortcut: "move_voice_task_to_reasoning",
+        checklist_sync_intent_detected: false,
+        sync_action_started: false,
+        sync_source: "voice_interruption",
+        active_panel_id_at_interruption: baseCtx.active_panel_id,
+        latest_reasoning_output_available: hasReasoningOutput,
+        checklist_state_available: Boolean(checklistState.exists),
+        handled: true
+      });
+      return true;
+    }
+    if (maybeHandleWorkModePanelNavigationShortcut(routedText, { reason: "voice_interruption", isVoice: true })) {
+      logInterruptTranscriptDebug("routed_to_normal_user_turn", {
+        original_transcript: String(originalText || "").slice(0, 120),
+        normalized_command_text: routedText.slice(0, 120),
+        shortcut: "panel_navigation",
         checklist_sync_intent_detected: false,
         sync_action_started: false,
         sync_source: "voice_interruption",
@@ -26735,6 +27131,14 @@ async function handleUtterance() {
         updateMuteInputButton();
         return;
       }
+      if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
+        requestInFlight = false;
+        processing = false;
+        voiceUxTurn = null;
+        setStatus("Ready", "idle");
+        updateMuteInputButton();
+        return;
+      }
       if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
         return;
       }
@@ -27000,6 +27404,13 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
      is not a reasoning request; if we let it fall through, the user can see
      the generic "Reasoning is temporarily unavailable" bubble. */
   if (!fromQueue && !fromPanelQueue &&
+      maybeHandleWorkModePanelNavigationShortcut(trimmed, {
+        reason: path || "work-typed-preflight",
+        isVoice: Boolean(opts?.isVoice),
+      })) {
+    return;
+  }
+  if (!fromQueue && !fromPanelQueue &&
       maybeHandleCloseReasoningPanelShortcut(trimmed, {
         reason: path || "work-typed-preflight",
         isVoice: Boolean(opts?.isVoice)
@@ -27158,6 +27569,9 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     });
   }
 
+  if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: path || "work-typed", isVoice: false })) {
+    return;
+  }
   if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: path || "work-typed", isVoice: false })) {
     return;
   }
@@ -27561,6 +27975,12 @@ async function sendTextMessage() {
       updateMuteInputButton();
       return;
     }
+    if (maybeHandleWorkModePanelNavigationShortcut(text, { reason: "main-work-text-input", isVoice: false })) {
+      if (textInput) textInput.value = "";
+      setStatus("Ready", "idle");
+      updateMuteInputButton();
+      return;
+    }
     if (maybeHandleCloseReasoningPanelShortcut(text, { reason: "main-work-text-input", isVoice: false })) {
       if (textInput) textInput.value = "";
       setStatus("Ready", "idle");
@@ -27922,6 +28342,11 @@ async function onPttClick() {
       return;
     }
     if (await maybeHandleWorkChecklistPlanShortcut(text, { isVoice: true, source: "ptt-browser-asr" })) {
+      setStatus("Ready", "idle");
+      updateMuteInputButton();
+      return;
+    }
+    if (maybeHandleWorkModePanelNavigationShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
       setStatus("Ready", "idle");
       updateMuteInputButton();
       return;
