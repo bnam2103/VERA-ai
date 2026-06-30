@@ -23,6 +23,8 @@
 
   Shared fixes across both sites:
     - Commit on one branch, cherry-pick onto the other, deploy each target separately.
+    - Backend/system: one source of truth on production — use scripts/setup-backend-worktree.ps1
+      (see docs/REPO_STRATEGY.md). Do not copy Python between main and production.
     - This script does NOT merge, cherry-pick, or sync branches automatically.
 
   -Target both:

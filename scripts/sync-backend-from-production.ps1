@@ -1,5 +1,8 @@
 # Backend paths synced from production for local dev (not deployed to static hosts).
-# Run from repo root after: git checkout production -- <paths below>
+#
+# DEPRECATED: Prefer a dedicated backend worktree instead of copying onto main:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\setup-backend-worktree.ps1
+# See docs/REPO_STRATEGY.md
 
 $backendPaths = @(
   "server.py",
