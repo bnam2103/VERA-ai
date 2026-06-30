@@ -1,0 +1,2 @@
+# Local Vera backend — same set as docker/requirements.txt
+-r docker/requirements.txt

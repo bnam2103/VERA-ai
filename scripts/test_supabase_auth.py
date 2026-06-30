@@ -82,7 +82,7 @@ def main() -> int:
         print(json.dumps(anon_body, indent=2))
     except urllib.error.URLError as exc:
         print(f"FAIL: Backend not reachable — {exc}")
-        print("Start the server: py -3 -m uvicorn app:app --host 127.0.0.1 --port 8000")
+        print("Start the server: py -3 -m uvicorn server:app --host 127.0.0.1 --port 8000")
         return 1
 
     print("\n=== 2) Get Supabase access token (password grant) ===")

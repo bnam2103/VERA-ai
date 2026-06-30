@@ -8,7 +8,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from io import BytesIO
 
 # Import your existing backend logic
-from app import text_input, infer, TextInput
+from server import text_input, infer, TextInput
 
 
 def run_async(func, *args):

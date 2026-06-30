@@ -9,6 +9,12 @@
 
   Backend (NOT deployed by this script):
     https://api.workwithvera.com  (Cloudflare Worker in vera-api/)
+    Local Python API: server.py (+ app.py import shim) — never pushed by this script.
+
+  Static files copied to the deploy clone ONLY:
+    index.html, styles.css, product.css (if present), app/, config/, utils/,
+    users/, voice/, workmode/, news/, debug/, and frontend media as needed.
+  Never copied: server.py, app.py, actions/, auth/, CHAT*.py, TTS.py, tests/, etc.
 
   Workflow:
     1. Check out the correct branch in your SOURCE repo (Online_demo).

@@ -14,5 +14,5 @@ cd path\to\Online_demo
 $env:SUPABASE_URL = "https://YOUR_PROJECT.supabase.co"
 $env:SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
 $env:SUPABASE_JWT_SECRET = "your-jwt-secret"
-py -3 -m uvicorn app:app --host 127.0.0.1 --port 8000
+py -3 -m uvicorn server:app --host 127.0.0.1 --port 8000
 ```
