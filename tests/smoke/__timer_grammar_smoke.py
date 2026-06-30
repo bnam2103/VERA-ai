@@ -92,6 +92,21 @@ TIMER_CASES = [
     ("Start a 1 hour and 30 minute timer", 5400),
     ("Set 10 minute timer", 600),
     ("Count down 10 minutes", 600),
+    # Hyphenated compound-adjective forms (2026-06-21)
+    ("start a timer for 10 minutes", 600),
+    ("start a 10-minute timer", 600),
+    ("start 10 minute timer", 600),
+    ("begin a 5-minute timer", 300),
+    ("create a one-hour timer", 3600),
+    ("create a 30-second timer", 30),
+]
+
+MULTI_TIMER_CASES = [
+    (
+        "start a 10-minute timer and switch to second panel",
+        600,
+        ["timer.set", "panel.navigate"],
+    ),
 ]
 
 
@@ -150,6 +165,20 @@ ok(isinstance(cancel, dict)
    and cancel["work_mode_timer"].get("cancel") is True,
    "cancel the timer → cancel payload",
    detail=str(cancel))
+
+
+# ---------------------------------------------------------------------------
+# Multi-action — timer + panel (hyphenated duration)
+# ---------------------------------------------------------------------------
+section("Planner — multi-action timer + panel")
+for utt, expected, expected_types in MULTI_TIMER_CASES:
+    plan = P.plan_user_actions(utt)
+    types_ = [a.get("type") for a in (plan.get("actions") or [])]
+    ok(types_ == expected_types, f"{utt!r} → action types", detail=str(types_))
+    ts = next((a for a in (plan.get("actions") or []) if a.get("type") == "timer.set"), None)
+    ok(ts is not None and (ts.get("payload") or {}).get("duration_seconds") == expected,
+       f"{utt!r} → timer duration_seconds == {expected}",
+       detail=str(ts.get("payload") if ts else types_))
 
 
 # ---------------------------------------------------------------------------

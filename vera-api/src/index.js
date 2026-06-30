@@ -45,7 +45,7 @@ function applyCorsHeaders(headers, request) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request) {
     if (request.method === "OPTIONS") {
       const h = new Headers()
       applyCorsHeaders(h, request)
@@ -54,11 +54,8 @@ export default {
 
     const url = new URL(request.url)
 
-    // Configure via Worker secret / wrangler var VERA_TUNNEL_URL (never commit real URLs).
-    const TUNNEL_URL = String(env?.VERA_TUNNEL_URL || "").replace(/\/$/, "")
-    if (!TUNNEL_URL) {
-      return new Response("VERA_TUNNEL_URL is not configured on this Worker.", { status: 503 })
-    }
+    // Paste your current cloudflared URL here when the tunnel rotates, then: wrangler deploy
+    const TUNNEL_URL = "https://sites-format-conventional-heights.trycloudflare.com"
 
     const targetUrl = TUNNEL_URL + url.pathname + url.search
 

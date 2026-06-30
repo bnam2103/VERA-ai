@@ -99,7 +99,6 @@ t1 = "Can you help me plan an English essay that is due in two hours in panel 2?
 p1 = P.plan_user_actions(t1)
 trig1, reason1 = P.should_trigger_planner(t1)
 ok(trig1, "should_trigger_planner=True", detail=f"reason={reason1}")
-ok(p1["is_multi_action"], "is_multi_action=True", detail=str(types_of(p1)))
 ok("reasoning.request" in types_of(p1), "plan contains reasoning.request",
    detail=str(types_of(p1)))
 ok(target_index_of(p1, "reasoning.request") == 2,
@@ -144,7 +143,6 @@ t3 = "In panel 2, help me plan an English essay due in two hours."
 p3 = P.plan_user_actions(t3)
 trig3, reason3 = P.should_trigger_planner(t3)
 ok(trig3, "should_trigger_planner=True", detail=f"reason={reason3}")
-ok(p3["is_multi_action"], "is_multi_action=True", detail=str(types_of(p3)))
 ok("reasoning.request" in types_of(p3), "plan contains reasoning.request",
    detail=str(types_of(p3)))
 ok(target_index_of(p3, "reasoning.request") == 2,
@@ -294,7 +292,7 @@ for text in negative_plan_cases:
 section("Regression — existing planner spec still passes")
 reg_cases = [
     ("explain the Vietnam War in panel 2",
-     ["panel.navigate", "reasoning.request"]),
+     ["reasoning.request"]),
     ("close panel 1 and panel 3",
      ["panel.close"]),   # multi-panel-close stays one action with two targets
     ("play lo-fi and turn down the volume",
@@ -307,6 +305,132 @@ for text, expected in reg_cases:
     ok(types_of(plan) == expected,
        f"{text!r} → {expected}",
        detail=str(types_of(plan)))
+
+# ============================================================================
+# 2026-06-21 — multi-action panel compound regressions (A–F)
+# ============================================================================
+section("Compound panel actions A–F (2026-06-21 patch)")
+
+def _targets_index(plan, family):
+    pay = payload_of(plan, family)
+    tgts = pay.get("targets") or []
+    if not tgts:
+        return None
+    t0 = tgts[0]
+    if isinstance(t0, dict):
+        return t0.get("index") or t0.get("ordinal")
+    return t0
+
+# A — open + close
+section("A — open new panel + close panel 2")
+t_a = "Open a new panel and close panel 2."
+p_a = P.plan_user_actions(t_a)
+ok(types_of(p_a) == ["panel.open", "panel.close"],
+   "A: [panel.open, panel.close]",
+   detail=str(types_of(p_a)))
+ok(_targets_index(p_a, "panel.close") == 2,
+   "A: panel.close target index == 2",
+   detail=str(payload_of(p_a, "panel.close")))
+
+# B — open + close second + switch by title
+section("B — open + close second + switch Vietnam War panel")
+t_b = "Open a new panel, close second panel and switch to Vietnam War panel."
+p_b = P.plan_user_actions(t_b)
+ok(types_of(p_b) == ["panel.open", "panel.close", "panel.navigate"],
+   "B: [panel.open, panel.close, panel.navigate]",
+   detail=str(types_of(p_b)))
+_pc_b = payload_of(p_b, "panel.close").get("targets") or []
+ok(_pc_b and _pc_b[0].get("ordinal") == "second",
+   "B: panel.close ordinal == second",
+   detail=str(_pc_b))
+ok((payload_of(p_b, "panel.navigate").get("target") or {}).get("title") == "Vietnam War",
+   "B: panel.navigate title == Vietnam War",
+   detail=str(payload_of(p_b, "panel.navigate")))
+
+# C — music pause + reasoning in panel 3 (no redundant panel.navigate)
+section("C — pause music + explain Vietnam War in panel 3")
+t_c = "Pause the music and explain the Vietnam War in panel 3."
+p_c = P.plan_user_actions(t_c)
+ok(types_of(p_c) == ["music.pause", "reasoning.request"],
+   "C: [music.pause, reasoning.request] — no redundant panel.navigate",
+   detail=str(types_of(p_c)))
+ok(target_index_of(p_c, "reasoning.request") == 3,
+   "C: reasoning.request target.index == 3",
+   detail=str(payload_of(p_c, "reasoning.request")))
+ok("panel.navigate" not in types_of(p_c),
+   "C: no panel.navigate",
+   detail=str(types_of(p_c)))
+
+# D — target panel 4 once
+section("D — explain tennis in panel 4")
+t_d = "Can you explain tennis in panel 4?"
+p_d = P.plan_user_actions(t_d)
+ok(types_of(p_d) == ["reasoning.request"],
+   "D: [reasoning.request] only",
+   detail=str(types_of(p_d)))
+ok(target_index_of(p_d, "reasoning.request") == 4,
+   "D: reasoning.request target.index == 4",
+   detail=str(payload_of(p_d, "reasoning.request")))
+ok(payload_of(p_d, "reasoning.request").get("explicit_panel_destination") is True,
+   "D: explicit_panel_destination == True",
+   detail=str(payload_of(p_d, "reasoning.request")))
+
+# E — existing panel 2, no extra open
+section("E — explain tennis in panel 2")
+t_e = "Explain tennis in panel 2."
+p_e = P.plan_user_actions(t_e)
+ok(types_of(p_e) == ["reasoning.request"],
+   "E: [reasoning.request] only — no panel.open/navigate",
+   detail=str(types_of(p_e)))
+ok(target_index_of(p_e, "reasoning.request") == 2,
+   "E: reasoning.request target.index == 2",
+   detail=str(payload_of(p_e, "reasoning.request")))
+
+# F — close panel 2 then explain in panel 3 (close before reasoning, no navigate inject)
+section("F — close panel 2 + explain tennis in panel 3")
+t_f = "Close panel 2 and explain tennis in panel 3."
+p_f = P.plan_user_actions(t_f)
+ok(types_of(p_f) == ["panel.close", "reasoning.request"],
+   "F: [panel.close, reasoning.request] in stable order",
+   detail=str(types_of(p_f)))
+ok(_targets_index(p_f, "panel.close") == 2,
+   "F: panel.close target == 2",
+   detail=str(payload_of(p_f, "panel.close")))
+ok(target_index_of(p_f, "reasoning.request") == 3,
+   "F: reasoning.request target == 3 (resolved before close mutates UI)",
+   detail=str(payload_of(p_f, "reasoning.request")))
+
+# G — explicit panel routing regression (2026-06-21)
+section("G — single explicit panel targets (numeric + ordinal)")
+for phrase, want_panel, want_task_fragment in [
+    ("Can you explain tennis in panel 4?", 4, "explain tennis"),
+    ("can you explain tennis in the fourth panel?", 4, "explain tennis"),
+    ("Can you explain photosynthesis in panel 1?", 1, "explain photosynthesis"),
+    ("Write about the Vietnam War in panel 2.", 2, "vietnam war"),
+]:
+    p_g = P.plan_user_actions(phrase)
+    ok(P.should_trigger_planner(phrase)[0], f"G trigger: {phrase[:48]}")
+    rr = payload_of(p_g, "reasoning.request")
+    ok(target_index_of(p_g, "reasoning.request") == want_panel,
+       f"G panel {want_panel}: {phrase[:48]}",
+       detail=str(rr))
+    task = str((rr or {}).get("content_task") or (rr or {}).get("text") or "").lower()
+    ok(want_task_fragment in task,
+       f"G task contains {want_task_fragment!r}: {phrase[:48]}",
+       detail=task)
+    ok(bool((rr or {}).get("explicit_panel_destination")),
+       f"G explicit_panel_destination: {phrase[:48]}")
+
+section("H — compound explicit panel (music + reasoning)")
+t_h = "Pause music and explain the Vietnam War in panel 3."
+p_h = P.plan_user_actions(t_h)
+ok(p_h.get("is_multi_action"), "H: is multi-action")
+ok(types_of(p_h) == ["music.pause", "reasoning.request"],
+   "H: music.pause + reasoning.request",
+   detail=str(types_of(p_h)))
+ok(target_index_of(p_h, "reasoning.request") == 3,
+   "H: reasoning.request target == 3",
+   detail=str(payload_of(p_h, "reasoning.request")))
 
 # ============================================================================
 # Summary

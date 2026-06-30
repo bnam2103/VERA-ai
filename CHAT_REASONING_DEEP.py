@@ -95,6 +95,7 @@ class ReasoningDeepAI(ReasoningAI):
                 temperature=self.deep_temperature,
                 max_completion_tokens=self.deep_max_tokens,
                 stream=True,
+                stream_options={"include_usage": True},
                 reasoning_effort=self.deep_reasoning_effort,
             )
             self.last_deep_reasoning_effort_active = True
@@ -138,6 +139,7 @@ class ReasoningDeepAI(ReasoningAI):
                 temperature=self.deep_temperature,
                 max_completion_tokens=self.deep_max_tokens,
                 stream=True,
+                stream_options={"include_usage": True},
             )
 
         for chunk in stream:
@@ -428,6 +430,7 @@ class ReasoningDeepAI(ReasoningAI):
                 temperature=self.deep_temperature,
                 max_completion_tokens=self.deep_max_tokens,
                 stream=True,
+                stream_options={"include_usage": True},
                 reasoning_effort=self.deep_reasoning_effort,
             )
             self.last_deep_reasoning_effort_active = True
@@ -455,6 +458,7 @@ class ReasoningDeepAI(ReasoningAI):
                 temperature=self.deep_temperature,
                 max_completion_tokens=self.deep_max_tokens,
                 stream=True,
+                stream_options={"include_usage": True},
             )
 
         for chunk in stream:

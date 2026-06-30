@@ -1,4 +1,4 @@
-"""Usage events REST API (behavioral analytics MVP — metadata only)."""
+"""Usage events REST API (behavioral analytics — metadata only)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from auth.jwt_auth import extract_bearer_token, verify_access_token
 from auth.supabase_config import get_supabase_config
 from auth.supabase_db import SupabaseDbError
-from auth.usage_events_db import MVP_EVENT_TYPES, create_usage_event, sanitize_event_props
+from auth.usage_events_db import ALLOWED_EVENT_TYPES, create_usage_event, sanitize_event_props
 
 router = APIRouter(tags=["supabase-usage-events"])
 _log = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ class UsageEventCreateBody(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=256)
     event_type: str = Field(..., min_length=1, max_length=64)
     request_id: str | None = Field(default=None, max_length=128)
+    client_event_id: str | None = Field(default=None, max_length=128)
     event_props: dict[str, Any] | None = None
 
 
@@ -38,10 +39,10 @@ def api_usage_event_create(request: Request, body: UsageEventCreateBody) -> dict
     user_id = user.user_id if user else None
     auth_mode = "authenticated" if user else "anonymous"
     etype = (body.event_type or "").strip().lower()
-    if etype not in MVP_EVENT_TYPES:
+    if etype not in ALLOWED_EVENT_TYPES:
         raise HTTPException(
             status_code=422,
-            detail=f"event_type must be one of: {', '.join(sorted(MVP_EVENT_TYPES))}.",
+            detail=f"event_type must be one of: {', '.join(sorted(ALLOWED_EVENT_TYPES))}.",
         )
     try:
         props = sanitize_event_props(body.event_props)
@@ -55,6 +56,7 @@ def api_usage_event_create(request: Request, body: UsageEventCreateBody) -> dict
             session_id=body.session_id.strip(),
             event_type=etype,
             request_id=body.request_id,
+            client_event_id=body.client_event_id,
             event_props=props,
         )
     except SupabaseDbError as exc:

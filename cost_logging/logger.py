@@ -568,6 +568,33 @@ def end_request(
             "note": _NOTE_API_ONLY,
         }
         _append_jsonl(REQUEST_SUMMARY_FILE, row)
+        try:
+            from auth.request_auth import get_bound_auth_user
+            from .credit_enforcement import settle_request_credits
+
+            _auth_user = get_bound_auth_user()
+            _uid = getattr(_auth_user, "user_id", None) if _auth_user else None
+            if not _uid and st.extra:
+                _uid = st.extra.get("auth_user_id")
+            _settle_sid = st.session_id or (st.extra or {}).get("settlement_session_id")
+            settle_request_credits(
+                user_id=_uid,
+                session_id=_settle_sid,
+                request_id=st.request_id,
+                credit_action=st.credit_action,
+                credits_used=st.credits_used,
+                success=st.success,
+                events=st.events,
+                estimated_cost_usd=totals.get("total_api_cost_usd"),
+                extra={
+                    "mode": st.mode,
+                    "request_type": st.request_type,
+                    "credit_reason": st.credit_reason,
+                    **(st.extra or {}),
+                },
+            )
+        except Exception as _settle_err:
+            print(f"[credit_cap] settle_request_credits skipped: {_settle_err}")
         if st.session_id:
             _roll_into_session(st, totals)
         return row
@@ -988,4 +1015,28 @@ def log_serper_event(
         return row
     except Exception as e:
         print(f"[cost_logger] log_serper_event swallowed error: {e}")
+        return {}
+
+
+def log_openweather_event(
+    *,
+    endpoint: str,
+    call_count: int = 1,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        qc = max(0, int(call_count or 0))
+        row: dict[str, Any] = {
+            "timestamp": _now_iso(),
+            "provider": "openweather",
+            "endpoint": endpoint,
+            "call_count": qc,
+            "estimated_cost_usd": None,
+            "extra": extra or None,
+        }
+        _attach_request_fields(row)
+        _append_jsonl(COST_EVENTS_FILE, row)
+        return row
+    except Exception as e:
+        print(f"[cost_logger] log_openweather_event swallowed error: {e}")
         return {}

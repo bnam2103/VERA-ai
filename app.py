@@ -108,7 +108,14 @@ from actions.weather import (
     fetch_weather_facts_for_action,
     cache_weather_action_result,
     build_weather_prompt,
+    handle_weather_forecast_request,
     normalize_location_key,
+)
+from actions.weather_query_parse import (
+    apply_recent_weather_context_to_parsed,
+    merge_weather_parsed,
+    parse_weather_query,
+    strip_weather_time_from_location,
 )
 from intent import is_command, is_mute_voice_command
 from ASR import transcribe_long
@@ -172,6 +179,187 @@ except Exception as _cost_import_err:  # pragma: no cover - optional module
 
     def _cost_request_context(*_a, **_kw):  # type: ignore[no-redef]
         return _NoopCtx()
+
+
+def _credit_action_for_structured_action(action_name: str | None) -> tuple[str | None, str | None]:
+    if not action_name:
+        return None, None
+    if action_name in ("weather.current", "weather.forecast", "weather.followup"):
+        return "weather", None
+    if action_name in (
+        "news.latest",
+        "finance.quote",
+        "finance.context",
+        "finance.analytics",
+        "web.search",
+    ) or action_name in SPORTS_ACTION_NAMES:
+        return "search_or_news", "search"
+    return None, None
+
+
+def _enforce_usage_credit_cap(
+    credit_action: str,
+    *,
+    session_id: str | None,
+    feature_type: str | None = None,
+    precharge_credits: int | None = None,
+) -> None:
+    try:
+        from auth.request_auth import get_bound_auth_user
+        from cost_logging.credit_enforcement import enforce_credit_cap_or_raise
+
+        user = get_bound_auth_user()
+        user_id = getattr(user, "user_id", None) if user else None
+        enforce_credit_cap_or_raise(
+            user_id=user_id,
+            session_id=session_id,
+            credit_action=credit_action,
+            feature_type=feature_type,
+            credits_needed=precharge_credits,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[credit_cap] enforcement skipped: {exc}")
+
+
+def _credit_action_for_streaming_meta(meta_action_type: str | None) -> tuple[str, str | None]:
+    mt = str(meta_action_type or "").strip().lower()
+    if mt == "weather":
+        return "weather", None
+    if mt in ("search", "news", "web", "finance", "sports", "web_search"):
+        return "search_or_news", "search"
+    return "voice_assistant", None
+
+
+def _preflight_general_llm_credit_cap(
+    session_id: str,
+    text: str,
+    history: list[dict],
+    *,
+    client_context_snapshot: dict | None = None,
+) -> None:
+    """Sync cap check before hosted general-LLM streaming (/infer, /text)."""
+    try:
+        if _is_memory_command_request(text):
+            return
+    except Exception:
+        pass
+    try:
+        prepared = try_prepare_streaming_action_messages(session_id, text, history)
+        if prepared is not None:
+            return
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[credit_cap] streaming prep probe swallowed: {exc}")
+    try:
+        resolved = resolve_reply_if_not_general_llm(
+            session_id,
+            text,
+            history,
+            client_context_snapshot=client_context_snapshot,
+        )
+        if resolved is not None:
+            return
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[credit_cap] sync resolve probe swallowed: {exc}")
+    _enforce_usage_credit_cap("voice_assistant", session_id=session_id)
+
+
+def _cost_touch_work_mode_reasoning_request(
+    *,
+    session_id: str,
+    endpoint: str,
+    lane_id: str | None = None,
+    request: Request | None = None,
+    has_upload: bool = False,
+    upload_count: int = 0,
+) -> None:
+    """Attach session + work_mode metadata to the in-flight cost request."""
+    if not _COST_LOGGING_AVAILABLE:
+        return
+    try:
+        extra: dict = {
+            "http_path": endpoint,
+            "route_path": endpoint,
+            "endpoint": endpoint,
+            "settlement_session_id": session_id,
+        }
+        if lane_id:
+            extra["lane_id"] = lane_id
+        if has_upload:
+            extra["has_file"] = True
+            extra["has_image"] = True
+            extra["file_attachment_count"] = max(1, int(upload_count or 1))
+        if request is not None:
+            try:
+                from auth.request_auth import bind_request_auth_user, get_bound_auth_user
+
+                bind_request_auth_user(request)
+                user = get_bound_auth_user()
+                if user is not None:
+                    extra["auth_user_id"] = user.user_id
+            except Exception:
+                pass
+        _cost_update_request(
+            session_id=session_id,
+            mode="work_mode",
+            request_type="reasoning",
+            extra=extra,
+        )
+    except Exception as exc:
+        print(f"[cost_logger] work_mode cost touch skipped: {exc}")
+
+
+def _cost_finalize_work_mode_stream(
+    *,
+    session_id: str,
+    endpoint: str,
+    request: Request | None = None,
+    deep_reasoning_effort_active: bool | None = None,
+    success: bool = True,
+    error_message: str | None = None,
+) -> None:
+    """Ensure streaming Work Mode requests settle credits once the body finishes."""
+    if not _COST_LOGGING_AVAILABLE:
+        return
+    try:
+        if request is not None:
+            try:
+                from auth.request_auth import bind_request_auth_user
+
+                bind_request_auth_user(request)
+            except Exception:
+                pass
+        extra: dict = {
+            "route_path": endpoint,
+            "http_path": endpoint,
+            "endpoint": endpoint,
+            "settlement_session_id": session_id,
+        }
+        if deep_reasoning_effort_active is not None:
+            extra["deep_reasoning_effort_active"] = bool(deep_reasoning_effort_active)
+        if request is not None:
+            try:
+                from auth.request_auth import get_bound_auth_user
+
+                user = get_bound_auth_user()
+                if user is not None:
+                    extra["auth_user_id"] = user.user_id
+            except Exception:
+                pass
+        _cost_update_request(
+            session_id=session_id,
+            mode="work_mode",
+            request_type="reasoning",
+            extra=extra,
+        )
+        _cost_finalize_request(success=success, error_message=error_message)
+    except Exception as exc:
+        print(f"[cost_logger] work_mode stream finalize skipped: {exc}")
 from pydub import AudioSegment
 import random
 from fastapi.staticfiles import StaticFiles
@@ -181,6 +369,8 @@ from actions.checklist import (
     is_checklist_action_request,
     is_checklist_clear_all_request,
     is_checklist_undo_request,
+    is_checklist_undo_clarification_answer,
+    is_checklist_undo_followup,
     normalize_items as normalize_checklist_action_items,
     parse_checklist_command,
     visible_flattened_summary,
@@ -322,6 +512,9 @@ def _ndjson_stream_headers() -> dict[str, str]:
         "X-Accel-Buffering": "no",
     }
 WEATHER_LOCATION_PROMPT = "Which location should I check?"
+WEATHER_FORECAST_LOCATION_PROMPT = "What location should I check?"
+WEATHER_FORECAST_TIME_PROMPT = "For when should I check the forecast?"
+WEATHER_FORECAST_BOTH_PROMPT = "What location and time should I check?"
 # 2026-05-28 PART 1 — beta info-tool router.
 # Prompt used when the classifier decides a query requires a location and the
 # session does not have one available yet (e.g. "coffee shops near me",
@@ -381,6 +574,10 @@ try:
     from auth.checklist_routes import router as _supabase_checklist_router
     from auth.feedback_routes import router as _supabase_feedback_router
     from auth.usage_events_routes import router as _supabase_usage_events_router
+    from auth.usage_credits_routes import router as _supabase_usage_credits_router
+    from auth.explicit_feedback_routes import router as _supabase_explicit_feedback_router
+    from auth.no_cap_routes import router as _supabase_no_cap_router
+    from auth.workspace_routes import router as _supabase_workspace_router
     from auth.checklist_merge import is_checklist_placeholder_item
 
     app.include_router(_supabase_auth_router)
@@ -389,6 +586,21 @@ try:
     app.include_router(_supabase_checklist_router)
     app.include_router(_supabase_feedback_router)
     app.include_router(_supabase_usage_events_router)
+    app.include_router(_supabase_usage_credits_router)
+    app.include_router(_supabase_explicit_feedback_router)
+    app.include_router(_supabase_no_cap_router)
+    app.include_router(_supabase_workspace_router)
+    try:
+        from cost_logging.no_cap_testing import no_cap_toggle_enabled as _no_cap_toggle_enabled
+
+        _raw_no_cap = os.environ.get("VERA_ENABLE_NO_CAP_TOGGLE", "")
+        print(
+            f"[no-cap] toggle enabled: {_no_cap_toggle_enabled()} "
+            f"(VERA_ENABLE_NO_CAP_TOGGLE={_raw_no_cap!r})",
+            flush=True,
+        )
+    except Exception as _no_cap_log_err:
+        print(f"[no-cap] toggle status unavailable: {_no_cap_log_err}", flush=True)
 except ImportError as _auth_import_err:
     print(f"[WARN] Supabase auth routes not loaded: {_auth_import_err}", flush=True)
 
@@ -1053,7 +1265,308 @@ anonymous_work_mode_checklists = {}
 # After "clear the checklist", we stash the previous items so "undo that"
 # can restore them. Per session_id; expires after CHECKLIST_UNDO_TTL_SEC.
 checklist_undo_snapshots: dict[str, dict] = {}
-CHECKLIST_UNDO_TTL_SEC = 600
+# Short TTL so "undo that" only wins immediately after a clear/erase/delete.
+CHECKLIST_UNDO_TTL_SEC = 120
+pending_checklist_undo_context: dict[str, dict] = {}
+
+
+def _checklist_undo_item_titles(items: list) -> list[str]:
+    titles: list[str] = []
+    for row in items or []:
+        if not isinstance(row, dict):
+            continue
+        text = str((row or {}).get("text") or "").strip()
+        if text:
+            titles.append(text[:80])
+    return titles[:12]
+
+
+def _checklist_undo_non_empty_items(items: list | None) -> list[dict]:
+    out: list[dict] = []
+    for row in items or []:
+        if not isinstance(row, dict):
+            continue
+        text = str((row or {}).get("text") or "").strip()
+        if not text:
+            continue
+        out.append(
+            {
+                "id": str((row or {}).get("id") or ""),
+                "text": text,
+                "done": bool((row or {}).get("done")),
+                "parent_id": (row or {}).get("parent_id"),
+            }
+        )
+    return out
+
+
+def _checklist_undo_snapshot_from_client_context(client_context_snapshot: dict | None) -> dict | None:
+    if not isinstance(client_context_snapshot, dict):
+        return None
+    raw = client_context_snapshot.get("checklist_undo_snapshot")
+    if not isinstance(raw, dict):
+        return None
+    items = _checklist_undo_non_empty_items(raw.get("items"))
+    if not items:
+        return None
+    created_ms = float(raw.get("created_at_ms") or raw.get("created_at") or 0)
+    if created_ms > 1e12:
+        created_ms = created_ms / 1000.0
+    age = time() - created_ms if created_ms else 0
+    if created_ms and age > CHECKLIST_UNDO_TTL_SEC:
+        return None
+    return {
+        "snapshot_id": str(raw.get("snapshot_id") or ""),
+        "items": items,
+        "completed_collapsed": bool(raw.get("completed_collapsed", False)),
+        "created_at": created_ms or time(),
+        "source": str(raw.get("source") or "client_snapshot"),
+        "valid": True,
+    }
+
+
+def _checklist_undo_snapshot_item_count(snap: dict | None) -> int:
+    return len(_checklist_undo_non_empty_items((snap or {}).get("items")))
+
+
+def _arm_checklist_undo_snapshot(
+    session_id: str,
+    items: list,
+    *,
+    completed_collapsed: bool,
+    source: str = "checklist.clear",
+) -> dict | None:
+    non_empty = _checklist_undo_non_empty_items(items)
+    if not non_empty:
+        return None
+    snapshot_id = f"cu-{int(time() * 1000)}-{abs(hash(session_id)) % 100000}"
+    created_at = time()
+    payload = {
+        "snapshot_id": snapshot_id,
+        "items": non_empty,
+        "completed_collapsed": bool(completed_collapsed),
+        "created_at": created_at,
+        "source": source,
+        "valid": True,
+    }
+    checklist_undo_snapshots[session_id] = payload
+    pending_checklist_undo_context[session_id] = {
+        "domain": "checklist",
+        "action": "undo_clear",
+        "snapshot_id": snapshot_id,
+        "snapshot_item_count": len(non_empty),
+        "expires_at_ms": int((created_at + CHECKLIST_UNDO_TTL_SEC) * 1000),
+    }
+    titles = _checklist_undo_item_titles(non_empty)
+    _emit_undo_routing_log(
+        "checklist_undo_snapshot_created",
+        session_id=(session_id or "")[:64],
+        snapshot_id=snapshot_id,
+        snapshot_item_count=len(non_empty),
+        snapshot_titles=titles,
+        created_at_ms=int(created_at * 1000),
+        expires_at_ms=int((created_at + CHECKLIST_UNDO_TTL_SEC) * 1000),
+    )
+    _emit_undo_routing_log(
+        "checklist_undo_context_set",
+        session_id=(session_id or "")[:64],
+        snapshot_id=snapshot_id,
+        snapshot_item_count=len(non_empty),
+        ttl_ms=CHECKLIST_UNDO_TTL_SEC * 1000,
+    )
+    return payload
+
+
+def _emit_undo_routing_log(tag: str, **fields) -> None:
+    try:
+        print(f"[{tag}] " + json.dumps(fields, ensure_ascii=False), flush=True)
+    except Exception:
+        pass
+
+
+def _checklist_undo_ttl_remaining_ms(session_id: str) -> int:
+    snap = checklist_undo_snapshots.get(session_id)
+    if not snap:
+        return 0
+    remaining = CHECKLIST_UNDO_TTL_SEC - (time() - float(snap.get("created_at") or 0))
+    return max(0, int(remaining * 1000))
+
+
+def _get_checklist_undo_snapshot_valid(session_id: str) -> tuple[dict | None, str]:
+    """Return (snapshot, status) where status is valid | expired | missing | empty."""
+    snap = checklist_undo_snapshots.get(session_id)
+    if not snap:
+        return None, "missing"
+    age = time() - float(snap.get("created_at") or 0)
+    if age > CHECKLIST_UNDO_TTL_SEC:
+        checklist_undo_snapshots.pop(session_id, None)
+        pending_checklist_undo_context.pop(session_id, None)
+        _emit_undo_routing_log(
+            "checklist_undo_failed_expired",
+            session_id=(session_id or "")[:64],
+            snapshot_id=str(snap.get("snapshot_id") or ""),
+            decision_reason="ttl_expired",
+        )
+        return None, "expired"
+    if _checklist_undo_snapshot_item_count(snap) <= 0:
+        checklist_undo_snapshots.pop(session_id, None)
+        pending_checklist_undo_context.pop(session_id, None)
+        _emit_undo_routing_log(
+            "checklist_undo_failed_empty_snapshot",
+            session_id=(session_id or "")[:64],
+            snapshot_id=str(snap.get("snapshot_id") or ""),
+            decision_reason="empty_snapshot",
+        )
+        return None, "empty"
+    return snap, "valid"
+
+
+def _undo_clarification_spoken(session_id: str) -> str:
+    _snap, status = _get_checklist_undo_snapshot_valid(session_id)
+    if status == "valid":
+        return "Restored the checklist."
+    return "I don't have a recent checklist change to undo."
+
+
+def resolve_checklist_undo_shortcut(
+    session_id: str,
+    text: str,
+    client_context_snapshot: dict | None = None,
+) -> tuple[str, float, dict] | None:
+    """High-priority undo routing after checklist clear/erase/delete.
+
+    When the user says undo/restore phrasing:
+    - valid snapshot -> checklist.undo_clear
+    - otherwise -> spoken clarification (never music volume)
+    """
+    if not is_checklist_undo_followup(text):
+        return None
+
+    norm = (text or "").strip().lower()
+    recent = get_recent_action_context(session_id) or {}
+    recent_domain = str(recent.get("action_name") or "").split(".")[0]
+    snap, snap_status = _get_checklist_undo_snapshot_valid(session_id)
+    client_snap = None
+    if snap_status != "valid":
+        client_snap = _checklist_undo_snapshot_from_client_context(client_context_snapshot)
+        if client_snap:
+            checklist_undo_snapshots[session_id] = client_snap
+            snap, snap_status = client_snap, "valid"
+    ttl_ms = _checklist_undo_ttl_remaining_ms(session_id)
+    pending_ctx = pending_checklist_undo_context.get(session_id) or {}
+    items_now, _collapsed_now, _owner = _load_checklist_state_for_session(session_id)
+    current_count = len(_checklist_undo_non_empty_items(items_now))
+    base_log = {
+        "raw_text": (text or "")[:200],
+        "normalized_text": norm[:200],
+        "recent_action_domain": recent_domain,
+        "pending_undo_domain": "checklist" if snap_status == "valid" else "",
+        "checklist_snapshot_exists": snap_status != "missing",
+        "checklist_undo_ttl_remaining_ms": ttl_ms,
+    }
+    _emit_undo_routing_log(
+        "undo_intent_detected",
+        **base_log,
+        decision_reason="undo_phrase_matched",
+    )
+    _emit_undo_routing_log(
+        "checklist_undo_lookup",
+        session_id=(session_id or "")[:64],
+        pending_undo_exists=bool(pending_ctx),
+        snapshot_id=str((snap or {}).get("snapshot_id") or pending_ctx.get("snapshot_id") or ""),
+        snapshot_exists=snap_status == "valid",
+        snapshot_item_count=_checklist_undo_snapshot_item_count(snap),
+        ttl_remaining_ms=ttl_ms,
+        current_checklist_item_count=current_count,
+        snap_status=snap_status,
+        client_snapshot_hydrated=bool(client_snap),
+        decision_reason="checklist_snapshot_probe",
+    )
+    _emit_undo_routing_log(
+        "undo_context_candidates",
+        **base_log,
+        candidates=[{"domain": "checklist", "status": snap_status}],
+        decision_reason="checklist_snapshot_probe",
+    )
+
+    if snap_status == "valid":
+        _emit_undo_routing_log(
+            "checklist_undo_context_valid",
+            **base_log,
+            selected_undo_domain="checklist",
+            decision_reason="valid_snapshot",
+        )
+        _emit_undo_routing_log(
+            "checklist_undo_restore_attempt",
+            session_id=(session_id or "")[:64],
+            snapshot_id=str((snap or {}).get("snapshot_id") or ""),
+            snapshot_item_count=_checklist_undo_snapshot_item_count(snap),
+        )
+        ar = _handle_checklist_action(
+            session_id, text, "checklist.undo_clear", client_context_snapshot
+        )
+        _emit_undo_routing_log(
+            "checklist_undo_dispatched",
+            **base_log,
+            selected_undo_domain="checklist",
+            decision_reason="restored_after_clear",
+        )
+        return action_result_reply(ar) or "", 0.0, ar
+
+    if snap_status == "expired":
+        _emit_undo_routing_log(
+            "checklist_undo_context_expired",
+            **base_log,
+            decision_reason="ttl_expired",
+        )
+        spoken = "I don't have a recent checklist change to undo."
+    elif snap_status == "empty":
+        _emit_undo_routing_log(
+            "checklist_undo_failed_empty_snapshot",
+            **base_log,
+            decision_reason="empty_snapshot",
+        )
+        spoken = "I don't have a recent checklist change to undo."
+    else:
+        _emit_undo_routing_log(
+            "checklist_undo_failed_no_snapshot",
+            **base_log,
+            decision_reason="no_valid_checklist_snapshot",
+        )
+        spoken = "I don't have a recent checklist change to undo."
+
+    if recent_domain == "music":
+        _emit_undo_routing_log(
+            "undo_wrong_domain_blocked",
+            **base_log,
+            blocked_domain="music",
+            decision_reason="undo_clarify_instead_of_music",
+        )
+
+    ar = {
+        "spoken_reply": spoken,
+        "action_type": "clarification",
+        "data": {"undo_clarification": True, "checklist_snapshot_status": snap_status},
+        "ui_payload": None,
+    }
+    return spoken, 0.0, ar
+
+
+def peek_checklist_undo_action_name(
+    session_id: str,
+    text: str,
+    client_context_snapshot: dict | None = None,
+) -> str | None:
+    if not is_checklist_undo_followup(text):
+        return None
+    _snap, status = _get_checklist_undo_snapshot_valid(session_id)
+    if status == "valid":
+        return "checklist.undo_clear"
+    if pending_checklist_undo_context.get(session_id):
+        return "checklist.undo_clear"
+    if _checklist_undo_snapshot_from_client_context(client_context_snapshot):
+        return "checklist.undo_clear"
+    return None
 # Current-session memory of facts the user volunteered ("I like tennis", "my name is Sarah").
 # Persists for the lifetime of the session_id, not across logins/devices. When Supabase
 # accounts arrive, prefer reading/writing the same shape from `user_profile['session_facts']`
@@ -1153,6 +1666,7 @@ def cleanup_sessions():
         latest_client_context_snapshot.pop(sid, None)
         anonymous_work_mode_checklists.pop(sid, None)
         checklist_undo_snapshots.pop(sid, None)
+        pending_checklist_undo_context.pop(sid, None)
         work_mode_timer_plans.pop(sid, None)
         # These were never pruned → unbounded growth and slower dict/GC over days.
     expired_pending = [
@@ -1715,9 +2229,180 @@ def extract_weather_location(text: str) -> str | None:
 
         location = clean_location_text(match.group("location"))
         if location:
-            return location
+            try:
+                from actions.weather_query_parse import strip_weather_time_from_location
+
+                location = strip_weather_time_from_location(location)
+            except Exception:
+                pass
+            if location:
+                return location
 
     return None
+
+
+def _weather_clarification_prompt(missing_slot: str, *, near_me: bool = False) -> str:
+    if near_me and missing_slot in ("location", "both"):
+        return "I don't have your location yet. Which city should I check the forecast for?"
+    if missing_slot == "both":
+        return WEATHER_FORECAST_BOTH_PROMPT
+    if missing_slot == "time":
+        return WEATHER_FORECAST_TIME_PROMPT
+    return WEATHER_FORECAST_LOCATION_PROMPT
+
+
+def _weather_pending_slots_from_parsed(text: str, parsed: dict) -> dict:
+    q = parsed.get("query") or {}
+    return {
+        "user_text": (text or "").strip(),
+        "location": clean_location_text(parsed.get("location") or ""),
+        "time_kind": q.get("time_kind"),
+        "time_label": q.get("time_label"),
+        "intent": parsed.get("intent") or "general",
+        "parsed_weather": dict(parsed),
+    }
+
+
+def _log_weather_forecast_clarify(missing_slot: str, parsed: dict) -> None:
+    try:
+        q = parsed.get("query") or {}
+        print(
+            "[weather_forecast_clarify] "
+            + json.dumps(
+                {
+                    "missing": missing_slot,
+                    "time_kind": q.get("time_kind"),
+                    "time_label": q.get("time_label"),
+                    "intent": parsed.get("intent") or "general",
+                    "location": parsed.get("location"),
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+def _log_weather_forecast_pending_store(session_id: str, missing_slot: str, slots: dict) -> None:
+    try:
+        print(
+            "[weather_forecast_pending_store] "
+            + json.dumps(
+                {
+                    "session_id": (session_id or "")[:64],
+                    "type": "weather.forecast",
+                    "missing": missing_slot,
+                    "pending_payload": {
+                        "location": slots.get("location") or None,
+                        "time_kind": slots.get("time_kind"),
+                        "time_label": slots.get("time_label"),
+                        "intent": slots.get("intent") or "general",
+                        "user_text": str(slots.get("user_text") or "")[:240],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+def _weather_query_has_forecast_time(q: dict) -> bool:
+    time_kind = str((q or {}).get("time_kind") or "now").strip()
+    return time_kind not in ("now", "multi_day")
+
+
+def _log_weather_forecast_pending_resolve(
+    user_reply: str,
+    *,
+    resolved_location: str = "",
+    resolved_time: str = "",
+    missing_slot: str = "",
+    action: str = "weather.forecast",
+) -> None:
+    try:
+        print(
+            "[weather_forecast_pending_resolve] "
+            + json.dumps(
+                {
+                    "user_reply": str(user_reply or "")[:240],
+                    "missing_slot": missing_slot or None,
+                    "resolved_location": resolved_location or None,
+                    "resolved_time_label": resolved_time or None,
+                    "action": action,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+def weather_action_route_from_text(
+    text: str,
+    *,
+    location_hint: str = "",
+    session_id: str = "",
+) -> dict:
+    """Build a structured weather route (current vs forecast) from user text."""
+    parsed = parse_weather_query(text or "")
+    if session_id:
+        parsed = apply_recent_weather_context_to_parsed(
+            text,
+            parsed,
+            get_recent_action_context(session_id),
+        )
+    parsed_loc = clean_location_text(parsed.get("location") or "")
+    hint_loc = clean_location_text(location_hint)
+    if hint_loc and not parsed_loc and not parsed.get("needs_location"):
+        parsed_loc = hint_loc
+        parsed = {
+            **parsed,
+            "location": hint_loc,
+            "location_kind": "explicit",
+            "needs_location": False,
+            "missing_fields": [m for m in (parsed.get("missing_fields") or []) if m != "location"],
+            "needs_time": "time" in (parsed.get("missing_fields") or []),
+        }
+    loc = parsed_loc or hint_loc
+    action_name = parsed.get("action_name") or "weather.current"
+    missing_fields = list(parsed.get("missing_fields") or [])
+    if parsed.get("needs_location") and "location" not in missing_fields:
+        missing_fields.insert(0, "location")
+    if parsed.get("needs_time") and "time" not in missing_fields:
+        missing_fields.append("time")
+
+    needs_followup = bool(missing_fields) and action_name == "weather.forecast"
+    missing_slot = None
+    if needs_followup:
+        if "location" in missing_fields and "time" in missing_fields:
+            missing_slot = "both"
+        elif "time" in missing_fields:
+            missing_slot = "time"
+        else:
+            missing_slot = "location"
+
+    q = parsed.get("query") or {}
+    slots = {
+        "location": loc,
+        "user_text": (text or "").strip(),
+        "time_kind": q.get("time_kind"),
+        "time_label": q.get("time_label"),
+        "intent": parsed.get("intent") or "general",
+        "parsed_weather": dict(parsed),
+    }
+    return {
+        "domain": "weather",
+        "is_action_request": True,
+        "action_name": action_name,
+        "slots": slots,
+        "needs_followup": needs_followup,
+        "missing_slot": missing_slot,
+        "_parsed_weather": parsed,
+    }
 
 
 def is_plausible_location(text: str) -> bool:
@@ -1864,6 +2549,136 @@ def resolve_pending_web_search_request(
             session_id,
             "web.search",
             {"query": combined_query, "location": extracted_location},
+            action_result,
+        )
+    return action_result, perf_counter() - t0
+
+
+def resolve_pending_weather_forecast_request(session_id: str, text: str, pending: dict | None = None):
+    pending = pending or {}
+    prior_slots = dict(pending.get("slots") or {})
+    missing_slot = str(pending.get("missing_slot") or "location").strip().lower()
+    prior_parsed = dict(
+        prior_slots.get("parsed_weather")
+        or parse_weather_query(prior_slots.get("user_text") or "")
+    )
+    reply_parsed = parse_weather_query(text or "")
+    merged = dict(prior_parsed)
+
+    if missing_slot in ("location", "both"):
+        extracted = vera.extract_location_slot(text)
+        location = clean_location_text(extracted.get("location"))
+        if not location:
+            location = clean_location_text(reply_parsed.get("location") or "")
+        if not location:
+            location = extract_weather_location(text) or clean_location_text(text)
+        location = strip_weather_time_from_location(location) if location else ""
+        if location and is_plausible_location(location):
+            merged["location"] = location
+            merged["location_kind"] = "explicit"
+        elif missing_slot in ("location", "both") and not merged.get("location"):
+            return {
+                "spoken_reply": WEATHER_LOCATION_INVALID_REPLY,
+                "action_type": "weather_forecast",
+                "data": None,
+                "ui_payload": None,
+            }, 0.0
+
+    if missing_slot in ("time", "both"):
+        merged = merge_weather_parsed(
+            merged,
+            reply_parsed,
+            merge_time=True,
+            merge_location=missing_slot == "both",
+        )
+    elif missing_slot == "location":
+        merged = merge_weather_parsed(
+            merged,
+            reply_parsed,
+            merge_time=False,
+            merge_location=False,
+        )
+
+    location = clean_location_text(strip_weather_time_from_location(merged.get("location") or ""))
+    q = merged.get("query") or {}
+    has_time = _weather_query_has_forecast_time(q)
+
+    if q.get("beyond_horizon"):
+        clear_pending_action(session_id)
+        return {
+            "spoken_reply": (
+                "I can only forecast about five days ahead with the current weather service."
+            ),
+            "action_type": "weather_forecast",
+            "data": None,
+            "ui_payload": None,
+        }, 0.0
+
+    if not location or not has_time:
+        next_slot = "both" if (not location and not has_time) else (
+            "location" if not location else "time"
+        )
+        pending_parse = {
+            **merged,
+            "action_name": "weather.forecast",
+            "needs_location": not location,
+            "needs_time": not has_time,
+            "missing_fields": (
+                ["location", "time"]
+                if not location and not has_time
+                else (["location"] if not location else ["time"])
+            ),
+        }
+        set_pending_action(
+            session_id,
+            "weather.forecast",
+            next_slot,
+            _weather_pending_slots_from_parsed(prior_slots.get("user_text") or text, pending_parse),
+        )
+        _log_weather_forecast_pending_store(session_id, next_slot, prior_slots)
+        return {
+            "spoken_reply": _weather_clarification_prompt(next_slot),
+            "action_type": "weather_forecast",
+            "data": None,
+            "ui_payload": None,
+        }, 0.0
+
+    clear_pending_action(session_id)
+    _log_weather_forecast_pending_resolve(
+        text,
+        resolved_location=location,
+        resolved_time=str(q.get("time_label") or ""),
+        missing_slot=missing_slot,
+        action="weather.forecast",
+    )
+
+    merged = {
+        **merged,
+        "location": location,
+        "needs_location": False,
+        "needs_time": False,
+        "missing_fields": [],
+        "action_name": "weather.forecast",
+        "location_kind": "explicit",
+    }
+    t0 = perf_counter()
+    user_text = str(prior_slots.get("user_text") or text or "")
+    action_result = handle_weather_forecast_request(
+        location=location,
+        parsed_query=merged,
+        user_text=user_text,
+    )
+    if action_result.get("data") or action_result.get("ui_payload"):
+        set_recent_action_context(
+            session_id,
+            "weather.forecast",
+            {
+                "location": location,
+                **prior_slots,
+                "parsed_weather": merged,
+                "time_kind": q.get("time_kind"),
+                "time_label": q.get("time_label"),
+            },
             action_result,
         )
     return action_result, perf_counter() - t0
@@ -2340,7 +3155,7 @@ _WORK_MODE_REASONING_HANDOFF_CREATION_RE = re.compile(
 )
 _WORK_MODE_REASONING_HANDOFF_TARGET_RE = re.compile(
     r"\b(?:reasoning\s+(?:space|panel|tab|page)|(?:reasoning\s+)?panel(?:\s+\d+)?|panel\s+\d+|reasoning\s+space|workspace|work\s*mode)\b|"
-    r"\b(?:in|into|to)\s+(?:the\s+)?(?:reasoning\s+(?:space|panel|tab|page)|panel(?:\s+\d+)?)\b",
+    r"\b(?:in|into|to)\s+(?:(?:the|this|that)\s+)?(?:reasoning\s+(?:space|panel|tab|page)|panel(?:\s+\d+)?)\b",
     re.IGNORECASE,
 )
 
@@ -2579,6 +3394,13 @@ except Exception:  # pragma: no cover - defensive fallback only
 _SUPPORTED_APP_ACTION_TIMER_SET_RE = re.compile(
     _TIMER_START_INTENT_PATTERN, re.IGNORECASE
 )
+from actions.timer_extend import (  # noqa: E402
+    TIMER_EXTEND_INTENT_RE as _TIMER_EXTEND_INTENT_RE,
+    format_timer_duration_label as _format_timer_duration_label,
+    parse_timer_extend_request as _parse_timer_extend_request,
+    timer_extend_intent_matches as _timer_extend_intent_matches,
+)
+_SUPPORTED_APP_ACTION_TIMER_EXTEND_RE = _TIMER_EXTEND_INTENT_RE
 # Runtime timer dispatcher uses the same compiled grammar.
 _WM_TIMER_START_INTENT_RE = _SUPPORTED_APP_ACTION_TIMER_SET_RE
 _SUPPORTED_APP_ACTION_TIMER_CANCEL_RE = re.compile(
@@ -2682,6 +3504,8 @@ def looks_like_supported_app_action(text: str) -> bool:
     if _SUPPORTED_APP_ACTION_CHECKLIST_COMPLETE_RE.search(raw):
         return True
 
+    if _timer_extend_intent_matches(raw):
+        return True
     if _SUPPORTED_APP_ACTION_TIMER_SET_RE.search(raw):
         return True
     if _SUPPORTED_APP_ACTION_TIMER_CANCEL_RE.search(raw):
@@ -2990,6 +3814,55 @@ _EXPLANATION_OR_INTERPRETATION_RES: tuple[re.Pattern, ...] = (
         re.IGNORECASE,
     ),
 )
+
+
+def looks_like_work_mode_schedule_followup(text: str) -> bool:
+    """Advice about a visible plan/schedule block — not a local venue search.
+
+    Catches turns like "is gym at 9:20 too late?" where ``gym`` would otherwise
+    match ``_INFO_TOOL_VENUE_RE`` and misroute to web search.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    low = raw.lower()
+    if re.search(
+        r"\b(?:near\s+me|nearby|around\s+here|find\s+(?:a\s+)?(?:gym|gyms|coffee|restaurant|restaurants))\b",
+        low,
+    ):
+        return False
+    time_ref = bool(
+        re.search(
+            r"\b(?:at|by|around)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b|\b\d{1,2}:\d{2}\s*(?:am|pm)?\b",
+            low,
+        )
+    )
+    advice_ref = bool(
+        re.search(
+            r"\b(?:too\s+(?:late|early)|move\s+(?:it|that|this|gym)?\s*(?:earlier|later)|"
+            r"should\s+i\b|realistic|doable|feasible|enough\s+time|"
+            r"what(?:'s|s|\s+is)\s+next|what\s+should\s+i\s+do|"
+            r"(?:first|next)\s+(?:on|in)\s+(?:the\s+)?(?:plan|schedule|checklist))\b",
+            low,
+        )
+    )
+    plan_ref = bool(
+        re.search(
+            r"\b(?:the\s+)?(?:plan|schedule|checklist|time\s*block)\b|"
+            r"\b(?:this|that)\s+(?:too\s+)?(?:late|early)\b",
+            low,
+        )
+    )
+    question = bool(
+        re.search(r"^\s*(?:is|are|was|were|will|would|should|can|could|do|does|what|when)\b", low)
+    )
+    if time_ref and (advice_ref or question):
+        return True
+    if plan_ref and question:
+        return True
+    if advice_ref and question and len(low.split()) <= 20:
+        return True
+    return False
 
 
 def looks_like_explanation_or_interpretation(text: str) -> bool:
@@ -3629,7 +4502,7 @@ _REASONING_CLOSE_NON_REASONING_SUBJECTS_RE = re.compile(
     re.IGNORECASE,
 )
 _REASONING_CHECKLIST_PATTERN_RE = re.compile(
-    r"\b(?:remove|delete|cross\s+off|check\s+off|uncheck|mark)\s+(?:the\s+)?"
+    r"\b(?:remove|delete|cross\s+off|check\s+off|uncheck|tick|check|mark)\s+(?:the\s+)?"
     r"(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)?\s*"
     r"(?:and\s+(?:first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th)?)\s*)?"
     r"(?:item|task|bullet|checklist|to[- ]?do|todo|step)s?\b",
@@ -3872,7 +4745,7 @@ def _work_mode_create_reasoning_panel_count(text: str) -> int | None:
     noun = r"(?:reasoning\s+)?(?:panel|space|tab|lane|page)s?"
     count_word = r"(?P<count>\d{1,2}|a|an|one|two|three|four|five|six|seven|eight)"
     patterns = [
-        rf"\b(?:open|add|create|make)\s+(?:{count_word}\s+)?(?:new\s+)?{noun}\b",
+        rf"\b(?:open(?:\s+up)?|add|create|make)\s+(?:{count_word}\s+)?(?:new\s+)?{noun}\b",
         rf"\bnew\s+(?:{count_word}\s+)?{noun}\b",
     ]
     for pat in patterns:
@@ -4481,7 +5354,7 @@ def heuristic_route_action(text: str) -> dict | None:
                 "missing_slot": None,
             }
         wm_ord = re.search(
-            r"\b(?:go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+)?"
+            r"\b(?:(?:can you|could you|please)\s+)?(?:go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+)?"
             r"(first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?(?:panel|space|tab|lane|page)\b",
             lowered,
         )
@@ -4524,6 +5397,26 @@ def heuristic_route_action(text: str) -> dict | None:
             if q and len(q) >= 2 and not re.fullmatch(r"\d+", q):
                 if not _workmode_navigation_guard(raw, wm_name.group(0)):
                     return None
+                ord_map = {
+                    "first": 1,
+                    "second": 2,
+                    "third": 3,
+                    "fourth": 4,
+                    "fifth": 5,
+                    "sixth": 6,
+                    "seventh": 7,
+                    "eighth": 8,
+                }
+                ord_n = ord_map.get(q.lower().strip())
+                if ord_n:
+                    return {
+                        "domain": "work",
+                        "is_action_request": True,
+                        "action_name": "work_mode.reasoning_select_panel",
+                        "slots": {"panel_number": ord_n},
+                        "needs_followup": False,
+                        "missing_slot": None,
+                    }
                 # Music / Spotify / playback are dedicated UI panels — never
                 # treat them as reasoning-panel tab titles. They were already
                 # caught by the music.open_panel heuristic above; this guard
@@ -4549,6 +5442,26 @@ def heuristic_route_action(text: str) -> dict | None:
                 }
         q_loose = _go_to_reasoning_panel_query_heuristic(raw)
         if q_loose:
+            ord_map = {
+                "first": 1,
+                "second": 2,
+                "third": 3,
+                "fourth": 4,
+                "fifth": 5,
+                "sixth": 6,
+                "seventh": 7,
+                "eighth": 8,
+            }
+            ord_n = ord_map.get(q_loose.lower().strip())
+            if ord_n:
+                return {
+                    "domain": "work",
+                    "is_action_request": True,
+                    "action_name": "work_mode.reasoning_select_panel",
+                    "slots": {"panel_number": ord_n},
+                    "needs_followup": False,
+                    "missing_slot": None,
+                }
             return {
                 "domain": "work",
                 "is_action_request": True,
@@ -5344,6 +6257,49 @@ def route_action_request(session_id: str, text: str) -> dict:
         if upgraded is not None:
             return finalize(upgraded)
 
+    if is_checklist_undo_followup(text):
+        snap, snap_status = _get_checklist_undo_snapshot_valid(session_id)
+        if snap_status == "valid" or pending_checklist_undo_context.get(session_id):
+            return finalize(
+                normalize_route(
+                    {
+                        "domain": "checklist",
+                        "is_action_request": True,
+                        "action_name": "checklist.undo_clear",
+                        "slots": {},
+                        "needs_followup": False,
+                        "missing_slot": None,
+                    }
+                )
+            )
+        spoken = "I don't have a recent checklist change to undo."
+        recent = get_recent_action_context(session_id) or {}
+        recent_domain = str(recent.get("action_name") or "").split(".")[0]
+        _emit_undo_routing_log(
+            "undo_wrong_domain_blocked",
+            raw_text=(text or "")[:200],
+            normalized_text=(text or "").strip().lower()[:200],
+            recent_action_domain=recent_domain,
+            pending_undo_domain="",
+            checklist_snapshot_exists=session_id in checklist_undo_snapshots,
+            checklist_undo_ttl_remaining_ms=_checklist_undo_ttl_remaining_ms(session_id),
+            selected_undo_domain="",
+            blocked_domain=recent_domain or "llm_router",
+            decision_reason="blocked_before_chat_router",
+        )
+        return finalize(
+            normalize_route(
+                {
+                    "domain": "clarification",
+                    "is_action_request": True,
+                    "action_name": "clarification.undo",
+                    "slots": {"spoken": spoken},
+                    "needs_followup": False,
+                    "missing_slot": None,
+                }
+            )
+        )
+
     normalized = normalize_route(
         vera.route_action(
             text,
@@ -5371,12 +6327,43 @@ def execute_structured_action(
     slots = route.get("slots", {})
     t0 = perf_counter()
 
+    if action_name == "clarification.undo":
+        spoken = str((slots or {}).get("spoken") or _undo_clarification_spoken(session_id))
+        action_result = {
+            "spoken_reply": spoken,
+            "action_type": "clarification",
+            "data": {"undo_clarification": True},
+            "ui_payload": None,
+        }
+        return action_result, perf_counter() - t0
+
     if route.get("needs_followup"):
         if action_name == "weather.current" and route.get("missing_slot") == "location":
             set_pending_action(session_id, "weather.current", "location", slots)
             action_result = {
                 "spoken_reply": WEATHER_LOCATION_PROMPT,
                 "action_type": "weather",
+                "data": None,
+                "ui_payload": None,
+            }
+            return action_result, perf_counter() - t0
+        if action_name == "weather.forecast" and route.get("missing_slot") in {
+            "location",
+            "time",
+            "both",
+        }:
+            missing_slot = route.get("missing_slot") or "location"
+            parsed = (route or {}).get("_parsed_weather") or parse_weather_query(text)
+            pending_slots = _weather_pending_slots_from_parsed(text, parsed)
+            set_pending_action(session_id, "weather.forecast", missing_slot, pending_slots)
+            _log_weather_forecast_pending_store(session_id, missing_slot, pending_slots)
+            _log_weather_forecast_clarify(missing_slot, parsed)
+            action_result = {
+                "spoken_reply": _weather_clarification_prompt(
+                    missing_slot,
+                    near_me=parsed.get("location_kind") == "near_me",
+                ),
+                "action_type": "weather_forecast",
                 "data": None,
                 "ui_payload": None,
             }
@@ -5468,6 +6455,54 @@ def execute_structured_action(
             return action_result, perf_counter() - t0
         return None, 0.0
 
+    try:
+        _cap_action, _cap_feature = _credit_action_for_structured_action(action_name)
+        if _cap_action:
+            _enforce_usage_credit_cap(
+                _cap_action,
+                session_id=session_id,
+                feature_type=_cap_feature,
+            )
+    except HTTPException:
+        raise
+
+    if action_name == "weather.forecast":
+        location = clean_location_text(slots.get("location", ""))
+        parsed = (route or {}).get("_parsed_weather") or parse_weather_query(text)
+        if not location:
+            location = clean_location_text(parsed.get("location") or "")
+        if not location:
+            set_pending_action(session_id, "weather.forecast", "location", _weather_pending_slots_from_parsed(text, parsed))
+            _log_weather_forecast_pending_store(session_id, "location", slots)
+            _log_weather_forecast_clarify("location", parsed)
+            action_result = {
+                "spoken_reply": _weather_clarification_prompt(
+                    "location",
+                    near_me=parsed.get("location_kind") == "near_me",
+                ),
+                "action_type": "weather_forecast",
+                "data": None,
+                "ui_payload": None,
+            }
+            return action_result, perf_counter() - t0
+
+        parsed = {
+            **parsed,
+            "location": location,
+            "needs_location": False,
+            "location_kind": "explicit",
+        }
+        action_result = handle_weather_forecast_request(
+            location=location,
+            parsed_query=parsed,
+            user_text=text,
+        )
+        if action_result.get("data") or action_result.get("ui_payload"):
+            effective_slots = dict(slots)
+            effective_slots["location"] = location
+            set_recent_action_from_result(session_id, action_name, effective_slots, action_result)
+        return action_result, perf_counter() - t0
+
     if action_name == "weather.current":
         location = clean_location_text(slots.get("location", ""))
         if not location:
@@ -5489,10 +6524,18 @@ def execute_structured_action(
 
     if action_name == "weather.followup":
         recent = get_recent_action_context(session_id)
-        if recent and recent.get("action_name") == "weather.current":
+        if recent and recent.get("action_name") in ("weather.current", "weather.forecast"):
             action_result = dict(recent.get("result", {}))
-            action_result["spoken_reply"] = answer_direct_weather_question(text, session_id, action_result)
-            set_recent_action_from_result(session_id, "weather.current", recent.get("slots", {}), action_result)
+            if recent.get("action_name") == "weather.forecast":
+                action_result["spoken_reply"] = action_result.get("spoken_reply") or ""
+            else:
+                action_result["spoken_reply"] = answer_direct_weather_question(text, session_id, action_result)
+            set_recent_action_from_result(
+                session_id,
+                recent.get("action_name"),
+                recent.get("slots", {}),
+                action_result,
+            )
             return action_result, perf_counter() - t0
         return None, 0.0
 
@@ -5625,6 +6668,14 @@ def execute_structured_action(
         query = (slots.get("query") or slots.get("user_text") or text or "").strip()
         if not query:
             return None, 0.0
+        try:
+            print(
+                "[search_action_execute] "
+                + json.dumps({"query": query[:240]}, ensure_ascii=False),
+                flush=True,
+            )
+        except Exception:
+            pass
         raw_user_text = (slots.get("user_text") or text or "").strip() or None
         action_result = handle_web_search_request(
             vera, query=query, raw_user_text=raw_user_text
@@ -5711,11 +6762,39 @@ def execute_structured_action(
         return action_result, perf_counter() - t0
 
     if action_name == "music.volume_up":
+        if is_checklist_undo_followup(text):
+            spoken = _undo_clarification_spoken(session_id)
+            return {
+                "spoken_reply": spoken,
+                "action_type": "clarification",
+                "data": {"undo_clarification": True},
+                "ui_payload": None,
+            }, perf_counter() - t0
         action_result = handle_music_volume_up(0.05)
         set_recent_action_from_result(session_id, action_name, slots, action_result)
         return action_result, perf_counter() - t0
 
     if action_name == "music.volume_down":
+        if is_checklist_undo_followup(text):
+            spoken = _undo_clarification_spoken(session_id)
+            _emit_undo_routing_log(
+                "undo_wrong_domain_blocked",
+                raw_text=(text or "")[:200],
+                normalized_text=(text or "").strip().lower()[:200],
+                recent_action_domain="music",
+                pending_undo_domain="",
+                checklist_snapshot_exists=session_id in checklist_undo_snapshots,
+                checklist_undo_ttl_remaining_ms=_checklist_undo_ttl_remaining_ms(session_id),
+                selected_undo_domain="",
+                blocked_domain="music.volume_down",
+                decision_reason="blocked_volume_down_for_undo_intent",
+            )
+            return {
+                "spoken_reply": spoken,
+                "action_type": "clarification",
+                "data": {"undo_clarification": True},
+                "ui_payload": None,
+            }, perf_counter() - t0
         action_result = handle_music_volume_down(0.05)
         set_recent_action_from_result(session_id, action_name, slots, action_result)
         return action_result, perf_counter() - t0
@@ -5909,6 +6988,17 @@ def prepare_streaming_structured_action(
 
     if route.get("needs_followup"):
         return None
+
+    try:
+        _cap_action, _cap_feature = _credit_action_for_structured_action(action_name)
+        if _cap_action:
+            _enforce_usage_credit_cap(
+                _cap_action,
+                session_id=session_id,
+                feature_type=_cap_feature,
+            )
+    except HTTPException:
+        raise
 
     if action_name == "weather.current":
         location = clean_location_text(slots.get("location", ""))
@@ -9245,6 +10335,42 @@ _INFO_TOOL_FINANCE_QUOTE_RE = re.compile(
     r"how(?:'s|s|\s+is)\s+(?:[a-z]+\s+)?doing\s+today)\b",
     re.IGNORECASE,
 )
+# Broader finance anchors for blocking bare "what's the latest" → news when the
+# full compound turn is a stock quote request.
+_FINANCE_TURN_ANCHOR_RE = re.compile(
+    r"\b(?:stock\s+price|share\s+price|price\s+of|quote\s+for|trading\s+at|"
+    r"market\s+cap|(?:ticker|shares?)\b|"
+    r"[\w.$-]{1,12}\s+(?:stock\s+price|share\s+price|trading\s+at|market\s+cap|shares?))\b",
+    re.IGNORECASE,
+)
+_BARE_LATEST_RECENCY_QUERY_RE = re.compile(
+    r"^\s*what(?:'?s|s|\s+is)\s+(?:the\s+)?(?:latest|current|newest)\s*[?!.]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _has_finance_anchor_in_text(text: str) -> bool:
+    return bool(_FINANCE_TURN_ANCHOR_RE.search(str(text or "").strip()))
+
+
+def _planner_full_turn_context() -> str:
+    try:
+        return str(_planner_plan_raw_text_var.get() or "").strip()
+    except Exception:
+        return ""
+
+
+def _bare_latest_news_blocked_by_finance_anchor(span: str, *, full_turn: str = "") -> bool:
+    """True when a bare recency fragment must not route to news.latest."""
+    s = str(span or "").strip()
+    if not s:
+        return False
+    if re.search(r"\b(?:news|headlines?)\b", s, re.IGNORECASE):
+        return False
+    if not _BARE_LATEST_RECENCY_QUERY_RE.match(s):
+        return False
+    context = str(full_turn or "").strip() or _planner_full_turn_context()
+    return bool(context and _has_finance_anchor_in_text(context))
 # Sports — explicit win/lose/score/play/schedule questions about a team.
 _INFO_TOOL_SPORTS_TEAM_RE = re.compile(
     r"\b(?:lakers|clippers|warriors|celtics|knicks|heat|bulls|spurs|nets|"
@@ -9999,6 +11125,18 @@ def _classify_info_tool_deterministic(
         )
         return out
 
+    # ---- 10.75) WORK-MODE SCHEDULE / PLAN FOLLOW-UP --------------------
+    # "is gym at 9:20 too late?" contains ``gym`` which matches the venue
+    # noun list — answer from visible plan context via LLM, not Serper.
+    if looks_like_work_mode_schedule_followup(raw):
+        out.update(
+            route="llm_only",
+            tool="none",
+            confidence=0.92,
+            reason="work_mode_schedule_followup_not_venue_search",
+        )
+        return out
+
     # ---- 11) LOCAL — "near me" needs location; "in <city>" does not ----
     if _INFO_TOOL_VENUE_RE.search(raw):
         near_me_flag = bool(_INFO_TOOL_NEAR_ME_RE.search(raw))
@@ -10303,21 +11441,12 @@ def build_route_from_info_tool(
         }
 
     if route == "weather_tool":
-        # Use the classifier-extracted location if present; otherwise let the
-        # existing weather pipeline ask for it.
         loc_hint = (
             classification.get("query")
             if classification.get("query") and classification.get("query") != raw
             else ""
         )
-        return {
-            "domain": "weather",
-            "is_action_request": True,
-            "action_name": "weather.current",
-            "slots": {"location": clean_location_text(loc_hint) or ""},
-            "needs_followup": False,
-            "missing_slot": None,
-        }
+        return weather_action_route_from_text(raw, location_hint=loc_hint, session_id=session_id)
 
     if route == "finance_quote_tool":
         return {
@@ -10771,6 +11900,8 @@ def _detect_app_action_route_family(text: str) -> dict | None:
 
     lowered = raw.lower()
     try:
+        if is_checklist_undo_request(raw):
+            return None
         has_music_subject = bool(
             re.search(r"\b(?:music|song|track|spotify|playback)\b", lowered)
         )
@@ -11753,6 +12884,57 @@ def classify_news_search_intent(
         }
 
     if request_shape and (raw_keyword_news or _detect_current_or_recent(raw)):
+        if _bare_latest_news_blocked_by_finance_anchor(raw):
+            try:
+                print(
+                    "[news_latest_blocked_by_finance_anchor] "
+                    + json.dumps(
+                        {
+                            "raw_clause": raw[:240],
+                            "normalized_clause": lowered[:240],
+                            "full_turn_context": (
+                                _planner_full_turn_context() or raw
+                            )[:240],
+                            "finance_anchor_detected": True,
+                            "candidate_routes": ["news.latest"],
+                            "blocked_routes": ["news.latest"],
+                            "selected_route": "general_chat",
+                            "decision_reason": "bare_latest_recency_with_finance_in_full_turn",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
+            return {
+                "shouldSearchNews": False,
+                "confidence": 0.85,
+                "intentType": "general_chat",
+                "reason": "finance_anchor_blocks_bare_latest_news",
+                "rawKeywordNewsDetected": raw_keyword_news,
+                "requestShapeDetected": request_shape,
+                "currentFactQuestionDetected": False,
+                "currentFactQuestionScore": 0.0,
+                "personalNewsStatementDetected": False,
+                "emotionalContextDetected": False,
+            }
+        try:
+            print(
+                "[news_latest_candidate] "
+                + json.dumps(
+                    {
+                        "raw_clause": raw[:240],
+                        "normalized_clause": lowered[:240],
+                        "candidate_routes": ["news.latest"],
+                        "reason": "request_shape_plus_news_or_recent_terms",
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
         return {
             "shouldSearchNews": True,
             "confidence": 0.9,
@@ -13816,7 +14998,9 @@ def try_prepare_streaming_action_messages(
         note="shadow_only_streaming_entry",
     )
     pending = get_pending_action(session_id)
-    if pending and pending.get("action_name") == "weather.current" and pending.get("missing_slot") == "location":
+    if pending and pending.get("action_name") in ("weather.current", "weather.forecast") and pending.get(
+        "missing_slot"
+    ) in ("location", "time", "both"):
         return None
     # 2026-05-28 PART 1 — beta info-tool router clarification follow-up.
     # Same shape as the weather pending guard: defer streaming so the sync
@@ -14717,6 +15901,47 @@ def _inject_client_context_snapshot(
     checklist = snapshot.get("checklist") if isinstance(snapshot.get("checklist"), dict) else {}
     checklist_items = checklist.get("ongoing_items") if isinstance(checklist.get("ongoing_items"), list) else []
     checklist_items = [str(x).strip()[:120] for x in checklist_items if str(x).strip()][:8]
+    checklist_detail_items: list[str] = []
+    main_items_snap = (
+        checklist.get("main_items") if isinstance(checklist.get("main_items"), list) else []
+    )
+    if main_items_snap:
+        for m in main_items_snap[:12]:
+            if not isinstance(m, dict):
+                continue
+            label = str(m.get("text") or "").strip()
+            if not label:
+                continue
+            children = m.get("children") if isinstance(m.get("children"), list) else []
+            child_bits = [
+                str(c.get("text") or "").strip()[:120]
+                for c in children
+                if isinstance(c, dict) and str(c.get("text") or "").strip()
+            ][:6]
+            if child_bits:
+                checklist_detail_items.append(
+                    f"main: {label[:160]} (details: {', '.join(child_bits)})"
+                )
+            else:
+                checklist_detail_items.append(f"main: {label[:160]}")
+    else:
+        id_to_text: dict[str, str] = {}
+        for it in (checklist.get("items") if isinstance(checklist.get("items"), list) else [])[:40]:
+            if isinstance(it, dict) and str(it.get("id") or "").strip():
+                id_to_text[str(it.get("id") or "").strip()] = str(it.get("text") or "").strip()
+        for it in (checklist.get("items") if isinstance(checklist.get("items"), list) else [])[:20]:
+            if not isinstance(it, dict):
+                continue
+            label = str(it.get("text") or "").strip()
+            if not label:
+                continue
+            pid = str(it.get("parent_id") or "").strip()
+            if pid and pid in id_to_text:
+                prefix = "sub"
+            else:
+                prefix = "main"
+            checklist_detail_items.append(f"{prefix}: {label[:160]}")
+    asks_schedule_followup = looks_like_work_mode_schedule_followup(user_transcript)
     reasoning = snapshot.get("reasoning") if isinstance(snapshot.get("reasoning"), dict) else {}
     snapshot_strict_flag = bool(reasoning.get("contamination_test_no_voice"))
     suppress_voice = handoff_usable and (
@@ -14800,6 +16025,15 @@ def _inject_client_context_snapshot(
                 "(e.g. 'new question', 'different problem', 'forget that'), treat their turn as continuing "
                 "the same visible task; combine the reasoning excerpt with the latest assistant reply when resolving references.\n"
             )
+    if asks_schedule_followup and (excerpt or checklist_detail_items or checklist_items):
+        reasoning_lines += (
+            "\nSchedule/plan follow-up rule for this turn: the user is asking about the "
+            "visible evening/day plan, schedule blocks, or checklist (timing, order, whether "
+            "a block is too late/early, what to do next, or if the plan is realistic). "
+            "Answer using the Reasoning workspace excerpt and checklist items above. "
+            "Treat words like 'gym' as scheduled activities from the plan, not local venue "
+            "searches.\n"
+        )
     if asks_deictic_followup and (excerpt or voice_excerpt or handoff_usable):
         if handoff_usable:
             reasoning_lines += (
@@ -14856,8 +16090,12 @@ def _inject_client_context_snapshot(
             else "- music.skip_prev_available=(unknown)\n"
         )
         + f"- checklist.ongoing_count={int(checklist.get('ongoing_count') or 0)}\n"
+        f"- checklist.main_count={int(checklist.get('main_count') or 0)}\n"
+        f"- checklist.subitem_count={int(checklist.get('subitem_count') or 0)}\n"
         f"- checklist.completed_count={int(checklist.get('completed_count') or 0)}\n"
         f"- checklist.ongoing_items={'; '.join(checklist_items) if checklist_items else '(none)'}\n"
+        f"- checklist.items_detail={'; '.join(checklist_detail_items) if checklist_detail_items else '(none)'}\n"
+        f"- schedule_followup_detected={asks_schedule_followup}\n"
         f"{rp_panel_line}"
         f"{reasoning_lines}"
         f"\nThe user's words in this turn were: \"{user_transcript}\".\n"
@@ -17061,6 +18299,28 @@ def _try_work_mode_timer_core(
         except Exception:
             pass
         if dur is None:
+            if timer_start_match is not None:
+                try:
+                    print(
+                        "[timer_client_start_failed] "
+                        + json.dumps(
+                            {
+                                "reason": "duration_parse_failed",
+                                "normalized_text": ql[:200],
+                            },
+                            ensure_ascii=False,
+                        ),
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+                return {
+                    "reply": (
+                        "I understood the timer request, but couldn't start it. "
+                        "Try saying 'set a timer for 10 minutes.'"
+                    ),
+                    "work_mode_timer": None,
+                }
             return None
         fire_ts = now + float(dur)
         if dur >= 3600 and dur % 3600 == 0:
@@ -17120,13 +18380,251 @@ def _try_work_mode_timer_core(
     return {"reply": spoken.strip(), "work_mode_timer": wm}
 
 
+def _timer_snapshot_from_client_context(client_context: dict | None) -> dict:
+    snap = client_context if isinstance(client_context, dict) else {}
+    timer = snap.get("timer") if isinstance(snap.get("timer"), dict) else {}
+    fire_raw = timer.get("fire_at_epoch_ms")
+    try:
+        fire_at = int(fire_raw) if fire_raw is not None else None
+    except (TypeError, ValueError):
+        fire_at = None
+    return {
+        "active": bool(timer.get("active")),
+        "expired": bool(timer.get("expired")),
+        "fire_at_epoch_ms": fire_at,
+        "remaining_seconds": timer.get("remaining_seconds"),
+        "timer_id": str(timer.get("timer_id") or "").strip() or None,
+    }
+
+
+def _try_work_mode_timer_extend_core(
+    session_id: str, transcript: str, client_context: dict | None, client: str
+) -> dict | None:
+    """Extend an active client-authoritative work-mode timer by a parsed delta."""
+    if str(client or "").strip().lower() != "vera":
+        return None
+    q = (transcript or "").strip()
+    if not q:
+        return None
+    req = _parse_timer_extend_request(q)
+    if not req:
+        return None
+
+    delta = int(req.get("duration_delta_seconds") or 0)
+    if delta <= 0:
+        return None
+
+    if not _is_work_mode_snapshot(client_context):
+        label = _format_timer_duration_label(delta)
+        return {
+            "reply": (
+                "Timers are only available in Work Mode right now. "
+                f"Turn on Work Mode, then ask me to add {label} to the timer."
+            ),
+            "work_mode_timer": None,
+        }
+
+    timer_state = _timer_snapshot_from_client_context(client_context)
+    label = _format_timer_duration_label(delta)
+
+    try:
+        print(
+            "[timer_extend_execute_start] "
+            + json.dumps(
+                {
+                    "raw_text": q[:240],
+                    "duration_delta_seconds": delta,
+                    "timer_active": timer_state.get("active"),
+                    "timer_expired": timer_state.get("expired"),
+                    "timer_id": timer_state.get("timer_id"),
+                    "fire_at_epoch_ms": timer_state.get("fire_at_epoch_ms"),
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+    if not timer_state.get("active"):
+        if timer_state.get("expired"):
+            reply = (
+                f"I can't add time because that timer already finished. "
+                f"Want me to start a new {label} timer?"
+            )
+        else:
+            reply = (
+                f"There isn't an active timer to extend. "
+                f"Want me to start a {label} timer?"
+            )
+        try:
+            print(
+                "[timer_extend_execute_done] "
+                + json.dumps(
+                    {
+                        "success": False,
+                        "reason": "expired" if timer_state.get("expired") else "no_active_timer",
+                        "duration_delta_seconds": delta,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        return {"reply": reply, "work_mode_timer": None}
+
+    fire_at = timer_state.get("fire_at_epoch_ms")
+    if fire_at is None:
+        reply = (
+            f"There isn't an active timer to extend. "
+            f"Want me to start a {label} timer?"
+        )
+        return {"reply": reply, "work_mode_timer": None}
+
+    new_fire_at = int(fire_at) + int(delta) * 1000
+    timer_id = timer_state.get("timer_id") or uuid.uuid4().hex[:12]
+    wm = {
+        "id": timer_id,
+        "fire_at_epoch_ms": new_fire_at,
+        "extend": True,
+        "duration_delta_seconds": delta,
+        "message": "Your work mode timer is up.",
+        "label": "timer",
+    }
+    spoken = f"Added {label} to your timer."
+    try:
+        print(
+            "[timer_extend_execute_done] "
+            + json.dumps(
+                {
+                    "success": True,
+                    "duration_delta_seconds": delta,
+                    "old_fire_at_epoch_ms": fire_at,
+                    "new_fire_at_epoch_ms": new_fire_at,
+                    "timer_id": timer_id,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+    return {"reply": spoken.strip(), "work_mode_timer": wm}
+
+
+def _resolve_checklist_items_for_mutation(
+    session_id: str,
+    server_items: list,
+    client_context_snapshot: dict | None,
+    *,
+    source: str = "",
+) -> tuple[list, str]:
+    """Choose the checklist base for a normal mutation (add/remove/etc.).
+
+    Undo snapshots are never merged into add — they only gate whether an
+    explicit client-side empty snapshot should override stale server rows
+    after a recent clear/erase.
+    """
+    items = server_items if isinstance(server_items, list) else []
+    selected_base = "server"
+    snapshot_checklist = (
+        client_context_snapshot.get("checklist")
+        if isinstance(client_context_snapshot, dict) and isinstance(client_context_snapshot.get("checklist"), dict)
+        else None
+    )
+    snapshot_items = snapshot_checklist.get("items") if isinstance(snapshot_checklist, dict) else None
+    server_item_count_before = len(_checklist_undo_non_empty_items(items))
+    client_snapshot_item_count = (
+        len(_checklist_undo_non_empty_items(snapshot_items))
+        if isinstance(snapshot_items, list)
+        else None
+    )
+    client_undo = _checklist_undo_snapshot_from_client_context(client_context_snapshot)
+    server_undo = checklist_undo_snapshots.get(session_id)
+    pending_undo = pending_checklist_undo_context.get(session_id)
+    pending_server_undo = bool(server_undo or pending_undo)
+
+    if isinstance(snapshot_items, list):
+        client_nonempty = _checklist_undo_non_empty_items(snapshot_items)
+        if client_nonempty:
+            items = snapshot_items
+            selected_base = "client_snapshot"
+        elif not server_item_count_before:
+            items = snapshot_items
+            selected_base = "client_snapshot"
+        elif len(snapshot_items) == 0 and (client_undo or pending_server_undo):
+            items = []
+            selected_base = "client_current_empty"
+
+    try:
+        _emit_undo_routing_log(
+            "checklist_resolve_mutation_base",
+            session_id=(session_id or "")[:64],
+            source=str(source or "")[:40],
+            server_item_count_before=server_item_count_before,
+            client_snapshot_item_count=client_snapshot_item_count
+            if client_snapshot_item_count is not None
+            else -1,
+            client_undo_snapshot_present=bool(client_undo),
+            pending_server_undo=pending_server_undo,
+            selected_base=selected_base,
+        )
+    except Exception:
+        pass
+    return items, selected_base
+
+
+def _resolve_checklist_items_for_clear(
+    session_id: str,
+    server_items: list,
+    client_context_snapshot: dict | None,
+) -> tuple[list, str, str]:
+    """Choose which checklist rows to clear and snapshot for undo.
+
+    Unlike add mutations, clear prefers server when non-empty, but falls
+    back to the client-visible checklist when the server was cleared
+    separately (e.g. UI erase PUT) while localStorage still has items.
+    """
+    _ = session_id  # reserved for future session-scoped hints
+    items = server_items if isinstance(server_items, list) else []
+    server_count = len(_checklist_undo_non_empty_items(items))
+    snapshot_checklist = (
+        client_context_snapshot.get("checklist")
+        if isinstance(client_context_snapshot, dict) and isinstance(client_context_snapshot.get("checklist"), dict)
+        else None
+    )
+    snapshot_items = snapshot_checklist.get("items") if isinstance(snapshot_checklist, dict) else None
+    client_count = (
+        len(_checklist_undo_non_empty_items(snapshot_items))
+        if isinstance(snapshot_items, list)
+        else 0
+    )
+    if server_count > 0:
+        return items, "server", "server_has_items"
+    if client_count > 0 and isinstance(snapshot_items, list):
+        return _normalize_checklist_items(snapshot_items), "client_snapshot", "server_empty_client_has_items"
+    return [], "empty", "both_empty"
+
+
 def _handle_checklist_action(
     session_id: str,
     text: str,
     action_name: str,
     client_context_snapshot: dict | None,
 ) -> dict:
-    if not _is_work_mode_snapshot(client_context_snapshot):
+    undo_snap_peek = (
+        checklist_undo_snapshots.get(session_id)
+        if action_name == "checklist.undo_clear"
+        else None
+    )
+    undo_snap_fresh = bool(
+        undo_snap_peek
+        and (time() - float(undo_snap_peek.get("created_at") or 0)) <= CHECKLIST_UNDO_TTL_SEC
+    )
+    if not _is_work_mode_snapshot(client_context_snapshot) and not (
+        action_name == "checklist.undo_clear" and undo_snap_fresh
+    ):
         return {
             "spoken_reply": "Checklist voice and typed editing only works in Work Mode.",
             "action_type": "checklist",
@@ -17134,46 +18632,112 @@ def _handle_checklist_action(
             "ui_payload": None,
         }
     items, collapsed, owner_stem = _load_checklist_state_for_session(session_id)
+    server_item_count_before = len(_checklist_undo_non_empty_items(items))
     snapshot_checklist = (
         client_context_snapshot.get("checklist")
         if isinstance(client_context_snapshot, dict) and isinstance(client_context_snapshot.get("checklist"), dict)
         else None
     )
     snapshot_items = snapshot_checklist.get("items") if isinstance(snapshot_checklist, dict) else None
-    if isinstance(snapshot_items, list):
-        # Voice/typed commands should mutate the same canonical rows the user
-        # sees. The client sends its localStorage-backed checklist snapshot
-        # before the request; prefer it over the last persisted server copy so
-        # recent manual edits are not missed by "remove the first item".
-        items = snapshot_items
+    client_snapshot_item_count = (
+        len(_checklist_undo_non_empty_items(snapshot_items))
+        if isinstance(snapshot_items, list)
+        else -1
+    )
+    client_undo_present = bool(_checklist_undo_snapshot_from_client_context(client_context_snapshot))
+    pending_server_undo = bool(
+        checklist_undo_snapshots.get(session_id) or pending_checklist_undo_context.get(session_id)
+    )
+    selected_base = "server"
+    if action_name not in ("checklist.clear_all", "checklist.undo_clear"):
+        items, selected_base = _resolve_checklist_items_for_mutation(
+            session_id,
+            items,
+            client_context_snapshot,
+            source=action_name or "unknown",
+        )
     if not isinstance(items, list):
         items = []
+
+    if action_name == "checklist.add_item":
+        _emit_undo_routing_log(
+            "checklist_add_execute_start",
+            session_id=(session_id or "")[:64],
+            source="add",
+            server_item_count_before=server_item_count_before,
+            client_snapshot_item_count=client_snapshot_item_count,
+            client_undo_snapshot_present=client_undo_present,
+            pending_server_undo=pending_server_undo,
+            selected_base=selected_base,
+            item_text=str(text or "")[:160],
+        )
 
     if action_name == "checklist.undo_clear":
         snap = checklist_undo_snapshots.get(session_id)
         if not snap or (time() - float(snap.get("created_at") or 0)) > CHECKLIST_UNDO_TTL_SEC:
             checklist_undo_snapshots.pop(session_id, None)
+            pending_checklist_undo_context.pop(session_id, None)
+            client_snap = _checklist_undo_snapshot_from_client_context(client_context_snapshot)
+            if client_snap:
+                snap = client_snap
+                checklist_undo_snapshots[session_id] = snap
+        if not snap or _checklist_undo_snapshot_item_count(snap) <= 0:
+            checklist_undo_snapshots.pop(session_id, None)
+            pending_checklist_undo_context.pop(session_id, None)
+            _emit_undo_routing_log(
+                "checklist_undo_failed_no_snapshot",
+                session_id=(session_id or "")[:64],
+                snapshot_id=str((snap or {}).get("snapshot_id") or ""),
+                decision_reason="no_snapshot_on_restore",
+            )
             return {
                 "spoken_reply": "I don't have a recent checklist change to undo.",
                 "action_type": "checklist",
                 "data": {"changed": False, "undo_available": False},
                 "ui_payload": None,
             }
-        restored_items = snap.get("items") or []
+        if (time() - float(snap.get("created_at") or 0)) > CHECKLIST_UNDO_TTL_SEC:
+            checklist_undo_snapshots.pop(session_id, None)
+            pending_checklist_undo_context.pop(session_id, None)
+            _emit_undo_routing_log(
+                "checklist_undo_failed_expired",
+                session_id=(session_id or "")[:64],
+                snapshot_id=str(snap.get("snapshot_id") or ""),
+                decision_reason="ttl_expired_on_restore",
+            )
+            return {
+                "spoken_reply": "I don't have a recent checklist change to undo.",
+                "action_type": "checklist",
+                "data": {"changed": False, "undo_available": False},
+                "ui_payload": None,
+            }
+        restored_items = _checklist_undo_non_empty_items(snap.get("items") or [])
         restored_collapsed = bool(snap.get("completed_collapsed", collapsed))
+        _emit_undo_routing_log(
+            "checklist_undo_restore_attempt",
+            session_id=(session_id or "")[:64],
+            snapshot_id=str(snap.get("snapshot_id") or ""),
+            snapshot_item_count=len(restored_items),
+        )
         _save_checklist_state_for_session(
             session_id, restored_items, completed_collapsed=restored_collapsed
         )
         checklist_undo_snapshots.pop(session_id, None)
-        try:
-            non_empty = sum(1 for r in restored_items if str((r or {}).get("text") or "").strip())
-        except Exception:
-            non_empty = len(restored_items or [])
+        pending_checklist_undo_context.pop(session_id, None)
+        non_empty = len(restored_items)
+        titles = _checklist_undo_item_titles(restored_items)
         print(
             f"[CHECKLIST_DEBUG][undo_clear] session={session_id} restored_count={non_empty}"
         )
+        _emit_undo_routing_log(
+            "checklist_undo_restored",
+            session_id=(session_id or "")[:64],
+            snapshot_id=str(snap.get("snapshot_id") or ""),
+            restored_item_count=non_empty,
+            restored_titles=titles,
+        )
         return {
-            "spoken_reply": f"Restored {non_empty} checklist items.",
+            "spoken_reply": "Restored the checklist.",
             "action_type": "checklist",
             "data": {"changed": True, "undo": True, "restored_count": non_empty},
             "ui_payload": {
@@ -17186,6 +18750,51 @@ def _handle_checklist_action(
         }
 
     if action_name == "checklist.clear_all":
+        client_titles = (
+            _checklist_undo_item_titles(snapshot_items)
+            if isinstance(snapshot_items, list)
+            else []
+        )
+        items, selected_clear_base, clear_reason = _resolve_checklist_items_for_clear(
+            session_id,
+            items,
+            client_context_snapshot,
+        )
+        titles_before = _checklist_undo_item_titles(items)
+        item_count_before = len(_checklist_undo_non_empty_items(items))
+        _emit_undo_routing_log(
+            "checklist_clear_execute_start",
+            session_id=(session_id or "")[:64],
+            source="voice_clear",
+            server_item_count_before=server_item_count_before,
+            client_snapshot_item_count=client_snapshot_item_count,
+            client_titles=client_titles[:20],
+            client_undo_snapshot_present=client_undo_present,
+            pending_server_undo=pending_server_undo,
+            selected_clear_base=selected_clear_base,
+            reason=clear_reason,
+        )
+        if item_count_before <= 0:
+            _emit_undo_routing_log(
+                "checklist_clear_already_empty_decision",
+                session_id=(session_id or "")[:64],
+                server_item_count_before=server_item_count_before,
+                client_snapshot_item_count=client_snapshot_item_count,
+                reason=clear_reason,
+            )
+            return {
+                "spoken_reply": "Your checklist is already empty.",
+                "action_type": "checklist",
+                "data": {"changed": False, "cleared_count": 0, "undo_available": False},
+                "ui_payload": None,
+            }
+        _emit_undo_routing_log(
+            "checklist_clear_requested",
+            session_id=(session_id or "")[:64],
+            mode=str((client_context_snapshot or {}).get("mode") or ""),
+            item_count_before_clear=item_count_before,
+            item_titles_before_clear=titles_before,
+        )
         before_total = len(items)
         before_done = sum(1 for r in items if isinstance(r, dict) and bool(r.get("done")))
         snapshot_payload = {
@@ -17205,15 +18814,43 @@ def _handle_checklist_action(
         next_items, spoken_reply, changed = apply_checklist_action(
             items, action_name, {"action": action_name}, vera=vera, user_text=text
         )
-        if changed:
-            checklist_undo_snapshots[session_id] = snapshot_payload
+        if changed and item_count_before > 0:
+            armed = _arm_checklist_undo_snapshot(
+                session_id,
+                snapshot_payload.get("items") or items,
+                completed_collapsed=bool(collapsed),
+                source="checklist.clear",
+            )
+            if not armed:
+                checklist_undo_snapshots.pop(session_id, None)
+                pending_checklist_undo_context.pop(session_id, None)
             _save_checklist_state_for_session(session_id, next_items, completed_collapsed=collapsed)
         else:
             checklist_undo_snapshots.pop(session_id, None)
+            pending_checklist_undo_context.pop(session_id, None)
+        after_count = len(_checklist_undo_non_empty_items(next_items))
+        _emit_undo_routing_log(
+            "checklist_clear_execute_done",
+            session_id=(session_id or "")[:64],
+            source="voice_clear",
+            server_item_count_before=server_item_count_before,
+            cleared_item_count=item_count_before if changed else 0,
+            undo_snapshot_source=selected_clear_base if changed and item_count_before > 0 else None,
+            result_item_count=after_count,
+            result_titles=_checklist_undo_item_titles(next_items),
+        )
+        _emit_undo_routing_log(
+            "checklist_cleared",
+            session_id=(session_id or "")[:64],
+            item_count_after_clear=after_count,
+            undo_snapshot_item_count=_checklist_undo_snapshot_item_count(
+                checklist_undo_snapshots.get(session_id)
+            ),
+        )
         print(
             "[CHECKLIST_DEBUG][clear_all] "
             f"session={session_id} before={before_total} done_before={before_done} "
-            f"after={len(next_items)} undo_snapshot_available={changed}"
+            f"after={len(next_items)} undo_snapshot_available={changed and item_count_before > 0}"
         )
         return {
             "spoken_reply": spoken_reply,
@@ -17221,7 +18858,7 @@ def _handle_checklist_action(
             "data": {
                 "changed": changed,
                 "cleared_count": before_total if changed else 0,
-                "undo_available": changed,
+                "undo_available": changed and item_count_before > 0,
             },
             "ui_payload": (
                 {
@@ -17327,6 +18964,21 @@ def _handle_checklist_action(
         )
     except Exception:
         pass
+    if action_name == "checklist.add_item":
+        result_titles = _checklist_undo_item_titles(next_items or [])
+        _emit_undo_routing_log(
+            "checklist_add_execute_done",
+            session_id=(session_id or "")[:64],
+            source="add",
+            server_item_count_before=server_item_count_before,
+            client_snapshot_item_count=client_snapshot_item_count,
+            client_undo_snapshot_present=client_undo_present,
+            pending_server_undo=pending_server_undo,
+            selected_base=selected_base,
+            item_text=str(text or "")[:160],
+            result_item_count=len(result_titles),
+            result_titles=result_titles[:20],
+        )
     return {
         "spoken_reply": spoken_reply,
         "action_type": "checklist",
@@ -17379,6 +19031,10 @@ def run_general_llm(
     work_mode_stage2_turn: dict | None = None,
     work_mode_stage2_spoken_override: str | None = None,
 ) -> tuple[str, float]:
+    try:
+        _enforce_usage_credit_cap("voice_assistant", session_id=session_id)
+    except HTTPException:
+        raise
     # 2026-06-01 identity-leak patch: pass the session-scoped active user
     # profile so the chat prompt only contains a "Current active user
     # profile" block when THIS session has explicitly signed in. Without
@@ -17501,7 +19157,24 @@ def resolve_reply_if_not_general_llm(
         recent_news_context=_rf_ctx_sync,
         note="shadow_only_sync_entry",
     )
+
+    undo_resolved = resolve_checklist_undo_shortcut(
+        session_id,
+        text,
+        client_context_snapshot=client_context_snapshot,
+    )
+    if undo_resolved is not None:
+        reply, t_llm, action_result = undo_resolved
+        return reply, t_llm, action_result
+
     pending = get_pending_action(session_id)
+    if pending and pending.get("action_name") == "weather.forecast" and pending.get("missing_slot") in {
+        "location",
+        "time",
+        "both",
+    }:
+        action_result, t_llm = resolve_pending_weather_forecast_request(session_id, text, pending)
+        return action_result_reply(action_result) or WEATHER_LOCATION_INVALID_REPLY, t_llm, action_result
     if pending and pending.get("action_name") == "weather.current" and pending.get("missing_slot") == "location":
         action_result, t_llm = resolve_pending_weather_request(session_id, text, filler_generation=filler_generation)
         return action_result_reply(action_result) or WEATHER_LOCATION_INVALID_REPLY, t_llm, action_result
@@ -17627,13 +19300,6 @@ def resolve_reply_if_not_general_llm(
         return reply, followup_t_llm, followup_result
 
     checklist_action = is_checklist_action_request(text)
-    if not checklist_action and _is_work_mode_snapshot(client_context_snapshot):
-        # "undo that" only counts as a checklist action when we still have a
-        # recent snapshot to restore — otherwise it stays a generic phrase.
-        snap = checklist_undo_snapshots.get(session_id)
-        if snap and (time() - float(snap.get("created_at") or 0)) <= CHECKLIST_UNDO_TTL_SEC:
-            if is_checklist_undo_request(text):
-                checklist_action = "checklist.undo_clear"
     if checklist_action:
         action_result = _handle_checklist_action(
             session_id, text, checklist_action, client_context_snapshot
@@ -18237,6 +19903,18 @@ async def iter_infer_tts_ndjson_stream_llm_stream(
     NDJSON: meta (reply empty until done) → TTS chunk lines as each sentence is ready
     while the LLM streams; then done. Pipelines first-sentence TTS with later LLM tokens.
     """
+    _cap_action, _cap_feature = _credit_action_for_streaming_meta(meta_action_type)
+    if messages_override is None:
+        _cap_action = "voice_assistant"
+        _cap_feature = None
+    try:
+        _enforce_usage_credit_cap(
+            _cap_action,
+            session_id=session_id,
+            feature_type=_cap_feature,
+        )
+    except HTTPException:
+        raise
     lane_dbg: dict = {}
     if messages_override is not None:
         messages = list(messages_override)
@@ -18550,6 +20228,18 @@ async def iter_text_tts_ndjson_stream_llm_stream(
     client_context_snapshot: dict | None = None,
 ) -> AsyncIterator[str]:
     """Text path: stream LLM → sentence TTS chunks; meta has empty reply until done."""
+    _cap_action, _cap_feature = _credit_action_for_streaming_meta(meta_action_type)
+    if messages_override is None:
+        _cap_action = "voice_assistant"
+        _cap_feature = None
+    try:
+        _enforce_usage_credit_cap(
+            _cap_action,
+            session_id=session_id,
+            feature_type=_cap_feature,
+        )
+    except HTTPException:
+        raise
     if messages_override is not None:
         messages = list(messages_override)
         messages, _lane_dbg = _inject_client_context_snapshot(messages, client_context_snapshot, user_text, None)
@@ -18927,6 +20617,7 @@ def _voice_planner_takeover_decision(
     confidence: float,
     clarification_needed: bool,
     min_confidence: float = 0.6,
+    actions_preview: list | None = None,
 ) -> tuple[bool, str, dict]:
     """Decide whether voice ``/infer`` should hand a preview plan to the
     structured multi-action executor.
@@ -18957,6 +20648,15 @@ def _voice_planner_takeover_decision(
     }
     if clarification_needed:
         return False, "clarification_needed", diag
+    preview = [a for a in (actions_preview or []) if isinstance(a, dict) and a.get("type")]
+    if len(preview) == 1 and preview[0].get("type") == "reasoning.request":
+        payload = preview[0].get("payload") or {}
+        if isinstance(payload, dict) and payload.get("explicit_panel_destination"):
+            if not validate_ok:
+                return False, "validation_failed", diag
+            if float(confidence or 0.0) < float(min_confidence):
+                return False, "confidence_below_min", diag
+            return True, "voice_single_explicit_panel_reasoning", diag
     if not is_multi_action:
         return False, "not_multi_action", diag
     if not validate_ok:
@@ -19636,10 +21336,24 @@ async def infer(
                     validate_ok=bool(_voice_validate_ok),
                     confidence=_voice_confidence,
                     clarification_needed=_voice_clarify,
+                    actions_preview=_voice_actions_preview,
                 )
             )
             _voice_compound_override = bool(_voice_allowed)
             try:
+                print(
+                    "[route_decision] "
+                    + json.dumps(
+                        {
+                            "route": "multi_action" if _voice_compound_override else "legacy_router",
+                            "reason": _override_reason if _voice_compound_override else "voice_planner_takeover_denied",
+                            "transcript_preview": _planner_gate_transcript[:200],
+                            "action_types": [a.get("type") for a in _voice_actions_preview],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
                 print(
                     "[planner_gate_voice_compound_override] "
                     + json.dumps(
@@ -19758,11 +21472,10 @@ async def infer(
     checklist_action_name = None
     if planner_executed_infer is None:
         checklist_action_name = is_checklist_action_request(transcript)
-    if not checklist_action_name and _is_work_mode_snapshot(client_context):
-        snap = checklist_undo_snapshots.get(session_id)
-        if snap and (time() - float(snap.get("created_at") or 0)) <= CHECKLIST_UNDO_TTL_SEC:
-            if is_checklist_undo_request(transcript):
-                checklist_action_name = "checklist.undo_clear"
+    if not checklist_action_name:
+        checklist_action_name = peek_checklist_undo_action_name(
+            session_id, transcript, client_context
+        )
     try:
         fallback_action_type = ""
         fallback_router_used = False
@@ -20064,7 +21777,9 @@ async def infer(
     # planner's direct dispatcher already did so via the timer.set
     # branch of ``_dispatch_planned_action_directly``.
     if planner_executed_infer is None:
-        timer_short = _try_work_mode_timer_core(session_id, transcript, client_context, client)
+        timer_short = _try_work_mode_timer_extend_core(
+            session_id, transcript, client_context, client
+        ) or _try_work_mode_timer_core(session_id, transcript, client_context, client)
     else:
         timer_short = None
         try:
@@ -20084,6 +21799,21 @@ async def infer(
             pass
 
     if want_stream_tts:
+        if not (
+            timer_short is not None
+            or identity_reply
+            or memory_reply
+            or anonymous_reply
+            or snapshot_reply
+            or planner_executed_infer is not None
+            or brief_voice_imp
+        ):
+            _preflight_general_llm_credit_cap(
+                session_id,
+                transcript,
+                history,
+                client_context_snapshot=client_context,
+            )
         async def ndjson_infer():
             # First bytes to the client: ASR line (Voice UI user bubble). Omit transcript for reasoning stage‑2
             # brief so the client does not re-insert an older user line above this assistant reply.
@@ -20984,6 +22714,7 @@ _COST_LOGGING_PATH_PREFIXES = (
     "/tts_emotion_route",
     "/api/work-mode/reasoning",
     "/api/reasoning",
+    "/work_mode/",
 )
 # Endpoints that are state sync only (no LLM / Fish / Serper call) — skip them
 # entirely so they don't pollute pricing analysis with empty rows.
@@ -21709,11 +23440,34 @@ def api_work_mode_checklist_put(body: WorkChecklistSaveBody):
     sid = safe_id(body.session_id or "")
     if not sid:
         raise HTTPException(status_code=400, detail="Missing session_id.")
+    before_items, before_collapsed, _ = _load_checklist_state_for_session(sid)
+    before_count = len(_checklist_undo_non_empty_items(before_items))
     count, username = _save_checklist_state_for_session(
         sid,
         body.items,
         completed_collapsed=body.completed_collapsed,
     )
+    if before_count > 0 and count == 0:
+        _emit_undo_routing_log(
+            "checklist_clear_execute_start",
+            session_id=sid[:64],
+            source="ui_erase",
+            server_item_count_before=before_count,
+            client_snapshot_item_count=0,
+            client_undo_snapshot_present=False,
+            pending_server_undo=bool(
+                checklist_undo_snapshots.get(sid) or pending_checklist_undo_context.get(sid)
+            ),
+            selected_base="client_snapshot",
+        )
+        _emit_undo_routing_log(
+            "checklist_clear_execute_done",
+            session_id=sid[:64],
+            source="ui_erase",
+            server_item_count_before=before_count,
+            result_item_count=count,
+            result_titles=[],
+        )
     return {"ok": True, "username": username, "items_count": count}
 
 
@@ -22878,6 +24632,57 @@ class WorkModePanelTitlePayload(BaseModel):
     summary_excerpt: str = ""
 
 
+class WorkModeVoiceFinalBriefPayload(BaseModel):
+    session_id: str
+    user_text: str
+    panel_markdown: str
+    turn_id: Optional[str] = None
+    lane_id: Optional[str] = None
+    lane_title: Optional[str] = None
+    stream_lane_id: Optional[str] = None
+
+
+def _validate_voice_final_brief_scope(
+    *,
+    turn_id: str | None,
+    lane_id: str | None,
+    stream_lane_id: str | None,
+    panel_markdown: str | None = None,
+) -> tuple[bool, str]:
+    """Return (scope_ok, skip_reason). Frontend is authoritative; server mirrors checks."""
+    tid = str(turn_id or "").strip()
+    lid = str(lane_id or "").strip()
+    stream = str(stream_lane_id or lane_id or "").strip()
+    if lid and stream and lid != stream:
+        return False, "frozen_stream_lane_mismatch"
+    if not tid:
+        return False, "missing_turn_id"
+    md = str(panel_markdown or "").strip()
+    if len(md) < 24:
+        return False, "panel_markdown_too_short"
+    return True, ""
+
+
+def _log_voice_final_brief(row: dict) -> None:
+    try:
+        print("[voice_final_brief] " + json.dumps(row, ensure_ascii=False), flush=True)
+    except Exception:
+        pass
+
+
+def _log_lane_handoff_server(row: dict) -> None:
+    try:
+        print("[lane_handoff] " + json.dumps(row, ensure_ascii=False), flush=True)
+    except Exception:
+        pass
+
+
+def _log_voice_panel_contract_server(row: dict) -> None:
+    try:
+        print("[voice_panel_contract] " + json.dumps(row, ensure_ascii=False), flush=True)
+    except Exception:
+        pass
+
 WORK_MODE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
 
 
@@ -23024,6 +24829,112 @@ def _work_mode_touch_session(session_id: str) -> str:
     user_last_seen[sid] = time()
     total_sessions_seen.add(sid)
     return sid
+
+
+@app.post("/work_mode/voice_final_brief")
+async def work_mode_voice_final_brief(request: Request, data: WorkModeVoiceFinalBriefPayload):
+    """Phase A: grounded Voice UI final brief from completed panel markdown (not main /infer)."""
+    try:
+        from auth.request_auth import bind_request_auth_user
+
+        bind_request_auth_user(request)
+    except Exception:
+        pass
+    sid = _work_mode_touch_session(data.session_id)
+    if reasoning_ai is None:
+        raise HTTPException(503, "Reasoning model not loaded")
+
+    user_text = (data.user_text or "").strip()
+    panel_md = (data.panel_markdown or "").strip()
+    turn_id = (data.turn_id or "").strip() or None
+    lane_id = _normalize_reasoning_lane_id(data.lane_id) if data.lane_id else None
+    stream_lane_id = (
+        _normalize_reasoning_lane_id(data.stream_lane_id) if data.stream_lane_id else lane_id
+    )
+    lane_title = (data.lane_title or "").strip() or None
+
+    _log_voice_panel_contract_server(
+        {
+            "turn_id": turn_id,
+            "lane_id": lane_id,
+            "user_text": user_text[:240],
+        }
+    )
+    _log_lane_handoff_server(
+        {
+            "turn_id": turn_id,
+            "frozen_lane_id": lane_id,
+            "stream_lane_id": stream_lane_id,
+            "active_dom_lane_id": None,
+            "mismatch": bool(lane_id and stream_lane_id and lane_id != stream_lane_id),
+        }
+    )
+
+    scope_ok, skip_reason = _validate_voice_final_brief_scope(
+        turn_id=turn_id,
+        lane_id=lane_id,
+        stream_lane_id=stream_lane_id,
+        panel_markdown=panel_md,
+    )
+    if not scope_ok:
+        _log_voice_final_brief(
+            {
+                "turn_id": turn_id,
+                "lane_id": lane_id,
+                "skipped": True,
+                "skip_reason": skip_reason,
+                "source": "panel_markdown",
+                "excerpt_length": len(panel_md),
+                "brief_preview": "",
+            }
+        )
+        return {
+            "brief": "",
+            "skipped": True,
+            "skip_reason": skip_reason,
+            "source": "panel_markdown",
+        }
+
+    if not user_text:
+        raise HTTPException(400, "Empty user_text")
+
+    try:
+        _enforce_usage_credit_cap(
+            "work_mode_voice_summary",
+            session_id=sid,
+            feature_type="work_mode",
+            precharge_credits=2,
+        )
+    except HTTPException:
+        raise
+
+    try:
+        brief = await asyncio.to_thread(
+            reasoning_ai.summarize_panel_for_voice,
+            user_text,
+            panel_md,
+            lane_title,
+        )
+    except Exception as e:
+        print(f"[WORK_MODE/voice_final_brief] error: {e}")
+        raise HTTPException(500, "Voice final brief failed") from e
+
+    _log_voice_final_brief(
+        {
+            "turn_id": turn_id,
+            "lane_id": lane_id,
+            "skipped": False,
+            "source": "panel_markdown",
+            "excerpt_length": len(panel_md),
+            "brief_preview": (brief or "")[:240],
+        }
+    )
+    return {
+        "brief": brief,
+        "skipped": False,
+        "source": "panel_markdown",
+        "excerpt_length": len(panel_md),
+    }
 
 
 @app.post("/work_mode/classify")
@@ -23870,7 +25781,22 @@ async def work_mode_reasoning_stream(request: Request, data: WorkModeTextPayload
         raise
     except Exception as _safe_err:
         print(f"[safety_guard] reasoning_stream guard swallowed: {_safe_err}")
+    try:
+        _enforce_usage_credit_cap(
+            "work_mode_reasoning_deep",
+            session_id=sid,
+            feature_type="work_mode",
+            precharge_credits=20,
+        )
+    except HTTPException:
+        raise
     lane_id = _normalize_reasoning_lane_id(data.lane_id)
+    _cost_touch_work_mode_reasoning_request(
+        session_id=sid,
+        endpoint="/work_mode/reasoning_stream",
+        lane_id=lane_id,
+        request=request,
+    )
     lane_key = _reasoning_lane_history_key(sid, lane_id)
     lane_history = reasoning_lane_histories[lane_key]
     client_ctx = (data.work_mode_lane_client_context or "").strip()[:22000]
@@ -23895,6 +25821,8 @@ async def work_mode_reasoning_stream(request: Request, data: WorkModeTextPayload
         # a concurrent reasoning request can't overwrite it before we serialize
         # it into our `done` payload.
         effort_snap = _EffortSnapshot()
+        stream_ok = True
+        stream_err: str | None = None
         # Tag every diag log inside this generator with our request_id.
         _current_request_id_var.set(_rs_request_id)
         try:
@@ -23984,10 +25912,21 @@ async def work_mode_reasoning_stream(request: Request, data: WorkModeTextPayload
             done_payload["math_final_route"] = classifier_result.get("final_route")
             yield (json.dumps(done_payload, ensure_ascii=False) + "\n").encode("utf-8")
         except Exception as e:
+            stream_ok = False
+            stream_err = str(e)[:200]
             print(f"[WORK_MODE/reasoning_stream] error: {e}")
             yield (
                 json.dumps({"type": "error", "message": str(e), "request_id": _rs_request_id}, ensure_ascii=False) + "\n"
             ).encode("utf-8")
+        finally:
+            _cost_finalize_work_mode_stream(
+                session_id=sid,
+                endpoint="/work_mode/reasoning_stream",
+                request=request,
+                deep_reasoning_effort_active=effort_snap.value,
+                success=stream_ok,
+                error_message=stream_err,
+            )
 
     return StreamingResponse(
         _diag_wrap_stream(
@@ -24077,6 +26016,24 @@ async def work_mode_reasoning_stream_upload(
     if not upload_items:
         raise HTTPException(400, "Missing file")
 
+    _cost_touch_work_mode_reasoning_request(
+        session_id=sid,
+        endpoint="/work_mode/reasoning_stream_upload",
+        lane_id=lane,
+        request=request,
+        has_upload=True,
+        upload_count=len(upload_items),
+    )
+
+    try:
+        _enforce_usage_credit_cap(
+            "image_pdf_reasoning",
+            session_id=sid,
+            feature_type="image_pdf",
+        )
+    except HTTPException:
+        raise
+
     for uf in upload_items:
         b = await uf.read()
         if len(b) > WORK_MODE_UPLOAD_MAX_BYTES:
@@ -24152,6 +26109,8 @@ async def work_mode_reasoning_stream_upload(
     async def gen():
         # PART 3: per-stream snapshot of the shared model field.
         effort_snap = _EffortSnapshot()
+        stream_ok = True
+        stream_err: str | None = None
         _current_request_id_var.set(_rsu_request_id)
         try:
             if _is_generic_example_request(q):
@@ -24246,9 +26205,20 @@ async def work_mode_reasoning_stream_upload(
             done_payload["math_final_route"] = classifier_result.get("final_route")
             yield (json.dumps(done_payload, ensure_ascii=False) + "\n").encode("utf-8")
         except Exception as e:
+            stream_ok = False
+            stream_err = str(e)[:200]
             yield (
                 json.dumps({"type": "error", "message": str(e), "request_id": _rsu_request_id}, ensure_ascii=False) + "\n"
             ).encode("utf-8")
+        finally:
+            _cost_finalize_work_mode_stream(
+                session_id=sid,
+                endpoint="/work_mode/reasoning_stream_upload",
+                request=request,
+                deep_reasoning_effort_active=effort_snap.value,
+                success=stream_ok,
+                error_message=stream_err,
+            )
 
     return StreamingResponse(
         _diag_wrap_stream(
@@ -24384,7 +26354,7 @@ def _shadow_run_multi_action_planner(
         # the text is short — keeps log noise down for "what time is it".
         if not triggered and len(text) < 24:
             return
-        plan = mp.plan_user_actions(text, vera=vera if triggered else None)
+        plan = mp.plan_user_actions(text, vera=None)
         ok, errors, cq = mp.validate_plan(plan)
         mp.log_planner(
             raw_user_text=text,
@@ -24483,7 +26453,8 @@ def _dispatch_planned_action_directly(
             pass
 
     if family == "panel.open":
-        slots: dict = {"count": 1}
+        span_text = str(action.get("span") or "").strip()
+        slots: dict = {"count": _work_mode_create_reasoning_panel_count(span_text) or 1}
         if isinstance(payload, dict) and payload.get("content_task"):
             slots["content_task"] = str(payload.get("content_task") or "").strip()
         if isinstance(payload, dict) and payload.get("new_panel_request_id"):
@@ -24534,12 +26505,33 @@ def _dispatch_planned_action_directly(
                 "missing_slot": None,
             }
         elif family == "info.weather":
-            info_action_type = "weather.current"
+            route = weather_action_route_from_text(
+                info_span, location_hint=info_location, session_id=session_id
+            )
+            info_action_type = str(route.get("action_name") or "weather.current")
+            if not route.get("needs_followup"):
+                parsed_loc = clean_location_text(
+                    (route.get("_parsed_weather") or {}).get("location") or ""
+                )
+                if parsed_loc:
+                    route["slots"]["location"] = parsed_loc
+                elif info_location:
+                    route["slots"]["location"] = clean_location_text(info_location)
+        elif (
+            family == "info.search"
+            and not looks_like_supported_app_action(info_span)
+            and re.search(
+                r"\b(?:search(?:\s+the\s+web)?\s+for|look\s+up|google)\b",
+                info_span,
+                re.IGNORECASE,
+            )
+        ):
+            info_action_type = "web.search"
             route = {
-                "domain": "weather",
+                "domain": "web",
                 "is_action_request": True,
-                "action_name": "weather.current",
-                "slots": {"location": clean_location_text(info_location)},
+                "action_name": "web.search",
+                "slots": {"query": info_query, "user_text": info_span},
                 "needs_followup": False,
                 "missing_slot": None,
             }
@@ -24693,6 +26685,32 @@ def _dispatch_planned_action_directly(
             return None
 
         try:
+            if family == "info.finance":
+                print(
+                    "[finance_anchor_detected] "
+                    + json.dumps(
+                        {
+                            "raw_clause": info_span[:240],
+                            "query": info_query[:240],
+                            "finance_anchor_detected": _has_finance_anchor_in_text(info_span),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+                print(
+                    "[finance_route_selected] "
+                    + json.dumps(
+                        {
+                            "raw_clause": info_span[:240],
+                            "selected_route": info_action_type
+                            or str((route or {}).get("action_name") or "finance.quote"),
+                            "query": info_query[:240],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
             print(
                 "[planner_info_action] "
                 + json.dumps(
@@ -24714,6 +26732,137 @@ def _dispatch_planned_action_directly(
         except Exception:
             pass
         return (ar or {}).get("spoken_reply") or "", float(t_action or 0.0), ar
+
+    if family == "checklist.plan":
+        from actions.checklist_plan import (
+            CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+            checklist_plan_context_from_snapshot,
+            log_checklist_plan_detected,
+        )
+
+        span_text = (action.get("span") or "").strip()
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        source = str(payload.get("source") or "voice")
+        log_checklist_plan_detected(span_text or str(payload.get("raw") or ""), source=source)
+        ctx = checklist_plan_context_from_snapshot(client_context_snapshot)
+        main_count = int(ctx.get("main_count") or 0)
+        subitem_count = int(ctx.get("subitem_count") or 0)
+        try:
+            print(
+                "[checklist_plan_context] "
+                + json.dumps(
+                    {
+                        "main_count": main_count,
+                        "subitem_count": subitem_count,
+                        "source": source,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        try:
+            print(
+                "[checklist_plan_action_start] "
+                + json.dumps(
+                    {
+                        "span": span_text[:200],
+                        "source": source,
+                        "main_count": main_count,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        if main_count <= 0:
+            spoken = "Add text to at least one ongoing item first."
+            ar = {
+                "spoken_reply": spoken,
+                "action_type": "checklist_plan",
+                "data": {"success": False, "reason": "no_main_items", "main_count": 0},
+                "ui_payload": None,
+            }
+            try:
+                print(
+                    "[checklist_plan_action_done] "
+                    + json.dumps({"success": False, "reason": "no_main_items"}, ensure_ascii=False),
+                    flush=True,
+                )
+            except Exception:
+                pass
+            return spoken, perf_counter() - t0, ar
+        if main_count > CHECKLIST_PLAN_MAIN_ITEM_LIMIT:
+            try:
+                print(
+                    "[checklist_plan_limit_exceeded] "
+                    + json.dumps(
+                        {
+                            "main_count": main_count,
+                            "limit": CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
+            spoken = (
+                f"I can make a plan for up to {CHECKLIST_PLAN_MAIN_ITEM_LIMIT} main checklist items. "
+                f"You currently have {main_count}. Please remove or group a few first."
+            )
+            ar = {
+                "spoken_reply": spoken,
+                "action_type": "checklist_plan",
+                "data": {
+                    "success": False,
+                    "reason": "too_many_main_items",
+                    "main_count": main_count,
+                    "limit": CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+                },
+                "ui_payload": None,
+            }
+            try:
+                print(
+                    "[checklist_plan_action_done] "
+                    + json.dumps(
+                        {"success": False, "reason": "too_many_main_items", "main_count": main_count},
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
+            return spoken, perf_counter() - t0, ar
+        spoken = "I'll build a plan from your checklist."
+        ui_payload = {
+            "panel_type": "checklist_plan",
+            "op": "run",
+            "source": source,
+            "max_main_items": CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+            "main_count": main_count,
+            "subitem_count": subitem_count,
+        }
+        ar = {
+            "spoken_reply": spoken,
+            "action_type": "checklist_plan",
+            "data": {"success": True, "main_count": main_count, "subitem_count": subitem_count},
+            "ui_payload": ui_payload,
+        }
+        try:
+            print(
+                "[checklist_plan_action_done] "
+                + json.dumps(
+                    {"success": True, "main_count": main_count, "subitem_count": subitem_count},
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        return spoken, perf_counter() - t0, ar
 
     if family == "checklist.add":
         # Multi-action planner spans can be intentionally terse:
@@ -25054,6 +27203,59 @@ def _dispatch_planned_action_directly(
         _log_music_action_result(ar)
         return (ar or {}).get("spoken_reply") or "", perf_counter() - t0, ar
 
+    if family == "timer.extend":
+        span_text = (action.get("span") or "").strip()
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        try:
+            print(
+                "[timer_extend_action_payload] "
+                + json.dumps(
+                    {
+                        "family": family,
+                        "span": span_text[:160],
+                        "duration_delta_seconds": payload.get("duration_delta_seconds"),
+                        "source": payload.get("source"),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        try:
+            wm_out = _try_work_mode_timer_extend_core(
+                session_id, span_text, client_context_snapshot, "vera"
+            )
+        except Exception as _texc:
+            wm_out = None
+            try:
+                print(
+                    f"[planner_action_dispatch] timer_extend_exception family={family} exc={_texc}"
+                )
+            except Exception:
+                pass
+        if not isinstance(wm_out, dict):
+            ar = {
+                "spoken_reply": (
+                    "I understood the timer extension, but couldn't apply it. "
+                    "Try saying 'add 3 minutes to the timer.'"
+                ),
+                "action_type": "work_mode_timer",
+                "data": {"changed": False, "family": family},
+                "ui_payload": None,
+            }
+            return ar["spoken_reply"], perf_counter() - t0, ar
+        reply_text = str(wm_out.get("reply") or "").strip()
+        wm_block = wm_out.get("work_mode_timer")
+        ar = {
+            "spoken_reply": reply_text or "Okay, I extended your timer.",
+            "action_type": "work_mode_timer",
+            "data": {"changed": bool(wm_block), "family": family},
+            "ui_payload": None,
+            "work_mode_timer": wm_block,
+        }
+        return ar["spoken_reply"], perf_counter() - t0, ar
+
     if family in ("timer.set", "timer.cancel"):
         # 2026-05-29 spec PART 3 — direct timer dispatch.
         # The planner just hands us the span; we route it through the
@@ -25097,7 +27299,8 @@ def _dispatch_planned_action_directly(
             # Bubble up a graceful spoken reply rather than nothing so the
             # multi-action aggregate still narrates what happened.
             fallback_reply = (
-                "I couldn't tell how long to set the timer for. Try, for example, 'set a timer for 10 seconds.'"
+                "I understood the timer request, but couldn't start it. "
+                "Try saying 'set a timer for 10 minutes.'"
                 if family == "timer.set"
                 else "I couldn't find a timer to cancel."
             )
@@ -25127,6 +27330,27 @@ def _dispatch_planned_action_directly(
 
         reply_text = str(wm_out.get("reply") or "").strip()
         wm_block = wm_out.get("work_mode_timer")
+        try:
+            print(
+                "[timer_action_payload] "
+                + json.dumps(
+                    {
+                        "action": family,
+                        "duration_seconds": (
+                            (action.get("payload") or {}).get("duration_seconds")
+                            if isinstance(action.get("payload"), dict)
+                            else None
+                        ),
+                        "work_mode_timer_created": bool(
+                            isinstance(wm_block, dict) and wm_block.get("fire_at_epoch_ms")
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
         ar = {
             "spoken_reply": reply_text or (
                 "Okay, timer set." if family == "timer.set" else "Okay, timer cancelled."
@@ -25191,6 +27415,8 @@ def _dispatch_planned_action_directly(
         action_plan_id_for_payload = ""
         explicit_panel_destination = False
         content_task_for_payload = ""
+        parent_turn_id_for_payload = ""
+        planner_action_index: int | None = None
         if isinstance(payload, dict):
             tgt = payload.get("target") or {}
             if isinstance(tgt, dict):
@@ -25204,13 +27430,28 @@ def _dispatch_planned_action_directly(
                     target_title = title.strip()
             new_panel_request_id = str(payload.get("new_panel_request_id") or "").strip()
             action_plan_id_for_payload = str(payload.get("action_plan_id") or "").strip()
-            # 2026-06-12 — the planner marks reasoning.requests that came
-            # from an explicit panel destination ("... in panel N", "... in
-            # a new panel"). When set, the frontend must force the content
-            # task into the reasoning panel even if the bare task would
-            # otherwise qualify as a simple Voice-UI answer.
             explicit_panel_destination = bool(payload.get("explicit_panel_destination"))
             content_task_for_payload = str(payload.get("content_task") or "").strip()
+            parent_turn_id_for_payload = str(payload.get("parent_turn_id") or "").strip()
+            _pai = payload.get("planner_action_index")
+            if isinstance(_pai, int):
+                planner_action_index = _pai
+        if not parent_turn_id_for_payload and isinstance(client_context_snapshot, dict):
+            parent_turn_id_for_payload = str(
+                client_context_snapshot.get("turn_id")
+                or client_context_snapshot.get("parent_turn_id")
+                or ""
+            ).strip()
+
+        action_id_for_payload = ""
+        reasoning_request_id_for_payload = ""
+        if action_plan_id_for_payload and planner_action_index is not None:
+            action_id_for_payload = f"{action_plan_id_for_payload}:{planner_action_index}"
+            reasoning_request_id_for_payload = (
+                f"{action_plan_id_for_payload}:reasoning:{planner_action_index}"
+            )
+        elif action_plan_id_for_payload:
+            reasoning_request_id_for_payload = f"{action_plan_id_for_payload}:reasoning"
 
         # Hard warning: if the cleaned reasoning prompt still contains
         # known app-action phrases, log so live regressions are visible.
@@ -25269,6 +27510,11 @@ def _dispatch_planned_action_directly(
             "target_new_panel": target_new_panel,
             "new_panel_request_id": new_panel_request_id,
             "action_plan_id": action_plan_id_for_payload,
+            "planner_action_index": planner_action_index,
+            "action_id": action_id_for_payload,
+            "reasoning_request_id": reasoning_request_id_for_payload,
+            "request_id": reasoning_request_id_for_payload,
+            "parent_turn_id": parent_turn_id_for_payload,
             "explicit_panel_destination": explicit_panel_destination,
             "content_task": content_task_for_payload,
             "source": "planner_reasoning_request_dispatcher",
@@ -25285,6 +27531,8 @@ def _dispatch_planned_action_directly(
                 "[reasoning_request_dispatch] "
                 + json.dumps(
                     {
+                        "action_id": action_id_for_payload,
+                        "parent_turn_id": parent_turn_id_for_payload,
                         "explicit_panel_destination": explicit_panel_destination,
                         "panel_target": (
                             "new"
@@ -25295,8 +27543,19 @@ def _dispatch_planned_action_directly(
                             if target_title
                             else "active"
                         ),
+                        "target_panel": (
+                            target_index_1based
+                            if target_index_1based is not None
+                            else "new"
+                            if target_new_panel
+                            else target_title
+                            if target_title
+                            else "active"
+                        ),
+                        "task": (content_task_for_payload or clean_prompt_raw)[:160],
                         "content_task": (content_task_for_payload or clean_prompt_raw)[:160],
                         "new_panel_request_id": new_panel_request_id,
+                        "reasoning_request_id": reasoning_request_id_for_payload,
                         "op": "open_and_stream",
                     },
                     ensure_ascii=False,
@@ -25486,6 +27745,7 @@ _CHECKLIST_PLANNER_TO_HANDLER_ACTION = {
     "checklist.add": "checklist.add_item",
     "checklist.remove": "checklist.remove_item",
     "checklist.complete": "checklist.complete_item",
+    "checklist.uncomplete": "checklist.uncomplete_item",
 }
 
 _CHECKLIST_ORDINAL_TO_INT = {
@@ -25531,6 +27791,16 @@ def _checklist_log(tag: str, payload: dict) -> None:
             print(f"[{tag}] <unserializable>", flush=True)
         except Exception:
             pass
+
+
+def _checklist_ordinal_range_from_planner_payload(payload: dict) -> dict | None:
+    targets = payload.get("targets") if isinstance(payload, dict) else None
+    if not isinstance(targets, list):
+        return None
+    for target in targets:
+        if isinstance(target, dict) and target.get("kind") == "ordinal_range":
+            return target
+    return None
 
 
 def _checklist_target_ordinals_from_planner_payload(payload: dict) -> list[int]:
@@ -25711,6 +27981,21 @@ def _execute_planned_checklist_batch(
         else:
             exec_text = span
             parsed = parse_checklist_command(vera, exec_text, action_name)
+            range_target = _checklist_ordinal_range_from_planner_payload(payload)
+            if range_target:
+                direction = str(range_target.get("direction") or "first").strip().lower()
+                count = int(range_target.get("count") or 0)
+                if count > 0:
+                    parsed["target_count"] = count
+                    parsed["target_count_direction"] = direction
+                    parsed["target_count_mode"] = f"{direction}_visible_rows"
+                    parsed["target_count_reason"] = range_target.get("reason") or f"{direction}_n_items"
+                    parsed["target_mode"] = (
+                        "count_from_end" if direction == "last" else "count_from_start"
+                    )
+                    parsed.pop("target_relative_ordinals", None)
+                    parsed["target_indices"] = []
+                    parsed.pop("target_index", None)
             ordinals = _checklist_target_ordinals_from_planner_payload(payload)
             if ordinals:
                 resolved_ids = [
@@ -25908,6 +28193,7 @@ def execute_planned_actions(
         return checklist_batch
 
     action_plan_id = f"plan_{uuid.uuid4().hex}"
+    parent_turn_id = str((plan or {}).get("user_turn_id") or (plan or {}).get("turn_id") or "").strip()
     try:
         print(
             "[workmode_route] "
@@ -25952,14 +28238,59 @@ def execute_planned_actions(
     # one so a cancel-then-set sequence still ends up with the set.
     collected_work_mode_timer: dict | None = None
     try:
-        for action in actions:
+        try:
+            print(
+                "[multi_action_execute_start] "
+                + json.dumps(
+                    {
+                        "action_count": len(actions),
+                        "action_types": [(a or {}).get("type") for a in actions],
+                        "action_plan_id": action_plan_id,
+                        "raw_user_text": str((plan or {}).get("raw_user_text") or "")[:240],
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        _exec_successes = 0
+        _exec_failures = 0
+        for _action_idx, action in enumerate(actions):
             if isinstance(action, dict):
                 payload_for_plan = action.get("payload")
-                if isinstance(payload_for_plan, dict) and action_plan_id:
-                    payload_for_plan.setdefault("action_plan_id", action_plan_id)
+                if isinstance(payload_for_plan, dict):
+                    if action_plan_id:
+                        payload_for_plan.setdefault("action_plan_id", action_plan_id)
+                    payload_for_plan.setdefault("planner_action_index", _action_idx)
+                    if parent_turn_id:
+                        payload_for_plan.setdefault("parent_turn_id", parent_turn_id)
             span = (action.get("span") or "").strip()
             if not span:
                 continue
+            action_family_for_log = action.get("type") or "unknown"
+            _action_id_for_log = (
+                f"{action_plan_id}:{_action_idx}" if action_plan_id else f"action:{_action_idx}"
+            )
+            try:
+                print(
+                    "[multi_action_action_start] "
+                    + json.dumps(
+                        {
+                            "index": _action_idx,
+                            "action": action_family_for_log,
+                            "action_type": action_family_for_log,
+                            "action_id": _action_id_for_log,
+                            "parent_turn_id": parent_turn_id or "",
+                            "span": span[:160],
+                            "payload": (action.get("payload") or {}) if isinstance(action.get("payload"), dict) else {},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
             # Try direct backend dispatch first. Music/transport/volume
             # actions go through their dedicated handlers so the planner
             # always emits a real ui_payload (the LLM router would
@@ -26003,6 +28334,23 @@ def execute_planned_actions(
                     # count.
                     _action_family_failed = action.get("type") or "unknown"
                     executed_types.append(_action_family_failed)
+                    _exec_failures += 1
+                    try:
+                        print(
+                            "[multi_action_action_done] "
+                            + json.dumps(
+                                {
+                                    "index": _action_idx,
+                                    "action_type": _action_family_failed,
+                                    "success": False,
+                                    "error": str(_exc)[:200],
+                                },
+                                ensure_ascii=False,
+                            ),
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
                     _fallback_reply = _human_failure_reply_for_action(action)
                     if _fallback_reply:
                         replies.append(_fallback_reply)
@@ -26034,6 +28382,37 @@ def execute_planned_actions(
                     pass
             if speak_action_reply and isinstance(reply_i, str) and reply_i.strip():
                 replies.append(reply_i.strip())
+            _timer_action_ok = True
+            _timer_action_err = ""
+            if action_family == "timer.set":
+                _timer_action_ok = bool(
+                    isinstance(ar_i, dict)
+                    and isinstance(ar_i.get("work_mode_timer"), dict)
+                    and ar_i["work_mode_timer"].get("fire_at_epoch_ms")
+                )
+                if not _timer_action_ok:
+                    _timer_action_err = (
+                        (ar_i or {}).get("spoken_reply") or "timer_not_started"
+                        if isinstance(ar_i, dict)
+                        else "timer_dispatch_failed"
+                    )
+            try:
+                print(
+                    "[multi_action_result] "
+                    + json.dumps(
+                        {
+                            "action": action_family,
+                            "success": _timer_action_ok
+                            if action_family == "timer.set"
+                            else bool(isinstance(reply_i, str) and reply_i.strip()),
+                            "error": _timer_action_err or None,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
             # 2026-05-29 spec PART 4 — preserve every successful action's
             # ui_payload in execution order. The "first wins" branch above
             # (combined_ar["ui_payload"] = payloads[0]) is for legacy
@@ -26059,7 +28438,12 @@ def execute_planned_actions(
                         action_payload_candidates.append(single_payload)
 
             if action_payload_candidates:
-                payloads.extend(action_payload_candidates)
+                for p in action_payload_candidates:
+                    if isinstance(p, dict):
+                        if action_plan_id:
+                            p.setdefault("action_plan_id", action_plan_id)
+                        p["planner_action_index"] = len(payloads)
+                    payloads.append(p)
                 payload_preserved = True
             else:
                 payload_dropped_reason = (
@@ -26126,6 +28510,40 @@ def execute_planned_actions(
                     )
                 except Exception:
                     pass
+            _action_ok = (
+                _timer_action_ok
+                if action_family == "timer.set"
+                else bool(
+                    payload_preserved
+                    or (isinstance(reply_i, str) and reply_i.strip())
+                    or (isinstance(ar_i, dict) and ar_i.get("work_mode_timer"))
+                )
+            )
+            if _action_ok:
+                _exec_successes += 1
+            else:
+                _exec_failures += 1
+            try:
+                print(
+                    "[multi_action_action_done] "
+                    + json.dumps(
+                        {
+                            "index": _action_idx,
+                            "action": action_family,
+                            "action_type": action_family,
+                            "action_id": (
+                                f"{action_plan_id}:{_action_idx}" if action_plan_id else f"action:{_action_idx}"
+                            ),
+                            "parent_turn_id": parent_turn_id or "",
+                            "success": _action_ok,
+                            "error": _timer_action_err or (None if _action_ok else payload_dropped_reason or "empty_reply"),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
             # App-state propagation between actions: handled implicitly.
             # Each backend handler (panel.navigate → active_panel_id,
             # checklist.add → checklist state, music.* → music state) makes
@@ -26136,11 +28554,57 @@ def execute_planned_actions(
             # full original user text + combined reply ONCE at the end of
             # the turn, keeping conversation logs symmetric with regular
             # non-multi-action turns.
+        try:
+            print(
+                "[multi_action_execute_done] "
+                + json.dumps(
+                    {
+                        "successes": _exec_successes,
+                        "failures": _exec_failures,
+                        "executed_types": executed_types,
+                        "payload_count": len(payloads),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
     finally:
         _planner_executing_var.reset(token)
         _planner_plan_raw_text_var.reset(_plan_raw_token)
 
     combined_reply = " ".join(r for r in replies if r).strip()
+
+    try:
+        music_ops = [
+            p.get("op")
+            for p in payloads
+            if isinstance(p, dict) and p.get("panel_type") == "music_control"
+        ]
+        if music_ops:
+            dup_ops = sorted({op for op in music_ops if music_ops.count(op) > 1})
+            print(
+                "[music_plan_payloads] "
+                + json.dumps(
+                    {
+                        "normalized_user_text": str(
+                            (plan or {}).get("raw_user_text")
+                            or (plan or {}).get("_raw_user_text")
+                            or ""
+                        )[:240],
+                        "planned_action_types": executed_types,
+                        "action_count": len(executed_types),
+                        "payload_ops_in_order": music_ops,
+                        "duplicate_ops_detected": dup_ops,
+                        "payload_count": len(payloads),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+    except Exception:
+        pass
 
     # 2026-05-29 spec PART 6 — build a clean voice quote from the planned
     # action spans so ``meta["work_mode_voice_quote"]`` no longer echoes
@@ -27103,7 +29567,9 @@ async def text_input(request: Request, data: TextInput):
             },
         }
 
-    text_timer_short = _try_work_mode_timer_core(session_id, text, client_context, data.client)
+    text_timer_short = _try_work_mode_timer_extend_core(
+        session_id, text, client_context, data.client
+    ) or _try_work_mode_timer_core(session_id, text, client_context, data.client)
     if text_timer_short is not None:
         reply_tm = text_timer_short["reply"]
         wm_tm = text_timer_short.get("work_mode_timer")
@@ -27265,6 +29731,12 @@ async def text_input(request: Request, data: TextInput):
         and not memory_reply
         and not identity_reply
     ):
+        _preflight_general_llm_credit_cap(
+            session_id,
+            text,
+            history,
+            client_context_snapshot=client_context,
+        )
         async def ndjson_text():
             async for line in iter_text_tts_ndjson_stream_llm_stream(
                 t_start=t_start,

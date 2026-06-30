@@ -572,7 +572,8 @@ def speak_to_file(text: str, output_path: Path) -> Path:
         "email" : "e-mail",
         "parameters": "puhrammiters",
         "chaos": "kay os",
-        "reset": "re set"
+        "reset": "re set",
+        "sushi": "suh shee"
     }
 
     def replace_mispronounced(text: str) -> str:

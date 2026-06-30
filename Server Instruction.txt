@@ -3,9 +3,9 @@ SERVER INSTRUCTION
 
 Run Fast API: py -m uvicorn app:app --host 0.0.0.0 --port 8000 (make sure to cd Documents\VERA\Online_demo)
 Run public tunneling: cloudflared tunnel --url http://localhost:8000
-then change the url in index.js
-Deploy worker: wrangler deploy (make sure to cd vera-api) cd Documents\VERA\Online_demo\vera-api
-check if it works: curl.exe https://YOUR_VERA_API_HOST/health
+then paste the tunnel URL into vera-api/src/index.js (TUNNEL_URL), then:
+Deploy worker: cd Documents\VERA\Online_demo\vera-api && npx wrangler deploy
+check if it works: curl.exe https://vera-api.vera-api-ned.workers.dev/health
 archiving cost and pricing: Invoke-RestMethod -Method POST -Uri "http://localhost:8000/cost/logs/archive"
 
 #########################################

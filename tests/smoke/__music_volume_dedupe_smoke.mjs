@@ -38,7 +38,9 @@ import vm from "node:vm";
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 // Path adjusted on move to tests/smoke/: app.js lives at the repo root (two levels up).
-const APP_JS = fs.readFileSync(path.join(__dirname, "..", "..", "app.js"), "utf8");
+const ROOT = path.join(__dirname, "..", "..");
+const NAV_JS = fs.readFileSync(path.join(ROOT, "voice", "musicNavigation.js"), "utf8");
+const APP_JS = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
 
 // --- mock browser-ish context --------------------------------------------
 let _now = 1000;
@@ -53,9 +55,11 @@ const ctx = vm.createContext({
 ctx.window = fakeWindow;
 ctx.performance = { now: () => _now };
 
+vm.runInContext(NAV_JS, ctx, { filename: "musicNavigation.js" });
+
 // --- carve out shouldApplyMusicTransportAction ---------------------------
-const START_MARKER = "/**\n * Collapse NDJSON double ``applyActionPayload``";
-const END_MARKER = "function invokeSpotifyTransport(";
+const START_MARKER = "/**\n * Collapse duplicate music transport dispatch";
+const END_MARKER = "async function invokeSpotifyTransport(";
 function carve(src, start, end) {
   const i = src.indexOf(start);
   if (i < 0) throw new Error(`start marker not found: ${start}`);

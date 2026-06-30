@@ -757,11 +757,14 @@ class ReasoningAI:
     )
 
     _EXPLICIT_PANEL_REFERENCE_RE = re.compile(
-        # in / into / using / on / via the reasoning space|panel|tab — also
-        # accepts "in panel 2", "in tab 3", "in the second panel", and the
-        # imperative forms "put/write/answer/explain ... in (the) panel".
-        r"\b(?:in|into|using|on|via|inside)\s+(?:the\s+)?"
-        r"(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)"
+        # in / into / to / using / on / via / inside the reasoning
+        # space|panel|tab — also accepts "in panel 2", "in the second panel",
+        # bare "in reasoning", and imperative put/write/explain forms.
+        r"\b(?:in|into|inside|within|on|via|using|to)\s+"
+        r"(?:(?:the|this|that|a|my)\s+)?"
+        r"(?:(?P<pre_ord>first|second|third|fourth|fifth|sixth|seventh|eighth)\s+)?"
+        r"(?:(?:current|active|same|previous|new|another|extra|fresh|empty|reasoning|work\s*mode|workmode)\s+)*"
+        r"(?:reasoning(?:\s+(?:panel|space|tab|page))?|(?:panel|tab|space|page)|work\s*mode|workmode)"
         r"(?:\s*#?\s*(?P<panel_num>\d+)|\s+(?P<panel_ord>first|second|third|fourth|fifth|sixth|seventh|eighth))?\b",
         re.IGNORECASE,
     )
@@ -780,11 +783,12 @@ class ReasoningAI:
     )
 
     _EXPLICIT_PANEL_PUT_RE = re.compile(
-        # "put/place/write/answer/show this|that|it in (the) panel/reasoning"
-        r"\b(?:put|place|write|answer|show|drop|paste)\s+"
+        # "put/place/write/explain/open/send/move this|that|it in (the) panel/reasoning"
+        r"\b(?:put|place|write|answer|show|drop|paste|explain|send|move|open|work\s+out|do)\s+"
         r"(?:this|that|it|them|the\s+answer|the\s+explanation|an?\s+explanation\s+of\s+(?P<topic>.+?))"
-        r"\s+(?:in|into|onto|on)\s+(?:the\s+)?"
-        r"(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)"
+        r"\s+(?:in|into|inside|within|on|via|using|to)\s+(?:(?:the|a|my)\s+)?"
+        r"(?:(?:current|active|same|previous|new|another|extra|fresh|empty|reasoning|work\s*mode|workmode)\s+)*"
+        r"(?:reasoning(?:\s+(?:panel|space|tab|page))?|(?:panel|tab|space|page)|work\s*mode|workmode)"
         r"(?:\s*#?\s*(?P<panel_num>\d+)|\s+(?P<panel_ord>first|second|third|fourth|fifth|sixth|seventh|eighth))?",
         re.IGNORECASE,
     )
@@ -918,8 +922,9 @@ class ReasoningAI:
         # "in (the) (reasoning) panel/space/tab N"
         m_in = self._EXPLICIT_PANEL_REFERENCE_RE.search(s)
         if m_in:
-            num = m_in.groupdict().get("panel_num")
-            ordn = (m_in.groupdict().get("panel_ord") or "").lower()
+            gd = m_in.groupdict()
+            num = gd.get("panel_num")
+            ordn = (gd.get("panel_ord") or gd.get("pre_ord") or "").lower()
             target = None
             if num:
                 try:
@@ -1448,6 +1453,101 @@ class ReasoningAI:
             "I'll walk through that with you in more detail on screen."
         )
 
+    def summarize_panel_for_voice(
+        self,
+        user_text: str,
+        panel_markdown: str,
+        lane_title: str | None = None,
+        max_panel_chars: int = 12000,
+    ) -> str:
+        """Grounded Voice UI final brief from completed Work Mode panel markdown (Phase A)."""
+        ut = (user_text or "").strip()
+        md = (panel_markdown or "").strip()
+        if not md or len(md) < 24:
+            return (
+                "I couldn't pull a clear conclusion from the panel yet — "
+                "check Work Mode for what's there so far."
+            )
+        if len(md) > max_panel_chars:
+            md = md[:max_panel_chars] + "\n…"
+        title_line = f"Panel topic: {(lane_title or '').strip()}\n" if (lane_title or "").strip() else ""
+        sys = (
+            "You write a short spoken answer for Voice UI after the user already received a detailed "
+            "Work Mode reasoning panel.\n"
+            "Rules:\n"
+            "- Exactly 1–2 short sentences total.\n"
+            "- Sentence 1: direct answer or conclusion to the user's request.\n"
+            "- Sentence 2 (optional): the key reason, step, or main change — not a recap of every step.\n"
+            "- You MAY end with a brief clause like 'I expanded the steps in Work Mode' ONLY if the "
+            "answer needed steps and fits naturally in sentence 2.\n"
+            "- Ground ONLY in the panel markdown below — do not invent facts not supported there.\n"
+            "- If the panel lacks a clear final answer, say briefly what is still missing.\n"
+            "- TTS-friendly plain English: no markdown, bullets, tables, code blocks, or LaTeX.\n"
+            "- Do NOT say: 'I worked through it', 'In the reasoning panel', 'I have provided', "
+            "'check the panel', or other meta handoff filler.\n"
+            "- Do NOT mention models, routing, or internal systems."
+        )
+        profile = self._profile_block()
+        if profile:
+            sys += "\n\n" + profile
+        user_block = (
+            f"{title_line}"
+            f"User request:\n{ut[:4000]}\n\n"
+            f"Completed panel markdown (authoritative):\n{md}"
+        )
+        messages = [
+            {"role": "developer", "content": sys},
+            {"role": "user", "content": user_block[:14000]},
+        ]
+        r = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=0.25,
+            max_completion_tokens=180,
+        )
+        raw = (r.choices[0].message.content or "").strip()
+        sanitized = self._sanitize_voice_final_brief(raw)
+        if raw and not sanitized:
+            print(
+                f"[voice_final_brief_rejected] reason=sanitize_stripped raw_text={raw[:240]!r}",
+                flush=True,
+            )
+        return sanitized or (
+            "Check Work Mode for the full answer — I couldn't compress it cleanly for voice."
+        )
+
+    @staticmethod
+    def _sanitize_voice_final_brief(text: str) -> str:
+        s = (text or "").replace("\r", "\n").strip()
+        if not s:
+            return ""
+        s = re.sub(r"```[\s\S]*?```", " ", s)
+        s = re.sub(r"`([^`]+)`", r"\1", s)
+        s = re.sub(r"\$\$?[\s\S]*?\$\$?", " ", s)
+        s = re.sub(r"\\[\[(][\s\S]*?\\[\])]", " ", s)
+        s = re.sub(r"^#{1,6}\s+", "", s, flags=re.M)
+        s = re.sub(r"^\s*[-*•]\s+", "", s, flags=re.M)
+        s = re.sub(r"\s+", " ", s).strip()
+        low = s.lower()
+        generic_banned = (
+            "i worked through",
+            "in the reasoning panel",
+            "in the reasoning space",
+            "i have provided",
+            "check the reasoning panel",
+            "check work mode for the full",
+        )
+        if any(p in low for p in generic_banned) and len(s) < 120:
+            return ""
+        if len(s) > 420:
+            cut = s[:420]
+            m = re.search(r"[.!?]\s", cut)
+            if m:
+                s = cut[: m.end()].strip()
+            else:
+                s = cut.rstrip() + "…"
+        return s
+
     def generate_stream_markdown(
         self,
         user_text: str,
@@ -1495,6 +1595,7 @@ class ReasoningAI:
             temperature=0.45,
             max_completion_tokens=4096,
             stream=True,
+            stream_options={"include_usage": True},
         )
         for chunk in stream:
             choice = chunk.choices[0] if chunk.choices else None

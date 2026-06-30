@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -10,6 +11,8 @@ from fastapi import HTTPException, Request
 from jwt import PyJWKClient
 
 from auth.supabase_config import SupabaseConfig, get_supabase_config
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -143,6 +146,26 @@ def resolve_auth_user(
     if not token:
         return None
     return verify_access_token(token, cfg)
+
+
+def resolve_optional_auth(
+    request: Request,
+    *,
+    endpoint: str,
+    session_id_present: bool = False,
+    config: SupabaseConfig | None = None,
+) -> tuple[str | None, str]:
+    """Optional auth for UI/read endpoints — never 401 on bad or stale Bearer tokens."""
+    user = resolve_auth_user(request, config)
+    if user is not None:
+        return user.user_id, "authenticated"
+    if extract_bearer_token(request):
+        _log.debug(
+            "[optional_auth_fallback] endpoint=%s reason=invalid_or_expired_token session_id_present=%s",
+            endpoint,
+            session_id_present,
+        )
+    return None, "anonymous"
 
 
 def require_auth_user(

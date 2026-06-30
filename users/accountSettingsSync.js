@@ -13,9 +13,13 @@
  *    - PATCH /api/settings in background with vera_prefs_v1 snapshot
  *
  *  Logged-out: localStorage only (no API calls).
+ *  Logout boundary (Phase 4d):
+ *    - Cancel/block pending PATCH; restore anonymous snapshot or safe defaults.
+ *    - Never PATCH account settings after logout cleanup.
  * ========================================================================= */
 
 const VERA_PREFS_API_KEY = "vera_prefs_v1";
+const VERA_PREFS_ANON_SNAPSHOT_KEY_PREFIX = "vera_prefs_anon_snapshot_v1:";
 
 const LS_ASR_MODE = "vera_setting_asr_mode_v1";
 const LS_ASR_SILENCE_MS = "vera_setting_asr_silence_ms_v1";
@@ -26,12 +30,19 @@ const LS_LEFT_PANES_LAYOUT = "vera_wm_left_panes_layout_v1";
 
 let _hydratePromise = null;
 let _patchInFlight = null;
+/** Bumped on logout so in-flight account PATCHes cannot overwrite Supabase. */
+let _settingsAuthWriteGeneration = 0;
 
 function _isLoggedIn() {
   return (
     typeof isSupabaseUserAuthenticated === "function" &&
     isSupabaseUserAuthenticated()
   );
+}
+
+function getAnonymousVeraPrefsSnapshotKey() {
+  const sid = typeof getSessionId === "function" ? getSessionId() : "default";
+  return `${VERA_PREFS_ANON_SNAPSHOT_KEY_PREFIX}${sid}`;
 }
 
 function _safeGet(key) {
@@ -48,6 +59,17 @@ function _normalizeAsrMode(raw) {
   if (mode === "browser") return "streaming";
   if (mode === "single") return "whisper";
   return null;
+}
+
+function getSafeDefaultVeraPrefs() {
+  return {
+    asr_mode: "whisper",
+    asr_silence_ms: 1300,
+    workmode_mute: false,
+    text_guide_rotator: true,
+    main_asr_partial_min_chars: 20,
+    work_left_panes_layout: "split",
+  };
 }
 
 function collectLocalVeraPrefs() {
@@ -85,6 +107,25 @@ function collectLocalVeraPrefs() {
 
 function _prefsIsEmpty(prefs) {
   return !prefs || typeof prefs !== "object" || !Object.keys(prefs).length;
+}
+
+function saveAnonymousVeraPrefsSnapshot(prefs) {
+  const snap = prefs && !_prefsIsEmpty(prefs) ? prefs : collectLocalVeraPrefs();
+  if (_prefsIsEmpty(snap)) return;
+  try {
+    localStorage.setItem(getAnonymousVeraPrefsSnapshotKey(), JSON.stringify(snap));
+  } catch (_) {}
+}
+
+function readAnonymousVeraPrefsSnapshot() {
+  try {
+    const raw = localStorage.getItem(getAnonymousVeraPrefsSnapshotKey());
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return _prefsIsEmpty(parsed) ? null : parsed;
+  } catch (_) {
+    return null;
+  }
 }
 
 function applyVeraPrefsToLocal(prefs) {
@@ -128,18 +169,31 @@ function applyVeraPrefsToLocal(prefs) {
   }
 }
 
+function _settingsCancelPendingAccountSync() {
+  _patchInFlight = null;
+  _hydratePromise = null;
+}
+
+function _settingsBlockAccountWrites() {
+  _settingsAuthWriteGeneration += 1;
+  _settingsCancelPendingAccountSync();
+}
+
 async function patchVeraPrefsToSupabase(prefs, { reason } = {}) {
   if (!_isLoggedIn() || _prefsIsEmpty(prefs)) return false;
   if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
 
+  const genAtStart = _settingsAuthWriteGeneration;
   const body = { vera_prefs_v1: prefs };
   const run = async () => {
+    if (genAtStart !== _settingsAuthWriteGeneration) return false;
     try {
       const res = await authFetch(authApiUrl("/api/settings"), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (genAtStart !== _settingsAuthWriteGeneration) return false;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         console.warn("[VERA][SETTINGS] patch failed", reason || "", data);
@@ -165,7 +219,10 @@ async function patchVeraPrefsToSupabase(prefs, { reason } = {}) {
 }
 
 async function syncLocalVeraPrefsToSupabase(reason) {
-  if (!_isLoggedIn()) return false;
+  if (!_isLoggedIn()) {
+    saveAnonymousVeraPrefsSnapshot();
+    return false;
+  }
   return patchVeraPrefsToSupabase(collectLocalVeraPrefs(), { reason: reason || "local_change" });
 }
 
@@ -175,9 +232,14 @@ async function hydrateVeraSettingsFromSupabase() {
 
   if (_hydratePromise) return _hydratePromise;
 
+  const genAtStart = _settingsAuthWriteGeneration;
   _hydratePromise = (async () => {
     try {
+      saveAnonymousVeraPrefsSnapshot();
+      if (genAtStart !== _settingsAuthWriteGeneration) return false;
+
       const res = await authFetch(authApiUrl("/api/settings"), { method: "GET" });
+      if (genAtStart !== _settingsAuthWriteGeneration) return false;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         console.warn("[VERA][SETTINGS] hydrate GET failed", data);
@@ -186,15 +248,17 @@ async function hydrateVeraSettingsFromSupabase() {
 
       const remote = data?.vera_prefs_v1 || data?.settings?.[VERA_PREFS_API_KEY] || {};
       if (!_prefsIsEmpty(remote)) {
+        if (genAtStart !== _settingsAuthWriteGeneration) return false;
         applyVeraPrefsToLocal(remote);
         return true;
       }
 
       const local = collectLocalVeraPrefs();
       if (!_prefsIsEmpty(local)) {
+        if (genAtStart !== _settingsAuthWriteGeneration) return false;
         await patchVeraPrefsToSupabase(local, { reason: "seed_from_local" });
       }
-      return true;
+      return genAtStart === _settingsAuthWriteGeneration;
     } catch (err) {
       console.warn("[VERA][SETTINGS] hydrate error", err);
       return false;
@@ -206,11 +270,31 @@ async function hydrateVeraSettingsFromSupabase() {
   return _hydratePromise;
 }
 
+function clearSettingsAfterLogout() {
+  console.info("[settings_logout_cleanup]", { phase: "start" });
+  _settingsBlockAccountWrites();
+  const anon = readAnonymousVeraPrefsSnapshot();
+  const restore = anon || getSafeDefaultVeraPrefs();
+  applyVeraPrefsToLocal(restore);
+  try {
+    console.info("[settings_logout_cleanup]", {
+      phase: "done",
+      restored_from: anon ? "anonymous_snapshot" : "safe_defaults",
+      asr_mode: restore.asr_mode || null,
+    });
+  } catch (_) {}
+}
+
 try {
   if (typeof window !== "undefined") {
     window.collectLocalVeraPrefs = collectLocalVeraPrefs;
     window.applyVeraPrefsToLocal = applyVeraPrefsToLocal;
     window.hydrateVeraSettingsFromSupabase = hydrateVeraSettingsFromSupabase;
     window.syncLocalVeraPrefsToSupabase = syncLocalVeraPrefsToSupabase;
+    window.clearSettingsAfterLogout = clearSettingsAfterLogout;
+    window.saveAnonymousVeraPrefsSnapshot = saveAnonymousVeraPrefsSnapshot;
+    window.readAnonymousVeraPrefsSnapshot = readAnonymousVeraPrefsSnapshot;
+    window.getSafeDefaultVeraPrefs = getSafeDefaultVeraPrefs;
+    window.getAnonymousVeraPrefsSnapshotKey = getAnonymousVeraPrefsSnapshotKey;
   }
 } catch (_) {}

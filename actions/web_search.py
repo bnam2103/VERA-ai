@@ -147,6 +147,17 @@ def _serper_search_organic(query: str, limit: int = SEARCH_RESULT_LIMIT) -> dict
     )
     response.raise_for_status()
     payload = response.json()
+    try:
+        from cost_logging.serper_helpers import log_serper_http_call
+
+        log_serper_http_call(
+            endpoint=SERPER_SEARCH_ENDPOINT,
+            query=query,
+            payload=payload,
+            extra={"source": "web_search._serper_search_organic"},
+        )
+    except Exception as _serper_log_err:
+        print(f"[cost_logger] serper log skipped: {_serper_log_err}")
     _web_search_cache[key] = {"payload": payload, "timestamp": now}
     return payload
 
@@ -446,6 +457,17 @@ def _serper_media(endpoint: str, query: str, limit: int, cache_prefix: str) -> d
     )
     response.raise_for_status()
     payload = response.json()
+    try:
+        from cost_logging.serper_helpers import log_serper_http_call
+
+        log_serper_http_call(
+            endpoint=endpoint,
+            query=query,
+            payload=payload,
+            extra={"source": "web_search._serper_media", "cache_prefix": cache_prefix},
+        )
+    except Exception as _serper_log_err:
+        print(f"[cost_logger] serper log skipped: {_serper_log_err}")
     _web_search_cache[cache_key] = {"payload": payload, "timestamp": now}
     return payload
 

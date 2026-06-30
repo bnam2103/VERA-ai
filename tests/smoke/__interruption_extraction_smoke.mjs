@@ -233,6 +233,11 @@ function buildLoadedSandbox() {
     var __startPostInterruptBrowserRecognitionCalls = 0;
     function startPostInterruptBrowserRecognition() { __startPostInterruptBrowserRecognitionCalls += 1; }
 
+    var __startInterruptCaptureCalls = 0;
+    function startInterruptCapture() { __startInterruptCaptureCalls += 1; }
+
+    function getVeraAsrMode() { return "whisper"; }
+
     function detectInterruptSpeechEnd() {}
 
     /* ---- VAD / SR / recorder state placeholders ---- */
@@ -241,6 +246,7 @@ function buildLoadedSandbox() {
     var waveState = "speaking";
     var audioStartedAt = 0;
     var interruptRecording = false;
+    var interruptRecorder = null;
     var interruptPrearmStartedAt = 0;
     var interruptPrearmCommittedAt = 0;
     var interruptPrearmTtsId = "";
@@ -712,17 +718,23 @@ vm.runInContext(
 );
 eq(vm.runInContext("__cancelBrowserInterruptTtsOnlyCalls", A.sandbox), 0, "early-return when listeningMode !== 'continuous'");
 
-/* Case 2: continuous but no recorder & no browser ASR */
+/* Case 2: continuous but no recorder & no browser ASR — still cut TTS if playing */
 vm.runInContext(
   `
   listeningMode = "continuous";
   interruptRecording = false;
   __browserAsrPreferredReturn = false;
+  __assistantTtsPlaying = true;
+  __audioStubState.paused = false;
+  mainTtsPlaybackActive = true;
+  activeMainTtsBufferSources.length = 0;
+  registerMainTtsBufferSource({ onended: null, stop: function () {}, disconnect: function () {} });
+  __cancelBrowserInterruptTtsOnlyCalls = 0;
   interruptSpeech();
   `,
   A.sandbox
 );
-eq(vm.runInContext("__cancelBrowserInterruptTtsOnlyCalls", A.sandbox), 0, "early-return when no recorder and no browserAsr");
+eq(vm.runInContext("__cancelBrowserInterruptTtsOnlyCalls", A.sandbox), 1, "audio-only cancel when no recorder and no browserAsr but TTS playing");
 
 /* Case 3: continuous + recorder, but TTS not playing */
 vm.runInContext(
@@ -733,6 +745,7 @@ vm.runInContext(
   __audioStubState.paused = true;
   mainTtsPlaybackActive = false;
   activeMainTtsBufferSources.length = 0;
+  __cancelBrowserInterruptTtsOnlyCalls = 0;
   interruptSpeech();
   `,
   A.sandbox

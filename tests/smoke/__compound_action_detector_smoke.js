@@ -18,7 +18,7 @@ const APP_JS_PATH = path.resolve(__dirname, "../../app.js");
 const APP_JS = fs.readFileSync(APP_JS_PATH, "utf8");
 
 // Slice the compound-detector block out of app.js.
-const HELPER_START = "/**\n * 2026-05-29 spec PART 4 — compound-action-families detector.";
+const HELPER_START = "const _WMC_PANEL_FAMILY_RE =";
 const HELPER_END = "try { window.detectCompoundActionFamilies";
 const startIdx = APP_JS.indexOf(HELPER_START);
 const endIdx = APP_JS.indexOf(HELPER_END);
@@ -30,6 +30,11 @@ const helpersSource = APP_JS.slice(startIdx, endIdx);
 
 const sandboxSource = `
 "use strict";
+const _REASONING_PANEL_IN_RE = /\\bin\\s+(?:the\\s+)?(?:reasoning\\s+)?(?:panel|space|tab|page)\\s+(\\d+)\\b/i;
+function extractSubstantiveTopicBeforePanelPhrase(text) {
+  const m = String(text || "").match(/\\b(?:explain|describe|tell\\s+me\\s+about)\\s+(.+?)\\s+in\\s+(?:the\\s+)?panel\\b/i);
+  return m ? m[1].trim() : null;
+}
 ${helpersSource}
 module.exports = { detectCompoundActionFamilies };
 `;
@@ -79,6 +84,18 @@ const COMPOUND_CASES = [
   {
     text: "Explain the Vietnam War and play lo-fi.",
     expected_families_subset: ["reasoning", "music"],
+  },
+  {
+    text: "Can you remove stat homework and pause the music?",
+    expected_families_subset: ["checklist", "music"],
+  },
+  {
+    text: "Can you unpause the music, help me do this homework in this panel, and start a 10 minute timer?",
+    expected_families_subset: ["music", "reasoning", "timer"],
+  },
+  {
+    text: "remove the fourth panel and play lofi",
+    expected_families_subset: ["panel", "music"],
   },
 ];
 for (const c of COMPOUND_CASES) {
@@ -140,9 +157,9 @@ for (const text of FALSE_POSITIVES) {
 // ---- Implicit panel via "in panel N" ----
 section("Implicit panel via 'in panel N' suffix");
 const r1 = detectCompoundActionFamilies("Explain the Vietnam War in panel 2");
-ok(r1.isCompound === true, "'explain X in panel 2' is compound (reasoning + panel)", JSON.stringify(r1));
-ok(r1.families.includes("panel"), "  includes 'panel' (implicit)", JSON.stringify(r1.families));
+ok(r1.isCompound === false, "'explain X in panel 2' is single reasoning intent (panel routing directive)", JSON.stringify(r1));
 ok(r1.families.includes("reasoning"), "  includes 'reasoning'", JSON.stringify(r1.families));
+ok(r1.reason === "panel_routing_directive_single_intent", "  reason is panel_routing_directive_single_intent", JSON.stringify(r1.reason));
 
 // ---- Final tally ----
 console.log(`\n${"=".repeat(60)}`);

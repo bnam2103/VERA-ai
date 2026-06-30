@@ -286,6 +286,55 @@ def _extract_multi_ordinals(text: str) -> list[int]:
     return out
 
 
+def _extract_ordinal_range_phrase(text: str) -> tuple[str | None, int | None, str | None]:
+    """Detect bulk ``first/last N items`` phrases.
+
+    Returns ``(direction, count, reason)`` where *direction* is ``first`` or
+    ``last``. Checked BEFORE singular relative ordinals and bare ``N items``
+    so ``remove the last 4 items`` is not misread as singular ``last`` or
+    ``count_from_start``.
+    """
+    q = str(text or "").strip().lower()
+    if not q or _ITEM_NAME_REF_RE.search(q):
+        return None, None, None
+    patterns: list[tuple[str, str]] = [
+        (
+            rf"\b(?:the\s+)?(first|last)\s+(\d{{1,3}}|{_NUM_WORD_PAT})\s+"
+            rf"(?:checklist\s+)?(?:items?|tasks?)\b",
+            "n_items",
+        ),
+        (
+            rf"\b(?:remove|delete|drop|clear)\s+(?:the\s+)?(first|last)\s+"
+            rf"(\d{{1,3}}|{_NUM_WORD_PAT})\b",
+            "bare",
+        ),
+    ]
+    for pat, kind in patterns:
+        m = re.search(pat, q)
+        if not m:
+            continue
+        direction = str(m.group(1) or "").strip().lower()
+        count = _word_or_number_to_int(m.group(2))
+        if direction in {"first", "last"} and count and count > 0:
+            suffix = "n_items" if kind == "n_items" else "bare"
+            return direction, count, f"{direction}_{suffix}"
+    return None, None, None
+
+
+def extract_checklist_ordinal_range(text: str) -> dict[str, Any] | None:
+    """Public helper for planner/tests — bulk first/last N visible rows."""
+    direction, count, reason = _extract_ordinal_range_phrase(text)
+    if not direction or not count:
+        return None
+    return {
+        "kind": "ordinal_range",
+        "direction": direction,
+        "count": int(count),
+        "scope": "visible_items",
+        "reason": reason or f"{direction}_n_items",
+    }
+
+
 def _extract_count_phrase(text: str) -> tuple[int | None, str | None]:
     """Detect count phrases on a checklist edit.
 
@@ -299,11 +348,16 @@ def _extract_count_phrase(text: str) -> tuple[int | None, str | None]:
     A multi-ordinal command like "first, third, and fifth items" is NOT
     a count — the caller should resolve those through
     ``_extract_multi_ordinals`` instead, so we early-return here.
+
+    ``first/last N items`` ranges are handled by
+    :func:`_extract_ordinal_range_phrase` instead.
     """
     q = str(text or "").strip().lower()
     if not q:
         return None, None
     if _ITEM_NAME_REF_RE.search(q):
+        return None, None
+    if _extract_ordinal_range_phrase(q)[1] is not None:
         return None, None
     if len(_extract_multi_ordinals(q)) >= 2:
         return None, None
@@ -463,14 +517,239 @@ def is_checklist_undo_request(text: str) -> bool:
     if not q:
         return False
     if re.search(
-        r"\b(?:undo|restore|revert"
-        r"|bring\s+(?:it|them|that|those|back)"
+        r"(?:^|[\s,.!?;:])(?:you\s+)?(?:can\s+(?:you|u)\s+)?(?:please\s+)?(?:undo|restore|revert)\b"
+        r"|\b(?:undo|restore|revert"
+        r"|bring\s+(?:it|them|that|those)\s+back"
+        r"|bring\s+back"
         r"|put\s+(?:it|them|that|those)\s+back"
-        r"|get\s+(?:it|them|that|those)\s+back)\b",
+        r"|get\s+(?:it|them|that|those)\s+back"
+        r"|restore\s+(?:the\s+)?(?:checklist|list|tasks?))\b",
         q,
     ):
         return True
     return False
+
+
+def is_checklist_undo_clarification_answer(text: str) -> bool:
+    """Short follow-up naming the checklist after a generic undo clarify."""
+    q = (text or "").strip().lower()
+    if not q or len(q) > 80:
+        return False
+    if re.search(
+        r"^(?:the\s+)?(?:check\s*list|checklist|to-?do(?:\s+list)?|my\s+(?:check\s*list|checklist)|tasks?|list)\.?$",
+        q,
+    ):
+        return True
+    return False
+
+
+def is_checklist_undo_followup(text: str) -> bool:
+    return is_checklist_undo_request(text) or is_checklist_undo_clarification_answer(text)
+
+
+_CHECKLIST_STATUS_REVIEW_RE = re.compile(
+    r"\bcheck\s+(?:my|the|our|this|that)?\s*(?:check\s*list|checklist|to-?do(?:\s+list)?|list|plan)\b"
+    r"|\bcheck\s+(?:if|whether)\b"
+    r"|\bcheck\s+(?:what|how\s+many)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_checklist_item_target(text: str) -> bool:
+    """True when the user names a specific checklist row (ordinal, item N, …)."""
+    return _has_checklist_ordinal_phrase(text)
+
+
+def _is_checklist_status_review_request(text: str) -> bool:
+    """Review/list/status phrasing — not a mutation (e.g. "check the checklist")."""
+    q = str(text or "").strip()
+    if not q:
+        return False
+    return bool(_CHECKLIST_STATUS_REVIEW_RE.search(q))
+
+
+def _is_checklist_complete_verb(text: str, *, has_item_target: bool) -> bool:
+    q = str(text or "").strip().lower()
+    if not q or _is_checklist_status_review_request(q):
+        return False
+    if re.search(r"\b(?:complete|completed|finish|finished)\b", q):
+        return True
+    if re.search(r"\b(?:check\s+off|tick\s+off)\b", q):
+        return True
+    if re.search(r"\bmark\b", q) and re.search(r"\b(?:complete|completed|done)\b", q):
+        return True
+    if re.search(r"\bmark\s+complete\b", q):
+        return True
+    if has_item_target and re.search(r"\b(?:tick|check)\b", q):
+        return True
+    if has_item_target and re.search(r"\bdone\b", q):
+        return True
+    return False
+
+
+def _is_checklist_uncomplete_verb(text: str) -> bool:
+    q = str(text or "").strip().lower()
+    if not q:
+        return False
+    if re.search(r"\buncheck\b", q):
+        return True
+    if re.search(r"\bmark\b", q) and re.search(r"\bincomplete\b", q):
+        return True
+    if re.search(r"\bundo\s+complete\b", q):
+        return True
+    if re.search(r"\bmove\b", q) and re.search(r"\bongoing\b", q):
+        return True
+    if re.search(r"\bmark\b", q) and re.search(r"\bnot\s+done\b", q):
+        return True
+    return False
+
+
+_CHECKLIST_IMPLICIT_BLOCK_RES = (
+    re.compile(
+        r"\b(?:add|append)\s+\d+\s*(?:minutes?|mins?|hours?|hrs?|seconds?|secs?)\s+to\s+(?:the\s+)?timer\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:add|append)\s+(?:more\s+)?(?:detail|details|evidence|context|information|depth)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:remove|delete|close|clear|hide|dismiss)\s+(?:the\s+)?"
+        r"(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|\d+(?:st|nd|rd|th)?)\s+)?"
+        r"(?:reasoning\s+)?(?:panel|tab)s?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bcomplete\s+(?:this|the|that)\s+(?:explanation|answer|response|essay|draft|paragraph|section|problem|question)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:add|put|move|place)\s+(?:this|that|it|the\s+(?:answer|explanation|evidence|response|content))\s+"
+        r"(?:to|in|into)\s+(?:the\s+)?(?:panel|reasoning)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:add|append)\s+.+\s+in\s+(?:the\s+)?panel\s+\d+\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bmark\s+(?:this|the|that)\s+(?:paragraph|sentence|section|line|page|word)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:add|turn\s+up|increase)\s+(?:the\s+)?volume\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _strip_checklist_command_politeness(text: str) -> str:
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"^\s*(?:please\s+|pls\s+|kindly\s+)+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^\s*(?:can|could|would|will)\s+you\b[\s,]+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^\s*(?:hey\s+vera|hey|ok|okay|alright)\b[\s,]+", "", s, flags=re.IGNORECASE)
+    return s.strip()
+
+
+def _is_blocked_implicit_checklist_command(text: str) -> tuple[bool, str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return True, "empty"
+    for pat in _CHECKLIST_IMPLICIT_BLOCK_RES:
+        if pat.search(raw):
+            return True, pat.pattern[:48]
+    collision = _detect_non_checklist_object_collision(raw)
+    if collision:
+        return True, f"non_checklist_object:{collision}"
+    return False, ""
+
+
+def _classify_implicit_checklist_mutation_clause(clause: str) -> dict | None:
+    raw = _strip_checklist_command_politeness(clause)
+    if not raw:
+        return None
+    blocked, _ = _is_blocked_implicit_checklist_command(raw)
+    if blocked:
+        return None
+    low = raw.lower()
+
+    if (
+        re.search(r"\b(?:add|append|insert)\b", low)
+        and not re.search(r"\bto\s+the\s+timer\b", low)
+        and not re.search(r"\b(?:to|in|into)\s+(?:the\s+)?(?:panel|reasoning)\b", low)
+    ):
+        m = re.search(r"\b(?:add|append|insert)\s+(?:the\s+)?(.+?)\s*$", raw, flags=re.IGNORECASE)
+        body = re.sub(r"[?.!]+$", "", (m.group(1) if m else "")).strip()
+        if body and not re.search(
+            r"\b(?:panel|tab|timer|volume|minute|minutes|detail|evidence)\b", body, re.IGNORECASE
+        ):
+            return {"action": "checklist.add_item", "reason": "implicit_add_verb_with_item_target"}
+
+    if (
+        (
+            re.search(r"\b(?:mark|complete|check\s+off|tick\s+off)\b", raw, re.IGNORECASE)
+            and re.search(r"\b(?:complete|completed|done)\b", raw, re.IGNORECASE)
+        )
+        or re.search(r"\bmark\s+.+\s+(?:complete|completed|done)\b", raw, re.IGNORECASE)
+        or re.search(r"\b(?:check\s+off|tick\s+off)\s+\S", raw, re.IGNORECASE)
+    ):
+        return {"action": "checklist.complete_item", "reason": "implicit_complete_verb_with_item_target"}
+
+    if (
+        re.search(r"\b(?:remove|delete|cross\s+off)\b", raw, re.IGNORECASE)
+        and not re.search(r"\b(?:panel|tab|reasoning)\b", raw, re.IGNORECASE)
+    ):
+        return {"action": "checklist.remove_item", "reason": "implicit_remove_verb_with_item_target"}
+
+    if _is_checklist_uncomplete_verb(raw):
+        return {"action": "checklist.uncomplete_item", "reason": "implicit_uncomplete_verb_with_item_target"}
+
+    return None
+
+
+def _split_implicit_checklist_clauses(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    parts: list[str] = []
+    cursor = 0
+    for match in re.finditer(r"\s+(?:and|then|also)\s+", raw, flags=re.IGNORECASE):
+        before = raw[cursor : match.start()].strip()
+        after = raw[match.end() :].strip()
+        if not before or not after:
+            continue
+        if not _classify_implicit_checklist_mutation_clause(after):
+            continue
+        parts.append(before)
+        cursor = match.end()
+    tail = raw[cursor:].strip()
+    if tail:
+        parts.append(tail)
+    return parts if parts else [raw]
+
+
+def _detect_implicit_checklist_mutations(text: str) -> list[dict]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    blocked, _ = _is_blocked_implicit_checklist_command(raw)
+    if blocked:
+        return []
+    scan = _split_implicit_checklist_clauses(raw)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for clause in scan:
+        hit = _classify_implicit_checklist_mutation_clause(clause)
+        if not hit:
+            continue
+        key = f"{hit['action']}:{clause.lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(hit)
+    return out
 
 
 def is_checklist_action_request(text: str) -> str | None:
@@ -518,6 +797,9 @@ def is_checklist_action_request(text: str) -> str | None:
     has_checklist_noun = bool(_CHECKLIST_OBJECT_NOUN_RE.search(q))
     has_item_ordinal = _has_checklist_ordinal_phrase(q)
     ordinals = _extract_multi_ordinals(q)
+
+    if _is_checklist_status_review_request(q):
+        return _debug(None, "checklist_status_review", ordinals=ordinals)
     non_checklist_noun = _detect_non_checklist_object_collision(raw)
     removal_verb = bool(
         re.search(
@@ -535,11 +817,53 @@ def is_checklist_action_request(text: str) -> str | None:
             non_checklist_noun=non_checklist_noun,
         )
 
+    implicit_mutations = _detect_implicit_checklist_mutations(raw)
+    if implicit_mutations:
+        primary = implicit_mutations[0]
+        try:
+            print(
+                "[checklist_implicit_action_detected] "
+                + json.dumps(
+                    {
+                        "raw_text": raw[:240],
+                        "reason": (
+                            "multi_implicit_checklist_mutation"
+                            if len(implicit_mutations) > 1
+                            else primary.get("reason")
+                        ),
+                        "actions": [m.get("action") for m in implicit_mutations],
+                        "mutation_count": len(implicit_mutations),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            print(
+                "[checklist_action_parse] "
+                + json.dumps(
+                    {
+                        "raw_text": raw[:240],
+                        "actions": implicit_mutations,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        confidence = 0.9 if len(implicit_mutations) > 1 else 0.8
+        return _debug(
+            str(primary.get("action") or ""),
+            str(primary.get("reason") or "implicit_checklist_mutation"),
+            ordinals=ordinals,
+            removal_verb=removal_verb,
+            confidence=confidence,
+        )
+
     add_verb = bool(re.search(r"\b(?:add|append|create|insert)\b", q))
-    complete_verb = bool(re.search(
-        r"\b(?:complete|completed|done|finish|finished|mark|check\s+off|tick\s+off)\b",
-        q,
-    ))
+    has_item_target = _has_checklist_item_target(q)
+    complete_verb = _is_checklist_complete_verb(q, has_item_target=has_item_target)
+    uncomplete_verb = _is_checklist_uncomplete_verb(q)
     update_verb = bool(re.search(r"\b(?:update|replace|rename|change)\b", q))
 
     if has_checklist_word and add_verb:
@@ -554,6 +878,12 @@ def is_checklist_action_request(text: str) -> str | None:
         )
         return _debug("checklist.remove_item", reason,
                       ordinals=ordinals, removal_verb=True, confidence=confidence)
+
+    if (has_checklist_word or has_item_ordinal) and uncomplete_verb:
+        confidence = 0.85 if has_checklist_word else 0.7
+        reason = "checklist_word_plus_uncomplete_verb" if has_checklist_word else "ordinal_plus_uncomplete_verb"
+        return _debug("checklist.uncomplete_item", reason,
+                      ordinals=ordinals, removal_verb=False, confidence=confidence)
 
     if (has_checklist_word or has_item_ordinal) and complete_verb:
         confidence = 0.85 if has_checklist_word else 0.7
@@ -633,32 +963,46 @@ def _extract_index_list(text: str) -> list[int]:
     return _extract_multi_ordinals(text)
 
 
-def _split_multi_phrases(text: str) -> list[str]:
+# End-anchored destination tail — aligned with
+# actions/multi_action_planner.py::_CHECKLIST_TAIL_RE (planner uses the
+# inline form for split; we anchor at $ so ``talk to Alex`` is preserved).
+_CHECKLIST_DESTINATION_TAIL_END_RE = re.compile(
+    r"(?:^|\s+)(?:to|on|in|onto|into)\s+(?:the|my|our|this)?\s*"
+    r"(?:check[-\s]?list|to[-\s]?do(?:\s+list)?|list|plan)\s*[?.!]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_checklist_tail(text: str) -> str:
+    """Remove a trailing checklist/list destination from item body text.
+
+    End-anchored only so internal phrases like ``talk to Alex`` are kept
+    when the utterance ends with ``to my checklist``.
+    """
     s = str(text or "").strip()
+    if not s:
+        return ""
+    s = _CHECKLIST_DESTINATION_TAIL_END_RE.sub("", s).strip()
+    s = re.sub(r"(?i)^(?:the|my|our|this)\s+(?:check[-\s]?list|to[-\s]?do(?:\s+list)?|list|plan)\s*[?.!]*\s*$", "", s).strip()
+    return s
+
+
+def _split_multi_phrases(text: str) -> list[str]:
+    s = _strip_checklist_tail(str(text or "").strip())
     if not s:
         return []
     parts = re.split(r"(?i)\s*(?:,|;|\band\b|\bas well as\b|&|\+|\bthen\b)\s*", s)
     out: list[str] = []
     for p in parts:
-        item = str(p or "").strip(" .,:;")
+        item = _strip_checklist_tail(str(p or "").strip())
+        item = item.strip(" .,:;!?")
         if not item:
             continue
         item = re.sub(r"(?i)^(?:also\s+)?(?:add|remove|mark|complete|check off)\s+", "", item).strip()
+        item = item.strip(" .,:;!?")
         if item:
             out.append(item)
     return out
-
-
-def _strip_checklist_tail(text: str) -> str:
-    s = str(text or "").strip()
-    s = re.sub(
-        r"(?i)(?:^|\s+)(?:to|in|on|from)\s+(?:the\s+)?checklist\s*[?.!]*\s*$",
-        "",
-        s,
-    ).strip()
-    s = re.sub(r"(?i)(?:^|\s+)(?:in|to|on)\s+(?:my\s+)?list\s*[?.!]*\s*$", "", s).strip()
-    s = re.sub(r"(?i)^(?:the\s+|my\s+)?checklist\s*[?.!]*\s*$", "", s).strip()
-    return s
 
 
 # 2026-06-13 — hierarchy-level detection for ordinal commands. When the
@@ -733,7 +1077,7 @@ def _route_checklist_multi_command(text: str, action_name: str) -> dict[str, Any
 
     # When a label-based command sneaks through ("remove proofread"), we
     # want target_mode=label so the resolve_debug entry is informative.
-    if action_name in {"checklist.remove_item", "checklist.complete_item"}:
+    if action_name in {"checklist.remove_item", "checklist.complete_item", "checklist.uncomplete_item"}:
         # Removal scope: auto (default 2026-06-01), whole_section, sub_item.
         # The scope governs whether children cascade and whether ordinals
         # resolve against TOP-LEVEL rows or a named parent's children.
@@ -757,13 +1101,39 @@ def _route_checklist_multi_command(text: str, action_name: str) -> dict[str, Any
         q = re.sub(r"(?i)\bvisible\s+(?=item|items|task|tasks|bullet|bullets)", "", q)
 
         ordinal_list = _extract_multi_ordinals(q)
+        range_dir, range_count, range_reason = _extract_ordinal_range_phrase(q)
         count, count_reason = _extract_count_phrase(q)
+        if range_count and range_dir:
+            try:
+                print(
+                    "[checklist_remove_range_detected] "
+                    + json.dumps(
+                        {
+                            "direction": range_dir,
+                            "count": range_count,
+                            "reason": range_reason,
+                            "raw_text": q[:200],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
+            out["target_count"] = range_count
+            out["target_count_direction"] = range_dir
+            out["target_count_mode"] = f"{range_dir}_visible_rows"
+            out["target_count_reason"] = range_reason or f"{range_dir}_n_items"
+            out["target_mode"] = (
+                "count_from_end" if range_dir == "last" else "count_from_start"
+            )
         # 2026-06-01: surface relative ordinals ("last", "second to last")
         # so the resolver can expand them once the live top-level count
         # is known. We do NOT pre-expand here because the multi-action
         # planner / fallback parser may consume the parsed dict before
-        # the checklist state is available.
-        relative_list = _extract_relative_ordinals(q)
+        # the checklist state is available. Skip when a bulk range was
+        # parsed so "last 4 items" does not also become singular "last".
+        relative_list = [] if range_count else _extract_relative_ordinals(q)
         if relative_list:
             out["target_relative_ordinals"] = list(relative_list)
         # Multi-ordinal commands win over a single "first item" count, so
@@ -773,7 +1143,7 @@ def _route_checklist_multi_command(text: str, action_name: str) -> dict[str, Any
             out["target_indices"] = ordinal_list
             out["target_index"] = ordinal_list[0]
             out["target_mode"] = "multi_ordinal"
-        elif count is not None and count > 0:
+        elif count is not None and count > 0 and not range_count:
             out["target_count"] = count
             out["target_count_mode"] = (
                 "first_top_level_group" if count == 1 else "first_visible_rows"
@@ -782,6 +1152,7 @@ def _route_checklist_multi_command(text: str, action_name: str) -> dict[str, Any
             out["target_mode"] = (
                 "single_ordinal" if count_reason == "first_item" else "count_from_start"
             )
+            out["target_count_direction"] = "first"
             if ordinal_list:
                 out["target_indices"] = ordinal_list
                 out["target_index"] = ordinal_list[0]
@@ -798,7 +1169,10 @@ def _route_checklist_multi_command(text: str, action_name: str) -> dict[str, Any
                 out["target_index"] = ordinal_list[0]
                 out["target_mode"] = "single_ordinal"
 
-        verb_pat = r"(?:remove|delete|mark|complete|check off|finish|done)"
+        if action_name == "checklist.uncomplete_item":
+            verb_pat = r"(?:uncheck|mark|undo\s+complete|move)"
+        else:
+            verb_pat = r"(?:remove|delete|mark|complete|check(?:\s+off)?|tick(?:\s+off)?|finish|done)"
         body = re.sub(rf"(?i)^.*?\b{verb_pat}\b", "", q, count=1).strip()
         body = re.sub(
             r"(?i)\b(?:item|items)\b\s*(?:\d{1,3}(?:\s*(?:,|and)\s*\d{1,3})*)",
@@ -842,6 +1216,32 @@ def _route_checklist_multi_command(text: str, action_name: str) -> dict[str, Any
             out["target_text"] = target_texts[0]
             out.setdefault("target_mode", "label")
         out.setdefault("target_mode", out.get("target_mode") or "label")
+        if action_name == "checklist.remove_item":
+            try:
+                print(
+                    "[checklist_remove_parse] "
+                    + json.dumps(
+                        {
+                            "raw_text": q[:240],
+                            "target_kind": (
+                                "ordinal_range"
+                                if range_count
+                                else (
+                                    "relative_ordinal"
+                                    if relative_list
+                                    else out.get("target_mode")
+                                )
+                            ),
+                            "direction": range_dir or out.get("target_count_direction"),
+                            "count": range_count or out.get("target_count"),
+                            "target_mode": out.get("target_mode"),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
         return out
 
     return out
@@ -849,7 +1249,7 @@ def _route_checklist_multi_command(text: str, action_name: str) -> dict[str, Any
 
 def parse_checklist_command(vera, text: str, action_name: str) -> dict[str, Any]:
     routed = _route_checklist_multi_command(text, action_name)
-    if action_name in {"checklist.add_item", "checklist.remove_item", "checklist.complete_item"}:
+    if action_name in {"checklist.add_item", "checklist.remove_item", "checklist.complete_item", "checklist.uncomplete_item"}:
         return routed
 
     prompt = (
@@ -1009,6 +1409,10 @@ def visible_flattened_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _ongoing_visible_rows(flat: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [r for r in flat if not r.get("done")]
+
+
+def _completed_visible_rows(flat: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r for r in flat if r.get("done")]
 
 
 def _top_level_visible_rows(flat: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1221,48 +1625,37 @@ def _child_indices_for_top_level(items: list[dict[str, Any]], parent_idx: int) -
     return out
 
 
-def _resolve_first_count_indices(
+def _resolve_visible_count_indices(
     items: list[dict[str, Any]],
     count: int,
     *,
+    direction: str = "first",
     scope: str = "auto",
-) -> tuple[list[int], str | None]:
-    """Resolve "first N items" against the current VISIBLE FLATTENED list.
+) -> tuple[list[int], str | None, int, int]:
+    """Resolve ``first/last N items`` against the visible flattened list.
 
-    2026-06-02 spec change: the user's "first N items" now indexes into
-    the full visible flattened list (top-level rows AND sub-items),
-    matching what the user actually sees on screen. The cascade decision
-    is per resolved row:
-
-    - When the picked visible row is a top-level row (``depth == 0`` and
-      no parent), include its descendants in the result. The user's
-      "remove the first item" must drop the entire top-level group.
-    - When the picked visible row is a sub-item (``depth > 0``), include
-      only that single row. The user's "remove the second item" must
-      affect only that nested row.
-    - ``"whole_section"`` keeps cascading every resolved row regardless
-      of depth (explicit phrasing wins).
-    - Ranges like "first two items" deduplicate naturally: descendants
-      pulled in by a top-level cascade are not re-processed when a
-      sub-item ordinal lands on the same id.
-
-    Pass ``scope="sub_item"`` only in the resolver's sub_item branch
-    (this helper is never called there).
+    Returns ``(row_indices, error, applied_visible_count, available_visible_count)``.
     """
     flat = visible_flattened_rows(items)
     if not flat:
-        return [], "I could not find any visible checklist items."
+        return [], "I could not find any visible checklist items.", 0, 0
     if count <= 0:
-        return [], "Please tell me which checklist item to change."
+        return [], "Please tell me which checklist item to change.", 0, 0
 
     ongoing_flat = _ongoing_visible_rows(flat)
     pool_flat = ongoing_flat if ongoing_flat else flat
     if not pool_flat:
-        return [], "I could not find any visible checklist items."
+        return [], "I could not find any visible checklist items.", 0, 0
 
-    target_rows = pool_flat[: min(count, len(pool_flat))]
+    available = len(pool_flat)
+    take = min(int(count), available)
+    dir_norm = str(direction or "first").strip().lower()
+    if dir_norm == "last":
+        target_rows = pool_flat[-take:]
+    else:
+        target_rows = pool_flat[:take]
     if not target_rows:
-        return [], "I could not find those checklist items."
+        return [], "I could not find those checklist items.", 0, available
 
     selected_ids: list[str] = []
     for row in target_rows:
@@ -1274,11 +1667,6 @@ def _resolve_first_count_indices(
         is_top_level = (
             int(row.get("depth") or 0) == 0 and not row.get("parent_id")
         )
-        # Cascade rule:
-        #   "auto"          -> cascade only when the resolved row is
-        #                       itself top-level; sub-item ordinals stay
-        #                       single-row.
-        #   "whole_section" -> cascade every resolved row (explicit).
         should_cascade = scope == "whole_section" or (scope == "auto" and is_top_level)
         if should_cascade:
             for child_idx in _descendants_for_parent_id(items, rid):
@@ -1286,7 +1674,20 @@ def _resolve_first_count_indices(
                 cid = str((child_row or {}).get("id") or "")
                 if cid and cid not in selected_ids:
                     selected_ids.append(cid)
-    return _ids_to_row_indices(items, selected_ids), None
+    return _ids_to_row_indices(items, selected_ids), None, take, available
+
+
+def _resolve_first_count_indices(
+    items: list[dict[str, Any]],
+    count: int,
+    *,
+    scope: str = "auto",
+) -> tuple[list[int], str | None]:
+    """Back-compat wrapper — first N visible rows."""
+    indices, err, _applied, _available = _resolve_visible_count_indices(
+        items, count, direction="first", scope=scope
+    )
+    return indices, err
 
 
 def _ids_to_row_indices(items: list[dict[str, Any]], ids: list[str]) -> list[int]:
@@ -1684,6 +2085,28 @@ def _hierarchy_single_reply(
     return reply
 
 
+def _compose_count_range_removal_reply(
+    *,
+    direction: str,
+    requested: int,
+    available: int,
+    applied_visible: int,
+) -> str:
+    word = "first" if str(direction or "").strip().lower() == "first" else "last"
+    if applied_visible <= 0:
+        return "I could not find those checklist items."
+    if requested > available:
+        if applied_visible == 1:
+            return f"Removed the {word} item; there was only 1."
+        return (
+            f"Removed the {word} {applied_visible} items; "
+            f"there were only {available}."
+        )
+    if requested == 1:
+        return f"Removed the {word} item."
+    return f"Removed the {word} {requested} items."
+
+
 def _compose_removal_reply(
     *,
     scope: str,
@@ -1859,19 +2282,85 @@ def apply_checklist_action(
             and scope != "sub_item"
             and not target_level
         ):
-            resolved, err = _resolve_first_count_indices(rows, target_count, scope=scope)
-            # Record the first N visible rows as the directly-named targets
-            # (pre-cascade) so a single "first item" count still gets the
-            # hierarchy-aware reply, while multi-count keeps the aggregate.
+            direction = str(parsed.get("target_count_direction") or "").strip().lower()
+            if not direction:
+                mode = str(parsed.get("target_count_mode") or "")
+                direction = "last" if mode.startswith("last") else "first"
+            if str(parsed.get("target_mode") or "") == "count_from_end":
+                direction = "last"
+            resolved, err, applied_visible, available_visible = _resolve_visible_count_indices(
+                rows,
+                int(target_count),
+                direction=direction,
+                scope=scope,
+            )
+            parsed["_count_range_applied"] = applied_visible
+            parsed["_count_range_available"] = available_visible
+            try:
+                _vf = visible_flattened_rows(rows)
+                _pool = _ongoing_visible_rows(_vf) or _vf
+                selected_ids: list[str] = []
+                selected_texts: list[str] = []
+                take = min(int(target_count), len(_pool))
+                if direction == "last":
+                    preview_rows = _pool[-take:] if take > 0 else []
+                else:
+                    preview_rows = _pool[:take] if take > 0 else []
+                for row in preview_rows:
+                    rid = str(row.get("id") or "")
+                    txt = str(row.get("text") or "").strip()
+                    if rid:
+                        selected_ids.append(rid)
+                    if txt:
+                        selected_texts.append(txt)
+                print(
+                    "[checklist_remove_candidates] "
+                    + json.dumps(
+                        {
+                            "visible_count": len(_pool),
+                            "direction": direction,
+                            "count_requested": int(target_count),
+                            "selected_ids": selected_ids,
+                            "selected_texts": selected_texts[:12],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+                print(
+                    "[checklist_remove_execute_start] "
+                    + json.dumps(
+                        {
+                            "count_requested": int(target_count),
+                            "count_available": available_visible,
+                            "direction": direction,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
+            # Record the first/last N visible rows as directly-named targets
+            # (pre-cascade) for hierarchy-aware replies.
             _vf = visible_flattened_rows(rows)
             _pool = _ongoing_visible_rows(_vf) or _vf
-            for _i in range(min(int(target_count), len(_pool))):
-                _rid = str(_pool[_i].get("id") or "")
+            take = min(int(target_count), len(_pool))
+            if direction == "last":
+                preview_rows = _pool[-take:] if take > 0 else []
+            else:
+                preview_rows = _pool[:take] if take > 0 else []
+            for _i, row in enumerate(preview_rows):
+                _rid = str(row.get("id") or "")
                 if _rid:
                     primary_targets.append(
                         {
                             "id": _rid,
-                            "requested_ordinal": _i + 1,
+                            "requested_ordinal": (
+                                len(_pool) - take + _i + 1
+                                if direction == "last"
+                                else _i + 1
+                            ),
                             "level": target_level or "flat",
                         }
                     )
@@ -1913,8 +2402,12 @@ def apply_checklist_action(
             text_list = []
 
         flat = visible_flattened_rows(rows)
-        ongoing_flat = _ongoing_visible_rows(flat)
-        pool_flat = ongoing_flat if ongoing_flat else flat
+        if action_name == "checklist.uncomplete_item":
+            completed_flat = _completed_visible_rows(flat)
+            pool_flat = completed_flat if completed_flat else flat
+        else:
+            ongoing_flat = _ongoing_visible_rows(flat)
+            pool_flat = ongoing_flat if ongoing_flat else flat
 
         out_ids: list[str] = []
 
@@ -2327,6 +2820,84 @@ def apply_checklist_action(
         _log_after_mutation(action_name, [], rows)
         return rows, base_reply, changed
 
+    if action_name == "checklist.uncomplete_item":
+        flat_before = visible_flattened_rows(rows)
+        completed_before = _completed_visible_rows(flat_before)
+        pool_before = completed_before if completed_before else flat_before
+        top_level_before = _top_level_visible_rows(pool_before)
+        top_level_ord_by_id: dict[str, int] = {
+            str(r["id"]): int(r["top_level_index"]) for r in top_level_before
+        }
+        has_hierarchy = any(int(r.get("depth") or 0) != 0 for r in flat_before)
+        row_meta = _build_row_meta(rows)
+
+        target_row_indices, err, missing = _resolve_target_row_indices()
+        if err and not target_row_indices:
+            _emit_resolve_debug([], missing)
+            return rows, err, False
+        targeted_ids = [str(rows[i].get("id") or "") for i in target_row_indices]
+        _emit_resolve_debug(targeted_ids, missing)
+        user_supplied_ordinal = (
+            (
+                isinstance(parsed.get("target_indices"), list)
+                and any(
+                    isinstance(x, int) and x > 0
+                    for x in (parsed.get("target_indices") or [])
+                )
+            )
+            or (
+                isinstance(parsed.get("target_index"), int)
+                and int(parsed.get("target_index") or 0) > 0
+            )
+            or (
+                isinstance(parsed.get("target_count"), int)
+                and int(parsed.get("target_count") or 0) > 0
+            )
+            or bool(parsed.get("target_relative_ordinals") or [])
+            or bool(parsed.get("_reply_ordinals") or [])
+        )
+        changed = False
+        reopened_names: list[str] = []
+        reopened_top_ords: list[int] = []
+        for i in target_row_indices:
+            txt = str(rows[i].get("text") or "").strip()
+            if not txt:
+                continue
+            reopened_names.append(txt)
+            rid = str(rows[i].get("id") or "")
+            if user_supplied_ordinal and rid in top_level_ord_by_id:
+                reopened_top_ords.append(top_level_ord_by_id[rid])
+            if bool(rows[i].get("done")):
+                rows[i]["done"] = False
+                changed = True
+        if not reopened_names:
+            _log_after_mutation(action_name, [], rows)
+            return rows, "I could not find those checklist items.", False
+        reply_ordinals = [
+            int(x)
+            for x in (parsed.get("_reply_ordinals") or [])
+            if isinstance(x, int) and x > 0
+        ]
+        if user_supplied_ordinal and reply_ordinals:
+            reopened_top_ords = reply_ordinals
+        reopened_top_ords = sorted(set(reopened_top_ords))
+        if reopened_top_ords:
+            joined = _human_join_top_ordinals(reopened_top_ords)
+            if len(reopened_top_ords) == 1:
+                base_reply = f"Marked the {joined} item incomplete."
+            else:
+                base_reply = f"Marked the {joined} items incomplete."
+        elif len(reopened_names) == 1:
+            base_reply = f"Unchecked {reopened_names[0]}."
+        else:
+            base_reply = f"Unchecked {len(reopened_names)} checklist items."
+        if missing:
+            base_reply += (
+                f" I couldn't find {_human_join_ordinals(missing)}."
+            )
+        _log_after_mutation(action_name, [], rows)
+        return rows, base_reply, changed
+
     if action_name == "checklist.remove_item":
         scope = str(parsed.get("scope") or "auto").lower()
         # Back-compat: legacy "parent_only" senders collapse to the new
@@ -2490,6 +3061,41 @@ def apply_checklist_action(
             )
         if hier_reply is not None:
             base_reply = hier_reply
+        elif parsed.get("target_mode") in ("count_from_start", "count_from_end") and isinstance(
+            parsed.get("target_count"), int
+        ):
+            direction = str(
+                parsed.get("target_count_direction")
+                or ("last" if parsed.get("target_mode") == "count_from_end" else "first")
+            )
+            base_reply = _compose_count_range_removal_reply(
+                direction=direction,
+                requested=int(parsed.get("target_count") or 0),
+                available=int(parsed.get("_count_range_available") or 0),
+                applied_visible=int(parsed.get("_count_range_applied") or 0),
+            )
+            try:
+                print(
+                    "[checklist_remove_execute_done] "
+                    + json.dumps(
+                        {
+                            "removed_count": len(removed),
+                            "remaining_count": len(
+                                [r for r in rows if str(r.get("text") or "").strip()]
+                            ),
+                            "direction": direction,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+                print(
+                    "[checklist_remove_range_reply] "
+                    + json.dumps({"reply": base_reply}, ensure_ascii=False),
+                    flush=True,
+                )
+            except Exception:
+                pass
         else:
             base_reply = _compose_removal_reply(
                 scope=scope,

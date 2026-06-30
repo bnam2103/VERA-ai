@@ -107,6 +107,17 @@ from actions.music_intent import (
 from actions.timer_duration import (
     TIMER_START_INTENT_PATTERN as _TIMER_START_INTENT_PATTERN,
 )
+from actions.timer_extend import (
+    TIMER_EXTEND_INTENT_PATTERN as _TIMER_EXTEND_INTENT_PATTERN,
+    parse_timer_extend_request,
+    timer_extend_blocklist_rejects,
+    timer_extend_intent_matches,
+)
+from actions.checklist_plan import (
+    CHECKLIST_PLAN_INTENT_RE as _CHECKLIST_PLAN_INTENT_RE,
+    checklist_plan_intent_matches,
+    CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+)
 
 # ---------------------------------------------------------------------------
 # 2026-05-29 OPTION B FIX — LLM upgrade hook disabled for live execution.
@@ -165,6 +176,10 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
         r"tell\s+me\s+(?:the\s+)?weather|"
         r"check\s+(?:the\s+)?weather|"
         r"current\s+weather|"
+        r"weather\s+forecast|"
+        r"forecast(?:\s+for|\s+in)?|"
+        r"will\s+it\s+rain|"
+        r"weather\s+tomorrow|"
         r"is\s+it\s+(?:raining|rainy|snowing|windy|hot|cold))\b",
     ),
     # 2026-06-02 — bare/continuation info anchors for compound info
@@ -215,12 +230,12 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
         r"any\s+(?:updates|news)\s+on|"
         r"latest\s+on\s+[\w][\w\s.&'-]{1,80})\b",
     ),
-    # info.sports / info.product / info.location come BEFORE info.search so a
+    # info.sports / info.location come BEFORE info.search so a
     # phrase like "did the Lakers win" anchors as info.sports (more specific)
-    # and "coffee shops near me" anchors as info.location. info.search is the
-    # generic catch-all. Anchors are intentionally bounded (small {1,40}
-    # character runs) so the regex cannot eat a sibling action clause like
-    # "and play lo-fi" that follows the info span.
+    # and "coffee shops near me" anchors as info.location. info.search
+    # (explicit ``search for`` / ``look up`` / ``google``) sits before
+    # info.product so superlatives inside a search clause are not split off
+    # as a separate product action.
     (
         "info.sports",
         # 2026-05-30: extended beyond NBA/NFL/MLB teams to also anchor on
@@ -267,6 +282,16 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
         r"\b(?:next\s+(?:match|game|fixture|opponent|round))\b)",
     ),
     (
+        "info.search",
+        # Explicit web-search phrasing must anchor BEFORE info.product so
+        # "search for best webcams for Zoom" becomes info.search (web.search)
+        # rather than info.product stealing the superlative tail. Kept narrow
+        # (bounded {1,80} query tail) so sibling clauses like "and play lo-fi"
+        # are not absorbed.
+        r"(?:search(?:\s+the\s+web)?\s+for\b|look\s+up\b|google\b|"
+        r"did\s+(?:the\s+)?[\w][\w\s.&'-]{1,40}\s+(?:happen|go|announce|release)\b)",
+    ),
+    (
         "info.product",
         # Intentionally NO "compare" verb here — "compare A and B" is also
         # a legitimate reasoning.request phrasing (compare two stocks /
@@ -283,13 +308,6 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
         r"food|brunch|lunch|dinner)\s+"
         r"(?:near|in|around|by)\s+\w|"
         r"\b(?:near|around)\s+me\b",
-    ),
-    (
-        "info.search",
-        # General catch-all for "did X happen / announce / release …" style
-        # follow-ups that aren't sports, product, or location-specific. Kept
-        # narrow so it doesn't compete with info.sports / info.product.
-        r"(?:did\s+(?:the\s+)?[\w][\w\s.&'-]{1,40}\s+(?:happen|go|announce|release)\b)",
     ),
     # ----- panel -----
     (
@@ -308,6 +326,10 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
         # ``_is_panel_open_anchor_valid`` against the LEFT-hand context
         # so we don't treat "make a new one" as panel-open in unrelated
         # sentences.
+        r"(?:(?:open|create|make|add)\s+(?:up\s+)?"
+        r"(?:\d{1,2}|a|an|one|two|three|four|five|six|seven|eight)\s+)?"
+        r"(?:new\s+)?"
+        r"(?:reasoning\s+)?(?:panels?|spaces?|tabs?|pages?|lanes?)|"
         r"(?:(?:open|create|make|add)\s+(?:up\s+)?(?:a|another|the|one\s+more)?\s*"
         r"(?:new|extra|additional|empty|another)?\s*"
         r"(?:reasoning\s+panel|panel|reasoning\s+space|reasoning\s+tab|tab)|"
@@ -319,7 +341,7 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
     ),
     (
         "panel.close",
-        r"close\s+(?:panel\s+\d+|this\s+panel|the\s+(?:first|second|third|fourth|last|current|active)\s+(?:panel|two|three|four|panels)|"
+        r"close\s+(?:panel\s+\d+|this\s+panel|(?:the\s+)?(?:first|second|third|fourth|last|current|active)\s+(?:panel|two|three|four|panels)|"
         r"all\s+(?:other\s+)?panels|(?:current\s+|active\s+)?panel)",
     ),
     (
@@ -367,10 +389,14 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
         # tailed) alternative and "skip to the next song" anchors as just
         # "skip " — leaving "next song" to anchor a SECOND music.next
         # span. With "to the next" first we match the full 21-char span
-        # exactly once.
+        # exactly once. Same for "skip the next track" — add that branch
+        # before any bare ``skip`` tail that can match zero characters.
         r"(?:next\s+(?:song|track)|"
         r"skip\s+(?:to\s+(?:the\s+)?next(?:\s+(?:song|track))?|"
-        r"ahead|(?:this\s+)?(?:song|track)?)|"
+        r"(?:the\s+)?next(?:\s+(?:song|track))?|"
+        r"ahead\b|"
+        r"(?:this\s+)?(?:song|track)\b|"
+        r"it\b)|"
         # 2026-06-02 — accept "play next" AND "play the next" (and the
         # song/track suffixed forms) so the planner consistently routes
         # to music.next instead of leaking a bogus
@@ -426,6 +452,13 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
         r"playlist|track|song|album))",
     ),
     # ----- timer -----
+    # ``timer.extend`` is listed BEFORE ``timer.cancel`` / ``timer.set`` /
+    # ``checklist.add`` so explicit extend phrases ("add 3 minutes to the
+    # timer") are not misclassified as checklist.add or timer.set.
+    (
+        "timer.extend",
+        _TIMER_EXTEND_INTENT_PATTERN,
+    ),
     # ``timer.cancel`` is listed BEFORE ``checklist.remove`` so a phrase
     # like ``"remove the timer"`` resolves to timer.cancel (both regexes
     # match at start=0; ACTION_ANCHORS index breaks the tie). ``timer.set``
@@ -449,13 +482,22 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
     ),
     # ----- checklist -----
     (
+        "checklist.plan",
+        _CHECKLIST_PLAN_INTENT_RE.pattern,
+    ),
+    (
         "checklist.sync",
         r"sync\s+(?:the\s+)?(?:plan|checklist|list|reasoning(?:\s+plan)?)\b",
     ),
     (
+        "checklist.uncomplete",
+        r"(?:uncheck\b|mark\b.*\bincomplete\b|undo\s+complete\b|move\b.*\bongoing\b)",
+    ),
+    (
         "checklist.complete",
-        # "mark X complete", "check off X", "mark first done"
-        r"(?:mark\b|check\s+off\b|check\s+(?:item|the)\b)",
+        # "mark X complete", "check off X", "check/tick the first item"
+        r"(?:mark\b|check\s+off\b|tick(?:\s+off)?\b|complete\b|"
+        r"check\s+(?:the\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|\d+)\b)",
     ),
     (
         "checklist.remove",
@@ -489,7 +531,7 @@ ACTION_ANCHORS: list[tuple[str, str]] = [
         r"compare|outline|walk\s+me\s+through|tell\s+me\s+about|"
         r"break\s+down|derive|prove|draft|brainstorm|critique|"
         r"review|review\s+the|edit|revise|continue\s+the\s+(?:essay|outline|draft)|"
-        r"help\s+me\s+(?:with|solve|understand|write|plan|draft|outline|brainstorm)|"
+        r"help\s+me\s+(?:with|solve|understand|write|plan|draft|outline|brainstorm|do\b)|"
         # 2026-06-02 — narrow "work/walk/go/think/talk/reason/run through"
         # variants so panel-targeted reasoning like
         # "Can you work through this in panel 1?" anchors as reasoning
@@ -570,6 +612,7 @@ _ACTION_VERB_RHS_RE = re.compile(
     # passes ``_action_verb_after_connector`` and the planner is allowed
     # to look for a second action anchor.
     r"crank\s+it\s+(?:up|down)|"
+    r"search(?:\s+(?:the\s+web\s+for|for|on))?|look\s+up|google\b|"
     r"make\s+(?:it|the\s+(?:music|volume|sound|playback))\s+"
     r"(?:louder|quieter|softer|loud|quiet)|"
     r"set\s+the?\s*volume|"
@@ -630,6 +673,145 @@ _CHECKLIST_TAIL_PREP_RE = re.compile(
     r"(?:check[-\s]?list|to[-\s]?do(?:\s+list)?|list|plan)\b",
     re.IGNORECASE,
 )
+# "from my checklist" tail on remove targets.
+_CHECKLIST_FROM_TAIL_RE = re.compile(
+    r"\s+from\s+(?:the|my|our|this)?\s*"
+    r"(?:check[-\s]?list|to[-\s]?do(?:\s+list)?|list|plan)\b",
+    re.IGNORECASE,
+)
+# Trailing filler on add-item text ("eggs too", "milk also").
+_CHECKLIST_ITEM_FILLER_RE = re.compile(
+    r"\s+(?:too|also|as\s+well)\s*$",
+    re.IGNORECASE,
+)
+# Trailing "item/items" on complete/remove targets ("homework item" → homework).
+_CHECKLIST_TARGET_ITEM_SUFFIX_RE = re.compile(
+    r"\s+(?:item|items)\s*$",
+    re.IGNORECASE,
+)
+# If an add-item fragment contains another action verb, stop before it.
+_CHECKLIST_ACTION_VERB_IN_ITEM_RE = re.compile(
+    r"\s+\b(?:mark|complete|check(?:\s+off)?|remove|delete|pause|play|switch|start|set)\b",
+    re.IGNORECASE,
+)
+def _normalize_checklist_item_text(text: str) -> str:
+    """Strip filler/tails from a single checklist add-item fragment."""
+    clean = (text or "").strip().strip(".,;:!?")
+    if not clean:
+        return ""
+    clean = _CHECKLIST_TAIL_RE.sub("", clean).strip()
+    clean = _CHECKLIST_TAIL_PREP_RE.sub("", clean).strip()
+    clean = re.sub(r"^(?:the|a|an|some)\s+(?=\S)", "", clean, flags=re.IGNORECASE).strip()
+    clean = _CHECKLIST_ITEM_FILLER_RE.sub("", clean).strip()
+    m = _CHECKLIST_ACTION_VERB_IN_ITEM_RE.search(clean)
+    if m:
+        clean = clean[: m.start()].strip()
+    return clean.strip(".,;:!?").strip()
+
+
+def _normalize_checklist_target_text(text: str) -> str:
+    """Strip filler from complete/remove target text."""
+    clean = _normalize_checklist_item_text(text)
+    if not clean:
+        return ""
+    clean = _CHECKLIST_FROM_TAIL_RE.sub("", clean).strip()
+    clean = re.split(r"\bfrom\b|\bon\b|\bin\b|\bto\b", clean, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    clean = _CHECKLIST_TARGET_ITEM_SUFFIX_RE.sub("", clean).strip()
+    clean = re.sub(
+        r"\s+(?:complete|completed|done|incomplete|as\s+complete)\s*$",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    ).strip()
+    return clean.strip(".,;:!?").strip()
+
+
+def _merge_redundant_checklist_anchors(
+    anchors: list[tuple[int, str, int]], text: str
+) -> list[tuple[int, str, int]]:
+    """Merge split ``mark …`` + ``complete`` anchors into one complete action."""
+    if not anchors:
+        return anchors
+    merged: list[tuple[int, str, int]] = []
+    i = 0
+    while i < len(anchors):
+        start, family, end = anchors[i]
+        if (
+            family == "checklist.complete"
+            and i + 1 < len(anchors)
+            and anchors[i + 1][1] == "checklist.complete"
+        ):
+            n_start, _, n_end = anchors[i + 1]
+            frag2 = text[n_start:n_end].strip().lower()
+            if frag2 in ("complete", "completed", "done"):
+                merged.append((start, family, n_end))
+                i += 2
+                continue
+        merged.append((start, family, end))
+        i += 1
+    return merged
+
+
+def _log_checklist_parse_result(raw_text: str, actions: list[dict]) -> None:
+    """Emit checklist-specific parse logs when the plan contains checklist actions."""
+    cl_actions = [
+        a for a in (actions or []) if str((a or {}).get("type") or "").startswith("checklist.")
+    ]
+    if not cl_actions:
+        return
+    try:
+        print(
+            "[checklist_parse_input] "
+            + json.dumps({"raw_text": (raw_text or "")[:240]}, ensure_ascii=False),
+            flush=True,
+        )
+        print(
+            "[checklist_parse_actions] "
+            + json.dumps(
+                [
+                    {
+                        "type": a.get("type"),
+                        "span": (a.get("span") or "")[:160],
+                        "payload": a.get("payload") or {},
+                    }
+                    for a in cl_actions
+                ],
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        for a in cl_actions:
+            payload = a.get("payload") or {}
+            family = a.get("type") or ""
+            if family == "checklist.add":
+                print(
+                    "[checklist_add_items] "
+                    + json.dumps(
+                        {"items": payload.get("items") or [], "span": (a.get("span") or "")[:160]},
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            elif family == "checklist.complete":
+                targets = payload.get("targets") or []
+                target = targets[0] if targets else {}
+                print(
+                    "[checklist_complete_target] "
+                    + json.dumps({"target": target, "span": (a.get("span") or "")[:160]}, ensure_ascii=False),
+                    flush=True,
+                )
+            elif family == "checklist.remove":
+                targets = payload.get("targets") or []
+                target = targets[0] if targets else {}
+                print(
+                    "[checklist_remove_target] "
+                    + json.dumps({"target": target, "span": (a.get("span") or "")[:160]}, ensure_ascii=False),
+                    flush=True,
+                )
+    except Exception:
+        pass
+
+
 _PUT_REASONING_PANEL_RE = re.compile(
     r"^\s*put\s+"
     r"(?:(?:a|an|the|this|that)\s+)?"
@@ -678,6 +860,16 @@ _PLAYLIST_SCOPE_RE = re.compile(
 # "in panel N" / "in the Vietnam War panel" / "in panel two" target capture.
 _PANEL_TARGET_SUFFIX_RE = re.compile(
     r"\bin\s+(?:the\s+)?panel\s+(?P<num>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+    re.IGNORECASE,
+)
+# "in the fourth panel" / "in the first panel" — ordinal before the noun.
+_PANEL_ORDINAL_IN_SUFFIX_RE = re.compile(
+    r"\bin\s+(?:the\s+)?(?P<ord>first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last)\s+panel\b",
+    re.IGNORECASE,
+)
+# Deictic active-panel destinations: "in this panel", "in the reasoning panel".
+_PANEL_TARGET_DEICTIC_SUFFIX_RE = re.compile(
+    r"\bin\s+(?:(?:the|this|that)\s+)?(?:reasoning\s+)?(?:panel|space|tab|page|work\s*mode)\b",
     re.IGNORECASE,
 )
 _PANEL_TARGET_TITLE_RE = re.compile(
@@ -879,10 +1071,12 @@ _ACTION_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
     "music.previous": (),
     "music.volume": ("direction",),  # direction or level
     "checklist.add": ("items",),
+    "checklist.plan": ("source",),
     "checklist.remove": ("targets",),
     "checklist.complete": ("targets",),
     "checklist.sync": (),
     "timer.set": ("duration_seconds",),
+    "timer.extend": ("duration_delta_seconds",),
     "timer.cancel": (),
     "info.time": ("text",),
     "info.weather": ("text",),
@@ -931,7 +1125,10 @@ def should_trigger_planner(text: str) -> tuple[bool, str]:
         return True, "new_panel_content_task"
 
     has_connector = bool(_CONNECTORS_RE.search(raw))
-    has_in_panel_suffix = bool(_PANEL_TARGET_SUFFIX_RE.search(raw))
+    has_in_panel_suffix = bool(
+        _PANEL_TARGET_SUFFIX_RE.search(raw) or _PANEL_ORDINAL_IN_SUFFIX_RE.search(raw)
+    )
+    has_deictic_panel_suffix = bool(_PANEL_TARGET_DEICTIC_SUFFIX_RE.search(raw))
     has_after_gerund = bool(_AFTER_GERUND_RE.search(raw))
     has_multi_close = bool(_MULTI_PANEL_CLOSE_RE.search(raw))
 
@@ -957,7 +1154,7 @@ def should_trigger_planner(text: str) -> tuple[bool, str]:
             # catalog is ~24 entries so the extra ``re.search`` work is
             # negligible.
 
-    if has_in_panel_suffix and ("reasoning" in families_hit or "music" in families_hit or "checklist" in families_hit):
+    if (has_in_panel_suffix or has_deictic_panel_suffix) and ("reasoning" in families_hit or "music" in families_hit or "checklist" in families_hit):
         return True, "in_panel_suffix_with_action"
     # 2026-06-02 — Panel + reasoning combo without a connector
     # ("Use panel 3 to explain tennis." / "Go to panel 2 and explain
@@ -980,7 +1177,7 @@ def should_trigger_planner(text: str) -> tuple[bool, str]:
     # the trigger fires here. Statements like "The picture in panel 3
     # is broken." don't match ``_PANEL_REASONING_FALLBACK_INTENT_RE``
     # and continue down the legacy voice.answer path.
-    if has_in_panel_suffix:
+    if has_in_panel_suffix or has_deictic_panel_suffix:
         try:
             cleaned_for_intent = _strip_panel_phrase_from_reasoning_text(raw).strip()
         except Exception:
@@ -1069,6 +1266,25 @@ def _find_action_anchors(text: str) -> list[tuple[int, str, int]]:
                 continue
             if family == "panel.open" and not _is_panel_open_anchor_valid(text, start, end):
                 continue
+            if family == "info.product" and not _is_product_anchor_valid(text, start, end):
+                continue
+            if family == "timer.extend":
+                clause = _anchor_clause(text, start)
+                rejected, _reason = timer_extend_blocklist_rejects(clause)
+                if rejected:
+                    continue
+            if family == "timer.set":
+                clause = _anchor_clause(text, start)
+                if timer_extend_intent_matches(clause):
+                    continue
+            if family == "checklist.plan":
+                clause = _anchor_clause(text, start)
+                if not checklist_plan_intent_matches(clause):
+                    continue
+            if family == "reasoning.request":
+                clause = _anchor_clause(text, start)
+                if checklist_plan_intent_matches(clause):
+                    continue
             raw_hits.append((start, family, end, priority))
 
     # Dedup overlapping: prefer earlier start; for same start, prefer lower priority (more specific).
@@ -1080,6 +1296,14 @@ def _find_action_anchors(text: str) -> list[tuple[int, str, int]]:
             continue
         accepted.append((start, family, end))
     return accepted
+
+
+def _anchor_clause(text: str, start: int, *, max_len: int = 240) -> str:
+    segment = text[start : start + max_len]
+    m = re.search(r"\b(?:and|then|also|plus)\b", segment, re.IGNORECASE)
+    if m:
+        segment = segment[: m.start()]
+    return segment.strip()
 
 
 def _checklist_anchor_is_valid(
@@ -1098,7 +1322,9 @@ def _checklist_anchor_is_valid(
     ordinary "add X and Y" from being over-split while allowing the executor
     to preserve the checklist ui_payload for the user's current test.
     """
-    clause = text[anchor_start:anchor_start + 240]
+    clause = _anchor_clause(text, anchor_start)
+    if timer_extend_intent_matches(clause):
+        return False
     # "put an explanation/answer ... in panel N" is reasoning placement, not
     # checklist editing. This must be rejected BEFORE the bare Work Mode
     # shorthand below; otherwise "put an explanation ... in panel 3 and play
@@ -1117,6 +1343,17 @@ def _checklist_anchor_is_valid(
         body = (m.group("body") or "").strip(" .,:;!?")
         rhs = (m.group("rhs") or "").strip()
         if body and _ACTION_VERB_RHS_RE.match(rhs):
+            return True
+    # Continuation add in compound utterance after checklist context was established
+    # ("add milk to my checklist and add eggs too").
+    before = text[max(0, anchor_start - 200):anchor_start]
+    if _CHECKLIST_TAIL_RE.search(before) or _CHECKLIST_TAIL_PREP_RE.search(before):
+        after_verb = text[anchor_end : anchor_end + 120].strip()
+        if after_verb and not re.match(
+            r"^(?:mark|complete|check|remove|delete|pause|play|switch|start|set)\b",
+            after_verb,
+            re.IGNORECASE,
+        ):
             return True
     return False
 
@@ -1297,6 +1534,27 @@ def _clean_info_clause_text(text: str) -> str:
     return t
 
 
+def _extract_web_search_query(span: str) -> str:
+    """Strip leading search verbs so ``search for best X`` → ``best X``."""
+    s = _clean_info_clause_text(span)
+    m = re.match(
+        r"^(?:search(?:\s+the\s+web)?\s+for|look\s+up|google)\s+(?P<q>.+)$",
+        s,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group("q").strip().strip(".,;:!? ")
+    return s
+
+
+def _is_product_anchor_valid(text: str, anchor_start: int, anchor_end: int) -> bool:
+    """Reject product superlative anchors inside an explicit search clause."""
+    window = text[max(0, anchor_start - 80): anchor_start + 40].lower()
+    if re.search(r"\bsearch(?:\s+the\s+web)?\s+for\s", window):
+        return False
+    return True
+
+
 def _clean_info_location(value: str | None) -> str:
     loc = _clean_info_clause_text(value or "")
     loc = _INFO_LOCATION_TRAILING_FILLER_RE.sub("", loc).strip()
@@ -1344,11 +1602,24 @@ def _extract_payload_for(span: dict, full_text: str) -> dict:
 
     if family == "info.weather":
         location = _extract_weather_location(s)
+        try:
+            from actions.weather_query_parse import parse_weather_query
+
+            wq = parse_weather_query(s)
+        except Exception:
+            wq = {"action_name": "weather.current", "query": {}}
+        parsed_loc = (wq.get("location") or "").strip()
+        if parsed_loc:
+            location = parsed_loc
         return {
             "text": _clean_info_clause_text(s),
             "query": location,
             "location": location,
             "raw": s,
+            "weather_action": wq.get("action_name") or "weather.current",
+            "time_kind": (wq.get("query") or {}).get("time_kind"),
+            "time_label": (wq.get("query") or {}).get("time_label"),
+            "intent": wq.get("intent") or "general",
         }
 
     if family in (
@@ -1359,7 +1630,10 @@ def _extract_payload_for(span: dict, full_text: str) -> dict:
         "info.product",
         "info.location",
     ):
-        query = _clean_info_clause_text(s)
+        if family == "info.search":
+            query = _extract_web_search_query(s)
+        else:
+            query = _clean_info_clause_text(s)
         return {"query": query, "text": query, "raw": s}
 
     if family == "panel.navigate":
@@ -1391,7 +1665,10 @@ def _extract_payload_for(span: dict, full_text: str) -> dict:
                     if candidate not in targets:
                         targets.append(candidate)
             if not targets:
-                m = re.search(r"the\s+(?P<ord>first|second|third|fourth|last)\s+(?:panel|two|three|four|panels)", low)
+                m = re.search(
+                    r"(?:the\s+)?(?P<ord>first|second|third|fourth|last)\s+(?:panel|two|three|four|panels)\b",
+                    low,
+                )
                 if m:
                     targets.append({"ordinal": m.group("ord")})
                 elif re.search(r"\bthis\s+panel\b", low):
@@ -1494,14 +1771,64 @@ def _extract_payload_for(span: dict, full_text: str) -> dict:
         # cut at the checklist-tail boundary above, so this won't eat the
         # downstream sibling action).
         items = _split_checklist_items(body)
+        try:
+            print(
+                "[checklist_add_items] "
+                + json.dumps({"items": items, "span": (s or "")[:160]}, ensure_ascii=False),
+                flush=True,
+            )
+        except Exception:
+            pass
         return {"items": items, "raw": s}
 
-    if family in ("checklist.remove", "checklist.complete"):
+    if family in ("checklist.remove", "checklist.complete", "checklist.uncomplete"):
         targets = _extract_checklist_targets(s)
+        try:
+            tag = (
+                "[checklist_complete_target]"
+                if family == "checklist.complete"
+                else "[checklist_remove_target]"
+                if family == "checklist.remove"
+                else "[checklist_parse_actions]"
+            )
+            target_preview = (targets[0] if targets else {})
+            print(
+                tag
+                + " "
+                + json.dumps(
+                    {"target": target_preview, "span": (s or "")[:160]},
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
         return {"targets": targets, "raw": s}
 
     if family == "checklist.sync":
         return {"raw": s}
+
+    if family == "checklist.plan":
+        try:
+            print(
+                "[checklist_plan_action_detected] "
+                + json.dumps(
+                    {
+                        "raw_text": (s or "")[:240],
+                        "source": "voice",
+                        "span": (s or "")[:200],
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        return {
+            "source": "voice",
+            "max_main_items": CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
+            "raw": s,
+        }
 
     if family == "timer.set":
         # Pull the numeric duration so the executor doesn't have to
@@ -1534,6 +1861,30 @@ def _extract_payload_for(span: dict, full_text: str) -> dict:
             pass
         return {"duration_seconds": dur, "raw": s}
 
+    if family == "timer.extend":
+        req = parse_timer_extend_request(s)
+        delta = req.get("duration_delta_seconds") if req else None
+        try:
+            print(
+                "[timer_extend_action_payload] "
+                + json.dumps(
+                    {
+                        "span": (s or "")[:200],
+                        "duration_delta_seconds": delta,
+                        "source": "explicit_timer" if req else None,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        return {
+            "duration_delta_seconds": delta,
+            "source": "explicit_timer",
+            "raw": s,
+        }
+
     if family == "timer.cancel":
         return {"raw": s}
 
@@ -1565,24 +1916,59 @@ def _split_checklist_items(body: str) -> list[str]:
     parts = re.split(r"\s*(?:,|;|&|\+|\band\b|\bas\s+well\s+as\b)\s*", body, flags=re.IGNORECASE)
     out: list[str] = []
     for p in parts:
-        clean = (p or "").strip().strip(".,;:!?")
-        if not clean:
-            continue
-        # Boundary-strip: drop a trailing/embedded checklist tail.
-        clean = _CHECKLIST_TAIL_RE.sub("", clean).strip()
-        clean = _CHECKLIST_TAIL_PREP_RE.sub("", clean).strip()
-        # Drop a leading article when followed by a real word.
-        clean = re.sub(r"^(?:the|a|an|some)\s+(?=\S)", "", clean, flags=re.IGNORECASE).strip()
-        clean = clean.strip(".,;:!?").strip()
+        clean = _normalize_checklist_item_text(p)
         if clean:
             out.append(clean)
     return out
 
 
 def _extract_checklist_targets(span: str) -> list[Any]:
-    """Pull "first", "second", "third and fifth", or quoted text targets out."""
+    """Pull ordinal/index targets or normalized text from complete/remove spans."""
+    from actions.checklist import extract_checklist_ordinal_range
+
+    range_target = extract_checklist_ordinal_range(span)
+    if range_target:
+        try:
+            print(
+                "[checklist_remove_range_detected] "
+                + json.dumps(
+                    {
+                        "direction": range_target.get("direction"),
+                        "count": range_target.get("count"),
+                        "source": "planner_extract",
+                        "span": (span or "")[:160],
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
+        return [range_target]
+
     low = span.lower()
     targets: list[Any] = []
+    m_mark = re.match(
+        r"^\s*(?:mark|check(?:\s+off)?|tick(?:\s+off)?)\s+(?:the\s+)?(?P<rest>.+?)"
+        r"(?:\s+(?:as\s+)?(?:complete|completed|done))?\s*$",
+        span,
+        re.IGNORECASE,
+    )
+    if m_mark:
+        rest = _normalize_checklist_target_text(m_mark.group("rest"))
+        if rest:
+            targets.append({"text": rest})
+            return targets
+    m_complete = re.match(
+        r"^\s*complete\s+(?:the\s+)?(?P<rest>.+?)\s*$",
+        span,
+        re.IGNORECASE,
+    )
+    if m_complete:
+        rest = _normalize_checklist_target_text(m_complete.group("rest"))
+        if rest:
+            targets.append({"text": rest})
+            return targets
     for m in re.finditer(
         r"\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last)\b",
         low,
@@ -1600,15 +1986,14 @@ def _extract_checklist_targets(span: str) -> list[Any]:
     # ("remove homework", "delete the eggs item").
     if not targets:
         m = re.match(
-            r"^\s*(?:remove|delete|drop|mark|check\s+off|complete)\s+(?:the\s+)?(?P<rest>.+)",
+            r"^\s*(?:remove|delete|drop|mark|check(?:\s+off)?|tick(?:\s+off)?|complete|uncheck)\s+(?:the\s+)?(?P<rest>.+)",
             span,
             re.IGNORECASE,
         )
         if m:
-            rest = m.group("rest")
-            rest = re.split(r"\bfrom\b|\bon\b|\bin\b|\bto\b", rest, maxsplit=1)[0].strip()
+            rest = _normalize_checklist_target_text(m.group("rest"))
             if rest:
-                targets.append({"text": rest.rstrip(".,;:")})
+                targets.append({"text": rest})
     return targets
 
 
@@ -1617,13 +2002,20 @@ def _rewrite_in_panel_suffix(text: str) -> tuple[str, dict | None]:
     verb), rewrite it so the planner sees an explicit panel.navigate +
     a reasoning.request whose target is N. Returns (new_text, panel_target_dict)."""
     m = _PANEL_TARGET_SUFFIX_RE.search(text)
-    if not m:
-        return text, None
-    token = m.group("num").lower()
-    n = int(token) if token.isdigit() else _ORDINAL_TO_INT.get(token)
-    if n is None:
-        return text, None
-    return text, {"index": n}
+    if m:
+        token = m.group("num").lower()
+        n = int(token) if token.isdigit() else _ORDINAL_TO_INT.get(token)
+        if n is None:
+            return text, None
+        return text, {"index": n}
+    m_ord = _PANEL_ORDINAL_IN_SUFFIX_RE.search(text)
+    if m_ord:
+        n = _ORDINAL_TO_INT.get(m_ord.group("ord").lower())
+        if n is not None and n > 0:
+            return text, {"index": n}
+    if _PANEL_TARGET_DEICTIC_SUFFIX_RE.search(text):
+        return text, {"active": True}
+    return text, None
 
 
 def _rewrite_after_gerund(text: str) -> str:
@@ -1659,7 +2051,14 @@ def _rewrite_after_gerund(text: str) -> str:
 
 
 _REASONING_IN_PANEL_STRIP_RE = re.compile(
-    r"\s*\bin\s+(?:the\s+)?panel\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+    r"\s*\bin\s+(?:the\s+)?(?:"
+    r"panel\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)|"
+    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last)\s+panel"
+    r")\b",
+    re.IGNORECASE,
+)
+_REASONING_DEICTIC_PANEL_STRIP_RE = re.compile(
+    r"\s*\bin\s+(?:(?:the|this|that)\s+)?(?:reasoning\s+)?(?:panel|space|tab|page|work\s*mode)\b",
     re.IGNORECASE,
 )
 
@@ -1737,9 +2136,201 @@ def _strip_panel_phrase_from_reasoning_text(text: str) -> str:
     if not text:
         return ""
     cleaned = _REASONING_IN_PANEL_STRIP_RE.sub("", text)
+    cleaned = _REASONING_DEICTIC_PANEL_STRIP_RE.sub("", cleaned)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
     cleaned = cleaned.rstrip(".,;: ")
     return cleaned
+
+
+_DEICTIC_PANEL_ROUTING_ONLY_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:explain|describe|write|put|show|give)\s+(?:it|that|this|them)\b",
+    re.IGNORECASE,
+)
+_PANEL_ROUTING_TAIL_STRIP_RE = re.compile(
+    r"\s*(?:[,;]|\?)?\s*(?:(?:can|could|would|will)\s+you\s+|please\s+)?"
+    r"(?:explain|describe|write|put|show)\s+(?:it|that|this|them)(?:\s+there)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _extract_substantive_topic_before_panel_phrase(text: str) -> str:
+    """Pull the substantive question/task before an explicit panel phrase."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    m = (
+        _PANEL_TARGET_DEICTIC_SUFFIX_RE.search(raw)
+        or _PANEL_TARGET_SUFFIX_RE.search(raw)
+        or _PANEL_ORDINAL_IN_SUFFIX_RE.search(raw)
+    )
+    if not m:
+        return ""
+    before = raw[: m.start()].strip().rstrip("?,;.").strip()
+    if not before:
+        return ""
+    before = _PANEL_ROUTING_TAIL_STRIP_RE.sub("", before).strip().rstrip("?,;.").strip()
+    if not before:
+        return ""
+    parts = re.split(r"\?\s+", before)
+    if len(parts) > 1:
+        substantive = next((p for p in parts if len(p) >= 12), parts[0])
+        if not substantive:
+            return ""
+        return substantive if substantive.endswith("?") else f"{substantive}?"
+    return before if len(before) >= 8 else ""
+
+
+def _is_deictic_panel_routing_span(span_text: str) -> bool:
+    stripped = _strip_panel_phrase_from_reasoning_text(span_text or "").strip()
+    if not stripped:
+        return False
+    return bool(_DEICTIC_PANEL_ROUTING_ONLY_RE.match(stripped))
+
+
+def _collapse_explicit_panel_routing_compound(
+    spans: list[dict],
+    raw: str,
+    panel_suffix_target: dict | None,
+    *,
+    emit_logs: bool = True,
+) -> list[dict]:
+    """Merge voice.answer + deictic reasoning routing into one reasoning.request.
+
+    Utterances like "Is there a Nixon connection? Can you explain it in this
+    panel?" must become a single panel-targeted reasoning task — the panel
+    phrase is a destination directive, not a second action.
+    """
+    if panel_suffix_target is None or not spans:
+        return spans
+    substantive = _extract_substantive_topic_before_panel_phrase(raw).strip()
+    if not substantive:
+        return spans
+    types = {s.get("type") for s in spans}
+    has_voice = "voice.answer" in types
+    has_reasoning = "reasoning.request" in types
+    if not has_voice or not has_reasoning:
+        return spans
+    reasoning_spans = [s for s in spans if s.get("type") == "reasoning.request"]
+    if not reasoning_spans:
+        return spans
+    if not any(_is_deictic_panel_routing_span(s.get("span") or "") for s in reasoning_spans):
+        return spans
+    collapsed = [
+        {
+            "type": "reasoning.request",
+            "span": substantive,
+            "payload": {},
+            "_anchor_start": 0,
+            "_anchor_end": len(substantive),
+        }
+    ]
+    if emit_logs:
+        try:
+            _emit_planner_log_line({
+                "tag": "voice_to_panel_intent",
+                "detected_phrase": "explicit_panel_routing_compound_collapsed",
+                "panel_target": panel_suffix_target.get("index")
+                if isinstance(panel_suffix_target, dict) and panel_suffix_target.get("index")
+                else "active",
+                "resolved_topic_source": "same_utterance_before_panel_phrase",
+                "consumed_by_reasoning_route": True,
+                "content_task": substantive[:160],
+                "raw_user_text": raw[:240],
+                "collapsed_action_count": len(spans),
+            })
+            _emit_planner_log_line({
+                "tag": "reasoning_action_payload_created",
+                "action_type": "reasoning.request",
+                "count": 1,
+                "panel_target": panel_suffix_target.get("index")
+                if isinstance(panel_suffix_target, dict) and panel_suffix_target.get("index")
+                else "active",
+                "content_task": substantive[:160],
+            })
+        except Exception:
+            pass
+    return collapsed
+
+
+# Finance quote anchors — used to collapse voice.answer + info.finance splits
+# ("What's the latest" + "Nvidia stock price") into one info.finance action.
+_FINANCE_QUOTE_ANCHOR_RE = re.compile(
+    r"\b(?:stock\s+price|share\s+price|price\s+of|quote\s+for|trading\s+at|"
+    r"market\s+cap|"
+    r"(?:how\s+much\s+is|how(?:'s|s|\s+is))\s+[\w.$-]{1,20}\s+(?:stock|doing)\b|"
+    r"[\w.$-]{1,12}\s+(?:stock\s+price|share\s+price|trading\s+at|market\s+cap))\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_finance_quote_clause(text: str) -> bool:
+    return bool(_FINANCE_QUOTE_ANCHOR_RE.search(str(text or "").strip()))
+
+
+def _collapse_voice_answer_into_finance(
+    spans: list[dict],
+    raw: str,
+    reordered: str,
+    *,
+    emit_logs: bool = True,
+) -> list[dict]:
+    """Merge voice.answer + adjacent info.finance into one finance span.
+
+    The voice.answer anchor fires on leading question words ("What") while
+    info.finance only matches the ticker tail ("Nvidia stock price"). Without
+    this collapse the executor routes "What's the latest" to news before the
+    finance quote runs.
+    """
+    if len(spans) < 2:
+        return spans
+    src = reordered or raw
+    out: list[dict] = []
+    i = 0
+    while i < len(spans):
+        sp = spans[i]
+        if (
+            sp.get("type") == "voice.answer"
+            and i + 1 < len(spans)
+            and spans[i + 1].get("type") == "info.finance"
+        ):
+            voice_sp = spans[i]
+            finance_sp = spans[i + 1]
+            v_start = int(voice_sp.get("_anchor_start") or 0)
+            f_end = int(finance_sp.get("_anchor_end") or len(src))
+            combined = src[v_start:f_end].strip().rstrip(".,;:!?").strip()
+            voice_span = str(voice_sp.get("span") or "").strip()
+            finance_span = str(finance_sp.get("span") or "").strip()
+            if combined and _looks_like_finance_quote_clause(combined):
+                if emit_logs:
+                    try:
+                        _emit_planner_log_line(
+                            {
+                                "tag": "planner_voice_answer_collapsed_into_finance",
+                                "raw_user_text": raw[:240],
+                                "voice_answer_span": voice_span[:120],
+                                "info_finance_span": finance_span[:120],
+                                "merged_finance_span": combined[:160],
+                                "compound_clause_classified": "finance_quote",
+                                "finance_anchor_detected": True,
+                                "collapsed_action_count_before": len(spans),
+                            }
+                        )
+                    except Exception:
+                        pass
+                out.append(
+                    {
+                        "type": "info.finance",
+                        "span": combined,
+                        "_anchor_start": v_start,
+                        "_anchor_end": f_end,
+                    }
+                )
+                i += 2
+                continue
+        out.append(sp)
+        i += 1
+    return out
 
 
 def _clean_new_panel_content_task(task: str, *, allow_bare_topic: bool = False) -> str:
@@ -1981,6 +2572,51 @@ def _wire_compound_open_panel_reasoning(
             pass
 
 
+def _dedupe_fragmented_music_transport_spans(spans: list[dict]) -> list[dict]:
+    """Merge back-to-back music.next/previous spans from one skip phrase.
+
+    Regression guard: a bare ``skip`` anchor tail used to match zero
+    characters, leaving ``next track`` as a second music.next span for
+    phrases like "skip the next track".
+    """
+    if len(spans) < 2:
+        return spans
+    skip_phrase_re = re.compile(
+        r"^(?:"
+        r"skip\s+(?:to\s+)?(?:the\s+)?next(?:\s+(?:song|track))?|"
+        r"next\s+(?:song|track)|"
+        r"play\s+(?:the\s+)?next(?:\s+(?:song|track))?"
+        r")$",
+        re.IGNORECASE,
+    )
+    out: list[dict] = []
+    i = 0
+    while i < len(spans):
+        cur = spans[i]
+        fam = cur.get("type")
+        nxt = spans[i + 1] if i + 1 < len(spans) else None
+        if (
+            fam in ("music.next", "music.previous")
+            and nxt
+            and nxt.get("type") == fam
+        ):
+            combined = re.sub(
+                r"\s+",
+                " ",
+                f"{cur.get('span') or ''} {nxt.get('span') or ''}".strip(),
+            )
+            if fam == "music.next" and skip_phrase_re.search(combined):
+                merged = {**cur, "span": combined}
+                if "_anchor_end" in nxt:
+                    merged["_anchor_end"] = nxt["_anchor_end"]
+                out.append(merged)
+                i += 2
+                continue
+        out.append(cur)
+        i += 1
+    return out
+
+
 def _confidence_for_anchors(
     anchors: list[tuple[int, str, int]],
     text: str,
@@ -2032,7 +2668,7 @@ def _heuristic_plan(text: str) -> dict:
             if not _is_panel_open_anchor_valid(reordered, start, end):
                 continue
         cleaned_anchors.append((start, family, end))
-    anchors = cleaned_anchors
+    anchors = _merge_redundant_checklist_anchors(cleaned_anchors, reordered)
 
     # 4) Detect ambiguity: a "to checklist" tail with a music-play verb
     # inside its body (and NO sibling action after the tail). Then we
@@ -2132,11 +2768,22 @@ def _heuristic_plan(text: str) -> dict:
             except Exception:
                 pass
 
+    # 5.55) Explicit panel routing compound collapse — question + "explain
+    # it in this panel" must be ONE reasoning.request, not voice.answer +
+    # reasoning.request("explain it").
+    spans = _collapse_explicit_panel_routing_compound(
+        spans, raw, panel_suffix_target, emit_logs=True
+    )
+
+    spans = _collapse_voice_answer_into_finance(spans, raw, reordered, emit_logs=True)
+
     # If we couldn't anchor anything, treat the utterance as a single
     # voice/reasoning action — the dispatcher's existing single-action
     # heuristic will pick the right family.
     if not spans:
         return _single_action_fallback(raw)
+
+    spans = _dedupe_fragmented_music_transport_spans(spans)
 
     # 6) Extract payloads.
     for sp in spans:
@@ -2189,34 +2836,14 @@ def _heuristic_plan(text: str) -> dict:
         # silent code path.
         return _single_action_fallback(raw)
 
-    # 7) If "in panel N" suffix was detected, prepend a panel.navigate
-    # action and attach target=N to any reasoning.request spans.
+    # 7) If "in panel N" suffix was detected, attach target=N to any
+    # reasoning.request spans. Do NOT inject a synthetic panel.navigate:
+    # reasoning.request is dispatched as open_and_stream, which already
+    # ensures the target panel exists once. A redundant panel.navigate
+    # caused duplicate panel creation and reordered music/panel actions.
     if panel_suffix_target is not None:
         any_reasoning = any(s["type"] == "reasoning.request" for s in spans)
         if any_reasoning:
-            # Inject panel.navigate at the front IF the first action isn't
-            # already a panel.navigate/open to the same panel.
-            first = spans[0]
-            already_panel = first["type"] in ("panel.navigate", "panel.open") and (
-                first.get("payload", {}).get("target") == panel_suffix_target
-                or first["type"] == "panel.open"
-            )
-            if not already_panel:
-                # Inject a synthetic panel.navigate whose span is a
-                # fully-formed command ("go to panel N") so the dispatcher's
-                # existing single-action panel-navigation detector can route
-                # the span without modification. A bare "to panel N" span
-                # would not match the dispatcher's regex.
-                spans.insert(
-                    0,
-                    {
-                        "type": "panel.navigate",
-                        "span": f"go to panel {panel_suffix_target['index']}",
-                        "payload": {"target": panel_suffix_target, "raw": "in panel suffix"},
-                        "_anchor_start": -1,
-                        "_anchor_end": -1,
-                    },
-                )
             for sp in spans:
                 if sp["type"] == "reasoning.request":
                     sp["payload"]["target"] = panel_suffix_target
@@ -2234,15 +2861,28 @@ def _heuristic_plan(text: str) -> dict:
                     # dispatcher + reasoning gate force-route.
                     _idx = panel_suffix_target.get("index")
                     sp["payload"]["explicit_panel_destination"] = True
-                    sp["payload"]["panel_target"] = _idx
+                    sp["payload"]["panel_target"] = _idx if _idx is not None else "active"
                     sp["payload"]["content_task"] = sp["payload"].get("text") or ""
                     try:
                         _emit_planner_log_line({
-                            "tag": "explicit_panel_destination",
-                            "explicit_panel_destination": True,
-                            "panel_target": _idx,
+                            "tag": "voice_to_panel_intent",
+                            "detected_phrase": "in_panel_suffix",
+                            "panel_target": sp["payload"]["panel_target"],
                             "content_task": (sp["payload"].get("text") or "")[:160],
                             "raw_user_text": raw[:240],
+                        })
+                        _emit_planner_log_line({
+                            "tag": "explicit_panel_destination",
+                            "explicit_panel_destination": True,
+                            "panel_target": sp["payload"]["panel_target"],
+                            "content_task": (sp["payload"].get("text") or "")[:160],
+                            "raw_user_text": raw[:240],
+                        })
+                        _emit_planner_log_line({
+                            "tag": "reasoning_action_payload_created",
+                            "action_type": "reasoning.request",
+                            "panel_target": sp["payload"]["panel_target"],
+                            "content_task": (sp["payload"].get("text") or "")[:160],
                         })
                         _emit_planner_log_line({
                             "tag": "content_task_extracted",
@@ -2594,6 +3234,27 @@ def plan_user_actions(
     chosen["trigger_reason"] = trigger_reason
     try:
         print(
+            "[multi_action_parse] "
+            + json.dumps(
+                {
+                    "raw_text": raw[:240],
+                    "actions": [
+                        {
+                            "type": (a or {}).get("type"),
+                            "span": ((a or {}).get("span") or "")[:160],
+                            "target": ((a or {}).get("payload") or {}).get("target"),
+                            "targets": ((a or {}).get("payload") or {}).get("targets"),
+                            "panel_target": ((a or {}).get("payload") or {}).get("panel_target"),
+                        }
+                        for a in (chosen.get("actions") or [])
+                    ],
+                    "is_multi_action": bool(chosen.get("is_multi_action")),
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        print(
             "[multi_action_plan] "
             + json.dumps(
                 {
@@ -2618,6 +3279,8 @@ def plan_user_actions(
         )
     except Exception:
         pass
+
+    _log_checklist_parse_result(raw, chosen.get("actions") or [])
 
     # Diagnostic: gate fired but only one (or zero) anchor matched. This
     # is the symptom pattern from the live music-volume bug — the user

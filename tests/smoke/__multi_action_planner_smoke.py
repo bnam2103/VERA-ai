@@ -137,14 +137,14 @@ ok("vietnam" in p3["actions"][1]["payload"].get("text", "").lower(),
 section("Manual 4 — 'explain the Vietnam War in panel 2'")
 p4 = plan("Can you explain the Vietnam War in panel 2?")
 t4 = types_of(p4)
-ok(t4[:2] == ["panel.navigate", "reasoning.request"],
-   "panel.navigate injected before reasoning even though 'panel 2' is at end",
+ok(t4 == ["reasoning.request"],
+   "reasoning.request only — open_and_stream owns panel target (no redundant panel.navigate)",
    detail=str(t4))
 ok(p4["actions"][0]["payload"].get("target", {}).get("index") == 2,
-   "injected panel.navigate target = 2")
-ok(p4["actions"][1]["payload"].get("target", {}).get("index") == 2,
    "reasoning.request target attached = 2",
-   detail=str(p4["actions"][1]["payload"]))
+   detail=str(p4["actions"][0]["payload"]))
+ok(p4["actions"][0]["payload"].get("explicit_panel_destination") is True,
+   "explicit_panel_destination == True")
 
 # ============================================================================
 # Manual Test 5 — 'open a new panel and explain Black-Scholes delta'
@@ -1201,7 +1201,10 @@ checklist_variants = [
     ("remove the first item", "checklist.remove"),
     ("delete homework from the checklist", "checklist.remove"),
     ("check off the first item", "checklist.complete"),
+    ("check the first item in the checklist", "checklist.complete"),
+    ("tick the first item", "checklist.complete"),
     ("mark the first item complete", "checklist.complete"),
+    ("uncheck the first item", "checklist.uncomplete"),
 ]
 for utt, expected in checklist_variants:
     p = plan(utt)
@@ -1209,6 +1212,92 @@ for utt, expected in checklist_variants:
     ok(expected in ts,
        f"checklist variant '{utt}' contains {expected}",
        detail=str(ts))
+
+# ---- Semantic checklist extraction (2026-06-21) ----
+section("Semantic checklist — add/complete/remove normalization")
+
+def _cl_items(plan_obj):
+    acts = plan_obj.get("actions") or []
+    out = []
+    for a in acts:
+        if a.get("type") == "checklist.add":
+            out.extend((a.get("payload") or {}).get("items") or [])
+    return out
+
+def _cl_complete_texts(plan_obj):
+    acts = plan_obj.get("actions") or []
+    out = []
+    for a in acts:
+        if a.get("type") == "checklist.complete":
+            for t in (a.get("payload") or {}).get("targets") or []:
+                if isinstance(t, dict) and t.get("text"):
+                    out.append(t["text"])
+    return out
+
+def _cl_remove_texts(plan_obj):
+    acts = plan_obj.get("actions") or []
+    out = []
+    for a in acts:
+        if a.get("type") == "checklist.remove":
+            for t in (a.get("payload") or {}).get("targets") or []:
+                if isinstance(t, dict) and t.get("text"):
+                    out.append(t["text"])
+    return out
+
+p_sem1 = plan("Add milk to my checklist and add eggs too")
+ok(types_of(p_sem1) == ["checklist.add", "checklist.add"],
+   "milk+eggs too → two checklist.add actions",
+   detail=str(types_of(p_sem1)))
+ok(_cl_items(p_sem1) == ["milk", "eggs"],
+   "items == ['milk', 'eggs'] (no 'eggs too')",
+   detail=str(_cl_items(p_sem1)))
+
+p_sem2 = plan("Add milk and eggs to my checklist")
+ok(_cl_items(p_sem2) == ["milk", "eggs"],
+   "milk and eggs → ['milk', 'eggs']",
+   detail=str(_cl_items(p_sem2)))
+
+p_sem3 = plan("Add milk, eggs, and bread to my checklist")
+ok(_cl_items(p_sem3) == ["milk", "eggs", "bread"],
+   "comma list → milk, eggs, bread",
+   detail=str(_cl_items(p_sem3)))
+
+p_sem4 = plan("Add milk to my checklist, add eggs, and mark the homework item complete")
+ok(types_of(p_sem4) == ["checklist.add", "checklist.add", "checklist.complete"],
+   "compound add+complete → 3 actions",
+   detail=str(types_of(p_sem4)))
+ok(_cl_items(p_sem4) == ["milk", "eggs"],
+   "compound adds milk + eggs only",
+   detail=str(_cl_items(p_sem4)))
+ok(_cl_complete_texts(p_sem4) == ["homework"],
+   "complete target == homework (not 'homework item complete')",
+   detail=str(_cl_complete_texts(p_sem4)))
+
+p_sem5 = plan("mark the homework item complete")
+ok(types_of(p_sem5) == ["checklist.complete"],
+   "mark homework complete → single complete action",
+   detail=str(types_of(p_sem5)))
+ok(_cl_complete_texts(p_sem5) == ["homework"],
+   "mark homework item complete → target homework",
+   detail=str(_cl_complete_texts(p_sem5)))
+
+p_sem6 = plan("check off the homework item")
+ok(_cl_complete_texts(p_sem6) == ["homework"],
+   "check off homework item → target homework",
+   detail=str(_cl_complete_texts(p_sem6)))
+
+p_sem7 = plan("Remove stat homework from my checklist and pause the music")
+ok(types_of(p_sem7) == ["checklist.remove", "music.pause"],
+   "remove + pause music",
+   detail=str(types_of(p_sem7)))
+ok(_cl_remove_texts(p_sem7) == ["stat homework"],
+   "remove target == stat homework",
+   detail=str(_cl_remove_texts(p_sem7)))
+
+bad_items = {"eggs too", "the homework item complete", "mark the homework item complete"}
+for bad in bad_items:
+    ok(bad not in _cl_items(p_sem4) and bad not in _cl_complete_texts(p_sem4),
+       f"does not create bad item/target {bad!r}")
 
 # ---- Reasoning variants ----
 reasoning_variants = [
@@ -1240,7 +1329,7 @@ spec4_cases = [
     ("put milk on the checklist and play lo-fi",
      ["checklist.add", "music.play"], None, None, "lo-fi"),
     ("put an explanation of the squeeze theorem in panel 3 and play lo-fi",
-     ["panel.navigate", "reasoning.request", "music.play"], None, None, "lo-fi"),
+     ["reasoning.request", "music.play"], None, None, "lo-fi"),
     ("what's VGT trading at and open a new panel",
      ["info.finance", "panel.open"], None, None, None),
 ]
@@ -1363,6 +1452,94 @@ p_explain = plan("Open a panel and explain Q-learning.")
 ok(types_of(p_explain) == ["panel.open", "reasoning.request"],
    "open panel and explain → panel.open + reasoning.request",
    detail=str(types_of(p_explain)))
+
+# ============================================================================
+# Deictic active-panel routing — "explain it in this panel"
+# ============================================================================
+section("Deictic panel — explain it in this panel")
+deictic = plan("explain it in this panel")
+deictic_types = types_of(deictic)
+ok(
+    deictic_types == ["reasoning.request"],
+    "explain it in this panel → reasoning.request",
+    detail=str(deictic_types),
+)
+deictic_rr = next((a for a in (deictic.get("actions") or []) if a.get("type") == "reasoning.request"), {})
+deictic_payload = deictic_rr.get("payload") or {}
+ok(
+    bool(deictic_payload.get("explicit_panel_destination")),
+    "deictic panel plan sets explicit_panel_destination",
+    detail=str(deictic_payload),
+)
+triggered, trigger_reason = P.should_trigger_planner("explain it in this panel")
+ok(triggered, "should_trigger_planner for deictic panel + explain", detail=trigger_reason)
+
+# ============================================================================
+# Explicit panel routing — compound question + "explain it in this panel"
+# ============================================================================
+section("Panel routing compound collapse — Nixon + in this panel")
+nixon = plan(
+    "is there any connection with president nixon? can you explain it in this panel?"
+)
+nixon_types = types_of(nixon)
+ok(
+    nixon_types == ["reasoning.request"],
+    "Nixon compound → exactly one reasoning.request",
+    detail=str(nixon_types),
+)
+nixon_rr = next((a for a in (nixon.get("actions") or []) if a.get("type") == "reasoning.request"), {})
+nixon_payload = nixon_rr.get("payload") or {}
+ok(
+    "nixon" in str(nixon_payload.get("text") or "").lower(),
+    "Nixon compound prompt retains substantive Nixon question",
+    detail=str(nixon_payload.get("text")),
+)
+ok(
+    not nixon.get("is_multi_action"),
+    "Nixon compound is not multi-action after collapse",
+    detail=str(nixon.get("is_multi_action")),
+)
+
+section("Panel routing — explain in this panel strips suffix")
+vietnam = plan("can you explain Nixon connection to the Vietnam War in this panel?")
+vietnam_types = types_of(vietnam)
+ok(vietnam_types == ["reasoning.request"], "Vietnam panel → one reasoning.request", detail=str(vietnam_types))
+vietnam_rr = next((a for a in (vietnam.get("actions") or []) if a.get("type") == "reasoning.request"), {})
+vietnam_text = str((vietnam_rr.get("payload") or {}).get("text") or "").lower()
+ok(
+    "vietnam" in vietnam_text and "in this panel" not in vietnam_text,
+    "Vietnam panel prompt strips in this panel",
+    detail=vietnam_text,
+)
+
+section("Panel routing — explain it simply stays voice path")
+simple = plan("explain it simply")
+simple_types = types_of(simple)
+ok(
+    simple_types == ["voice.answer"] or simple_types == ["reasoning.request"],
+    "explain it simply → no panel compound split",
+    detail=str(simple_types),
+)
+ok(
+    not any(t == "reasoning.request" and "panel" in str(a.get("span") or "").lower()
+            for t, a in zip(simple_types, simple.get("actions") or [])),
+    "explain it simply has no panel routing reasoning span",
+    detail=str(simple_types),
+)
+
+section("Panel routing — open panel + explain Nixon")
+open_nixon = plan("open a reasoning panel and explain Nixon connection")
+open_types = types_of(open_nixon)
+ok(
+    "panel.open" in open_types and "reasoning.request" in open_types,
+    "open panel + explain → panel.open + reasoning.request",
+    detail=str(open_types),
+)
+ok(
+    "voice.answer" not in open_types,
+    "open panel + explain → no duplicate voice.answer",
+    detail=str(open_types),
+)
 
 # ============================================================================
 # Final tally

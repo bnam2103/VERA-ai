@@ -135,6 +135,38 @@ def _execute(text: str):
     )
 
 
+section("planner output — play + next + volume compound (Peak regression)")
+peak_plan = _plan("Can you play Peak in my playlist, skip to the next song and turn up the music?")
+peak_acts = _actions(peak_plan)
+peak_types = _types(peak_acts)
+ok(
+    peak_types == ["music.play", "music.next", "music.volume"],
+    "Peak playlist + skip + volume plans in spoken order",
+    detail=f"got={peak_types}",
+)
+for act in peak_acts:
+    if act.get("type") == "music.play":
+        q = (act.get("payload") or {}).get("query") or ""
+        ok("peak" in q.lower(), "music.play query contains Peak", detail=q)
+
+
+section("Music next — skip-the-next-track is a single action (not double anchor)")
+lofi_plan = _plan(
+    "Can you play the lo-fi mix, skip the next track and turn up the volume?"
+)
+lofi_acts = _actions(lofi_plan)
+lofi_types = _types(lofi_acts)
+ok(
+    lofi_types == ["music.play", "music.next", "music.volume"],
+    "lo-fi + skip the next track + volume → play, next, volume once each",
+    detail=f"got={lofi_types}",
+)
+ok(
+    sum(1 for t in lofi_types if t == "music.next") == 1,
+    "only one music.next for skip the next track phrase",
+    detail=str(lofi_types),
+)
+
 section("planner output")
 PLANNER_CASES = [
     ("Can you crank up the volume?", ["music.volume_up"]),
@@ -196,6 +228,43 @@ for text, expected_ops, reply_fragments in EXEC_CASES:
         ok(fragment.lower() in (reply or "").lower(),
            f"{text!r} reply contains {fragment!r}",
            detail=reply)
+
+
+section("executor — play Peak + next + volume preserves payload order")
+peak_result = _execute(
+    "Can you play Peak in my playlist, skip to the next song and turn up the music?"
+)
+ok(peak_result is not None, "Peak compound executor runs", detail=str(peak_result))
+if peak_result is not None:
+    _peak_reply, _t, peak_ar = peak_result
+    peak_payloads = (peak_ar or {}).get("ui_payloads") or []
+    peak_ops = [p.get("op") for p in peak_payloads if isinstance(p, dict)]
+    ok(
+        peak_ops == ["play_playlist_by_name", "skip_next", "volume_delta"],
+        "Peak compound payload ops in order",
+        detail=f"got={peak_ops}",
+    )
+
+
+section("executor — lofi + skip the next track + volume (single skip payload)")
+lofi_result = _execute(
+    "Can you play the lo-fi mix, skip the next track and turn up the volume?"
+)
+ok(lofi_result is not None, "lo-fi compound executor runs")
+if lofi_result is not None:
+    lofi_reply, _t, lofi_ar = lofi_result
+    lofi_payloads = (lofi_ar or {}).get("ui_payloads") or []
+    lofi_ops = [p.get("op") for p in lofi_payloads if isinstance(p, dict)]
+    ok(
+        lofi_ops == ["play_builtin", "skip_next", "volume_delta"],
+        "lo-fi compound payload ops in order",
+        detail=f"got={lofi_ops}",
+    )
+    ok(
+        lofi_reply.lower().count("next track") <= 1,
+        "combined reply mentions next track at most once",
+        detail=lofi_reply,
+    )
 
 
 print()

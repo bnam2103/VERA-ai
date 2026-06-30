@@ -9,9 +9,11 @@ try {
   // filter has "Info" disabled. It also renders in bright yellow so it is
   // impossible to miss while debugging the Work Mode sync flow.
   console.warn(
-    "%c[VERA] app.js build v71 loaded — REASONING_CLOSE_CONFIRMATION_UI_TTS (close-panel confirmations render as normal VERA assistant bubbles and voice-originated shortcuts enqueue TTS once) + MUSIC_VOLUME_DEDUPE (turn up/down music applied once per command, not twice; volume_delta now joins skip_next/skip_previous in shouldApplyMusicTransportAction) + NEWS_CURRENT_FACT_ROUTE (yes/no fact-verification questions like 'Did Trump go to China last week?' now route to current_fact_search instead of general_chat) + MULTI_DEVICE_CONCURRENCY (per-tab session_id + ?session=new + window.veraConcurrencyDebug() + client_request_id on /infer + /text) + ASR_MODES (streaming default + whisper + hybrid; selective whisper-verify for risky commands; backcompat single->whisper, browser->streaming) + REASONING_PANEL_CLOSE + NEWS_PANEL_UI + NEWS_ROUTE_V2 + PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + CHECKLIST_INTENT_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG + MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG active. math_router_enabled=false.",
+    "%c[VERA] app.js build v72 loaded — WHISPER_INTERRUPT_CONFIRMATION_V2 (two-stage interrupt QA logs + transcript gate) + REASONING_CLOSE_CONFIRMATION_UI_TTS (close-panel confirmations render as normal VERA assistant bubbles and voice-originated shortcuts enqueue TTS once) + MUSIC_VOLUME_DEDUPE (turn up/down music applied once per command, not twice; volume_delta now joins skip_next/skip_previous in shouldApplyMusicTransportAction) + NEWS_CURRENT_FACT_ROUTE (yes/no fact-verification questions like 'Did Trump go to China last week?' now route to current_fact_search instead of general_chat) + MULTI_DEVICE_CONCURRENCY (per-tab session_id + ?session=new + window.veraConcurrencyDebug() + client_request_id on /infer + /text) + ASR_MODES (streaming default + whisper + hybrid; selective whisper-verify for risky commands; backcompat single->whisper, browser->streaming) + REASONING_PANEL_CLOSE + NEWS_PANEL_UI + NEWS_ROUTE_V2 + PLAN_SYNC_DEBUG + SYNC_VOICE_TURN_DEBUG + INTERRUPT_TRANSCRIPT_DEBUG + REQUEST_SHAPE_ROUTE_DEBUG + CHECKLIST_ACTION_COMMIT_DEBUG + CHECKLIST_SCOPE_DEBUG + CHECKLIST_INTENT_DEBUG + BARGE_IN_LATENCY_DEBUG + REASONING_PANEL_ROUTE_DEBUG + ARITHMETIC_FAST_PATH_DEBUG + MOVE_LATEST_VOICE_TASK_TO_REASONING_DEBUG active. math_router_enabled=false.",
     "background:#1a1a1a;color:#ffd166;padding:4px 8px;border-radius:4px;font-weight:bold;"
   );
+  console.warn("[VERA_BUILD] whisper_interrupt_confirmation_v2_loaded");
+  console.warn("[VERA_BUILD] whisper_interrupt_ndjson_line_probe_v1_loaded");
 } catch (_) {}
 
 /* =========================
@@ -123,6 +125,8 @@ function resetVeraSessionAndUi() {
     localStorage.removeItem(WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY);
     if (prevSessionId) {
       localStorage.removeItem(`${REASONING_TABS_STATE_STORAGE_KEY_PREFIX}:${prevSessionId}`);
+      localStorage.removeItem(`vera_checklist_state:anon:${prevSessionId}`);
+      localStorage.removeItem(`vera_checklist_state:anon_collapsed:${prevSessionId}`);
     }
   } catch (_) {}
   ensureFixedReasoningLanePanels(new Map(), 0);
@@ -142,6 +146,8 @@ function resetVeraSessionAndUi() {
   workModeReasoningLaneWaitQueue.length = 0;
   workModeTypedTurnQueue.length = 0;
   workModeTypedQueueDraining = false;
+  keyboardSubmitInFlight = 0;
+  normalInferInFlightForKeyboardGate = 0;
   workModeLastSubstantiveUserText = "";
   workModeLastSubstantiveLaneIdx = null;
   laneTopicSeedByIdx[0] = "";
@@ -171,6 +177,9 @@ function resetVeraSessionAndUi() {
   syncWorkModeReasoningCancelButton();
   setWorkModeAttachmentMeta("");
   hideWorkChecklistSyncPreview();
+  try {
+    if (typeof renderKeyboardQueueUi === "function") renderKeyboardQueueUi();
+  } catch (_) {}
   workChecklistSyncPlanVersion = 0;
   workChecklistSyncConsumedPlanVersion = 0;
   workChecklistSyncPendingMarkdown = "";
@@ -351,6 +360,20 @@ async function veraSurfaceLlmFetchFailure({
   extra = null
 } = {}) {
   if (error && error.name === "AbortError") return null;
+  if (
+    typeof shouldSuppressChecklistPlanGenericUnavailable === "function" &&
+    shouldSuppressChecklistPlanGenericUnavailable()
+  ) {
+    try {
+      console.info("[checklist_plan_generic_unavailable_suppressed]", {
+        feature: String(feature || ""),
+        status: response?.status ?? null,
+        error_name: error?.name || null,
+        error_message: error ? String(error.message || error).slice(0, 200) : null,
+      });
+    } catch (_) {}
+    return "checklist_plan_suppressed";
+  }
   const status = response?.status ?? 0;
   try {
     const usageSource =
@@ -396,6 +419,34 @@ async function veraSurfaceLlmFetchFailure({
     });
     veraShowCapabilityFailureBubble("safety_413", msg, { actionId: turnId });
     return "safety_413";
+  }
+  if (status === 429) {
+    let serverMsg = "";
+    try {
+      const body = await response.clone().json();
+      serverMsg = String(body?.detail || body?.message || "").trim();
+    } catch (_) {}
+    const msg =
+      serverMsg ||
+      "You've reached today's Vera usage limit. Try again tomorrow.";
+    logVeraCapabilityFailure(feature, "credit_cap_exceeded", {
+      status,
+      server_message: serverMsg.slice(0, 200),
+      ...(extra || {})
+    });
+    logCapabilityFallbackDebug({
+      capability: "reasoning",
+      failure_kind: "api_error",
+      should_show_bubble: true,
+      turn_id: turnId,
+      source_function: `veraSurfaceLlmFetchFailure:${feature}`,
+      raw_error_message: `HTTP 429 ${serverMsg.slice(0, 120)}`
+    });
+    veraShowSafetyFailureBubble(msg);
+    try {
+      window.veraRefreshUsageCredits?.();
+    } catch (_) {}
+    return "credit_cap";
   }
   const rawErrorMessage =
     response?.status != null
@@ -536,6 +587,16 @@ let interruptSpeechFrames = 0;
 let interruptSpeechStart = 0;
 /** Ms of speechLike time accumulated from RAF deltas (gaps do not add). */
 let interruptSpeechAccumMs = 0;
+/** Consecutive strong-RMS frames for Whisper fast interrupt (see detectInterrupt). */
+let whisperInterruptStrongFrames = 0;
+/** Valid speech-shaped frames (post noise gate); sustain starts after minimum confirmed. */
+let whisperInterruptValidFrames = 0;
+/** True when early candidate onset looked raspy/spiky (throat clear, cough onset). */
+let whisperInterruptSpikyOrRaspyStart = false;
+/** Consecutive smooth speech frames after a raspy/spiky onset. */
+let whisperInterruptSmoothFrames = 0;
+/** Perf-now timestamp: ignore further VAD triggers until this time (one-shot per TTS turn). */
+let whisperInterruptCooldownUntil = 0;
 let lastInterruptDetectTime = 0;
 let interruptLastSpeechLikeTime = 0;
 /** Snapshot from detectInterrupt when interruptSpeech() fires (for server interrupt_debug). */
@@ -1283,24 +1344,202 @@ function getInterruptSustainMs() {
     : INTERRUPT_SUSTAIN_MS_DESKTOP;
 }
 
-/** Max ms without a speech-like frame before resetting the sustain counter. */
-const INTERRUPT_GAP_RESET_MS = 110;
-/** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
-const INTERRUPT_MAX_CREST = 38;
-
-function resolveVeraApiBaseUrl() {
-  try {
-    if (typeof window !== "undefined" && window.VERA_API_BASE_URL) {
-      return String(window.VERA_API_BASE_URL).replace(/\/$/, "");
-    }
-    const m = document.querySelector('meta[name="vera-api-base-url"]');
-    const meta = m?.content?.trim();
-    if (meta) return meta.replace(/\/$/, "");
-  } catch (_) {}
-  return "";
+function getWhisperInterruptSustainMs() {
+  return isNarrowViewport()
+    ? WHISPER_INTERRUPT_SUSTAIN_MS_PHONE
+    : WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP;
 }
 
-const API_URL = resolveVeraApiBaseUrl();
+function getWhisperStrongFramesRequired() {
+  return isNarrowViewport()
+    ? WHISPER_STRONG_FRAME_COUNT_PHONE
+    : WHISPER_STRONG_FRAME_COUNT_DESKTOP;
+}
+
+function resetWhisperInterruptCandidateState() {
+  whisperInterruptStrongFrames = 0;
+  whisperInterruptValidFrames = 0;
+  whisperInterruptSpikyOrRaspyStart = false;
+  whisperInterruptSmoothFrames = 0;
+}
+
+function resetWhisperInterruptVadTriggerState() {
+  resetWhisperInterruptCandidateState();
+  whisperInterruptCooldownUntil = 0;
+}
+
+function isWhisperHarshOnsetSignal(rms, zcr, crest, speechWindowMs, rejectedReason) {
+  if (rejectedReason === "raspy_short_burst" || rejectedReason === "spiky_short_burst") {
+    return true;
+  }
+  const win = Number(speechWindowMs) || 0;
+  if (win >= WHISPER_RASPY_START_WINDOW_MS) return false;
+  if (crest >= WHISPER_RASPY_START_CREST_MIN) return true;
+  if (zcr >= WHISPER_RASPY_START_ZCR_HIGH && rms >= WHISPER_INTERRUPT_RMS_MIN) {
+    return true;
+  }
+  return false;
+}
+
+function isWhisperSmoothContinuationFrame(rms, zcr, crest, validInterruptSpeechFrame) {
+  if (!validInterruptSpeechFrame) return false;
+  if (rms < WHISPER_INTERRUPT_RMS_MIN) return false;
+  if (crest > WHISPER_SMOOTH_FRAME_MAX_CREST) return false;
+  if (zcr < WHISPER_SMOOTH_ZCR_MIN || zcr > WHISPER_SMOOTH_ZCR_MAX) return false;
+  return true;
+}
+
+/**
+ * Whisper-only frame gate. Invalid frames must not advance sustain or strong counters.
+ * Returns { valid, rejectedReason }.
+ */
+function classifyWhisperInterruptFrame(rms, zcr, crest, speechWindowMs) {
+  const win = Number(speechWindowMs) || 0;
+  if (rms < WHISPER_INTERRUPT_RMS_MIN) {
+    return { valid: false, rejectedReason: "rms_below_noise_gate" };
+  }
+  if (zcr > WHISPER_VALID_ZCR_MAX || zcr < WHISPER_VALID_ZCR_MIN) {
+    return { valid: false, rejectedReason: "zcr_out_of_speech_band" };
+  }
+  if (
+    zcr < WHISPER_LOW_ZCR_HUM_MAX &&
+    rms >= WHISPER_LOW_ZCR_HIGH_RMS &&
+    win < WHISPER_SPIKY_BURST_WINDOW_MS
+  ) {
+    return { valid: false, rejectedReason: "zcr_out_of_speech_band" };
+  }
+  if (
+    crest >= 18 &&
+    crest <= WHISPER_SPIKY_CREST_REJECT &&
+    win < WHISPER_SPIKY_BURST_WINDOW_MS
+  ) {
+    return { valid: false, rejectedReason: "raspy_short_burst" };
+  }
+  if (
+    crest > WHISPER_SPIKY_CREST_REJECT &&
+    win < WHISPER_SPIKY_BURST_WINDOW_MS
+  ) {
+    return { valid: false, rejectedReason: "spiky_short_burst" };
+  }
+  if (rms >= MAX_SPEECH_RMS && crest > WHISPER_STRONG_MAX_CREST) {
+    return { valid: false, rejectedReason: "spiky_short_burst" };
+  }
+  if (crest > INTERRUPT_MAX_CREST) {
+    return { valid: false, rejectedReason: "spiky_short_burst" };
+  }
+  return { valid: true, rejectedReason: null };
+}
+
+function isValidInterruptSpeechFrame(rms, zcr, crest, speechWindowMs) {
+  return classifyWhisperInterruptFrame(rms, zcr, crest, speechWindowMs).valid;
+}
+
+function isWhisperStrongInterruptFrame(rms, zcr, crest, speechWindowMs) {
+  if (!isValidInterruptSpeechFrame(rms, zcr, crest, speechWindowMs)) return false;
+  if (rms < WHISPER_INTERRUPT_RMS_STRONG) return false;
+  if (crest > WHISPER_STRONG_MAX_CREST) return false;
+  if (zcr < WHISPER_STRONG_ZCR_MIN || zcr > WHISPER_STRONG_ZCR_MAX) return false;
+  return true;
+}
+
+function whisperVadReasonIfNotTriggering({
+  rawSpeechLike,
+  validInterruptSpeechFrame,
+  rejectedReason,
+  validFrameCount,
+  consecutiveSpeechFrames,
+  requiredSpeechFrames,
+  accumMs,
+  sustainMs,
+  strongFrames,
+  requiredStrongFrames,
+  speechWindowMs,
+  requiredStrongWindowMs,
+  cooldownActive,
+  interruptRecording,
+  sustainReady,
+  strongReady,
+  sustainReadyRaw,
+  strongReadyRaw,
+  smoothGateAllowsTrigger,
+  spikyShortBurst,
+  crest,
+  spikyOrRaspyStart,
+  smoothFrameCount,
+  smoothFramesRequired,
+  smoothContinuationReady,
+}) {
+  if (inputMuted) return "input_muted";
+  if (listeningMode !== "continuous") return "not_continuous";
+  if (cooldownActive) return "cooldown_active";
+  if (!interruptRecording) return "interrupt_recording_false";
+  if (strongReady || sustainReady) return null;
+  if (rejectedReason) return rejectedReason;
+  if (spikyShortBurst) return "spiky_short_burst";
+  if (strongReadyRaw && !smoothGateAllowsTrigger) {
+    return "strong_ready_blocked_by_smooth_gate";
+  }
+  if (sustainReadyRaw && !smoothGateAllowsTrigger) {
+    return "sustain_ready_blocked_by_smooth_gate";
+  }
+  if (spikyOrRaspyStart && !smoothContinuationReady) {
+    if (smoothFrameCount === 0) return "spiky_start_waiting_for_smooth_continuation";
+    return `smooth_frames_${smoothFrameCount}_of_${smoothFramesRequired}`;
+  }
+  if (validInterruptSpeechFrame && validFrameCount < WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN) {
+    return `valid_frames_${validFrameCount}_of_${WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN}`;
+  }
+  if (!validInterruptSpeechFrame && !rawSpeechLike) return "not_speech_like";
+  if (strongFrames > 0 && strongFrames < requiredStrongFrames) {
+    return `strong_frames_${strongFrames}_of_${requiredStrongFrames}`;
+  }
+  if (
+    strongFrames >= requiredStrongFrames &&
+    speechWindowMs < requiredStrongWindowMs
+  ) {
+    return "strong_window_below_min";
+  }
+  if (consecutiveSpeechFrames < requiredSpeechFrames) return "insufficient_frames";
+  if (accumMs < sustainMs) {
+    return `accum_below_sustain_${Math.round(accumMs)}_of_${sustainMs}`;
+  }
+  return "threshold_not_met";
+}
+
+/** Max ms without a speech-like frame before resetting the sustain counter. */
+const INTERRUPT_GAP_RESET_MS = 110;
+/** Whisper barge-in: noise-gated sustain + strong-frame fast path (user speech over TTS). */
+const WHISPER_INTERRUPT_RMS_MIN = 0.02;
+const WHISPER_INTERRUPT_RMS_STRONG = 0.05;
+const WHISPER_VALID_ZCR_MIN = 0.015;
+const WHISPER_VALID_ZCR_MAX = 0.19;
+const WHISPER_STRONG_ZCR_MIN = 0.02;
+const WHISPER_STRONG_ZCR_MAX = 0.2;
+const WHISPER_LOW_ZCR_HUM_MAX = 0.015;
+const WHISPER_LOW_ZCR_HIGH_RMS = 0.04;
+const WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN = 3;
+const WHISPER_SPIKY_BURST_WINDOW_MS = 200;
+const WHISPER_RASPY_START_WINDOW_MS = 250;
+const WHISPER_RASPY_START_CREST_MIN = 16;
+const WHISPER_RASPY_START_ZCR_HIGH = 0.13;
+const WHISPER_SMOOTH_FRAMES_AFTER_RASPY_START = 3;
+const WHISPER_SMOOTH_FRAME_MAX_CREST = 18;
+const WHISPER_SMOOTH_ZCR_MIN = 0.025;
+const WHISPER_SMOOTH_ZCR_MAX = 0.14;
+const WHISPER_INTERRUPT_SUSTAIN_MS_DESKTOP = 450;
+const WHISPER_INTERRUPT_SUSTAIN_MS_PHONE = 120;
+const WHISPER_STRONG_FRAME_COUNT_DESKTOP = 4;
+const WHISPER_STRONG_FRAME_COUNT_PHONE = 3;
+const WHISPER_STRONG_MIN_WINDOW_MS = 120;
+/** Strong-frame fast path disabled; sustain + transcript confirmation handle barge-in. */
+const WHISPER_STRONG_INTERRUPT_PATH_ENABLED = false;
+const WHISPER_STRONG_MAX_CREST = 26;
+const WHISPER_SPIKY_CREST_REJECT = 24;
+const WHISPER_INTERRUPT_COOLDOWN_MS = 450;
+const WHISPER_INTERRUPT_GAP_RESET_MS = 180;
+/** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
+const INTERRUPT_MAX_CREST = 38;
+const API_URL = "https://vera-api.vera-api-ned.workers.dev";
 
 /** Request NDJSON streaming TTS from /infer and /text so the first /audio URL arrives as soon as it is synthesized. */
 const DEFAULT_STREAM_TTS = true;
@@ -1909,6 +2148,13 @@ function acknowledgeWorkModeTimerUp() {
 /** Server `/infer` + `/text` short-circuit: schedule a one-shot reminder in work mode only. */
 function applyWorkModeTimerPayload(wm) {
   if (!wm || typeof wm !== "object") return;
+  try {
+    console.info("[timer_client_action_received]", {
+      duration_seconds: wm.duration_seconds ?? null,
+      cancel: wm.cancel === true,
+      has_fire_at: Number.isFinite(Number(wm.fire_at_epoch_ms)),
+    });
+  } catch (_) {}
   if (typeof isVeraWorkModeOn !== "function" || !isVeraWorkModeOn()) return;
   if (appModePrefix() !== "vera") return;
   if (wm.cancel === true) {
@@ -1918,13 +2164,87 @@ function applyWorkModeTimerPayload(wm) {
   const id = String(wm.id || "");
   const fireMs = Number(wm.fire_at_epoch_ms);
   const message = String(wm.message || "Your work mode timer is up.");
-  if (!Number.isFinite(fireMs)) return;
+  if (!Number.isFinite(fireMs)) {
+    try {
+      console.warn("[timer_client_start_failed]", { reason: "invalid_fire_at_epoch_ms" });
+    } catch (_) {}
+    return;
+  }
+  if (wm.extend === true) {
+    try {
+      if (veraWorkModeTimerTimeoutId != null) {
+        clearTimeout(veraWorkModeTimerTimeoutId);
+        veraWorkModeTimerTimeoutId = null;
+      }
+      veraWorkModeTimerExpired = false;
+      veraWorkModeTimerFireAtMs = fireMs;
+      if (id) veraLastWorkModeTimerClientId = id;
+      updateWorkModeTimerHeaderFromState();
+      startWorkModeTimerUiFastRefreshIfNeeded();
+      const timerTtsPayload = {
+        audio_url: wm.audio_url,
+        audio_urls: wm.audio_urls
+      };
+      const delay = Math.max(0, fireMs - Date.now());
+      veraWorkModeTimerTimeoutId = window.setTimeout(() => {
+        veraWorkModeTimerTimeoutId = null;
+        if (typeof isVeraWorkModeOn === "function" && !isVeraWorkModeOn()) {
+          clearVeraWorkModeClientTimer();
+          return;
+        }
+        if (appModePrefix() !== "vera") {
+          clearVeraWorkModeClientTimer();
+          return;
+        }
+        veraWorkModeTimerExpired = true;
+        updateWorkModeTimerHeaderFromState();
+        startWorkModeTimerUiFastRefreshIfNeeded();
+        openWorkModeTimerUpModal(message);
+        const urls =
+          typeof resolveAudioUrls === "function" ? resolveAudioUrls(timerTtsPayload) : [];
+        if (urls.length) {
+          void playTtsFromApi(timerTtsPayload, {}).catch(() => {});
+        } else {
+          try {
+            if (window.speechSynthesis) {
+              window.speechSynthesis.cancel();
+              const u = new SpeechSynthesisUtterance(message);
+              u.rate = 1.0;
+              window.speechSynthesis.speak(u);
+            }
+          } catch (_) {}
+        }
+        try {
+          setStatus("Timer", "idle");
+        } catch (_) {}
+      }, delay);
+      console.info("[timer_client_extend_success]", {
+        timer_id: id || veraLastWorkModeTimerClientId,
+        duration_delta_seconds: wm.duration_delta_seconds ?? null,
+        fire_at_epoch_ms: fireMs,
+      });
+    } catch (err) {
+      try {
+        console.warn("[timer_client_extend_failed]", {
+          reason: String(err && err.message ? err.message : err),
+        });
+      } catch (_) {}
+    }
+    return;
+  }
   if (id && id === veraLastWorkModeTimerClientId) return;
   clearVeraWorkModeClientTimer();
   veraLastWorkModeTimerClientId = id || String(fireMs);
   veraWorkModeTimerFireAtMs = fireMs;
   updateWorkModeTimerHeaderFromState();
   startWorkModeTimerUiFastRefreshIfNeeded();
+  try {
+    const durationSeconds = Math.max(0, Math.round((fireMs - Date.now()) / 1000));
+    console.info("[timer_client_start_success]", {
+      timer_id: id || veraLastWorkModeTimerClientId,
+      duration_seconds: durationSeconds,
+    });
+  } catch (_) {}
   const delay = Math.max(0, fireMs - Date.now());
   const timerTtsPayload = {
     audio_url: wm.audio_url,
@@ -2445,6 +2765,105 @@ function getProductivityMusicSource(prefix) {
     : "spotify";
 }
 
+/**
+ * Long-lived built-in + Spotify preview `<audio>` nodes live outside
+ * replaceable side-pane markup so news/media/finance panel renders cannot
+ * destroy active playback.
+ */
+function ensurePersistentMusicAudioHost(prefix) {
+  const p = String(prefix || appModePrefix?.() || "vera").trim();
+  if (!p) return null;
+  const hostId = `${p}-persistent-music-audio-host`;
+  let host = document.getElementById(hostId);
+  if (!host) {
+    host = document.createElement("div");
+    host.id = hostId;
+    host.className = "vera-persistent-music-audio-host";
+    host.hidden = true;
+    host.setAttribute("aria-hidden", "true");
+    const veraMain = document.querySelector("main.chat-centered");
+    const bmoMain = document.querySelector("main.bmo-shell");
+    const anchor =
+      p === "bmo"
+        ? bmoMain || document.getElementById("bmo-audio")?.parentElement
+        : veraMain || document.getElementById("vera-audio")?.parentElement;
+    (anchor || document.body).appendChild(host);
+  }
+  const ensureAudio = (id, attrs) => {
+    let el = document.getElementById(id);
+    if (el && el.parentElement !== host) {
+      host.appendChild(el);
+    }
+    if (!el) {
+      el = document.createElement("audio");
+      el.id = id;
+      for (const [k, v] of Object.entries(attrs)) {
+        el.setAttribute(k, v);
+      }
+      el.hidden = true;
+      host.appendChild(el);
+    }
+    return el;
+  };
+  ensureAudio(`${p}-free-music-audio`, { preload: "metadata", crossorigin: "anonymous" });
+  ensureAudio(`${p}-spotify-preview-audio`, { preload: "none", crossorigin: "anonymous" });
+  return host;
+}
+
+function musicPlaybackDiagSnapshot(prefix) {
+  const p = prefix || appModePrefix?.() || "vera";
+  const free = document.getElementById(`${p}-free-music-audio`);
+  const preview = document.getElementById(`${p}-spotify-preview-audio`);
+  let activeProvider = "none";
+  try {
+    const st = veraMusicSourceState();
+    activeProvider = st?.active || getActivePlaybackSource(p) || "none";
+  } catch (_) {
+    activeProvider = getActivePlaybackSource(p) || "none";
+  }
+  return {
+    active_music_provider: activeProvider,
+    spotify_playing: isSpotifyMusicAudiblyPlaying(),
+    builtin_playing: isBuiltinMusicAudiblyPlaying(p),
+    builtin_audio_host: free?.parentElement?.id || "",
+    spotify_preview_host: preview?.parentElement?.id || "",
+  };
+}
+
+function musicPlaybackDiag(tag, extra = {}) {
+  try {
+    const snap = musicPlaybackDiagSnapshot(extra.prefix);
+    console.info(tag, {
+      ...snap,
+      reason: extra.reason || "",
+      source: extra.source || "",
+      tts_chunk_index: extra.tts_chunk_index ?? undefined,
+      ...extra,
+    });
+  } catch (_) {}
+}
+
+function initPersistentMusicAudioHosts() {
+  for (const p of ["vera", "bmo"]) {
+    try {
+      ensurePersistentMusicAudioHost(p);
+    } catch (_) {}
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.ensurePersistentMusicAudioHost = ensurePersistentMusicAudioHost;
+  window.__veraMusicPlaybackDiag = musicPlaybackDiag;
+  window.__veraMusicPlaybackDiagSnapshot = musicPlaybackDiagSnapshot;
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", initPersistentMusicAudioHosts);
+    } else {
+      initPersistentMusicAudioHosts();
+    }
+  }
+}
+
 /* =========================================================================
    Global music playback state (PART 1 of the music UI refactor)
 
@@ -2535,6 +2954,180 @@ function getGlobalPlaybackState(prefix) {
     volume: typeof window.__veraSpotifyVolume === "number" ? window.__veraSpotifyVolume : null,
     updatedAt: Date.now(),
   };
+}
+
+if (typeof window !== "undefined") {
+  window.__veraGetGlobalPlaybackState = getGlobalPlaybackState;
+}
+
+function isBuiltinMusicAudiblyPlaying(prefix) {
+  const p = prefix || (typeof appModePrefix === "function" ? appModePrefix() : "vera");
+  try {
+    const a = document.getElementById(`${p}-free-music-audio`);
+    return Boolean(a && a.src && !a.paused);
+  } catch (_) {
+    return false;
+  }
+}
+
+function isSpotifyMusicAudiblyPlaying() {
+  try {
+    if (window.__veraSpotifyPlaybackActive === true) return true;
+    const ns = window.__veraSpotifyNowState;
+    return Boolean(ns && ns.active === true && ns.paused === false && String(ns.title || "").trim());
+  } catch (_) {
+    return false;
+  }
+}
+
+function inferMusicTargetProviderFromPayload(payload, op) {
+  const operation = String(op || payload?.op || "");
+  if (operation === "play_builtin") return "builtin";
+  if (operation === "play_track" || operation === "play_album" || operation === "play_playlist_scoped") {
+    return "spotify";
+  }
+  if (operation === "play_playlist_by_name") {
+    const name = String(payload?.playlist_name || "").trim();
+    if (name && typeof matchBuiltinPlaylistOrSoundNameForClient === "function") {
+      if (matchBuiltinPlaylistOrSoundNameForClient(name)) return "builtin";
+    }
+    return "spotify";
+  }
+  return "spotify";
+}
+
+async function waitUntilMusicProviderExclusive(targetProvider, prefix, timeoutMs = 3000) {
+  const target = String(targetProvider || "").toLowerCase();
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeoutMs) {
+    const builtinOn = isBuiltinMusicAudiblyPlaying(prefix);
+    const spotifyOn = isSpotifyMusicAudiblyPlaying();
+    const exclusive =
+      (target === "spotify" && spotifyOn && !builtinOn) ||
+      (target === "builtin" && builtinOn && !spotifyOn) ||
+      (target === "spotify" && !builtinOn && !spotifyOn) ||
+      (target === "builtin" && !builtinOn && !spotifyOn);
+    if (exclusive) return { ok: true, elapsedMs: Math.round(performance.now() - t0), builtinOn, spotifyOn };
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return {
+    ok: false,
+    elapsedMs: Math.round(performance.now() - t0),
+    builtinOn: isBuiltinMusicAudiblyPlaying(prefix),
+    spotifyOn: isSpotifyMusicAudiblyPlaying(),
+  };
+}
+
+async function ensureSingleActiveMusicProvider(targetProvider, opts = {}) {
+  const prefix = opts.prefix || (typeof appModePrefix === "function" ? appModePrefix() : "vera");
+  const target = String(targetProvider || "").toLowerCase();
+  const st = veraMusicSourceState();
+  const oldProvider = st.active || getActivePlaybackSource(prefix) || "none";
+  const oldTrack = getGlobalPlaybackState(prefix);
+  const t0 = performance.now();
+
+  console.warn("[music_provider_exclusive_start]", {
+    oldProvider,
+    targetProvider: target,
+    oldTrack: oldTrack?.trackTitle || "",
+    oldContext: st.spotify?.playlist_name || st.builtin?.playlistId || "",
+    activeProviderBefore: oldProvider,
+  });
+
+  if (target === "spotify") {
+    if (isBuiltinMusicAudiblyPlaying(prefix) || oldProvider === "builtin") {
+      console.warn("[music_provider_stopping_old]", {
+        oldProvider: "builtin",
+        targetProvider: target,
+        oldTrack: oldTrack?.trackTitle || "",
+      });
+      try {
+        if (typeof _veraSpotifyAcquirePlayback === "function") _veraSpotifyAcquirePlayback(prefix, opts.reason || "ensure_single_spotify");
+        stopCurrentMusicPlaybackBeforeNewPlay("spotify");
+        const free = document.getElementById(`${prefix}-free-music-audio`);
+        if (free && !free.paused) {
+          musicPlaybackDiag("[builtin_pause_called]", {
+            reason: opts.reason || "ensure_single_spotify",
+            source: "ensureSingleActiveMusicProvider",
+            prefix,
+          });
+          free.pause();
+        }
+        st.active = "spotify";
+        st.builtin.state = "suspended_for_spotify";
+        st.builtin.paused = true;
+      } catch (err) {
+        console.warn("[music_provider_stopping_old]", { error: String(err?.message || err) });
+      }
+      await waitUntilMusicProviderExclusive("spotify", prefix, opts.timeoutMs || 3000);
+      console.warn("[music_provider_stopped_old]", {
+        oldProvider: "builtin",
+        targetProvider: target,
+        elapsedMs: Math.round(performance.now() - t0),
+      });
+    }
+    if (isSpotifyMusicAudiblyPlaying() && opts.stopSpotifyBeforePlay) {
+      await pauseSpotifyLayersForBuiltin(prefix);
+    }
+  } else if (target === "builtin") {
+    if (isSpotifyMusicAudiblyPlaying() || oldProvider === "spotify") {
+      console.warn("[music_provider_stopping_old]", {
+        oldProvider: "spotify",
+        targetProvider: target,
+        oldTrack: oldTrack?.trackTitle || "",
+      });
+      try {
+        await pauseSpotifyLayersForBuiltin(prefix);
+        stopCurrentMusicPlaybackBeforeNewPlay("builtin");
+        st.active = "builtin";
+        if (st.spotify.state === "playing") st.spotify.state = "suspended_for_builtin";
+        st.spotify.paused = true;
+      } catch (err) {
+        console.warn("[music_provider_stopping_old]", { error: String(err?.message || err) });
+      }
+      await waitUntilMusicProviderExclusive("builtin", prefix, opts.timeoutMs || 3000);
+      console.warn("[music_provider_stopped_old]", {
+        oldProvider: "spotify",
+        targetProvider: target,
+        elapsedMs: Math.round(performance.now() - t0),
+      });
+    }
+  }
+
+  st.active = target;
+  console.warn("[music_provider_active]", {
+    targetProvider: target,
+    activeProviderAfter: st.active,
+    activeProviderBefore: oldProvider,
+    elapsedMs: Math.round(performance.now() - t0),
+  });
+  if (oldProvider && oldProvider !== "none" && oldProvider !== target) {
+    try {
+      window.veraUsageOnMusicProviderSwitched?.(oldProvider, target, {
+        source: opts.reason || "provider_exclusive",
+      });
+    } catch (_) {}
+  }
+  return { targetProvider: target, oldProvider, elapsedMs: Math.round(performance.now() - t0) };
+}
+
+function resolveMusicTransportProvider(prefix, seqCtx = {}) {
+  const forced = seqCtx?.activeProvider || window.__veraMusicSequenceActiveProvider;
+  if (forced === "spotify" || forced === "builtin") return forced;
+  const st = veraMusicSourceState();
+  if (st.active === "spotify" || st.active === "builtin") return st.active;
+  const live = getActivePlaybackSource(prefix);
+  if (live === "spotify" || live === "builtin") return live;
+  return getProductivityMusicSource(prefix) || "spotify";
+}
+
+if (typeof window !== "undefined") {
+  window.__veraIsBuiltinMusicAudiblyPlaying = isBuiltinMusicAudiblyPlaying;
+  window.__veraIsSpotifyMusicAudiblyPlaying = isSpotifyMusicAudiblyPlaying;
+  window.__veraInferMusicTargetProvider = inferMusicTargetProviderFromPayload;
+  window.__veraEnsureSingleActiveMusicProvider = ensureSingleActiveMusicProvider;
+  window.__veraResolveMusicTransportProvider = resolveMusicTransportProvider;
+  window.__veraWaitUntilMusicProviderExclusive = waitUntilMusicProviderExclusive;
 }
 
 function logMusicPlaybackDebug(stage, extra = {}) {
@@ -2635,6 +3228,11 @@ function isBuiltinFreeMusicPlaying(prefix) {
 function stopBuiltinFreeMusic(prefix) {
   const a = document.getElementById(`${prefix}-free-music-audio`);
   if (!a) return;
+  musicPlaybackDiag("[builtin_pause_called]", {
+    reason: "stop_builtin_free_music",
+    source: "stopBuiltinFreeMusic",
+    prefix,
+  });
   a.pause();
   a.removeAttribute("src");
   a.loop = false;
@@ -2642,7 +3240,12 @@ function stopBuiltinFreeMusic(prefix) {
   window.__veraFreeMusicPlayback = null;
 }
 
-async function pauseSpotifyLayersForBuiltin(prefix) {
+async function pauseSpotifyLayersForBuiltin(prefix, opts = {}) {
+  musicPlaybackDiag("[spotify_pause_called]", {
+    reason: opts.reason || "pause_spotify_layers_for_builtin",
+    source: opts.source || "pauseSpotifyLayersForBuiltin",
+    prefix,
+  });
   const preview = document.getElementById(`${prefix}-spotify-preview-audio`);
   if (preview && !preview.paused) preview.pause();
   window.__veraSpotifyPlaybackActive = false;
@@ -2719,7 +3322,7 @@ async function loadFreeMusicCatalog(prefix) {
     if (typeof localBackendBase === "function") push(localBackendBase());
   } catch (_) {}
   push(typeof API_URL !== "undefined" ? API_URL : "");
-  const ordered = bases.length ? bases : [resolveVeraApiBaseUrl()].filter(Boolean);
+  const ordered = bases.length ? bases : ["https://vera-api.vera-api-ned.workers.dev"];
   let lastErr = null;
   for (const base of ordered) {
     try {
@@ -3408,6 +4011,9 @@ async function runBuiltinVoicePlayback(prefix, { playlistId = "", soundId = "" }
       return;
     }
     await playFreeMusicPlaylist(prefix, pl);
+    await ensureFreeMusicCatalogUi(prefix);
+    spotifyApplyNowStateToPanel(prefix);
+    spotifySyncPlayButtonUi(prefix);
     return;
   }
   if (sid) {
@@ -3419,6 +4025,9 @@ async function runBuiltinVoicePlayback(prefix, { playlistId = "", soundId = "" }
       return;
     }
     await playFreeMusicSingle(prefix, { title: tr.title || tr.id || sid, url: tr.url }, { loop: true });
+    await ensureFreeMusicCatalogUi(prefix);
+    spotifyApplyNowStateToPanel(prefix);
+    spotifySyncPlayButtonUi(prefix);
     return;
   }
   if (artistEl) artistEl.textContent = "Nothing to play — missing built-in target.";
@@ -3483,9 +4092,38 @@ function wireFreeMusicAudioElement(prefix) {
     if (getProductivityMusicSource(prefix) !== "builtin") return;
     const st = window.__veraFreeMusicPlayback;
     if (!st) return;
+    const nowMs = performance.now();
+    const navState =
+      typeof ensureMusicNavigationState === "function" ? ensureMusicNavigationState() : null;
+    const manualRecent =
+      navState && typeof isFreeMusicEndedNavigationSuppressed === "function"
+        ? isFreeMusicEndedNavigationSuppressed(navState, nowMs)
+        : false;
+    const idx = Number(st.index) || 0;
+    const trackName = st.queue?.[idx]?.name || st.currentTrackId || null;
+    try {
+      console.info("[music_audio_ended]", {
+        track: trackName,
+        playlist_index: idx,
+        manual_navigation_recent: manualRecent,
+      });
+    } catch (_) {}
+    if (manualRecent) {
+      freeMusicSyncNowFromAudio(prefix);
+      spotifySyncPlayButtonUi(prefix);
+      return;
+    }
     if (st.mode === "playlist" && st.queue.length > 1) {
       const next = freeMusicGetAdjacentQueueIndex(prefix, "next");
       if (next == null) return;
+      if (typeof markMusicNavigationExecuted === "function" && navState) {
+        markMusicNavigationExecuted(navState, {
+          delta: 1,
+          source: "audio_ended",
+          actionId: null,
+          nowMs,
+        });
+      }
       void freeMusicPlayQueueIndex(prefix, next);
       return;
     }
@@ -3531,6 +4169,17 @@ async function restoreSpotifyPlaybackAfterPanelRemount(prefix) {
   const audio = document.getElementById(`${prefix}-spotify-preview-audio`);
 
   if (resume?.preview_url && last.preview_url === resume.preview_url && audio) {
+    const previewIntact =
+      Boolean(audio.src) &&
+      !audio.ended &&
+      (audio.currentTime > 0 || !audio.paused);
+    if (previewIntact) {
+      if (!resume.paused && audio.paused) {
+        void audio.play().catch(() => {});
+      }
+      spotifySyncPlayButtonUi(prefix);
+      spotifyApplyNowStateToPanel(prefix);
+    } else {
     audio.volume = spotifyGetVolume();
     const targetSec = Math.max(0, Number(resume.currentTimeSec) || 0);
     const applySeek = () => {
@@ -3554,6 +4203,7 @@ async function restoreSpotifyPlaybackAfterPanelRemount(prefix) {
     });
     spotifySyncPlayButtonUi(prefix);
     spotifyApplyNowStateToPanel(prefix);
+    }
   }
 
   const wr = window.__veraSpotifyResumeWeb;
@@ -3583,6 +4233,88 @@ function restoreProductivityPanel(prefix) {
   });
 }
 
+const MUSIC_CONTROL_TRANSPORT_ONLY_OPS = new Set([
+  "pause",
+  "resume",
+  "skip_next",
+  "skip_previous",
+  "volume_delta",
+  "close_panel",
+]);
+
+/** Open/show the full Music panel — same surface as clicking MUSIC. Not gated by playback dedupe. */
+function ensureMusicPanelOpenForVoicePlayback(reason = "voice_music_play") {
+  const prefix = appModePrefix();
+  const sidePaneEl = uiEl("side-pane");
+  const wmOn = isVeraWorkModeOn() && prefix === "vera";
+  const wmLayoutBefore = wmOn ? getWorkModeLeftPaneLayout() : "";
+  const mountedBefore =
+    Boolean(sidePaneEl?.innerHTML?.trim()) && sidePaneEl?.dataset?.sidePaneKind === "productivity";
+
+  console.info("[music_panel_open_request]", {
+    reason,
+    prefix,
+    work_mode: wmOn,
+    wm_layout_before: wmLayoutBefore || null,
+    side_pane_hidden: sidePaneEl ? Boolean(sidePaneEl.hidden) : true,
+    side_pane_visible_class: sidePaneEl ? sidePaneEl.classList.contains("visible") : false,
+    productivity_mounted: mountedBefore,
+  });
+
+  if (wmOn && typeof window.layoutVeraWorkModePanels === "function") {
+    window.layoutVeraWorkModePanels(true);
+  }
+  if (wmOn && getWorkModeLeftPaneLayout() === "checklist-full") {
+    setWorkModeLeftPaneLayout("split");
+  }
+
+  if (sidePaneEl) {
+    const hasProductivityMarkup =
+      Boolean(sidePaneEl.innerHTML.trim()) && sidePaneEl.dataset.sidePaneKind === "productivity";
+    document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
+    if (hasProductivityMarkup) {
+      if (sidePaneEl.hidden) {
+        restoreProductivityPanel(prefix);
+      } else {
+        sidePaneEl.hidden = false;
+        sidePaneEl.dataset.sidePaneKind = "productivity";
+        document.body.classList.add("news-panel-open");
+        sidePaneEl.classList.add("visible");
+        removeSpotifyMiniButton(prefix);
+        spotifyApplyViewMode(prefix);
+      }
+    } else {
+      renderProductivityPanel({ immediate: true });
+    }
+    document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
+  }
+
+  const wmLayoutAfter = wmOn ? getWorkModeLeftPaneLayout() : "";
+  console.info("[music_panel_visible]", {
+    reason,
+    visible: sidePaneEl ? sidePaneEl.classList.contains("visible") : false,
+    hidden: sidePaneEl ? Boolean(sidePaneEl.hidden) : true,
+    collapsed: wmOn ? wmLayoutAfter === "checklist-full" : false,
+    mounted:
+      Boolean(sidePaneEl?.innerHTML?.trim()) && sidePaneEl?.dataset?.sidePaneKind === "productivity",
+    wm_layout: wmLayoutAfter || null,
+  });
+}
+
+function logMusicRenderState(prefix, extra = {}) {
+  const pfx = prefix || appModePrefix();
+  const st = veraMusicSourceState();
+  const gs = getGlobalPlaybackState(pfx);
+  console.info("[music_render_state]", {
+    source: getProductivityMusicSource(pfx),
+    active_playback_source: getActivePlaybackSource(pfx),
+    title: st.builtin?.title || st.spotify?.title || gs?.trackTitle || "",
+    is_playing: Boolean(gs?.isPlaying),
+    tab: getProductivityMusicSource(pfx),
+    ...extra,
+  });
+}
+
 /* renderNewsResultListMarkup, renderImageResultsMarkup, getVideoEmbedUrl,
  * renderVideoResultsMarkup, setActiveSidePaneTab, renderMediaTabsPanel
  * moved to news/newsPanel.js (Stage 10, 2026-05-27). */
@@ -3590,6 +4322,19 @@ function restoreProductivityPanel(prefix) {
 function renderFinanceChartPanel(payload) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
+  try {
+    ensurePersistentMusicAudioHost(typeof appModePrefix === "function" ? appModePrefix() : "vera");
+  } catch (_) {}
+
+  console.warn("[finance_panel_payload]", {
+    user_text: payload?.query || "",
+    extractedTicker: payload?.symbol || "",
+    resolvedTicker: payload?.symbol || "",
+    panelSymbol: payload?.symbol || "",
+    tradingviewSymbol: payload?.tradingview_symbol || "",
+    assetType: payload?.asset_type || "",
+    source: "renderFinanceChartPanel",
+  });
 
   const mount = () => {
     document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
@@ -4690,6 +5435,83 @@ function shouldForceReasoningActiveLaneContentFollowUp(trimmed, priorThreadAncho
 }
 
 /**
+ * True when the user is asking advice about a visible plan/schedule/checklist block
+ * (e.g. "is gym at 9:20 too late?") — stay on Voice /infer with panel context,
+ * not reasoning reroute or venue search.
+ */
+function isWorkModePlanOrScheduleFollowUp(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  const low = raw.toLowerCase();
+  if (/\b(?:near\s+me|nearby|around\s+here|find\s+(?:a\s+)?(?:gym|gyms|coffee|restaurant|restaurants))\b/i.test(low)) {
+    return false;
+  }
+  const timeRef =
+    /\b(?:at|by|around)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/i.test(low) ||
+    /\b\d{1,2}:\d{2}\s*(?:am|pm)?\b/i.test(low);
+  const adviceRef =
+    /\b(?:too\s+(?:late|early)|move\s+(?:it|that|this|gym)?\s*(?:earlier|later)|should\s+i\b|realistic|doable|feasible|enough\s+time|what(?:'s|s|\s+is)\s+next|what\s+should\s+i\s+do|(?:first|next)\s+(?:on|in)\s+(?:the\s+)?(?:plan|schedule|checklist))\b/i.test(
+      low
+    );
+  const planRef =
+    /\b(?:the\s+)?(?:plan|schedule|checklist|time\s*block)\b/i.test(low) ||
+    /\b(?:this|that)\s+(?:too\s+)?(?:late|early)\b/i.test(low);
+  const question = /^\s*(?:is|are|was|were|will|would|should|can|could|do|does|what|when)\b/i.test(low);
+  if (timeRef && (adviceRef || question)) return true;
+  if (planRef && question) return true;
+  if (adviceRef && question && (low.match(/\S+/g) || []).length <= 20) return true;
+  return false;
+}
+
+function logVoiceContextSnapshot(snapshot, text) {
+  const snap = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const reasoning = snap.reasoning && typeof snap.reasoning === "object" ? snap.reasoning : {};
+  const checklist = snap.checklist && typeof snap.checklist === "object" ? snap.checklist : {};
+  try {
+    console.info("[voice_context_snapshot]", {
+      raw_text: String(text || "").slice(0, 240),
+      has_reasoning_context: Boolean(String(reasoning.recent_problem_excerpt || "").trim()),
+      has_checklist_context: Boolean(Array.isArray(checklist.items) && checklist.items.length),
+      active_panel_label: String(reasoning.active_panel_label || "").slice(0, 120),
+      reasoning_excerpt_chars: String(reasoning.recent_problem_excerpt || "").length,
+      checklist_item_count: Array.isArray(checklist.items) ? checklist.items.length : 0,
+      schedule_followup: isWorkModePlanOrScheduleFollowUp(text),
+    });
+  } catch (_) {}
+}
+
+function logVoiceRouteDecision(text, meta = {}) {
+  try {
+    console.info("[voice_route_decision]", {
+      text: String(text || "").slice(0, 240),
+      ...meta,
+    });
+  } catch (_) {}
+}
+
+function logVoiceReplyStart(text, meta = {}) {
+  try {
+    console.info("[voice_reply_start]", { text: String(text || "").slice(0, 240), ...meta });
+  } catch (_) {}
+}
+
+function logVoiceReplyDone(text, meta = {}) {
+  try {
+    console.info("[voice_reply_done]", { text: String(text || "").slice(0, 240), ...meta });
+  } catch (_) {}
+}
+
+function logVoiceReplyDropped(text, reason, meta = {}) {
+  try {
+    console.info("[voice_reply_dropped]", {
+      text: String(text || "").slice(0, 240),
+      reason: String(reason || "unknown"),
+      ...meta,
+    });
+  } catch (_) {}
+}
+
+/**
  * True → keep this turn on the main Voice /infer path and reuse snapshot context instead of
  * spawning /work_mode/reasoning_stream. Default: short deictic / continuation turns stay on the
  * active task unless the user clearly starts something new (see negative checks).
@@ -4710,6 +5532,8 @@ function isGeneralWorkModeFollowUpContinuingTask(trimmed, priorThreadAnchor) {
     anchor.length >= 6 || reasoningPeek.length >= 40 || hasAssistantVoice;
 
   if (!hasContinuableContext) return false;
+
+  if (isWorkModePlanOrScheduleFollowUp(raw)) return true;
 
   if (
     /\b(new\s+(problem|question|topic|homework|assignment)|different\s+(question|problem)|unrelated|start\s+over|forget\s+(about\s+)?(that|this)|switch\s+topics?)\b/i.test(
@@ -4779,11 +5603,22 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
   let checklistItems = [];
   if (inWorkMode) {
     try {
-      const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) checklistItems = parsed;
+      if (typeof readChecklistItemsFromStorage === "function") {
+        checklistItems = readChecklistItemsFromStorage();
+      } else {
+        const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) checklistItems = parsed;
+      }
     } catch (_) {}
   }
+  const planHierarchy =
+    inWorkMode && typeof buildChecklistPlanHierarchyFromStorage === "function"
+      ? buildChecklistPlanHierarchyFromStorage()
+      : { main_items: [], main_count: 0, subitem_count: 0 };
+  const ongoingMainTexts = (planHierarchy.main_items || [])
+    .map((x) => String(x.text || "").trim())
+    .filter(Boolean);
   const ongoing = checklistItems
     .filter((x) => x && !Boolean(x.done))
     .map((x) => String(x.text || "").trim())
@@ -4801,9 +5636,64 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
       done: Boolean(x.done),
       parent_id: x.parent_id == null ? null : String(x.parent_id || "").slice(0, 80)
     }));
+  const checklistMainItemsSnapshot = (planHierarchy.main_items || [])
+    .slice(0, 8)
+    .map((m) => ({
+      id: String(m.id || "").slice(0, 80),
+      text: String(m.text || "").trim().slice(0, 200),
+      done: Boolean(m.done),
+      children: (m.children || []).slice(0, 8).map((c) => ({
+        id: String(c.id || "").slice(0, 80),
+        text: String(c.text || "").trim().slice(0, 200),
+        done: Boolean(c.done),
+      })),
+    }));
+  let checklistUndoSnapshot = null;
+  if (inWorkMode && typeof readChecklistUndoSnapshotFromStorage === "function") {
+    const undoSnap = readChecklistUndoSnapshotFromStorage();
+    if (undoSnap && Array.isArray(undoSnap.items) && undoSnap.items.length) {
+      checklistUndoSnapshot = {
+        snapshot_id: String(undoSnap.snapshot_id || "").slice(0, 80),
+        items: undoSnap.items.slice(0, 120).map((x) => ({
+          id: String(x.id || "").slice(0, 80),
+          text: String(x.text || "").trim().slice(0, 200),
+          done: Boolean(x.done),
+          parent_id: x.parent_id == null ? null : String(x.parent_id || "").slice(0, 80)
+        })),
+        completed_collapsed: Boolean(undoSnap.completed_collapsed),
+        created_at_ms: Number(undoSnap.created_at_ms) || Date.now(),
+        source: String(undoSnap.source || "checklist.clear").slice(0, 40),
+        valid: true,
+        expires_at_ms: Number(undoSnap.expires_at_ms) || 0
+      };
+    }
+  }
 
   const activeLaneIdx = inWorkMode ? getActiveReasoningLaneIndex() : null;
   const focusedLaneId = inWorkMode ? getFocusedWorkModeLaneId() : "";
+  const userTextForScope = String(snapshotOpts.userText || "").trim();
+  let contextScopeForSnapshot = null;
+  if (inWorkMode && userTextForScope && typeof buildReasoningContextScope === "function") {
+    const explicitFromOpts = Number.isFinite(Number(snapshotOpts.explicitPanelTarget))
+      ? Number(snapshotOpts.explicitPanelTarget)
+      : null;
+    const explicitFromText =
+      explicitFromOpts == null && typeof isExplicitReasoningPanelReference === "function"
+        ? (() => {
+            const ref = isExplicitReasoningPanelReference(userTextForScope);
+            return ref.matched && Number.isFinite(ref.targetPanel) ? ref.targetPanel : null;
+          })()
+        : null;
+    contextScopeForSnapshot = buildReasoningContextScope({
+      userText: userTextForScope,
+      inputSource: snapshotOpts.inputSource,
+      explicitPanelTarget: explicitFromOpts ?? explicitFromText,
+      activeLaneId: getActiveDomReasoningLaneId(),
+    });
+    if (contextScopeForSnapshot.block_voice_context) {
+      snapshotOpts = { ...snapshotOpts, suppressVoiceContext: true };
+    }
+  }
   let reasoningExcerpt = "";
   if (inWorkMode) {
     if (pinnedLaneId) {
@@ -4811,12 +5701,25 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
       if (pidx != null) {
         reasoningExcerpt = collectWorkModeReasoningExcerptForLaneIndex(pidx, 12000);
       }
+    } else if (
+      contextScopeForSnapshot?.explicit_panel_target &&
+      Number.isFinite(Number(contextScopeForSnapshot.target_panel))
+    ) {
+      const order =
+        typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+      const entry = Array.isArray(order) ? order[Number(contextScopeForSnapshot.target_panel) - 1] : null;
+      if (entry && Number.isFinite(entry.tabIndex)) {
+        reasoningExcerpt = collectWorkModeReasoningExcerptForLaneIndex(Number(entry.tabIndex), 12000);
+      }
     } else {
       reasoningExcerpt = collectWorkModeReasoningExcerptForContext();
     }
   }
   const suppressVoiceInSnapshot =
-    inWorkMode && (WORK_MODE_INFER_CONTAMINATION_TEST || snapshotOpts.weakVoiceOnly === true);
+    inWorkMode &&
+    (WORK_MODE_INFER_CONTAMINATION_TEST ||
+      snapshotOpts.weakVoiceOnly === true ||
+      Boolean(snapshotOpts.suppressVoiceContext));
   const voiceExcerpt =
     inWorkMode && !suppressVoiceInSnapshot ? collectWorkModeVoiceExcerptForContext(4500, 10) : "";
   const combinedProblemExcerpt = [reasoningExcerpt, voiceExcerpt]
@@ -4851,18 +5754,39 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
     music.skip_prev_available = transportEl.prev;
   }
 
+  const timerFireMs = Number(veraWorkModeTimerFireAtMs);
+  const timerHasFireAt = Number.isFinite(timerFireMs);
+  const timerExpired = Boolean(veraWorkModeTimerExpired);
+  const timerActive = timerHasFireAt && !timerExpired;
+  const timerRemainingSeconds = timerActive
+    ? Math.max(0, Math.round((timerFireMs - Date.now()) / 1000))
+    : 0;
+
   return {
     mode: inWorkMode ? "work" : "flow",
     app: prefix,
     music,
+    timer: inWorkMode
+      ? {
+          active: timerActive,
+          expired: timerHasFireAt && timerExpired,
+          fire_at_epoch_ms: timerHasFireAt ? timerFireMs : null,
+          remaining_seconds: timerRemainingSeconds,
+          timer_id: veraLastWorkModeTimerClientId || null,
+        }
+      : null,
     checklist: inWorkMode
       ? {
           ongoing_count: ongoing.length,
           completed_count: completed.length,
-          ongoing_items: ongoing.slice(0, 8),
+          main_count: Number(planHierarchy.main_count) || 0,
+          subitem_count: Number(planHierarchy.subitem_count) || 0,
+          ongoing_items: ongoingMainTexts.slice(0, 8),
+          main_items: checklistMainItemsSnapshot,
           items: checklistSnapshotItems,
         }
       : null,
+    checklist_undo_snapshot: checklistUndoSnapshot,
     reasoning:
       inWorkMode && prefix === "vera" && wmReasoningPanels
         ? {
@@ -5482,8 +6406,17 @@ async function ensureSpotifyWebPlayer(prefix) {
       spotifyStopWebPlaybackUiTick();
       return;
     }
+    const wasPlaying = window.__veraSpotifyPlaybackActive === true;
     const curTrack = state?.track_window?.current_track;
     spotifySyncNowStateFromWebSdk(state);
+    if (state.paused && wasPlaying && typeof isMainTtsPlaying === "function" && isMainTtsPlaying()) {
+      musicPlaybackDiag("[spotify_sdk_paused_during_tts]", {
+        reason: "browser_sdk_state_paused",
+        source: "player_state_changed",
+        prefix,
+        sdk_paused: true,
+      });
+    }
     if (state.paused) removeSpotifyMiniButton(prefix);
     spotifyApplyNowStateToPanel(prefix);
     window.__veraSpotifyResumeWeb = {
@@ -5928,37 +6861,20 @@ function wireProductivityPanelEvents(prefix) {
     if (typeof toggle === "function") toggle().catch(() => {});
   });
 
-  document.getElementById(`${prefix}-spotify-next`)?.addEventListener("click", () => {
-    if (getProductivityMusicSource(prefix) === "builtin") {
-      const st = window.__veraFreeMusicPlayback;
-      if (st?.mode === "playlist" && st.queue?.length > 1) {
-        const next = freeMusicGetAdjacentQueueIndex(prefix, "next");
-        if (next == null) return;
-        void freeMusicPlayQueueIndex(prefix, next);
-      }
-      return;
+  wireMusicTransportButtonOnce(
+    document.getElementById(`${prefix}-spotify-next`),
+    "next",
+    () => {
+      void navigateMusicTrack(1, "button_next", null);
     }
-    invokeSpotifyTransport("skip_next", { source: "button" });
-  });
-  document.getElementById(`${prefix}-spotify-prev`)?.addEventListener("click", () => {
-    if (getProductivityMusicSource(prefix) === "builtin") {
-      const st = window.__veraFreeMusicPlayback;
-      const a = document.getElementById(`${prefix}-free-music-audio`);
-      if (st?.mode === "playlist" && st.queue?.length > 1) {
-        const pos = Math.round((a?.currentTime || 0) * 1000);
-        if (pos > SPOTIFY_PREVIOUS_RESTART_MS && a) {
-          a.currentTime = 0;
-          freeMusicSyncNowFromAudio(prefix);
-          return;
-        }
-        const prev = freeMusicGetAdjacentQueueIndex(prefix, "previous");
-        if (prev == null) return;
-        void freeMusicPlayQueueIndex(prefix, prev);
-      }
-      return;
+  );
+  wireMusicTransportButtonOnce(
+    document.getElementById(`${prefix}-spotify-prev`),
+    "previous",
+    () => {
+      void navigateMusicTrack(-1, "button_previous", null);
     }
-    invokeSpotifyTransport("skip_previous", { source: "button" });
-  });
+  );
 
   document.getElementById(`${prefix}-spotify-logout`)?.addEventListener("click", async () => {
     const base = localBackendBase();
@@ -6087,12 +7003,19 @@ function wireProductivityPanelEvents(prefix) {
   spotifyApplyNowStateToPanel(prefix);
 }
 
-function renderProductivityPanel() {
+function renderProductivityPanel(opts = {}) {
   const sidePaneEl = uiEl("side-pane");
   if (!sidePaneEl) return;
   const prefix = appModePrefix();
+  ensurePersistentMusicAudioHost(prefix);
 
   const mount = () => {
+    try {
+      console.info("[music_panel_rerender]", {
+        prefix,
+        immediate: Boolean(opts.immediate),
+      });
+    } catch (_) {}
     sidePaneEl.hidden = false;
     sidePaneEl.dataset.sidePaneKind = "productivity";
     document.body.classList.add("news-panel-open");
@@ -6176,7 +7099,6 @@ function renderProductivityPanel() {
             </div>
           </div>
         </div>
-        <audio id="${prefix}-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
       </div>
       <div id="${prefix}-builtin-stack" class="music-pane-stack" hidden>
         <div class="music-inactive-source-banner" id="${prefix}-builtin-inactive-banner" hidden>
@@ -6188,10 +7110,10 @@ function renderProductivityPanel() {
           <div class="free-music-catalog" id="${prefix}-free-music-catalog"></div>
         </div>
       </div>
-      <audio id="${prefix}-free-music-audio" preload="metadata" crossorigin="anonymous" hidden></audio>
     </div>
   `;
 
+    ensurePersistentMusicAudioHost(prefix);
     sidePaneEl.scrollTop = 0;
     requestAnimationFrame(() => {
       sidePaneEl.classList.add("visible");
@@ -6200,6 +7122,10 @@ function renderProductivityPanel() {
     wireProductivityPanelEvents(prefix);
   };
 
+  if (opts.immediate) {
+    mount();
+    return;
+  }
   runFlowModeSidePaneContentCrossfade(sidePaneEl, mount);
 }
 
@@ -6291,10 +7217,16 @@ function migrateLegacyVeraChatStorageKey() {
 function persistVeraClientStateOnUnload() {
   persistVeraChatState();
   persistReasoningTabsState();
+  if (typeof queueWorkModeWorkspaceSync === "function") {
+    queueWorkModeWorkspaceSync({ immediate: true });
+  }
 }
 
 function persistVeraChatState() {
   if (chatStateHydrating) return;
+  if (typeof isSupabaseUserAuthenticated === "function" && isSupabaseUserAuthenticated()) {
+    return;
+  }
   const convo = document.getElementById("vera-conversation");
   if (!convo) return;
   const messages = [];
@@ -6336,6 +7268,9 @@ function persistVeraChatState() {
 }
 
 function restoreVeraChatState() {
+  if (typeof isSupabaseUserAuthenticated === "function" && isSupabaseUserAuthenticated()) {
+    return;
+  }
   const convo = document.getElementById("vera-conversation");
   if (!convo) return;
   let raw = "";
@@ -6702,7 +7637,14 @@ function wireReasoningTabStrip() {
   if (!tabsEl || tabsEl.dataset.wiredReasoningTabs === "1") return;
   if (!document.getElementById("vera-reasoning-tab-panels")) return;
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
-  restoreReasoningTabsState();
+  const skipLocalTabsForCloud =
+    typeof shouldSkipLocalReasoningTabsRestoreForCloud === "function" &&
+    shouldSkipLocalReasoningTabsRestoreForCloud();
+  if (skipLocalTabsForCloud) {
+    ensureFixedReasoningLanePanels(new Map(), 0);
+  } else {
+    restoreReasoningTabsState();
+  }
   if (panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length === 0) {
     ensureFixedReasoningLanePanels(new Map(), 0);
   }
@@ -6822,6 +7764,13 @@ function wireReasoningTabStrip() {
   if (bootActive instanceof HTMLElement) {
     const bootIdx = Number(bootActive.dataset.tabIndex);
     if (Number.isFinite(bootIdx)) setFocusedWorkModeLaneFromIndex(bootIdx);
+  }
+  if (skipLocalTabsForCloud) {
+    if (typeof scheduleWorkModeWorkspaceHydrateBestEffort === "function") {
+      scheduleWorkModeWorkspaceHydrateBestEffort("boot");
+    } else if (typeof hydrateWorkModeWorkspaceFromServer === "function") {
+      void hydrateWorkModeWorkspaceFromServer(false, { source: "boot_fallback" });
+    }
   }
   if (window.__veraReasoningTabsUnloadHook !== "1") {
     window.__veraReasoningTabsUnloadHook = "1";
@@ -7596,6 +8545,8 @@ const workModeReasoningFinalStatusByLaneId = new Map();
 const WORK_MODE_REASONING_WATCHDOG_MS = 110000;
 const workModeReasoningWatchdogByLaneIdx = new Map();
 const workModeTypedTurnQueue = [];
+/** Alias: visual-only FIFO for keyboard submits waiting behind active /infer. */
+const keyboardQueue = workModeTypedTurnQueue;
 const WORK_MODE_TYPED_TURN_QUEUE_MAX = 8;
 /**
  * Hard cap on typed (keyboard) inputs pending in Work Mode. Matches the
@@ -7623,6 +8574,10 @@ const laneReasoningChainTail = new Map();
 /** Serialize work-mode typed `/infer`+TTS while reasoning runs in parallel across lanes. */
 let workModeTypedVoiceInferTail = Promise.resolve();
 let workModeTypedVoiceInferDepth = 0;
+/** Keyboard-only: typed submit pipeline slots in the serialized chain. */
+let keyboardSubmitInFlight = 0;
+/** Keyboard-only: active normal `/infer` playback turns (voice or typed) — does not track reasoning streams. */
+let normalInferInFlightForKeyboardGate = 0;
 const WORK_MODE_TOPIC_SIMILARITY_MERGE = 0.26;
 const WORK_MODE_TYPED_VOICE_CHAIN_MAX = 12;
 let workModeTypedQueueDraining = false;
@@ -7849,6 +8804,15 @@ function acquireWorkModeReasoningLane(_forTopicText = "") {
   });
 }
 
+function ensureReasoningPanelIndexExists(visualIndex0Based) {
+  const visual1 = Number(visualIndex0Based) + 1;
+  if (!Number.isFinite(visual1) || visual1 < 1) return false;
+  if (typeof ensureReasoningPanelVisualIndexExists === "function") {
+    return ensureReasoningPanelVisualIndexExists(visual1, { source: "legacy_visual_index_wrapper" }) != null;
+  }
+  return false;
+}
+
 function acquireWorkModeReasoningLaneForIndex(desiredLaneIdx) {
   const idxs = getReasoningPanelIndices();
   const raw = Number(desiredLaneIdx);
@@ -7964,19 +8928,20 @@ function workModeTypedQueueItemHasPayload(item) {
 
 function enqueueWorkModeTypedTurn(text, opts = {}) {
   if (workModeTypedTurnQueue.length >= WORK_MODE_TYPED_TURN_QUEUE_MAX) {
-    console.warn("[WorkMode] typed queue full; dropping new request", {
+    console.warn("[WorkMode] keyboard queue full; dropping new request", {
       max: WORK_MODE_TYPED_TURN_QUEUE_MAX
     });
     try {
       console.info("[reasoning_queue_omitted]", {
         turn_id: null,
         lane_id: null,
-        reason: "typed_turn_queue_max"
+        reason: "keyboard_queue_max"
       });
     } catch (_) {}
     return false;
   }
   workModeTypedTurnQueue.push({
+    id: `kbd-q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     text: String(text || ""),
     opts: { ...opts, __fromQueue: true }
   });
@@ -7984,21 +8949,91 @@ function enqueueWorkModeTypedTurn(text, opts = {}) {
     const qFiles = Array.isArray(opts?.reasoningAttachments)
       ? opts.reasoningAttachments.filter((f) => f instanceof File && f.size)
       : [];
-    console.info("[reasoning_queue_enqueue]", {
-      turn_id: null,
-      lane_id: null,
+    console.info("[keyboard_queue_enqueued]", {
+      text_preview: String(text || "").slice(0, 120),
+      queue_len: workModeTypedTurnQueue.length,
       has_files: qFiles.length > 0,
       file_count: qFiles.length,
-      text_preview: String(text || "").slice(0, 120),
-      queue_len: workModeTypedTurnQueue.length
+    });
+    console.info("[keyboard_queue_does_not_block_voice]", {
+      listening,
+      processing,
+      requestInFlight,
+      keyboard_submit_in_flight: keyboardSubmitInFlight,
+      normal_infer_in_flight: normalInferInFlightForKeyboardGate,
+    });
+    console.info("[voice_lifecycle_unchanged_check]", {
+      listening,
+      processing,
+      requestInFlight,
+      keyboard_queue_only: true,
     });
   } catch (_) {}
+  renderKeyboardQueueUi();
   return true;
 }
 
-function isWorkModeTypedTurnBlocked() {
-  /* Typed lines queue only when the voice `/infer` chain is saturated; reasoning runs in parallel per panel. */
+function getKeyboardQueueBusyReason(fromQueue) {
+  if (fromQueue) return null;
+  const reasons = [];
+  if (keyboardSubmitInFlight > 0) reasons.push("keyboard_submit_in_flight");
+  if (normalInferInFlightForKeyboardGate > 0) reasons.push("normal_infer_in_flight");
+  return reasons.length ? reasons.join("+") : null;
+}
+
+/** True when a keyboard submit should wait visually — narrow /infer-only gate. */
+function shouldQueueKeyboardSubmit(fromQueue) {
+  if (fromQueue) return false;
+  return keyboardSubmitInFlight > 0 || normalInferInFlightForKeyboardGate > 0;
+}
+
+function isWorkModeTypedVoiceInferChainSaturated() {
   return workModeTypedVoiceInferDepth >= WORK_MODE_TYPED_VOICE_CHAIN_MAX;
+}
+
+/** @deprecated alias — use shouldQueueKeyboardSubmit / isWorkModeTypedVoiceInferChainSaturated. */
+function isWorkModeTypedTurnBlocked() {
+  return isWorkModeTypedVoiceInferChainSaturated();
+}
+
+function renderKeyboardQueueUi() {
+  const host = document.getElementById("vera-keyboard-queue-host");
+  if (!(host instanceof HTMLElement)) return;
+  const queue = keyboardQueue;
+  if (!queue.length || !isVeraWorkModeOn()) {
+    host.hidden = true;
+    host.replaceChildren();
+    return;
+  }
+  host.hidden = false;
+  const heading = document.createElement("div");
+  heading.className = "vera-reasoning-queue-heading";
+  heading.textContent = `Keyboard queued (${queue.length})`;
+  const list = document.createElement("ol");
+  list.className = "vera-reasoning-queue-list";
+  queue.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "vera-reasoning-queue-item";
+    li.dataset.queueItemId = String(item.id || "");
+    const textWrap = document.createElement("div");
+    textWrap.className = "vera-reasoning-queue-item-text";
+    textWrap.textContent = String(item.text || "");
+    li.appendChild(textWrap);
+    list.appendChild(li);
+  });
+  host.replaceChildren(heading, list);
+  try {
+    console.info("[keyboard_queue_rendered]", {
+      queue_len: queue.length,
+      previews: queue.map((it) => String(it.text || "").slice(0, 80)),
+    });
+  } catch (_) {}
+}
+
+function scheduleWorkModeKeyboardQueueDrainIfReady() {
+  if (keyboardQueue.length > 0 && !shouldQueueKeyboardSubmit(false)) {
+    scheduleWorkModeTypedQueueDrain();
+  }
 }
 
 /** Total typed Work-Mode turns currently in flight (voice infer chain) + queued. */
@@ -8022,8 +9057,9 @@ async function drainWorkModeTypedTurnQueue() {
   workModeTypedQueueDraining = true;
   try {
     while (workModeTypedTurnQueue.length > 0) {
-      if (isWorkModeTypedTurnBlocked()) break;
+      if (shouldQueueKeyboardSubmit(false)) break;
       const next = workModeTypedTurnQueue.shift();
+      renderKeyboardQueueUi();
       if (!workModeTypedQueueItemHasPayload(next)) {
         try {
           console.info("[reasoning_queue_omitted]", {
@@ -8035,19 +9071,25 @@ async function drainWorkModeTypedTurnQueue() {
         continue;
       }
       try {
-        const qFiles = Array.isArray(next.opts?.reasoningAttachments)
-          ? next.opts.reasoningAttachments.filter((f) => f instanceof File && f.size)
-          : [];
-        console.info("[reasoning_typed_queue_drain]", {
-          has_files: qFiles.length > 0,
-          file_count: qFiles.length,
-          text_preview: String(next.text || "").slice(0, 120)
+        console.info("[keyboard_queue_dequeued]", {
+          text_preview: String(next.text || "").slice(0, 120),
+          queue_len: workModeTypedTurnQueue.length,
+        });
+        console.info("[keyboard_queue_submitted]", {
+          text_preview: String(next.text || "").slice(0, 120),
         });
       } catch (_) {}
       await sendVeraWorkModeTypedInferTurn(next.text, next.opts || {});
+      try {
+        console.info("[keyboard_queue_finished]", {
+          text_preview: String(next.text || "").slice(0, 120),
+          queue_len: workModeTypedTurnQueue.length,
+        });
+      } catch (_) {}
     }
   } finally {
     workModeTypedQueueDraining = false;
+    renderKeyboardQueueUi();
   }
 }
 
@@ -8089,6 +9131,57 @@ window.layoutVeraWorkModePanels = function layoutVeraWorkModePanels(on) {
     console.warn("[WorkMode] layout panes", e);
   }
 };
+
+function logWmUploadLayoutDebug(tag, extra = {}) {
+  if (typeof window === "undefined" || window.__veraWmUploadLayoutDebug !== true) return;
+  try {
+    const veraApp = document.getElementById("vera-app");
+    const grid = document.getElementById("vera-body-grid");
+    const center = document.getElementById("vera-wm-center");
+    const bodyWrap = center?.querySelector(".vera-wm-reasoning-body-wrap");
+    const panels = document.getElementById("vera-reasoning-tab-panels");
+    const active = panels?.querySelector(".vera-reasoning-tab-panel.is-active");
+    const scroll = active?.querySelector(".vera-reasoning-scroll");
+    console.info("[wm_upload_layout]", {
+      tag: String(tag || ""),
+      work_mode: Boolean(veraApp?.classList.contains("work-mode")),
+      body_classes: String(document.body.className || ""),
+      vera_app_classes: String(veraApp?.className || ""),
+      grid_h: Math.round(grid?.getBoundingClientRect().height || 0),
+      center_h: Math.round(center?.getBoundingClientRect().height || 0),
+      body_wrap_h: Math.round(bodyWrap?.getBoundingClientRect().height || 0),
+      scroll_h: Math.round(scroll?.getBoundingClientRect().height || 0),
+      scroll_client_h: scroll?.clientHeight ?? null,
+      ...extra
+    });
+  } catch (_) {}
+}
+
+/** Reflow Work Mode grid/flex after reasoning upload/stream cleanup (success, error, cancel). */
+function scheduleRecalcWorkModeLayoutAfterReasoning(reason) {
+  if (!isVeraWorkModeOn()) return;
+  logWmUploadLayoutDebug("schedule", { reason: String(reason || "") });
+  const run = () => {
+    try {
+      window.layoutVeraWorkModePanels?.(true);
+      applyWorkModeLeftPaneLayoutFromStorage();
+      if (typeof recomputeReasoningPanelEmptyHints === "function") {
+        recomputeReasoningPanelEmptyHints();
+      }
+      window.syncVeraFlowVoiceDockLayoutClass?.();
+      logWmUploadLayoutDebug("recalc_done", { reason: String(reason || "") });
+    } catch (e) {
+      console.warn("[WorkMode] layout recalc after reasoning", e);
+    }
+  };
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(run));
+  } else {
+    window.setTimeout(run, 0);
+  }
+}
+
+window.scheduleRecalcWorkModeLayoutAfterReasoning = scheduleRecalcWorkModeLayoutAfterReasoning;
 
 window.ensureWorkModeVoiceUiActive = async function ensureWorkModeVoiceUiActive() {
   try {
@@ -8655,6 +9748,14 @@ async function drainReasoningNdjsonMarkdownTail(reader, initialTail, mdEl, decod
               });
             }
           } catch (_) {}
+          if (!mdEl.dataset.wmUploadFirstChunkLogged) {
+            mdEl.dataset.wmUploadFirstChunkLogged = "1";
+            logWmUploadLayoutDebug("first_chunk", {
+              turn_id: turnContext?.turn_id || null,
+              lane_id: streamLaneId || null,
+              chunk_chars: String(o.text || "").length
+            });
+          }
           markdownAcc += String(o.text);
           mdEl.dataset.markdownAcc = markdownAcc;
           renderWorkModeMarkdown(mdEl, markdownAcc, summaryText);
@@ -8755,19 +9856,23 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
   const s = String(userText ?? "").trim();
   if (!s) return null;
   if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return null;
+  if (isPureWorkModePanelOpenRequest(s)) return null;
   const lowered = s.toLowerCase();
   let m = s.match(
-    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
+    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
   );
   if (!m) {
     m = s.match(
-      /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
+      /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(.+?)(?:\s+(?:reasoning\s+)?(?:panel|space|tab|page))?\s*[?.!]*\s*$/i
     );
   }
   if (!m) return null;
   const q = cleanWorkModeActionQueryUi(m[1]);
   if (!q || q.length < 2) return null;
   if (/^\d+$/.test(q)) return null;
+  const normalizedCandidate = _stripPanelSuffixFromTitleQuery(q);
+  if (_panelNavOrdinalTokenToVisual1(normalizedCandidate || q) != null) return null;
+  if (_isPanelNavigationOrdinalPhrase(s)) return null;
   const low = q.toLowerCase().trim();
   const stop = new Set([
     "sleep",
@@ -8789,7 +9894,7 @@ function goToReasoningPanelQueryHeuristicUi(userText) {
     return null;
   }
   const hadTabWord = /\b(?:reasoning|panel|tab|workspace|page)\b/i.test(lowered);
-  if (!hadTabWord && !/\b(?:go\s+back\s+to|go\s+to|jump\s+to|switch\s+to|change\s+to)\b/i.test(lowered)) {
+  if (!hadTabWord && !/\b(?:go\s+back\s+to|go\s+to|jump\s+to|switch\s+to|change\s+to|move\s+to)\b/i.test(lowered)) {
     return null;
   }
   if (!hadTabWord && q.length < 10) return null;
@@ -8842,11 +9947,39 @@ const _REASONING_PANEL_SIMPLE_DEF_RES = [
   /^\s*(?:can\s+you\s+|could\s+you\s+|please\s+)?define\s+(?:the\s+(?:term|word)\s+)?(.+?)\s*[?.!]*\s*$/i
 ];
 
-const _REASONING_PANEL_PUT_RE =
-  /\b(?:put|place|write|answer|show|drop|paste)\s+(?:(this|that|it|them)|the\s+answer|the\s+explanation|an?\s+explanation\s+of\s+(.+?))\s+(?:in|into|onto|on)\s+(?:the\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?/i;
+const _REASONING_PANEL_ORD_WORDS =
+  "first|second|third|fourth|fifth|sixth|seventh|eighth|one|two|three|four|five|six|seven|eight";
 
-const _REASONING_PANEL_IN_RE =
-  /\b(?:in|into|using|on|via|inside|within)\s+(?:(?:the|this|that|a)\s+)?(?:(?:current|active|same|previous|reasoning|work\s*mode|workmode)\s+)*(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|space|page|work\s*mode|workmode)(?:\s*#?\s*(\d+)|\s+(first|second|third|fourth|fifth|sixth|seventh|eighth))?\b/i;
+const _REASONING_PANEL_ORD_TAIL =
+  "(?:\\s*#?\\s*(\\d+)|\\s+(" + _REASONING_PANEL_ORD_WORDS + "))?";
+
+const _REASONING_PANEL_DEST_NOUN =
+  "(?:reasoning(?:\\s+(?:panel|space|tab|page))?|(?:panel|tab|space|page)|work\\s*mode|workmode)" +
+  _REASONING_PANEL_ORD_TAIL;
+
+const _REASONING_PANEL_DEST_ADJ_RE =
+  "(?:(?:current|active|same|previous|new|another|extra|fresh|empty|reasoning|work\\s*mode|workmode)\\s+)*";
+
+const _REASONING_PANEL_PREP_RE = "(?:in|into|inside|within|on|via|using|to)";
+
+const _REASONING_PANEL_ACTION_PUT_RE =
+  "(?:put|place|write|answer|show|drop|paste|explain|send|move|open|work\\s+out|do)";
+
+const _REASONING_PANEL_PUT_RE = new RegExp(
+  "\\b" + _REASONING_PANEL_ACTION_PUT_RE +
+  "\\s+(?:(this|that|it|them)|the\\s+answer|the\\s+explanation|an?\\s+explanation\\s+of\\s+(.+?))" +
+  "\\s+" + _REASONING_PANEL_PREP_RE + "\\s+(?:(?:the|a|my)\\s+)?" +
+  _REASONING_PANEL_DEST_ADJ_RE + _REASONING_PANEL_DEST_NOUN,
+  "i"
+);
+
+const _REASONING_PANEL_IN_RE = new RegExp(
+  "\\b" + _REASONING_PANEL_PREP_RE +
+  "\\s+(?:(?:the|this|that|a|my)\\s+)?" +
+  "(?:(" + _REASONING_PANEL_ORD_WORDS + ")\\s+)?" +
+  _REASONING_PANEL_DEST_ADJ_RE + _REASONING_PANEL_DEST_NOUN + "\\b",
+  "i"
+);
 
 const _REASONING_PANEL_IMPERATIVE_RE =
   /\b(?:use|open|launch|spin\s*up|fire\s*up)\s+(?:up\s+)?(?:(?:a|another|the|one\s+more|some)\s+)?(?:(?:new|extra|additional|empty|fresh|another)\s+)?(?:reasoning\s+(?:panel|space|tab|page)|panel|tab|work\s*mode|workmode)\b/i;
@@ -8856,7 +9989,9 @@ const _REASONING_PANEL_PRONOUN_RE =
 
 const _REASONING_PANEL_ORD_MAP = {
   first: 1, second: 2, third: 3, fourth: 4,
-  fifth: 5, sixth: 6, seventh: 7, eighth: 8
+  fifth: 5, sixth: 6, seventh: 7, eighth: 8,
+  one: 1, two: 2, three: 3, four: 4,
+  five: 5, six: 6, seven: 7, eight: 8
 };
 
 const _REASONING_PANEL_BROAD_TOPIC_RE_LIST = [
@@ -9000,8 +10135,22 @@ function isExplicitReasoningPanelReference(text) {
   const empty = { matched: false, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
   const s = String(text || "").trim();
   if (!s) return empty;
+  if (isExplicitWorkModePanelNavigationIntent(s)) {
+    try {
+      console.info("[explicit_panel_reasoning_target_blocked_for_navigation]", {
+        raw_text: s.slice(0, 240),
+      });
+    } catch (_) {}
+    return empty;
+  }
   const mPut = s.match(_REASONING_PANEL_PUT_RE);
   if (mPut) {
+    try {
+      console.info("[explicit_panel_reasoning_target_detected]", {
+        raw_text: s.slice(0, 240),
+        form: "put",
+      });
+    } catch (_) {}
     const pronoun = (mPut[1] || "").trim().toLowerCase() || null;
     const explicitTopic = (mPut[2] || "").trim() || null;
     const num = mPut[3] ? parseInt(mPut[3], 10) : null;
@@ -9019,8 +10168,15 @@ function isExplicitReasoningPanelReference(text) {
   }
   const mIn = s.match(_REASONING_PANEL_IN_RE);
   if (mIn) {
-    const num = mIn[1] ? parseInt(mIn[1], 10) : null;
-    const ord = (mIn[2] || "").toLowerCase();
+    try {
+      console.info("[explicit_panel_reasoning_target_detected]", {
+        raw_text: s.slice(0, 240),
+        form: "in",
+      });
+    } catch (_) {}
+    const preOrd = (mIn[1] || "").toLowerCase();
+    const num = mIn[2] ? parseInt(mIn[2], 10) : null;
+    const ord = (mIn[3] || preOrd || "").toLowerCase();
     const targetPanel = Number.isFinite(num)
       ? num
       : (_REASONING_PANEL_ORD_MAP[ord] != null ? _REASONING_PANEL_ORD_MAP[ord] : null);
@@ -9041,7 +10197,10 @@ function isExplicitReasoningPanelReference(text) {
     };
   }
   if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
-    return { matched: true, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
+    if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|and\s+explain)\b/i.test(s)) {
+      return { matched: true, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
+    }
+    return empty;
   }
   return empty;
 }
@@ -9054,6 +10213,122 @@ function isExplicitReasoningPanelReference(text) {
 function resolveReasoningPanelTopicFromContext() {
   const t = String(workModeLastSubstantiveUserText || "").trim();
   return t;
+}
+
+/**
+ * Pull the substantive question/task from the portion of the utterance that
+ * precedes an explicit panel-destination phrase ("… in this panel").
+ */
+function extractRawTopicBeforePanelPhrase(text) {
+  const s = String(text || "").trim();
+  if (!s) return "";
+  const panelM = s.match(_REASONING_PANEL_IN_RE) || s.match(_REASONING_PANEL_PUT_RE);
+  if (!panelM) return "";
+  return s.slice(0, panelM.index ?? 0).trim().replace(/[?,;.]+\s*$/u, "").trim();
+}
+
+function extractSubstantiveTopicBeforePanelPhrase(text) {
+  const s = String(text || "").trim();
+  if (!s) return "";
+  if (isExplicitWorkModePanelNavigationIntent(s)) return "";
+  const panelM = s.match(_REASONING_PANEL_IN_RE);
+  if (!panelM) return "";
+  let before = s.slice(0, panelM.index ?? 0).trim().replace(/[?,;.]+\s*$/u, "").trim();
+  if (!before) return "";
+  before = before
+    .replace(
+      /\s*(?:[,;]|\?)?\s*(?:(?:can|could|would|will)\s+you\s+|please\s+)?(?:explain|describe|write|put|show)\s+(?:it|that|this|them)(?:\s+there)?\s*$/iu,
+      ""
+    )
+    .trim()
+    .replace(/[?,;.]+\s*$/u, "")
+    .trim();
+  if (!before) return "";
+  const parts = before.split(/\?\s+/u).map((p) => p.trim()).filter(Boolean);
+  if (parts.length > 1) {
+    const substantive = parts.find((p) => p.length >= 12) || parts[0];
+    if (!substantive) return "";
+    return substantive.endsWith("?") ? substantive : `${substantive}?`;
+  }
+  return before.length >= 8 ? before : "";
+}
+
+function cleanExplicitPanelReasoningTask(text) {
+  let t = String(text || "").trim();
+  if (!t) return "";
+  t = t.replace(/^(?:(?:can|could|would|will)\s+you\s+|please\s+)+/i, "").trim();
+  t = t.replace(/[?.!,;]+\s*$/u, "").trim();
+  if (!t) return "";
+  if (!/^[A-Z]/.test(t)) t = t.charAt(0).toUpperCase() + t.slice(1);
+  if (!/[.!?]$/.test(t)) t += ".";
+  return t;
+}
+
+function extractExplicitPanelTopicLabelForAck(cleanedTask) {
+  const fromClean = String(cleanedTask || "").trim();
+  const m = fromClean.match(/^Explain\s+(.+?)\.?$/i);
+  if (m && m[1] && !/^(?:it|that|this|them)$/i.test(m[1].trim())) {
+    return m[1].trim().replace(/\.$/, "");
+  }
+  return null;
+}
+
+/** Resolve explicit-panel pronoun topics from prior turn, same utterance, or voice anchor. */
+function resolveTopicForExplicitPanelReference(text, ref) {
+  if (!ref || !ref.matched) return { topic: "", priorTopicUsed: false, source: "none" };
+  if (ref.topic) {
+    return {
+      topic: cleanExplicitPanelReasoningTask(String(ref.topic).trim()),
+      priorTopicUsed: false,
+      source: "explicit_topic",
+    };
+  }
+  const fromSameUtterance = extractSubstantiveTopicBeforePanelPhrase(text);
+  if (fromSameUtterance) {
+    return {
+      topic: cleanExplicitPanelReasoningTask(fromSameUtterance),
+      priorTopicUsed: false,
+      source: "same_utterance_before_panel_phrase",
+    };
+  }
+  if (ref.wasPronoun) {
+    const fromPrior = resolveReasoningPanelTopicFromContext();
+    if (fromPrior) {
+      return {
+        topic: fromPrior,
+        priorTopicUsed: true,
+        source: "prior_substantive_user_text",
+      };
+    }
+    const rawBefore = extractRawTopicBeforePanelPhrase(text);
+    if (rawBefore && !/^(?:that|this|it)(?:\s+there)?[?.!]*$/i.test(rawBefore)) {
+      return { topic: rawBefore, priorTopicUsed: false, source: "same_utterance_raw_before_panel" };
+    }
+    return { topic: "", priorTopicUsed: false, source: "unresolved" };
+  }
+  const rawBefore = extractRawTopicBeforePanelPhrase(text);
+  if (rawBefore) {
+    return {
+      topic: cleanExplicitPanelReasoningTask(rawBefore),
+      priorTopicUsed: false,
+      source: "same_utterance_raw_before_panel",
+    };
+  }
+  const fromPrior = resolveReasoningPanelTopicFromContext();
+  if (fromPrior) {
+    return {
+      topic: fromPrior,
+      priorTopicUsed: false,
+      source: "prior_substantive_user_text",
+    };
+  }
+  return { topic: "", priorTopicUsed: false, source: "unresolved" };
+}
+
+function rememberWorkModeSubstantiveUserText(text) {
+  const t = String(text || "").trim();
+  if (!t || isGenericExampleFollowUpText(t)) return;
+  workModeLastSubstantiveUserText = t;
 }
 
 /**
@@ -9092,7 +10367,7 @@ function resolveReasoningPanelTopicFromContext() {
  *     (single family; let existing music handler take it)
  */
 const _WMC_PANEL_FAMILY_RE =
-  /\b(?:go(?:\s+back)?\s+to|jump\s+to|switch\s+to|change\s+to|open|close|hide|dismiss|create|make|add|new|navigate\s+to|use|show|select)\s+(?:a\s+|the\s+|my\s+|all\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b/i;
+  /\b(?:go(?:\s+back)?\s+to|jump\s+to|switch\s+to|change\s+to|move\s+to|open|close|hide|dismiss|create|make|add|new|navigate\s+to|use|show|select)\s+(?:a\s+|the\s+|my\s+|all\s+)?(?:new\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\b|\b(?:next|previous|prior)\s+panel\b/i;
 /* 2026-06-01 — added "help me plan|draft|outline|brainstorm" and the
    bare ``plan <my|an|the|out>`` reasoning verb so compound utterances
    like "Open panel 2 and help me plan my essay there" register the
@@ -9101,77 +10376,1394 @@ const _WMC_PANEL_FAMILY_RE =
    by a determiner/possessive token so "follow the plan" / "the plan"
    noun usages don't pollute the family detector. */
 const _WMC_REASONING_FAMILY_RE =
-  /\b(?:explain|describe|tell\s+me\s+about|summari[sz]e|analy[sz]e|solve|prove|derive|write|draft|compose|outline|compare|teach\s+me|walk\s+me\s+through|break\s+down|step[-\s]*by[-\s]*step|in\s+detail|deep\s*dive|thorough\s+(?:overview|explanation|analysis)|help\s+me\s+(?:plan|draft|outline|brainstorm|write|solve|understand|with)|plan\s+(?:out\s+)?(?:my|an?|the|this|that)\b)/i;
+  /\b(?:explain|describe|tell\s+me\s+about|summari[sz]e|analy[sz]e|solve|prove|derive|write|draft|compose|outline|compare|teach\s+me|walk\s+me\s+through|break\s+down|step[-\s]*by[-\s]*step|in\s+detail|deep\s*dive|thorough\s+(?:overview|explanation|analysis)|help\s+me\s+(?:plan|draft|outline|brainstorm|write|solve|understand|with|do\b)|plan\s+(?:out\s+)?(?:my|an?|the|this|that)\b)/i;
 const _WMC_MUSIC_FAMILY_RE =
   /\b(?:play|pause|stop|resume|mute|unmute|unpause|skip(?:\s+(?:to\s+the\s+)?(?:next|previous|forward|back))?|next\s+(?:song|track)|previous\s+(?:song|track))\b|\b(?:turn|raise|lower|crank)\s+(?:up\s+|down\s+)?(?:the\s+)?(?:music|volume)\b/i;
 const _WMC_TIMER_FAMILY_RE =
-  /\b(?:set|start|begin)\s+(?:a\s+|the\s+|another\s+)?timer\b|\btimer\s+for\b|\bcancel\s+(?:the\s+|that\s+|my\s+)?timer\b|\berase\s+(?:the\s+|that\s+|my\s+)?timer\b/i;
+  /\b(?:set|start|create|make|begin)\s+(?:a\s+|an\s+|the\s+|another\s+|my\s+)?(?:[\w'-]+\s+){0,5}timer\b|\btimer\s+for\b|\bcancel\s+(?:the\s+|that\s+|my\s+)?timer\b|\berase\s+(?:the\s+|that\s+|my\s+)?timer\b/i;
+const _WMC_SEARCH_FAMILY_RE =
+  /\b(?:search(?:\s+the\s+web)?\s+for|look\s+up|google)\b/i;
+const _WMC_CHECKLIST_PLAN_FAMILY_RE =
+  /\b(?:help\s+me\s+)?(?:plan|planning|prioriti[sz]e|break\s*(?:it\s*)?down|organi[sz]e)\b.{0,80}?\b(?:check\s*list|checklist|to-?do|todo|task\s*list|tasks?)\b|\bplan\s+(?:using|with|from)\s+(?:the\s+|my\s+)?(?:check\s*list|checklist|to-?do|todo|task\s*list)\b/i;
 const _WMC_CHECKLIST_FAMILY_RE =
   /\b(?:add|put|remove|delete|cross\s+off|check\s+off|complete|mark)\b[^.?!]{0,40}\b(?:checklist|plan|todo|to[-\s]?do|list)\b|\b(?:checklist|plan|to[-\s]?do(?:\s+list)?)\b[^.?!]{0,40}\b(?:add|remove|delete|complete|mark)\b|\bcross\s+off\s+the\s+(?:first|second|third|fourth|fifth|last)\b/i;
 
-function detectCompoundActionFamilies(text) {
-  const s = String(text || "").trim();
-  if (!s) return { isCompound: false, families: [], reason: "empty" };
+function _hasImplicitChecklistMutationFamily(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (typeof detectImplicitChecklistMutation === "function") {
+    const implicit = detectImplicitChecklistMutation(t);
+    if (implicit?.detected) return true;
+  }
+  const low = t.toLowerCase();
+  if (/\b(?:checklist|to-?do(?:\s+list)?)\b/.test(low)) return false;
+  if (/\b(?:remove|delete|close|clear|hide|dismiss)\s+(?:the\s+)?(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|\d+(?:st|nd|rd|th)?)\s+)?(?:reasoning\s+)?(?:panel|tab)\b/.test(low)) {
+    return false;
+  }
+  if (/\b(?:remove|delete|cross\s+off|check\s+off)\s+\S/.test(low)) return true;
+  if (/\b(?:complete|mark)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|last|\d+)\b/.test(low)) return true;
+  if (/\b(?:add|append|insert)\s+(?!(\d+\s*(?:minute|minutes|min|hour|hours|second|seconds)\s+to\s+(?:the\s+)?timer\b))/.test(low)) {
+    if (/\b(?:add|append|insert)\s+(?:more\s+)?(?:detail|evidence)\b/.test(low)) return false;
+    if (/\b(?:add|append|insert)\s+.+\s+in\s+(?:the\s+)?panel\s+\d+\b/.test(low)) return false;
+    return true;
+  }
+  if (/\bmark\s+.+\s+(?:complete|completed|done)\b/.test(low)) return true;
+  if (/\b(?:check\s+off|tick\s+off)\s+\S/.test(low)) return true;
+  return false;
+}
+
+function _familiesForCompoundClause(clause) {
+  const s = String(clause || "").trim();
+  if (!s) return [];
   const families = [];
   if (_WMC_PANEL_FAMILY_RE.test(s)) families.push("panel");
   if (_WMC_REASONING_FAMILY_RE.test(s)) families.push("reasoning");
   if (_WMC_MUSIC_FAMILY_RE.test(s)) families.push("music");
   if (_WMC_TIMER_FAMILY_RE.test(s)) families.push("timer");
+  if (_WMC_SEARCH_FAMILY_RE.test(s)) families.push("search");
+  if (_WMC_CHECKLIST_PLAN_FAMILY_RE.test(s)) families.push("checklist_plan");
+  if (_WMC_CHECKLIST_FAMILY_RE.test(s) || _hasImplicitChecklistMutationFamily(s)) families.push("checklist");
+  if (!families.includes("panel") && /\bin\s+(?:the\s+)?panel\s+\d+\b/i.test(s)) families.push("panel");
+  if (!families.includes("panel") && _REASONING_PANEL_IN_RE.test(s)) families.push("panel");
+  if (
+    !families.includes("panel") &&
+    /\b(?:remove|delete|close|clear|hide|dismiss)\b[^.?!]{0,40}\b(?:reasoning\s+)?(?:panel|tab)s?\b/i.test(s)
+  ) {
+    families.push("panel");
+  }
+  if (families.includes("checklist_plan")) {
+    const reasoningOnlyIdx = families.indexOf("reasoning");
+    if (reasoningOnlyIdx >= 0) families.splice(reasoningOnlyIdx, 1);
+  }
+  return families;
+}
+
+function _connectorClauseCompoundDetection(text) {
+  const raw = String(text || "").trim();
+  if (!raw || !/\s+(?:and|then|also)\s+|,\s+/i.test(raw)) return null;
+  const clauses = raw.split(/\s*,\s*|\s+(?:and|then|also)\s+/i).map((c) => c.trim()).filter(Boolean);
+  if (clauses.length < 2) return null;
+  const perClause = clauses.map(_familiesForCompoundClause).filter((f) => f.length);
+  if (perClause.length < 2) return null;
+  const union = [...new Set(perClause.flat())];
+  if (union.length >= 2) {
+    return { isCompound: true, families: union, reason: "connector_clause_multi_family" };
+  }
+  const panelOnlyClauses = perClause.filter((f) => f.length === 1 && f[0] === "panel").length;
+  if (panelOnlyClauses >= 2) {
+    return { isCompound: true, families: ["panel"], reason: "connector_clause_multi_panel" };
+  }
+  return null;
+}
+
+function _countDistinctPanelSubIntents(text) {
+  const low = String(text || "").toLowerCase();
+  let count = 0;
+  if (parseWorkModePanelOpenRequest(text) || /\b(?:open|create|make|add)\s+(?:a|an|another|one\s+more|new)\s+(?:new\s+)?(?:reasoning\s+)?(?:panel|one)\b/.test(low)) {
+    count += 1;
+  }
+  if (/\bclose\b[^.?!]{0,48}\bpanel\b/.test(low)) count += 1;
+  if (/\b(?:switch|go|jump|navigate|move)\s+to\b[^.?!]{0,80}\bpanel\b/.test(low)) count += 1;
+  return count;
+}
+
+function detectPanelShortcutClauses(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  if (!/\s+(?:and|then|also)\s+|,\s+/i.test(raw)) return [raw];
+  return raw.split(/\s*,\s*|\s+(?:and|then|also)\s+/i).map((c) => c.trim()).filter(Boolean);
+}
+
+function isSinglePanelShortcutActionClause(clause) {
+  const c = String(clause || "").trim();
+  if (!c) return false;
+  if (detectMoveLatestVoiceTaskToReasoningIntent(c).matched) return false;
+  if (_REASONING_PANEL_PUT_RE.test(c)) return false;
+  if (/\b(?:this|that|it|them)\b/i.test(c) && _REASONING_PANEL_IN_RE.test(c)) return false;
+  if (
+    /\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|an?\s+explanation)\b/i.test(c) &&
+    _REASONING_PANEL_IN_RE.test(c)
+  ) {
+    return false;
+  }
+  if (_REASONING_PANEL_IMPERATIVE_RE.test(c)) return true;
+  if (parseWorkModePanelOpenRequest(c)) return true;
+  if (/\bclose\b[^.?!]{0,48}\bpanel\b/i.test(c)) return true;
+  if (isExplicitWorkModePanelNavigationIntent(c)) return true;
+  return false;
+}
+
+/**
+ * True when the utterance chains multiple executable actions and must reach
+ * the backend multi-action planner instead of a greedy frontend panel shortcut.
+ */
+function isCompoundActionUtterance(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  if (
+    /\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me)\b/i.test(s) &&
+    _REASONING_PANEL_IN_RE.test(s)
+  ) {
+    return false;
+  }
+  const clauses = detectPanelShortcutClauses(s);
+  const panelActionClauses = clauses.filter(isSinglePanelShortcutActionClause);
+  if (panelActionClauses.length >= 2) return true;
+  if (_countDistinctPanelSubIntents(s) >= 2) return true;
+  const compound = detectCompoundActionFamilies(s);
+  if (!compound.isCompound) return false;
+  if (
+    compound.reason === "multi_panel_sub_intents" ||
+    compound.reason === "connector_clause_multi_panel"
+  ) {
+    return true;
+  }
+  const families = compound.families || [];
+  if (families.length >= 2) return true;
+  if (clauses.length >= 2) {
+    const panelClauseCount = clauses.filter((c) => _familiesForCompoundClause(c).includes("panel")).length;
+    if (panelClauseCount >= 2) return true;
+  }
+  return families.some((f) => f !== "panel");
+}
+
+try { window.isCompoundActionUtterance = isCompoundActionUtterance; } catch (_) {}
+
+function detectCompoundActionFamilies(text) {
+  const s = String(text || "").trim();
+  if (!s) return { isCompound: false, families: [], reason: "empty" };
+  const implicitChecklist =
+    typeof detectImplicitChecklistMutation === "function" ? detectImplicitChecklistMutation(s) : null;
+  if (implicitChecklist?.detected && implicitChecklist.count >= 2) {
+    try {
+      console.info("[compound_family_detected]", {
+        families: ["checklist"],
+        reason: "multi_checklist_mutation_implicit",
+      });
+      console.info("[compound_route_to_planner]", {
+        reason: "multi_checklist_mutation_implicit",
+        raw_preview: s.slice(0, 240),
+      });
+      console.info("[reasoning_fallback_blocked]", {
+        reason: "checklist_action_detected",
+        mutation_count: implicitChecklist.count,
+      });
+    } catch (_) {}
+    return {
+      isCompound: true,
+      families: ["checklist"],
+      reason: "multi_checklist_mutation_implicit",
+    };
+  }
+  const connectorCompound = _connectorClauseCompoundDetection(s);
+  if (connectorCompound) {
+    try {
+      console.info("[compound_family_detected]", {
+        families: connectorCompound.families,
+        reason: connectorCompound.reason,
+      });
+      console.info("[compound_route_to_planner]", {
+        reason: connectorCompound.reason,
+        raw_preview: s.slice(0, 240),
+      });
+    } catch (_) {}
+    return connectorCompound;
+  }
+  const families = [];
+  if (_WMC_PANEL_FAMILY_RE.test(s)) families.push("panel");
+  if (_WMC_REASONING_FAMILY_RE.test(s)) families.push("reasoning");
+  if (_WMC_MUSIC_FAMILY_RE.test(s)) families.push("music");
+  if (_WMC_TIMER_FAMILY_RE.test(s)) families.push("timer");
+  if (_WMC_SEARCH_FAMILY_RE.test(s)) families.push("search");
+  if (_WMC_CHECKLIST_PLAN_FAMILY_RE.test(s)) families.push("checklist_plan");
   if (_WMC_CHECKLIST_FAMILY_RE.test(s)) families.push("checklist");
+  if (!families.includes("checklist") && _hasImplicitChecklistMutationFamily(s)) families.push("checklist");
+  if (
+    implicitChecklist?.detected &&
+    implicitChecklist.count >= 2 &&
+    !families.includes("checklist")
+  ) {
+    families.push("checklist");
+  }
   /* Also count implicit "in panel N" as a panel family — covers
      "explain X in panel 2" which the backend planner rewrites into
      panel.navigate + reasoning.request. */
   if (!families.includes("panel") && /\bin\s+(?:the\s+)?panel\s+\d+\b/i.test(s)) {
     families.push("panel");
   }
-  const isCompound = families.length >= 2;
+  if (!families.includes("panel") && _REASONING_PANEL_IN_RE.test(s)) {
+    families.push("panel");
+  }
+  /* Checklist help-plan ("plan using the checklist") also matches the
+     reasoning family's ``help me plan`` branch — treat as one family so
+     the frontend plan shortcut is not deferred to /infer chat. */
+  if (families.includes("checklist_plan")) {
+    const reasoningOnlyIdx = families.indexOf("reasoning");
+    if (reasoningOnlyIdx >= 0) families.splice(reasoningOnlyIdx, 1);
+  }
+  const panelSubIntents = _countDistinctPanelSubIntents(s);
+  if (panelSubIntents >= 2) {
+    return {
+      isCompound: true,
+      families: families.length ? families : ["panel"],
+      reason: "multi_panel_sub_intents",
+    };
+  }
+  /* Panel phrase as routing destination (substantive topic + "in panel N")
+     is a single reasoning intent — not a compound panel+reasoning command.
+     Do NOT collapse when other executable families (music, timer, search,
+     checklist) are also present — those must defer to the backend planner. */
+  const _nonPanelReasoningFamilies = families.filter(
+    (f) => f !== "panel" && f !== "reasoning"
+  );
+  if (
+    families.length >= 2 &&
+    families.includes("panel") &&
+    families.includes("reasoning") &&
+    _nonPanelReasoningFamilies.length === 0 &&
+    extractSubstantiveTopicBeforePanelPhrase(s)
+  ) {
+    return {
+      isCompound: false,
+      families: ["reasoning"],
+      reason: "panel_routing_directive_single_intent"
+    };
+  }
+  const isCompound =
+    families.length >= 2 ||
+    (implicitChecklist?.detected && implicitChecklist.count >= 2 && families.includes("checklist"));
   const reason = isCompound
-    ? `compound_${families.join("_")}`
+    ? implicitChecklist?.detected && implicitChecklist.count >= 2 && families.length === 1
+      ? "multi_checklist_mutation_implicit"
+      : `compound_${families.join("_")}`
     : (families.length === 1 ? `single_family_${families[0]}` : "no_action_families");
+  if (isCompound) {
+    try {
+      console.info("[compound_family_detected]", { families, reason });
+      console.info("[compound_route_to_planner]", { reason, raw_preview: s.slice(0, 240) });
+    } catch (_) {}
+  }
   return { isCompound, families, reason };
 }
 
 try { window.detectCompoundActionFamilies = detectCompoundActionFamilies; } catch (_) {}
 
+/**
+ * True when the utterance is a compound executable command that must NOT be
+ * swallowed by the explicit-panel reasoning gate (music+explain in panel N, etc.).
+ */
+function shouldBlockExplicitPanelRouteForCompoundExecutable(text, opts = {}) {
+  if (opts && opts.__reasoningGateForceRoute === "reasoning_panel") {
+    return { blocked: false, reason: "caller_forced_reasoning_panel" };
+  }
+  const s = String(text || "").trim();
+  if (!s) return { blocked: false, reason: "empty" };
+  const compound = detectCompoundActionFamilies(s);
+  if (!compound.isCompound) {
+    return { blocked: false, reason: compound.reason || "not_compound", compound };
+  }
+  const explicitRef = isExplicitReasoningPanelReference(s);
+  if (explicitRef.matched) {
+    try {
+      console.info("[explicit_panel_route_detected]", {
+        raw_text: s.slice(0, 240),
+        target_panel: explicitRef.targetPanel ?? null,
+      });
+      console.info("[explicit_panel_route_blocked_for_compound]", {
+        reason: "other_executable_family",
+        families: compound.families,
+        raw_text: s.slice(0, 240),
+        target_panel: explicitRef.targetPanel ?? null,
+      });
+    } catch (_) {}
+  }
+  return {
+    blocked: true,
+    reason: compound.reason || "compound_executable",
+    compound,
+    explicitRef,
+  };
+}
+
+function deferReasoningGateToCompoundPlanner(trimmed, opts, noRouteMeta) {
+  const callerForcedReasoning =
+    Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel");
+  if (callerForcedReasoning) return false;
+  const block = shouldBlockExplicitPanelRouteForCompoundExecutable(trimmed, opts);
+  if (!block.blocked) return false;
+  const _compound = block.compound || detectCompoundActionFamilies(trimmed);
+  logReasoningRouteDebug({
+    raw_text: String(trimmed || "").slice(0, 240),
+    reasoning_gate_called: true,
+    reasoning_gate_result: "voice_ui",
+    reasoning_gate_reason: "compound_defer_to_backend_planner",
+    explicit_panel_reference: Boolean(block.explicitRef?.matched),
+    simple_definition_detected: false,
+    brief_explanation_detected: false,
+    broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
+    complex_task_detected: false,
+    active_work_mode: true,
+    prior_topic_used: false,
+    resolved_topic: null,
+    route_source: "frontend_compound_defer_to_backend",
+    final_panel_target: block.explicitRef?.targetPanel ?? null,
+    final_route: "chat",
+    final_route_reasoning: false,
+    backend_classify_route: null,
+    backend_category: null,
+    backend_confidence: null,
+    heuristic_reasoning: false,
+    personal_statement_veto: false,
+    venting_signals: [],
+    venting_score: 0,
+    explicit_artifact_intent: false,
+    artifact_signals: [],
+    force_active_lane: false,
+    task_follow_up_continuing: false,
+    planning_intent: false,
+    reason: _compound.reason,
+    compound_action_families_detected: _compound.families,
+    math_router_enabled: MATH_ROUTER_ENABLED,
+    arithmetic_fast_path_match: false
+  });
+  try {
+    console.info("[reasoning_gate_skip]", {
+      reason: "multi_action_executable",
+      raw_transcript: String(trimmed || "").slice(0, 240),
+      compound_action_families_detected: _compound.families,
+    });
+    console.info("[reasoning_gate_deferred_to_compound_planner]", {
+      raw_transcript: String(trimmed || "").slice(0, 240),
+      compound_action_families_detected: _compound.families,
+      clean_reasoning_span_if_available: null,
+    });
+    console.info("[reasoning_fallback_blocked]", {
+      reason: "compound_actions",
+      families: _compound.families,
+    });
+    console.info("[compound_route_to_planner]", {
+      reason: _compound.reason,
+      raw_preview: String(trimmed || "").slice(0, 240),
+      explicit_panel_deferred: Boolean(block.explicitRef?.matched),
+    });
+  } catch (_) {}
+  if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
+  return true;
+}
+
+try { window.shouldBlockExplicitPanelRouteForCompoundExecutable = shouldBlockExplicitPanelRouteForCompoundExecutable; } catch (_) {}
+
 
 function isExplicitWorkModePanelNavigationIntent(text) {
   const s = String(text ?? "").trim();
   if (!s) return false;
+  if (isPureWorkModePanelOpenRequest(s)) return false;
   if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return false;
+  if (_REASONING_PANEL_PUT_RE.test(s)) return false;
   const low = s.toLowerCase();
+  if (/\b(?:this|that|it|them)\b/i.test(s) && _REASONING_PANEL_IN_RE.test(s)) return false;
+  if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|an?\s+explanation)\b/i.test(low) && _REASONING_PANEL_IN_RE.test(s)) {
+    return false;
+  }
+  if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
+    if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|and\s+explain)\b/i.test(low)) {
+      return false;
+    }
+    return true;
+  }
+  const _navVerb =
+    /(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)/i;
   if (
-    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(
+    _navVerb.test(low) &&
+    /\b(?:go\s+to\s+)?next\s+panel\b/i.test(low)
+  ) {
+    return true;
+  }
+  if (
+    _navVerb.test(low) &&
+    /\b(?:go\s+to\s+)?(?:previous|prior)\s+panel\b/i.test(low)
+  ) {
+    return true;
+  }
+  if (/\bgo\s+back\s+to\s+(?:the\s+)?(?:previous|prior|last)\s+panel\b/i.test(low)) {
+    return true;
+  }
+  if (
+    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(
       low
     )
   ) {
     return true;
   }
   if (
-    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(
+    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\s+(?:the\s+|a\s+|my\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(
       low
     )
   ) {
     return true;
   }
   if (
-    /\b(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\b/i.test(low) &&
+    _navVerb.test(low) &&
     /\b(?:reasoning\s+)?(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(low)
   ) {
+    if (/\b(?:this|that|it|them)\b/i.test(low)) return false;
+    if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|an?\s+explanation)\b/i.test(low)) {
+      return false;
+    }
     return true;
   }
   if (
-    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\b/i.test(s) &&
+    /\b(?:can you|could you|please)\s+(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\b/i.test(s) &&
     /(?:reasoning\s+)?(?:panel|space|tab|page)\s*[?.!]*\s*$/i.test(s.trim())
   ) {
     return true;
   }
   if (
-    /^(?:go\s+back\s+to|go to|jump to|switch to|change to|show|select|use|open)\b/i.test(s.trim()) &&
+    /^(?:go\s+back\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)\b/i.test(s.trim()) &&
     /(?:reasoning\s+)?(?:panel|space|tab|page)\s*[?.!]*\s*$/i.test(s.trim())
   ) {
     return true;
+  }
+  if (/^\s*(?:next|previous|prior)\s+panel\s*[?.!]*\s*$/i.test(s)) {
+    return true;
+  }
+  if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|and\s+explain)\b/i.test(low)) {
+    return false;
   }
   return goToReasoningPanelQueryHeuristicUi(s) != null;
+}
+
+function _panelNavOrdinalTokenToVisual1(tok) {
+  const t = String(tok || "").toLowerCase().trim();
+  if (!t) return null;
+  if (_REASONING_PANEL_ORD_MAP[t] != null) return _REASONING_PANEL_ORD_MAP[t];
+  if (/^\d+(?:st|nd|rd|th)$/i.test(t)) {
+    return parseInt(t.replace(/(?:st|nd|rd|th)$/i, ""), 10);
+  }
+  if (/^\d+$/.test(t)) return parseInt(t, 10);
+  return null;
+}
+
+const _PANEL_NAV_VERB_PHRASE_RE =
+  "(?:go\\s+back\\s+to|go to|jump to|switch to|change to|move to|show|select|use|open)";
+const _PANEL_NAV_POLITE_PREFIX_RE = "(?:can you|could you|please)\\s+";
+const _PANEL_NAV_ARTICLE_RE = "(?:the\\s+|a\\s+|my\\s+)?";
+const _PANEL_NAV_ORDINAL_TOKEN_RE =
+  "(first|second|third|fourth|fifth|sixth|seventh|eighth|one|two|three|four|five|six|seven|eight|\\d+)(?:st|nd|rd|th)?";
+const _PANEL_NAV_DEST_NOUN_RE = "(?:reasoning\\s+)?(?:panel|space|tab|page)";
+
+function _logPanelNavigationTargetParse(fields) {
+  try {
+    console.info("[panel_navigation_target_parse] " + JSON.stringify(fields));
+  } catch (_) {}
+}
+
+function _isPanelNavigationOrdinalPhrase(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  const low = s.toLowerCase();
+  if (
+    /\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|one|two|three|four|five|six|seven|eight)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(
+      low
+    )
+  ) {
+    return true;
+  }
+  if (/\b(?:panel|space|tab|page)\s*#?\s*\d+\b/i.test(low)) return true;
+  if (/\b\d+(?:st|nd|rd|th)\s+(?:reasoning\s+)?(?:panel|space|tab|page)\b/i.test(low)) {
+    return true;
+  }
+  return false;
+}
+
+function _detectPanelNavigationOrdinalInText(text) {
+  const rawText = String(text || "").trim();
+  if (!rawText) return null;
+  const patterns = [
+    {
+      name: "polite_verb_ordinal_panel",
+      re: new RegExp(
+        "\\b" +
+          _PANEL_NAV_POLITE_PREFIX_RE +
+          _PANEL_NAV_VERB_PHRASE_RE +
+          "\\s+" +
+          _PANEL_NAV_ARTICLE_RE +
+          _PANEL_NAV_ORDINAL_TOKEN_RE +
+          "\\s+" +
+          _PANEL_NAV_DEST_NOUN_RE +
+          "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+    {
+      name: "verb_ordinal_panel",
+      re: new RegExp(
+        "\\b" +
+          _PANEL_NAV_VERB_PHRASE_RE +
+          "\\s+" +
+          _PANEL_NAV_ARTICLE_RE +
+          _PANEL_NAV_ORDINAL_TOKEN_RE +
+          "\\s+" +
+          _PANEL_NAV_DEST_NOUN_RE +
+          "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+    {
+      name: "panel_number",
+      re: /\b(?:panel|space|tab|page)\s*#?\s*(\d+)\b/i,
+      group: 1,
+    },
+  ];
+  for (const pat of patterns) {
+    const m = rawText.match(pat.re);
+    if (!m || !m[pat.group]) continue;
+    const token = m[pat.group];
+    const visual1 = _panelNavOrdinalTokenToVisual1(token);
+    if (!visual1) continue;
+    const ordinalValue = /^\d/.test(String(token)) ? null : String(token).toLowerCase();
+    const numericValue = /^\d/.test(String(token)) ? visual1 : null;
+    try {
+      console.info(
+        "[panel_navigation_ordinal_detected] " +
+          JSON.stringify({
+            raw_text: rawText.slice(0, 240),
+            normalized_text: rawText.toLowerCase().slice(0, 240),
+            matched_pattern: pat.name,
+            target_phrase: m[0].slice(0, 120),
+            ordinal_value: ordinalValue,
+            numeric_value: numericValue,
+            resolved_visual_index: visual1,
+          })
+      );
+    } catch (_) {}
+    return {
+      visualIndex1Based: visual1,
+      matchedPattern: pat.name,
+      targetPhrase: m[0],
+      ordinalValue,
+      numericValue,
+    };
+  }
+  return null;
+}
+
+function _stripPanelSuffixFromTitleQuery(q) {
+  return String(q || "")
+    .trim()
+    .replace(/^\s*the\s+/i, "")
+    .replace(/\s+(?:reasoning\s+)?(?:panel|space|tab|page)\s*$/i, "")
+    .trim();
+}
+
+function _resolvePanelNavigationSwitchFromVisual1(visual1) {
+  const want = Number(visual1);
+  if (!Number.isFinite(want) || want < 1) return null;
+  const order =
+    typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+  const entry = order[want - 1];
+  if (!entry) return { kind: "switch", visualIndex1Based: want, error: "no_such_panel" };
+  const tabIdx =
+    typeof resolveReasoningPanelTabIndexFromVisual1 === "function"
+      ? resolveReasoningPanelTabIndexFromVisual1(want)
+      : entry.tabIndex;
+  return {
+    kind: "switch",
+    visualIndex1Based: want,
+    tabIndex: tabIdx,
+    label: entry.label,
+  };
+}
+
+function parseWorkModePanelNavigationTarget(text) {
+  const s = String(text || "").trim();
+  if (!s) return null;
+  const low = s.toLowerCase();
+
+  if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
+    return { kind: "open_new" };
+  }
+  if (!isExplicitWorkModePanelNavigationIntent(s)) return null;
+
+  if (/\b(?:go\s+to\s+)?next\s+panel\b/i.test(low)) {
+    const order =
+      typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    const activeTabIdx =
+      typeof getActiveReasoningLaneIndex === "function" ? getActiveReasoningLaneIndex() : null;
+    let cur = order.findIndex((p) => p.tabIndex === activeTabIdx);
+    if (cur < 0) cur = 0;
+    if (cur + 1 >= order.length) return { kind: "next", error: "no_next" };
+    const entry = order[cur + 1];
+    return {
+      kind: "switch",
+      visualIndex1Based: entry.visualIndex,
+      tabIndex: entry.tabIndex,
+      label: entry.label,
+      relative: "next",
+    };
+  }
+
+  if (
+    /\b(?:go\s+to\s+)?(?:previous|prior)\s+panel\b/i.test(low) ||
+    /\bgo\s+back\s+to\s+(?:the\s+)?(?:previous|prior|last)\s+panel\b/i.test(low)
+  ) {
+    const order =
+      typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    const activeTabIdx =
+      typeof getActiveReasoningLaneIndex === "function" ? getActiveReasoningLaneIndex() : null;
+    let cur = order.findIndex((p) => p.tabIndex === activeTabIdx);
+    if (cur < 0) cur = 0;
+    if (cur - 1 < 0) return { kind: "previous", error: "no_previous" };
+    const entry = order[cur - 1];
+    return {
+      kind: "switch",
+      visualIndex1Based: entry.visualIndex,
+      tabIndex: entry.tabIndex,
+      label: entry.label,
+      relative: "previous",
+    };
+  }
+
+  const ordHit = _detectPanelNavigationOrdinalInText(s);
+  if (ordHit?.visualIndex1Based) {
+    const resolved = _resolvePanelNavigationSwitchFromVisual1(ordHit.visualIndex1Based);
+    _logPanelNavigationTargetParse({
+      raw_text: s.slice(0, 240),
+      normalized_text: low.slice(0, 240),
+      matched_pattern: ordHit.matchedPattern,
+      target_phrase: String(ordHit.targetPhrase || "").slice(0, 120),
+      ordinal_value: ordHit.ordinalValue,
+      numeric_value: ordHit.numericValue,
+      title_candidate: null,
+      resolved_visual_index: ordHit.visualIndex1Based,
+      resolved_panel_label: resolved?.label ?? null,
+      fallback_used: false,
+    });
+    return {
+      ...resolved,
+      matchedPattern: ordHit.matchedPattern,
+      ordinalValue: ordHit.ordinalValue,
+      numericValue: ordHit.numericValue,
+    };
+  }
+
+  const titleQ = goToReasoningPanelQueryHeuristicUi(s);
+  if (titleQ) {
+    const normalizedTitleQ = _stripPanelSuffixFromTitleQuery(titleQ);
+    const ordFromTitle = _panelNavOrdinalTokenToVisual1(normalizedTitleQ || titleQ);
+    if (ordFromTitle) {
+      const resolved = _resolvePanelNavigationSwitchFromVisual1(ordFromTitle);
+      _logPanelNavigationTargetParse({
+        raw_text: s.slice(0, 240),
+        normalized_text: low.slice(0, 240),
+        matched_pattern: "title_query_ordinal_fallback",
+        target_phrase: String(titleQ).slice(0, 120),
+        ordinal_value: normalizedTitleQ || titleQ,
+        numeric_value: null,
+        title_candidate: String(titleQ).slice(0, 120),
+        resolved_visual_index: ordFromTitle,
+        resolved_panel_label: resolved?.label ?? null,
+        fallback_used: true,
+      });
+      return resolved;
+    }
+    if (typeof findReasoningPanelIndicesByTitleQuery === "function") {
+    const hits = findReasoningPanelIndicesByTitleQuery(normalizedTitleQ || titleQ);
+    if (hits.length === 1) {
+      const resolved = _resolvePanelNavigationSwitchFromVisual1(hits[0]);
+      _logPanelNavigationTargetParse({
+        raw_text: s.slice(0, 240),
+        normalized_text: low.slice(0, 240),
+        matched_pattern: "title_match",
+        target_phrase: String(titleQ).slice(0, 120),
+        ordinal_value: null,
+        numeric_value: null,
+        title_candidate: String(normalizedTitleQ || titleQ).slice(0, 120),
+        resolved_visual_index: hits[0],
+        resolved_panel_label: resolved?.label ?? null,
+        fallback_used: true,
+      });
+      return resolved;
+    }
+    if (hits.length > 1) {
+      _logPanelNavigationTargetParse({
+        raw_text: s.slice(0, 240),
+        normalized_text: low.slice(0, 240),
+        matched_pattern: "title_ambiguous",
+        target_phrase: String(titleQ).slice(0, 120),
+        ordinal_value: null,
+        numeric_value: null,
+        title_candidate: String(normalizedTitleQ || titleQ).slice(0, 120),
+        resolved_visual_index: null,
+        resolved_panel_label: null,
+        fallback_used: true,
+      });
+      return { kind: "switch", titleQuery: titleQ, error: "ambiguous_title", hits };
+    }
+    try {
+      console.info(
+        "[panel_navigation_title_fallback] " +
+          JSON.stringify({
+            raw_text: s.slice(0, 240),
+            normalized_text: low.slice(0, 240),
+            title_candidate: String(normalizedTitleQ || titleQ).slice(0, 120),
+            resolved_visual_index: null,
+            fallback_used: true,
+          })
+      );
+    } catch (_) {}
+    _logPanelNavigationTargetParse({
+      raw_text: s.slice(0, 240),
+      normalized_text: low.slice(0, 240),
+      matched_pattern: "title_not_found",
+      target_phrase: String(titleQ).slice(0, 120),
+      ordinal_value: null,
+      numeric_value: null,
+      title_candidate: String(normalizedTitleQ || titleQ).slice(0, 120),
+      resolved_visual_index: null,
+      resolved_panel_label: null,
+      fallback_used: true,
+    });
+    return { kind: "switch", titleQuery: titleQ, error: "no_title_match" };
+    }
+  }
+
+  return null;
+}
+
+const _PANEL_OPEN_VERB_PHRASE_RE = "(?:open(?:\\s+up)?|create|make|add)";
+const _PANEL_OPEN_POLITE_PREFIX_RE = "(?:can you|could you|please)\\s+";
+const _PANEL_OPEN_COUNT_TOKEN_RE =
+  "(\\d{1,2}|a|an|one|two|three|four|five|six|seven|eight)";
+const _PANEL_OPEN_DEST_NOUN_RE = "(?:reasoning\\s+)?(?:panels?|spaces?|tabs?|pages?|lanes?)";
+
+function _panelOpenCountTokenToNumber(tok) {
+  const t = String(tok || "").toLowerCase().trim();
+  if (!t) return 1;
+  if (t === "a" || t === "an") return 1;
+  if (_REASONING_PANEL_ORD_MAP[t] != null) return _REASONING_PANEL_ORD_MAP[t];
+  if (/^\d{1,2}$/.test(t)) {
+    const n = parseInt(t, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return null;
+}
+
+function _isPanelOpenDeicticOrReasoningTarget(text) {
+  const s = String(text || "").trim();
+  if (!s) return true;
+  if (detectMoveLatestVoiceTaskToReasoningIntent(s).matched) return true;
+  if (_REASONING_PANEL_PUT_RE.test(s)) return true;
+  if (/\b(?:this|that|it|them)\b/i.test(s) && _REASONING_PANEL_IN_RE.test(s)) return true;
+  const low = s.toLowerCase();
+  if (
+    /\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|an?\s+explanation)\b/i.test(
+      low
+    ) &&
+    _REASONING_PANEL_IN_RE.test(s)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function parseWorkModePanelOpenRequest(text) {
+  const rawText = String(text || "").trim();
+  if (!rawText || _isPanelOpenDeicticOrReasoningTarget(rawText)) return null;
+  const patterns = [
+    {
+      name: "polite_verb_count_new_panel",
+      re: new RegExp(
+        "\\b" +
+          _PANEL_OPEN_POLITE_PREFIX_RE +
+          _PANEL_OPEN_VERB_PHRASE_RE +
+          "\\s+(?:" +
+          _PANEL_OPEN_COUNT_TOKEN_RE +
+          "\\s+)?(?:new\\s+)?" +
+          _PANEL_OPEN_DEST_NOUN_RE +
+          "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+    {
+      name: "verb_count_new_panel",
+      re: new RegExp(
+        "\\b" +
+          _PANEL_OPEN_VERB_PHRASE_RE +
+          "\\s+(?:" +
+          _PANEL_OPEN_COUNT_TOKEN_RE +
+          "\\s+)?(?:new\\s+)?" +
+          _PANEL_OPEN_DEST_NOUN_RE +
+          "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+    {
+      name: "new_count_panel",
+      re: new RegExp(
+        "\\bnew\\s+(?:" + _PANEL_OPEN_COUNT_TOKEN_RE + "\\s+)?" + _PANEL_OPEN_DEST_NOUN_RE + "\\b",
+        "i"
+      ),
+      group: 1,
+    },
+  ];
+  for (const pat of patterns) {
+    const m = rawText.match(pat.re);
+    if (!m) continue;
+    const count = _panelOpenCountTokenToNumber(m[pat.group]);
+    if (!count) continue;
+    const optionalNewDetected = /\bnew\b/i.test(m[0]);
+    try {
+      console.info(
+        "[panel_open_parse_candidate] " +
+          JSON.stringify({
+            raw_text: rawText.slice(0, 240),
+            normalized_text: rawText.toLowerCase().slice(0, 240),
+            matched_pattern: pat.name,
+            count,
+            optional_new_detected: optionalNewDetected,
+            target_phrase: m[0].slice(0, 120),
+          })
+      );
+    } catch (_) {}
+    return {
+      count,
+      matchedPattern: pat.name,
+      targetPhrase: m[0],
+      optionalNewDetected,
+    };
+  }
+  return null;
+}
+
+function isPureWorkModePanelOpenRequest(text) {
+  return parseWorkModePanelOpenRequest(text) != null;
+}
+
+function buildPanelOpenVoiceReply(requested, allowed) {
+  const req = Math.max(1, Number(requested) || 1);
+  const allow = Math.max(0, Number(allowed) || 0);
+  if (allow <= 0) {
+    return `You already have the maximum of ${REASONING_TABS_MAX} reasoning spaces.`;
+  }
+  if (req > 3 && allow < req) {
+    return `I can open up to 3 reasoning panels at once, so I opened ${allow}.`;
+  }
+  if (allow < req) {
+    return `I opened ${allow} reasoning panel${allow === 1 ? "" : "s"}; that is all the room available.`;
+  }
+  if (allow === 1) return "Opening a new reasoning panel.";
+  return `Opening ${allow} new reasoning spaces.`;
+}
+
+function shouldDeferPanelOpenShortcutForMultiAction(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  if (!isCompoundActionUtterance(s)) return false;
+  const clauses = detectPanelShortcutClauses(s);
+  const panelActions = clauses.filter(isSinglePanelShortcutActionClause);
+  const compound = detectCompoundActionFamilies(s);
+  try {
+    console.info(
+      "[panel_open_deferred_compound] " +
+        JSON.stringify({
+          raw_text: s.slice(0, 240),
+          normalized_text: s.toLowerCase().slice(0, 240),
+          is_compound: true,
+          route_selected: "backend_multi_action_planner",
+          reason: compound.reason || "compound_action_utterance",
+          clauses: clauses.map((c) => c.slice(0, 120)),
+          panel_action_clauses: panelActions.map((c) => c.slice(0, 120)),
+          consumed_locally: false,
+          defer_to_backend: true,
+        })
+    );
+  } catch (_) {}
+  return true;
+}
+
+function maybeHandleWorkModePanelOpenShortcut(text, opts = {}) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  const parsed = parseWorkModePanelOpenRequest(raw);
+  if (!parsed) {
+    if (
+      /\b(?:open|create|make|add)\b/i.test(raw) &&
+      /\b(?:panels?|spaces?|tabs?|pages?|lanes?)\b/i.test(raw) &&
+      !_isPanelOpenDeicticOrReasoningTarget(raw)
+    ) {
+      try {
+        console.info(
+          "[panel_open_missed_phrase] " +
+            JSON.stringify({
+              raw_text: raw.slice(0, 240),
+              normalized_text: raw.toLowerCase().slice(0, 240),
+              route_selected: "not_matched",
+              reason: "panel_open_shape_unparsed",
+            })
+        );
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  const isVoice = Boolean(opts.isVoice);
+  const source = opts.reason || opts.source || (isVoice ? "voice_panel_open" : "typed_panel_open");
+  const inputSource = isVoice ? "voice" : "typed";
+  const normalizedText = raw.toLowerCase();
+
+  if (shouldDeferPanelOpenShortcutForMultiAction(raw)) {
+    return false;
+  }
+
+  const orderBefore =
+    typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+  const cap = REASONING_TABS_MAX;
+  const current = orderBefore.length;
+  const requested = Math.max(1, Number(parsed.count) || 1);
+  const maxPerRequest = 3;
+  const allowed = Math.min(requested, maxPerRequest, Math.max(0, cap - current));
+
+  try {
+    console.info(
+      "[panel_open_count_resolved] " +
+        JSON.stringify({
+          raw_text: raw.slice(0, 240),
+          normalized_text: normalizedText.slice(0, 240),
+          matched_pattern: parsed.matchedPattern,
+          count: requested,
+          optional_new_detected: Boolean(parsed.optionalNewDetected),
+          allowed_count: allowed,
+          visible_panel_count: current,
+          route_selected: "local_panel_open_shortcut",
+        })
+    );
+  } catch (_) {}
+
+  const gatePassed = (() => {
+    try {
+      return Boolean(isVeraWorkModeOn()) && appModePrefix() === "vera";
+    } catch (_) {
+      return false;
+    }
+  })();
+  if (!gatePassed && current <= 0) {
+    return false;
+  }
+
+  const lifecycle = isVoice
+    ? finalizeReasoningCloseVoiceUserTurn(raw, {
+        source,
+        reason: source,
+        path: "panel-open-user",
+        isVoice: true,
+      })
+    : null;
+
+  let opened = 0;
+  if (typeof addReasoningTab === "function" && allowed > 0) {
+    for (let i = 0; i < allowed; i += 1) {
+      const panel = addReasoningTab({ source: "panel_open_shortcut" });
+      if (panel) opened += 1;
+    }
+  }
+
+  const reply = buildPanelOpenVoiceReply(requested, opened || allowed);
+
+  try {
+    console.info(
+      "[panel_open_shortcut_dispatched] " +
+        JSON.stringify({
+          raw_text: raw.slice(0, 240),
+          normalized_text: normalizedText.slice(0, 240),
+          matched_pattern: parsed.matchedPattern,
+          count: requested,
+          optional_new_detected: Boolean(parsed.optionalNewDetected),
+          opened_count: opened,
+          is_compound: false,
+          route_selected: "local_panel_open_shortcut",
+          reason: "pure_panel_open",
+          input_source: inputSource,
+          reply_preview: reply.slice(0, 120),
+        })
+    );
+  } catch (_) {}
+
+  if (typeof renderReasoningCloseAssistantConfirmation === "function") {
+    renderReasoningCloseAssistantConfirmation(reply, {
+      source,
+      isVoice,
+      path: "panel-open",
+      lifecycle,
+      resumeListeningAfter: isVoice,
+      closeActionCompleted: opened > 0,
+      stage: "panel_open",
+    });
+  } else if (typeof addBubble === "function") {
+    addBubble(reply, "vera", { path: "panel-open" });
+  }
+
+  return true;
+}
+
+function shouldDeferPanelNavigationShortcutForMultiAction(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  try {
+    const compoundDetected = isCompoundActionUtterance(s);
+    if (!compoundDetected) return false;
+    const clauses = detectPanelShortcutClauses(s);
+    const detectedPanelActions = clauses.filter(isSinglePanelShortcutActionClause);
+    const compound = detectCompoundActionFamilies(s);
+    try {
+      console.info("[panel_shortcut_deferred_compound]", {
+        raw_text: s.slice(0, 240),
+        normalized_text: s.toLowerCase().slice(0, 240),
+        detected_panel_actions: detectedPanelActions.map((c) => c.slice(0, 120)),
+        compound_detected: true,
+        defer_to_backend: true,
+        consumed_locally: false,
+        clauses: clauses.map((c) => c.slice(0, 120)),
+        reason: compound.reason || "compound_action_utterance",
+      });
+      if (detectedPanelActions.length >= 2) {
+        console.info("[multi_action_panel_sequence_detected]", {
+          raw_text: s.slice(0, 240),
+          normalized_text: s.toLowerCase().slice(0, 240),
+          action_count: detectedPanelActions.length,
+          clauses: detectedPanelActions.map((c) => c.slice(0, 120)),
+        });
+      }
+      console.info("[panel_compound_clause_parse]", {
+        raw_text: s.slice(0, 240),
+        clauses: clauses.map((c) => c.slice(0, 120)),
+        panel_action_clauses: detectedPanelActions.map((c) => c.slice(0, 120)),
+      });
+    } catch (_) {}
+    return true;
+  } catch (_) {}
+  return false;
+}
+
+function executeWorkModePanelNavigation(target) {
+  if (!target || typeof target !== "object") return { ok: false, error: "no_target" };
+  if (target.kind === "open_new") {
+    const panel =
+      typeof addReasoningTab === "function"
+        ? addReasoningTab({ source: "panel_navigation_open_new" })
+        : null;
+    return { ok: Boolean(panel), kind: "open_new" };
+  }
+  if (target.error === "no_next") {
+    return { ok: false, error: "no_next" };
+  }
+  if (target.error === "no_previous") {
+    return { ok: false, error: "no_previous" };
+  }
+  if (target.error === "no_such_panel") {
+    return { ok: false, error: "no_such_panel", visualIndex1Based: target.visualIndex1Based };
+  }
+  if (target.error === "ambiguous_title") {
+    return { ok: false, error: "ambiguous_title", hits: target.hits || [] };
+  }
+  if (target.error === "no_title_match") {
+    return { ok: false, error: "no_title_match", titleQuery: target.titleQuery || "" };
+  }
+  if (target.kind === "switch") {
+    let tabIdx = target.tabIndex;
+    if (tabIdx == null && target.visualIndex1Based != null) {
+      tabIdx =
+        typeof resolveReasoningPanelTabIndexFromVisual1 === "function"
+          ? resolveReasoningPanelTabIndexFromVisual1(target.visualIndex1Based)
+          : null;
+    }
+    if (tabIdx == null) {
+      return {
+        ok: false,
+        error: "no_such_panel",
+        visualIndex1Based: target.visualIndex1Based,
+      };
+    }
+    if (typeof activateReasoningTab === "function") {
+      activateReasoningTab(tabIdx, { source: "panel_navigation" });
+    }
+    const order =
+      typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    const entry =
+      order.find((p) => p.tabIndex === tabIdx) ||
+      order[(Number(target.visualIndex1Based) || 1) - 1];
+    return {
+      ok: true,
+      kind: "switch",
+      tabIndex: tabIdx,
+      visualIndex1Based: entry?.visualIndex ?? target.visualIndex1Based,
+      label: entry?.label || target.label || null,
+    };
+  }
+  return { ok: false, error: "unknown_target" };
+}
+
+function buildPanelNavigationVoiceReply(target, execResult) {
+  if (target?.kind === "open_new" && execResult?.ok) {
+    return "Opened a new reasoning panel.";
+  }
+  if (execResult?.error === "no_next") return "There is no next panel.";
+  if (execResult?.error === "no_previous") return "There is no previous panel.";
+  if (execResult?.error === "no_such_panel") {
+    const n = target?.visualIndex1Based;
+    return Number.isFinite(n) ? `I don't see panel ${n}.` : "I couldn't find that panel.";
+  }
+  if (execResult?.error === "no_title_match") return "I couldn't find that panel.";
+  if (execResult?.error === "ambiguous_title") return "Which reasoning panel do you mean?";
+  const label = String(execResult?.label || target?.label || "").trim();
+  if (label) {
+    const clean = label.replace(/\.$/, "");
+    return `Switching to ${clean}.`;
+  }
+  if (Number.isFinite(target?.visualIndex1Based)) {
+    return `Switching to panel ${target.visualIndex1Based}.`;
+  }
+  return "Switching panels.";
+}
+
+function maybeHandleWorkModePanelNavigationShortcut(text, opts = {}) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  const isVoice = Boolean(opts.isVoice);
+  const source = opts.reason || opts.source || (isVoice ? "voice_panel_navigation" : "typed_panel_navigation");
+  const inputSource = isVoice ? "voice" : "typed";
+  const normalizedText = raw.toLowerCase();
+
+  if (
+    !isExplicitWorkModePanelNavigationIntent(raw) &&
+    !_REASONING_PANEL_IMPERATIVE_RE.test(raw)
+  ) {
+    return false;
+  }
+
+  const orderBefore = (() => {
+    try {
+      return typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    } catch (_) {
+      return [];
+    }
+  })();
+  const activeBefore = (() => {
+    try {
+      const idx =
+        typeof getActiveReasoningLaneIndex === "function" ? getActiveReasoningLaneIndex() : null;
+      return orderBefore.find((p) => p.tabIndex === idx) || null;
+    } catch (_) {
+      return null;
+    }
+  })();
+
+  try {
+    console.info("[panel_shortcut_candidate]", {
+      raw_text: raw.slice(0, 240),
+      normalized_text: normalizedText.slice(0, 240),
+      source,
+      input_source: inputSource,
+      is_voice: isVoice,
+      visible_panel_count: orderBefore.length,
+      visible_panel_labels: orderBefore.map((p) => p.label),
+      active_before: activeBefore?.label || null,
+    });
+    console.info("[panel_navigation_detected]", {
+      raw_text: raw.slice(0, 240),
+      normalized_text: normalizedText.slice(0, 240),
+      source,
+      input_source: inputSource,
+      is_voice: isVoice,
+      visible_panel_count: orderBefore.length,
+      visible_panel_labels: orderBefore.map((p) => p.label),
+      active_before: activeBefore?.label || null,
+    });
+  } catch (_) {}
+
+  if (shouldDeferPanelNavigationShortcutForMultiAction(raw)) {
+    try {
+      console.info("[panel_navigation_fell_through_to_reasoning]", {
+        reason: "deferred_to_compound_planner",
+        raw_text: raw.slice(0, 240),
+      });
+    } catch (_) {}
+    return false;
+  }
+
+  try {
+    console.info("[panel_shortcut_single_action_confirmed]", {
+      raw_text: raw.slice(0, 240),
+      normalized_text: normalizedText.slice(0, 240),
+      detected_panel_actions: [raw.slice(0, 240)],
+      compound_detected: false,
+      defer_to_backend: false,
+      consumed_locally: true,
+      clauses: [raw.slice(0, 240)],
+      reason: "single_panel_action",
+    });
+  } catch (_) {}
+
+  const gatePassed = (() => {
+    try {
+      return Boolean(isVeraWorkModeOn()) && appModePrefix() === "vera";
+    } catch (_) {
+      return false;
+    }
+  })();
+  const hasPanels = orderBefore.length > 0;
+
+  if (!gatePassed && !hasPanels && !_REASONING_PANEL_IMPERATIVE_RE.test(raw)) {
+    return false;
+  }
+
+  const target = parseWorkModePanelNavigationTarget(raw);
+  if (!target) {
+    try {
+      console.info("[panel_navigation_fell_through_to_reasoning]", {
+        reason: "unparsed_navigation_target",
+        raw_text: raw.slice(0, 240),
+      });
+    } catch (_) {}
+    return false;
+  }
+
+  const targetPhrase =
+    target.titleQuery ||
+    (Number.isFinite(target.visualIndex1Based) ? `panel ${target.visualIndex1Based}` : target.kind || "");
+
+  try {
+    console.info("[panel_navigation_target_resolved]", {
+      raw_text: raw.slice(0, 240),
+      normalized_text: normalizedText.slice(0, 240),
+      target_phrase: String(targetPhrase).slice(0, 120),
+      target_visual_index: target.visualIndex1Based ?? null,
+      visible_panel_count: orderBefore.length,
+      visible_panel_labels: orderBefore.map((p) => p.label),
+      resolved_panel_label: target.label ?? null,
+      active_before: activeBefore?.label || null,
+      input_source: inputSource,
+      target_kind: target.kind,
+      target_error: target.error || null,
+    });
+  } catch (_) {}
+
+  try {
+    console.info("[panel_navigation_blocked_reasoning]", {
+      raw_text: raw.slice(0, 240),
+      target_kind: target.kind,
+      visual_index: target.visualIndex1Based ?? null,
+    });
+  } catch (_) {}
+
+  const lifecycle = isVoice
+    ? finalizeReasoningCloseVoiceUserTurn(raw, {
+        source,
+        reason: source,
+        path: "panel-navigation-user",
+        isVoice: true,
+      })
+    : null;
+
+  const exec = executeWorkModePanelNavigation(target);
+  const reply = buildPanelNavigationVoiceReply(target, exec);
+
+  const orderAfter = (() => {
+    try {
+      return typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+    } catch (_) {
+      return [];
+    }
+  })();
+  const activeAfter = (() => {
+    try {
+      const idx =
+        typeof getActiveReasoningLaneIndex === "function" ? getActiveReasoningLaneIndex() : null;
+      return orderAfter.find((p) => p.tabIndex === idx) || null;
+    } catch (_) {
+      return null;
+    }
+  })();
+
+  if (!exec?.ok) {
+    try {
+      console.info("[panel_navigation_target_not_found]", {
+        raw_text: raw.slice(0, 240),
+        normalized_text: normalizedText.slice(0, 240),
+        matched_pattern: target.matchedPattern || exec?.error || null,
+        target_phrase: String(targetPhrase).slice(0, 120),
+        ordinal_value: target.ordinalValue ?? null,
+        numeric_value: target.numericValue ?? target.visualIndex1Based ?? null,
+        title_candidate: target.titleQuery ? String(target.titleQuery).slice(0, 120) : null,
+        resolved_visual_index: target.visualIndex1Based ?? null,
+        resolved_panel_label: target.label ?? null,
+        fallback_used: Boolean(target.titleQuery),
+        exec_error: exec?.error || null,
+        input_source: inputSource,
+      });
+    } catch (_) {}
+  }
+
+  try {
+    console.info("[panel_navigation_dispatched]", {
+      raw_text: raw.slice(0, 240),
+      normalized_text: normalizedText.slice(0, 240),
+      target_kind: target.kind,
+      target_visual_index: target.visualIndex1Based ?? null,
+      resolved_panel_label: exec?.label || target.label || null,
+      active_before: activeBefore?.label || null,
+      active_after: activeAfter?.label || null,
+      exec_ok: exec?.ok,
+      reply_preview: reply.slice(0, 120),
+      input_source: inputSource,
+      should_resume_listening: Boolean(lifecycle?.shouldResumeListening),
+      transcript_rendered: Boolean(lifecycle?.userBubbleFinalized),
+    });
+  } catch (_) {}
+
+  if (isVoice && lifecycle) {
+    try {
+      console.info("[panel_navigation_voice_lifecycle_preserved]", {
+        raw_text: raw.slice(0, 240),
+        input_source: inputSource,
+        should_resume_listening: Boolean(lifecycle.shouldResumeListening),
+        transcript_rendered: Boolean(lifecycle.userBubbleFinalized),
+      });
+      if (lifecycle.userBubbleFinalized) {
+        console.info("[panel_navigation_transcript_rendered]", {
+          raw_text: raw.slice(0, 240),
+          finalized_bubble_id: lifecycle.finalizedBubbleId,
+          input_source: inputSource,
+        });
+      }
+      if (lifecycle.shouldResumeListening) {
+        console.info("[panel_navigation_listening_resume]", {
+          raw_text: raw.slice(0, 240),
+          input_source: inputSource,
+        });
+      }
+    } catch (_) {}
+  }
+
+  if (typeof renderReasoningCloseAssistantConfirmation === "function") {
+    renderReasoningCloseAssistantConfirmation(reply, {
+      source,
+      isVoice,
+      path: "panel-navigation",
+      lifecycle,
+      resumeListeningAfter: isVoice,
+      closeActionCompleted: Boolean(exec?.ok),
+      stage: "panel_navigation",
+    });
+  } else if (typeof addBubble === "function") {
+    addBubble(reply, "vera", { path: "panel-navigation" });
+  }
+
+  return true;
 }
 
 /** Multi-item planning / scheduling — route to reasoning and enable checklist Sync from markdown. */
@@ -9228,8 +11820,13 @@ function isLikelyRequestShape(text) {
     return true;
   }
 
-  /* Direct task asks ("I need to...", "I want to..."). */
-  if (/\b(i\s+need|i\s+want|i'?d\s+like|i\s+would\s+like)\s+(?:to|you|a|an|some|help|the)\b/.test(low)) {
+  /* Direct task asks ("I need to...", "I want to...").
+     Exclude FYI disclosures ("I want to let you know / …") — those are
+     personal statements, not task requests. */
+  if (
+    !/\b(?:just\s+)?want(?:ed)?\s+to\s+(?:let\s+you\s+know|tell\s+you)\b/.test(low) &&
+    /\b(i\s+need|i\s+want|i'?d\s+like|i\s+would\s+like)\s+(?:to|you|a|an|some|help|the)\b/.test(low)
+  ) {
     return true;
   }
 
@@ -9314,6 +11911,37 @@ function looksLikePersonalAdviceOrVenting(text) {
 
 /** Alias for spec compatibility — same heuristic, friendlier name. */
 const looksLikePersonalStatementOrVenting = looksLikePersonalAdviceOrVenting;
+
+/**
+ * Heuristic: first-person disclosure / preference / FYI with no embedded task.
+ * These should stay in Voice UI even when Work Mode is open and the backend
+ * classifier returns prompt_reasoning=true (e.g. "I love tennis and cooking").
+ *
+ * Task-bearing utterances are NOT flagged here when hasExplicitWorkArtifactIntent
+ * is true — the gate checks artifact intent before applying this veto.
+ */
+function looksLikePersonalDisclosureStatement(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return { matched: [], isPersonalStatement: false };
+  const low = raw.toLowerCase();
+  const matched = [];
+
+  const fyiOpeners =
+    /^\s*(?:i\s+(?:just\s+)?(?:want(?:ed)?\s+to\s+)?(?:let\s+you\s+know|tell\s+you\b)|just\s+so\s+you\s+know|(?:fyi|for\s+your\s+information)\b|i\s+wanted\s+to\s+(?:let\s+you\s+know|tell\s+you\b))/i;
+  const preferenceStatement =
+    /^\s*i\s+(?:really\s+|just\s+)?(?:like|love|enjoy|prefer|don'?t\s+(?:really\s+)?(?:like|enjoy|care\s+for)|am\s+(?:interested\s+in|into|a\s+(?:big\s+)?fan\s+of))(?:\s|$|[,.!])/i;
+  const feelingStatement =
+    /^\s*i'?m\s+(?:feeling\s+(?:a\s+bit\s+|kind\s+of\s+|a\s+little\s+|pretty\s+|really\s+|so\s+)?|(?:so|kind\s+of|a\s+little|pretty|really)\s+)?(?:tired|exhausted|homesick|sad|happy|bored|stressed|anxious|overwhelmed|lonely|down|sick|ill|great|good|bad|worried|nervous|excited|frustrated|annoyed|upset|burned?\s*out|burnt\s*out)\b/i;
+  const interestFyi =
+    /^\s*(?:just\s+so\s+you\s+know[, ]+)?i'?m\s+interested\s+in\b/i;
+
+  if (fyiOpeners.test(low)) matched.push("fyi_opener");
+  if (preferenceStatement.test(low)) matched.push("preference_statement");
+  if (feelingStatement.test(low)) matched.push("feeling_statement");
+  if (interestFyi.test(low)) matched.push("interest_fyi");
+
+  return { matched, isPersonalStatement: matched.length > 0 };
+}
 
 /**
  * Heuristic: explicit work-artifact verb that overrides the personal-advice
@@ -9473,6 +12101,10 @@ function workModeReasoningPrepOutcome(chainPromise, inferThreadAnchor, inferGate
     reasoningUploadState: meta.reasoningUploadState || null,
     voiceTwoStage: meta.voiceTwoStage || { reasoningRouted: false },
     reasoningLaneId: String(meta.reasoningLaneId || "").trim(),
+    explicitPanelTarget: Number.isFinite(Number(meta.explicitPanelTarget))
+      ? Number(meta.explicitPanelTarget)
+      : null,
+    explicitTargetLaneId: String(meta.explicitTargetLaneId || "").trim(),
     turnContext: meta.turnContext || null
   };
 }
@@ -10069,6 +12701,60 @@ function composeDeicticVoiceToPanelReasoningTask(opts = {}) {
   };
 }
 
+function buildVoiceDeicticReferentFromRecentContext() {
+  const priorUser = String(workModeLastSubstantiveUserText || "").trim();
+  const turns = collectRecentVoiceTurnPairs(2);
+  let lastAssistant = "";
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (turns[i]?.role === "assistant" && String(turns[i].content || "").trim()) {
+      lastAssistant = String(turns[i].content).trim();
+      break;
+    }
+  }
+  const parts = [];
+  if (priorUser) parts.push(`User concern: ${summarizeVoiceTopicAnchorForPanel(priorUser)}`);
+  if (lastAssistant) {
+    parts.push(`Prior Voice UI guidance: ${summarizeVoiceTopicAnchorForPanel(lastAssistant, 360)}`);
+  }
+  return parts.join(" ").trim();
+}
+
+function resolveExplicitPanelStreamTask(text, ref) {
+  const raw = String(text || "").trim();
+  if (!ref?.matched) return { task: "", source: "none", referent: "" };
+  const priorReferent =
+    buildVoiceDeicticReferentFromRecentContext() || resolveReasoningPanelTopicFromContext();
+  if (detectVoiceToPanelDeicticWritingHandoff(raw)) {
+    const compose = composeDeicticVoiceToPanelReasoningTask({
+      userText: raw,
+      originalUserText: raw,
+      resolvedReferent: priorReferent,
+      topicAnchor: priorReferent
+    });
+    if (compose?.composedTask) {
+      return {
+        task: compose.composedTask,
+        source: "deictic_compose",
+        referent: compose.resolvedReferent || priorReferent
+      };
+    }
+  }
+  const resolved = resolveTopicForExplicitPanelReference(text, ref);
+  if (resolved.topic) {
+    let task = resolved.topic;
+    if (ref.wasPronoun && /\b(?:write|draft|compose|prepare)\b/i.test(raw) && priorReferent) {
+      const action = /\bdraft\b/i.test(raw)
+        ? "Draft"
+        : /\bcompose\b/i.test(raw)
+          ? "Compose"
+          : "Write";
+      task = `${action} a clear deliverable based on this prior context: ${priorReferent}`;
+    }
+    return { task, source: resolved.source, referent: priorReferent || resolved.topic };
+  }
+  return { task: "", source: "unresolved", referent: priorReferent };
+}
+
 function detectVoiceToPanelActionReference(text) {
   const s = String(text || "").trim().toLowerCase();
   if (!s) return false;
@@ -10142,6 +12828,18 @@ function shouldIncludeVoiceContextForPanel(opts = {}) {
   const voiceTurns = collectRecentVoiceTurnPairs(1);
   const hasRecentVoice = voiceTurns.length > 0 || topicAnchor.length >= 6;
 
+  const contextScope =
+    opts.contextScope ||
+    buildReasoningContextScope({
+      userText: task,
+      cleanedPanelTask: task,
+      topicAnchor,
+      inputSource: opts.inputSource,
+      explicitPanelTarget: opts.explicitPanelTarget,
+      targetLaneId: opts.targetLaneId,
+      activeLaneId: opts.activeLaneId,
+    });
+
   const topicContinuity =
     Boolean(topicAnchor) &&
     (topicSimilarityScore(task, topicAnchor) >= VOICE_TO_PANEL_TOPIC_CONTINUITY_FLOOR ||
@@ -10154,10 +12852,40 @@ function shouldIncludeVoiceContextForPanel(opts = {}) {
     return { include: false, reasons: ["panel_local_follow_up"], deictic, actionRef, topicContinuity };
   }
 
+  if (contextScope.block_voice_context && !deictic && !actionRef) {
+    try {
+      console.info("[reasoning_context_blocked]", {
+        source: "voice_context",
+        reason: contextScope.explicit_panel_target
+          ? "explicit_target_non_deictic"
+          : "keyboard_non_deictic",
+      });
+      console.info("[reasoning_deictic_detected]", {
+        detected: Boolean(deictic || actionRef),
+        terms: deictic ? ["deictic"] : actionRef ? ["action_ref"] : [],
+      });
+    } catch (_) {}
+    return {
+      include: false,
+      reasons: [
+        contextScope.explicit_panel_target
+          ? "explicit_target_non_deictic"
+          : "keyboard_non_deictic",
+      ],
+      deictic,
+      actionRef,
+      topicContinuity,
+    };
+  }
+
   if (deictic) reasons.push("deictic_reference");
   if (actionRef) reasons.push("recent_action_reference");
-  if (isNewEmptyLane && hasRecentVoice) reasons.push("new_panel_from_voice");
-  if (topicContinuity && hasRecentVoice) reasons.push("topic_continuity");
+  if (isNewEmptyLane && hasRecentVoice && !contextScope.block_voice_context) {
+    reasons.push("new_panel_from_voice");
+  }
+  if (topicContinuity && hasRecentVoice && !contextScope.block_voice_context) {
+    reasons.push("topic_continuity");
+  }
 
   if (isNewEmptyLane && hasRecentVoice && !deictic && !actionRef && !topicContinuity && topicAnchor) {
     const sim = topicSimilarityScore(task, topicAnchor);
@@ -10170,12 +12898,112 @@ function shouldIncludeVoiceContextForPanel(opts = {}) {
     return { include: false, reasons: ["lane_has_substance"], deictic, actionRef, topicContinuity };
   }
 
-  if (isNewEmptyLane && hasRecentVoice && reasons.length === 0) {
+  if (isNewEmptyLane && hasRecentVoice && reasons.length === 0 && !contextScope.block_voice_context) {
     reasons.push("new_empty_lane");
   }
 
   const include = reasons.length > 0 && hasRecentVoice;
+  if (include) {
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_voice_context: true,
+        reason: reasons.join(","),
+      });
+    } catch (_) {}
+  }
   return { include, reasons, deictic, actionRef, topicContinuity };
+}
+
+function buildReasoningContextScope(opts = {}) {
+  const userText = String(opts.userText || opts.cleanedPanelTask || "").trim();
+  const inputSource =
+    String(opts.inputSource || opts.input_source || "").toLowerCase() === "voice"
+      ? "voice"
+      : "keyboard";
+  const targetPanel1Based = Number.isFinite(Number(opts.explicitPanelTarget))
+    ? Number(opts.explicitPanelTarget)
+    : Number.isFinite(Number(opts.targetPanel1Based))
+      ? Number(opts.targetPanel1Based)
+      : null;
+  const explicitPanelTarget = targetPanel1Based != null && targetPanel1Based >= 1;
+  const deictic =
+    Boolean(opts.deictic) ||
+    detectVoiceToPanelDeictic(userText) ||
+    detectVoiceToPanelActionReference(userText);
+  const cleanedTask = String(
+    opts.cleanedPanelTask ||
+      extractSubstantiveTopicBeforePanelPhrase(userText) ||
+      userText
+  ).trim();
+  const topicAnchor = String(opts.topicAnchor || workModeLastSubstantiveUserText || "").trim();
+  const activeLaneId = String(opts.activeLaneId || getActiveDomReasoningLaneId() || "").trim();
+  const targetLaneId = String(opts.targetLaneId || opts.laneId || "").trim();
+  let isFreshTopic = false;
+  if (explicitPanelTarget && !deictic && cleanedTask) {
+    if (!topicAnchor) {
+      isFreshTopic = true;
+    } else {
+      const sim = topicSimilarityScore(cleanedTask, topicAnchor);
+      const covFwd = topicCoverageScore(cleanedTask, topicAnchor);
+      const covRev = topicCoverageScore(topicAnchor, cleanedTask);
+      isFreshTopic =
+        (sim < VOICE_TO_PANEL_TOPIC_CONTINUITY_FLOOR &&
+          covFwd < 0.18 &&
+          covRev < 0.18) ||
+        detectNewDeliverableIntent(cleanedTask).detected;
+    }
+  }
+  const blockVoiceContext =
+    (explicitPanelTarget && !deictic) || (inputSource === "keyboard" && !deictic);
+  return {
+    input_source: inputSource,
+    target_panel: explicitPanelTarget ? targetPanel1Based : null,
+    active_lane_id: activeLaneId || null,
+    context_lane_id: targetLaneId || null,
+    target_lane_id: targetLaneId || null,
+    explicit_panel_target: explicitPanelTarget,
+    is_deictic: deictic,
+    is_fresh_topic: isFreshTopic,
+    cleaned_task: cleanedTask,
+    block_voice_context: blockVoiceContext,
+  };
+}
+
+function shouldBlockLanePriorContextForScope(scope, mainExcerpt, visible, task) {
+  if (!scope?.explicit_panel_target || scope.is_deictic) {
+    return { block: false, reason: "" };
+  }
+  const laneBody = String(mainExcerpt || visible || "").trim();
+  if (!laneBody) return { block: false, reason: "target_lane_empty" };
+  const topic = String(scope.cleaned_task || task || "").trim();
+  if (!topic || !scope.is_fresh_topic) return { block: false, reason: "not_fresh_topic" };
+  const sim = topicSimilarityScore(topic, laneBody.slice(0, 800));
+  if (sim < 0.12) {
+    return { block: true, reason: "fresh_topic_unrelated_lane_body" };
+  }
+  return { block: false, reason: "" };
+}
+
+function logReasoningContextScope(scope, extra = {}) {
+  if (!scope) return;
+  try {
+    console.info("[reasoning_context_scope]", {
+      input_source: scope.input_source,
+      target_panel: scope.target_panel,
+      active_panel: extra.active_panel ?? scope.target_panel,
+      context_panel: extra.context_panel ?? scope.target_panel,
+      active_lane_id: scope.active_lane_id,
+      context_lane_id: scope.context_lane_id,
+      explicit_panel_target: scope.explicit_panel_target,
+      is_deictic: scope.is_deictic,
+      is_fresh_topic: scope.is_fresh_topic,
+      cleaned_task_preview: String(scope.cleaned_task || "").slice(0, 120),
+    });
+    console.info("[reasoning_deictic_detected]", {
+      detected: Boolean(scope.is_deictic),
+      terms: scope.is_deictic ? ["deictic"] : [],
+    });
+  } catch (_) {}
 }
 
 function buildVoiceToPanelContextPacket(opts = {}) {
@@ -10192,7 +13020,12 @@ function buildVoiceToPanelContextPacket(opts = {}) {
     topicAnchor,
     mainExcerpt,
     visible,
-    isNewPanelFromVoice: Boolean(opts.isNewPanelFromVoice || opts.isNewPanelExplicit)
+    isNewPanelFromVoice: Boolean(opts.isNewPanelFromVoice || opts.isNewPanelExplicit),
+    inputSource: opts.inputSource,
+    explicitPanelTarget: opts.explicitPanelTarget,
+    targetLaneId: opts.targetLaneId,
+    activeLaneId: opts.activeLaneId,
+    contextScope: opts.contextScope,
   });
 
   if (!policy.include) {
@@ -10266,6 +13099,27 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
 
   const userText = String(opts.userText || "").trim();
   const turnContext = opts.turnContext || null;
+  const contextScope =
+    opts.contextScope ||
+    buildReasoningContextScope({
+      userText,
+      cleanedPanelTask: userText,
+      inputSource: opts.inputSource,
+      explicitPanelTarget: opts.explicitPanelTarget,
+      targetLaneId: laneId,
+      activeLaneId: opts.activeLaneId,
+      laneId,
+    });
+  logReasoningContextScope(contextScope, {
+    active_panel:
+      contextScope.active_lane_id && typeof getReasoningLaneIndexFromLaneId === "function"
+        ? (() => {
+            const idx = getReasoningLaneIndexFromLaneId(contextScope.active_lane_id);
+            return idx != null ? idx + 1 : null;
+          })()
+        : null,
+    context_panel: contextScope.target_panel,
+  });
   const requestHasCodeIntent =
     opts.requestHasCodeIntent != null
       ? Boolean(opts.requestHasCodeIntent)
@@ -10284,32 +13138,82 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     userText,
     mainExcerpt,
     visible,
-    turnId: turnContext?.turn_id || null
+    turnId: turnContext?.turn_id || null,
+    inputSource: contextScope.input_source,
+    explicitPanelTarget: contextScope.target_panel,
+    targetLaneId: laneId,
+    activeLaneId: contextScope.active_lane_id,
+    contextScope,
   });
   const voiceBlock = renderVoiceToPanelContextBlock(voiceToPanelBuilt);
+  const lanePriorBlock = shouldBlockLanePriorContextForScope(
+    contextScope,
+    mainExcerpt,
+    visible,
+    userText
+  );
 
   const parts = [];
   if (voiceBlock) {
     parts.push(voiceBlock);
+  } else if (contextScope.block_voice_context) {
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_voice_context: false,
+        reason: contextScope.explicit_panel_target
+          ? "explicit_target_non_deictic"
+          : "keyboard_non_deictic",
+      });
+    } catch (_) {}
   }
-  if (mainExcerpt) {
+  if (!lanePriorBlock.block && mainExcerpt) {
     parts.push(
       "ACTIVE_LANE_PRIOR_CONTEXT (authoritative — visible reasoning panel for this frozen lane; " +
         "use for all follow-ups):\n" +
         truncateWorkModeRegistryExcerpt(mainExcerpt, 14000)
     );
-  } else if (visible.trim()) {
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_active_lane: true,
+        reason: "target_lane_main_excerpt",
+      });
+    } catch (_) {}
+  } else if (!lanePriorBlock.block && visible.trim()) {
     parts.push(
       "ACTIVE_LANE_VISIBLE_MARKDOWN (from panel DOM):\n" + truncateWorkModeRegistryExcerpt(visible, 14000)
     );
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_active_lane: true,
+        reason: "target_lane_visible_markdown",
+      });
+    } catch (_) {}
+  } else if (lanePriorBlock.block) {
+    try {
+      console.info("[reasoning_context_blocked]", {
+        source: "active_lane",
+        reason: lanePriorBlock.reason,
+      });
+      console.info("[reasoning_context_injection]", {
+        included_active_lane: false,
+        reason: lanePriorBlock.reason,
+      });
+    } catch (_) {}
+  } else {
+    try {
+      console.info("[reasoning_context_injection]", {
+        included_active_lane: false,
+        reason: "target_lane_empty",
+      });
+    } catch (_) {}
   }
-  if (handoff?.last_user_request && handoff.last_user_request !== userText) {
+  if (!lanePriorBlock.block && handoff?.last_user_request && handoff.last_user_request !== userText) {
     parts.push(`Last user request on this lane:\n${handoff.last_user_request}`);
   }
-  if (handoff?.prior_problem_anchor) {
+  if (!lanePriorBlock.block && handoff?.prior_problem_anchor) {
     parts.push(`Prior problem / thread anchor:\n${handoff.prior_problem_anchor}`);
   }
-  if (handoff?.latest_reasoning_summary) {
+  if (!lanePriorBlock.block && handoff?.latest_reasoning_summary) {
     parts.push(`Latest reasoning summary:\n${handoff.latest_reasoning_summary}`);
   }
 
@@ -10323,7 +13227,8 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     parts.push(attSection);
   }
 
-  const solutionVisible = workModeVisibleLaneHasCompletedSolution(visible || mainExcerpt);
+  const solutionVisible =
+    !lanePriorBlock.block && workModeVisibleLaneHasCompletedSolution(visible || mainExcerpt);
   if (solutionVisible) {
     let rule =
       "The active lane already contains a completed solution. Treat the user's request as a follow-up " +
@@ -10357,7 +13262,16 @@ function prepareWorkModeReasoningModelCall(opts = {}) {
     request_has_code_intent: requestHasCodeIntent,
     lane_client_context_len: laneClientContextCapped.length,
     voice_to_panel_included: Boolean(voiceToPanelBuilt?.include),
-    voice_to_panel_reasons: voiceToPanelBuilt?.policy?.reasons || []
+    voice_to_panel_reasons: voiceToPanelBuilt?.policy?.reasons || [],
+    reasoning_context_scope: {
+      input_source: contextScope.input_source,
+      target_panel: contextScope.target_panel,
+      is_deictic: contextScope.is_deictic,
+      is_fresh_topic: contextScope.is_fresh_topic,
+      block_voice_context: contextScope.block_voice_context,
+      lane_prior_blocked: lanePriorBlock.block,
+      lane_prior_block_reason: lanePriorBlock.reason || null,
+    },
   };
 
   if (!opts.skipLog) {
@@ -10634,13 +13548,35 @@ function buildLaneScopedReasoningStreamAugmentations(trimmed, laneId, opts = {})
  * @returns {boolean} false if blocked by lane / DOM turn mismatch
  */
 function commitActiveWorkModeReasoningContext(payload, meta = {}) {
-  const streamStarted = String(
+  let commitLaneId = String(
     payload.stream_started_lane_id || payload.stream_lane_id || payload.active_lane_id || ""
   ).trim();
-  const commitLaneId = streamStarted;
   if (!commitLaneId) {
     console.warn("[work_mode_context_commit] skipped: missing stream_started_lane_id", meta);
     return false;
+  }
+
+  const turnEl = meta.turn_el;
+  if (turnEl instanceof HTMLElement) {
+    const turnPanel = turnEl.closest(".vera-reasoning-tab-panel");
+    if (turnPanel instanceof HTMLElement) {
+      const turnLaneId =
+        String(turnPanel.dataset.laneId || "").trim() ||
+        getWorkModeReasoningLaneId(Number(turnPanel.dataset.tabIndex));
+      if (turnLaneId && turnLaneId !== commitLaneId) {
+        console.warn("[work_mode_context_commit] reconciling commit lane to turn DOM panel", {
+          prior_commit_lane_id: commitLaneId,
+          turn_dom_lane_id: turnLaneId,
+          source_function: meta.source_function || ""
+        });
+        commitLaneId = turnLaneId;
+        payload = {
+          ...payload,
+          stream_started_lane_id: commitLaneId,
+          active_lane_id: commitLaneId
+        };
+      }
+    }
   }
 
   try {
@@ -10666,9 +13602,8 @@ function commitActiveWorkModeReasoningContext(payload, meta = {}) {
       turn_id: frozenTurnId || null,
       frozen_lane_id: frozenLaneId,
       attempted_lane_id: commitLaneId,
-      operation: "reasoning_commit"
+      operation: "reasoning_commit_render_lane_wins"
     });
-    return false;
   }
 
   const activeIdx = getActiveReasoningLaneIndex();
@@ -10677,30 +13612,11 @@ function commitActiveWorkModeReasoningContext(payload, meta = {}) {
 
   const metaStreamStarted = String(meta.stream_started_lane_id || "").trim();
   if (metaStreamStarted && metaStreamStarted !== commitLaneId) {
-    console.error("[work_mode_context_commit] BLOCKED: meta stream lane !== payload lane", {
+    console.warn("[work_mode_context_commit] stream meta lane reconciled to render lane", {
       commit_lane_id: commitLaneId,
       stream_started_lane_id: metaStreamStarted,
       source_function: meta.source_function || ""
     });
-    return false;
-  }
-
-  const turnEl = meta.turn_el;
-  if (turnEl instanceof HTMLElement) {
-    const turnPanel = turnEl.closest(".vera-reasoning-tab-panel");
-    if (turnPanel instanceof HTMLElement) {
-      const turnLaneId =
-        String(turnPanel.dataset.laneId || "").trim() ||
-        getWorkModeReasoningLaneId(Number(turnPanel.dataset.tabIndex));
-      if (turnLaneId && turnLaneId !== commitLaneId) {
-        console.error("[work_mode_context_commit] BLOCKED: turn DOM panel lane !== stream lane", {
-          commit_lane_id: commitLaneId,
-          turn_dom_lane_id: turnLaneId,
-          source_function: meta.source_function || ""
-        });
-        return false;
-      }
-    }
   }
 
   const excerpt = truncateWorkModeRegistryExcerpt(
@@ -10826,6 +13742,10 @@ function commitActiveWorkModeReasoningContext(payload, meta = {}) {
   });
 
   notifyWorkModeTtsReasoningCommitted(commitLaneId, o);
+
+  if (typeof queueWorkModeWorkspaceSync === "function") {
+    queueWorkModeWorkspaceSync();
+  }
 
   if (frozenTurnId) {
     const resultPack = classifyWorkModeSameTurnReasoningResultStatus(
@@ -11986,16 +14906,34 @@ function classifyWorkModeTurnIntent(userText) {
 
 function buildWorkModeReasoningStage1AckText(trimmed, opts = {}) {
   const o = opts || {};
-  if (o.hasUpload) return "I'll work from your file in the reasoning space.";
-  if (o.planningIntent) return "I'll lay out the plan in the reasoning space.";
-  /* Math-router disabled: never promise Python execution from Stage-1.
-     The deep reasoning stream lays out the calculation step-by-step instead. */
-  if (o.requestHasComputationalNumericIntent) return "I'll work through the calculation in the reasoning panel.";
-  if (o.requestHasCodeIntent) return "Sure — I'll put the detailed code in the reasoning space.";
-  if (o.requestHasProofIntent) return "I'll work through the proof in the reasoning space.";
-  if (o.requestHasDenseMathIntent) return "I'll work the full solution in the reasoning space.";
-  if (o.requestHasTableIntent) return "I'll put the full table in the reasoning space.";
-  return "I'll work through this in the reasoning space.";
+  if (o.explicitPanelDestination) {
+    const n = Number(o.explicitPanelTarget);
+    const userText = String(o.userText || trimmed || "");
+    if (Number.isFinite(n) && n >= 1) {
+      const cleanedTask = String(o.cleanedPanelTask || "").trim();
+      if (/\bexplain\b/i.test(userText)) {
+        const label = extractExplicitPanelTopicLabelForAck(cleanedTask);
+        if (label) return `I'll explain ${label} in panel ${n}.`;
+        return `I'll explain it in panel ${n}.`;
+      }
+      if (/\bwrite\b/i.test(userText)) return `I'll write it in panel ${n}.`;
+      if (/\b(?:draft|compose)\b/i.test(userText)) return `I'll draft it in panel ${n}.`;
+      if (/\bexplain\b/i.test(userText)) return `I'll explain it in panel ${n}.`;
+      return `I'll open this in panel ${n}.`;
+    }
+    return "I'll open this in the panel.";
+  }
+  if (o.hasUpload) return "Let me take a look at the file.";
+  if (o.checklistPlanIntent) return "Let me lay out a plan from your checklist.";
+  if (o.planningIntent) return "Let me lay out a plan.";
+  if (o.requestHasCodeIntent) return "Let me trace through it.";
+  const mathLike =
+    o.requestHasComputationalNumericIntent ||
+    o.requestHasDenseMathIntent ||
+    o.requestHasProofIntent ||
+    classifyWorkModeTurnIntent(trimmed).turn_intent === "solve";
+  if (mathLike) return "Let me work through the steps.";
+  return "Let me think through this.";
 }
 
 /* =========================
@@ -12267,6 +15205,438 @@ function attachWorkModeVoiceBriefCompletionFlag(formData, prep) {
   }
   logStage2ResultStatus(prep, detected, spokenOverride || "", Boolean(spokenOverride));
   clearPrepStage2ResultStatus(prep, "consumed_by_stage2_attach");
+}
+
+/** Phase A — status pack for grounded panel summary (no /infer brief-completion flags). */
+function prepareWorkModeStage2StatusOnPrep(prep, panelMarkdown) {
+  if (!prep?.voiceTwoStage?.reasoningRouted) return;
+  prep.stage2VoiceBubble = null;
+  const md = String(panelMarkdown || prep?.stage2InferExcerpt || "").trim();
+  if (md) prep.stage2InferExcerpt = md;
+  const detected = resolveScopedStage2ResultStatus(prep, { markdown: md });
+  prep.stage2ResultStatus = detected;
+  logStage2StatusScopeCheck(prep, detected._source || "stage2_grounded_prep", detected, true, "grounded_final_prep");
+  logStage2ResultStatus(prep, detected, "", false);
+}
+
+function logVoicePanelContract(prep, userText) {
+  try {
+    console.info("[voice_panel_contract]", {
+      turn_id: prep?.turnContext?.turn_id || null,
+      lane_id: prep?.turnContext?.turn_lane_id || prep?.reasoningLaneId || null,
+      user_text: String(userText || prep?.turnContext?.user_text || "").slice(0, 240)
+    });
+  } catch (_) {}
+}
+
+function logLaneHandoffForVoiceFinal(prep, streamLaneId, extra = {}) {
+  const frozen = String(prep?.turnContext?.turn_lane_id || "").trim();
+  const stream = String(streamLaneId || prep?.reasoningLaneId || "").trim();
+  const active = getActiveDomReasoningLaneId() || "";
+  const turnId = String(prep?.turnContext?.turn_id || "").trim();
+  const snap = turnId ? workModeStage2SameTurnByTurnId[turnId] || null : null;
+  const targetPanel =
+    extra.target_panel != null
+      ? extra.target_panel
+      : Number.isFinite(Number(prep?.explicitPanelTarget))
+        ? Number(prep.explicitPanelTarget)
+        : null;
+  const snapshotLane = String(extra.snapshot_lane_id || snap?.lane_id || "").trim();
+  try {
+    console.info("[lane_handoff]", {
+      turn_id: turnId || null,
+      target_panel: targetPanel,
+      frozen_lane_id: frozen || null,
+      stream_lane_id: stream || null,
+      snapshot_lane_id: snapshotLane || null,
+      active_dom_lane_id: active || null,
+      mismatch: Boolean(frozen && stream && frozen !== stream)
+    });
+  } catch (_) {}
+}
+
+function resolveGroundedVoiceFinalPanelMarkdown(prep) {
+  const turnId = String(prep?.turnContext?.turn_id || "").trim();
+  const frozenLane = String(prep?.turnContext?.turn_lane_id || "").trim();
+  const streamLane = String(prep?.reasoningLaneId || "").trim();
+  const userText = String(prep?.turnContext?.user_text || "").trim();
+  const explicitPanel = Boolean(prep?.voiceTwoStage?.explicitPanelDestination);
+  const explicitTargetLane = String(prep?.explicitTargetLaneId || streamLane || "").trim();
+  const expectedLane = explicitPanel && explicitTargetLane ? explicitTargetLane : streamLane || frozenLane;
+  logVoicePanelContract(prep, userText);
+
+  if (!turnId) {
+    return { ok: false, skipReason: "missing_turn_id", markdown: "", laneId: expectedLane };
+  }
+  if (explicitPanel && explicitTargetLane && streamLane && streamLane !== explicitTargetLane) {
+    logLaneHandoffForVoiceFinal(prep, streamLane, {
+      target_panel: prep?.explicitPanelTarget ?? null,
+      snapshot_lane_id: null
+    });
+    try {
+      console.info("[voice_final_brief_skip]", {
+        turn_id: turnId,
+        reason: "explicit_target_stream_lane_mismatch",
+        target_panel: prep?.explicitPanelTarget ?? null,
+        expected_lane_id: explicitTargetLane,
+        stream_lane_id: streamLane
+      });
+    } catch (_) {}
+    return {
+      ok: false,
+      skipReason: "explicit_target_stream_lane_mismatch",
+      markdown: "",
+      laneId: explicitTargetLane
+    };
+  }
+  if (frozenLane && streamLane && frozenLane !== streamLane) {
+    if (explicitPanel) {
+      logLaneHandoffForVoiceFinal(prep, streamLane, {
+        target_panel: prep?.explicitPanelTarget ?? null,
+        snapshot_lane_id: null
+      });
+      try {
+        console.info("[voice_final_brief_skip]", {
+          turn_id: turnId,
+          reason: "frozen_stream_lane_mismatch",
+          target_panel: prep?.explicitPanelTarget ?? null,
+          frozen_lane_id: frozenLane,
+          stream_lane_id: streamLane
+        });
+      } catch (_) {}
+      return {
+        ok: false,
+        skipReason: "frozen_stream_lane_mismatch",
+        markdown: "",
+        laneId: expectedLane
+      };
+    }
+    try {
+      console.info("[voice_final_brief_skip]", {
+        turn_id: turnId,
+        reason: "frozen_stream_lane_mismatch_soft",
+        frozen_lane_id: frozenLane,
+        stream_lane_id: streamLane
+      });
+    } catch (_) {}
+  }
+
+  const snap = workModeStage2SameTurnByTurnId[turnId] || null;
+  logLaneHandoffForVoiceFinal(prep, streamLane, {
+    target_panel: prep?.explicitPanelTarget ?? null,
+    snapshot_lane_id: snap?.lane_id || null
+  });
+
+  if (snap) {
+    if (String(snap.turn_id || "").trim() && String(snap.turn_id) !== turnId) {
+      return { ok: false, skipReason: "snapshot_turn_mismatch", markdown: "", laneId: expectedLane };
+    }
+    const snapLane = String(snap.lane_id || "").trim();
+    if (expectedLane && snapLane && snapLane !== expectedLane) {
+      try {
+        console.info("[voice_final_brief_skip]", {
+          turn_id: turnId,
+          reason: explicitPanel ? "snapshot_lane_mismatch" : "snapshot_lane_mismatch_soft",
+          target_panel: prep?.explicitPanelTarget ?? null,
+          snapshot_lane_id: snapLane,
+          expected_lane_id: expectedLane
+        });
+      } catch (_) {}
+      if (explicitPanel) {
+        return {
+          ok: false,
+          skipReason: "snapshot_lane_mismatch",
+          markdown: "",
+          laneId: expectedLane
+        };
+      }
+    }
+    const md = String(snap.latest_final_answer_excerpt || snap.latest_markdown_preview || "").trim();
+    if (md.length > 20 && (!expectedLane || !snapLane || snapLane === expectedLane)) {
+      return {
+        ok: true,
+        markdown: md,
+        laneId: snapLane || expectedLane,
+        source: "same_turn_snapshot"
+      };
+    }
+  }
+
+  const lanesToTry = [
+    ...new Set(
+      [expectedLane, explicitTargetLane, streamLane, frozenLane, snap?.lane_id].filter(Boolean)
+    )
+  ];
+  for (const laneForLive of lanesToTry) {
+    if (expectedLane && laneForLive !== expectedLane) continue;
+    const liveMd = getWorkModeLaneMarkdownExcerptForStage2(laneForLive);
+    if (liveMd.length > 20) {
+      return { ok: true, markdown: liveMd, laneId: laneForLive, source: "live_lane_dom" };
+    }
+  }
+  return {
+    ok: false,
+    skipReason: "no_panel_markdown",
+    markdown: "",
+    laneId: expectedLane || streamLane || frozenLane || ""
+  };
+}
+
+async function fetchWorkModeGroundedVoiceFinalBrief(prep, panelPack, signal) {
+  const tc = prep?.turnContext || {};
+  const laneForBrief = String(
+    panelPack.laneId || prep?.reasoningLaneId || tc.turn_lane_id || ""
+  ).trim();
+  const body = {
+    session_id: getSessionId(),
+    user_text: String(tc.user_text || "").trim(),
+    panel_markdown: String(panelPack.markdown || "").trim(),
+    turn_id: String(tc.turn_id || "").trim() || null,
+    lane_id: laneForBrief || null,
+    lane_title: String(tc.turn_lane_title || "").trim() || null,
+    stream_lane_id: laneForBrief || null
+  };
+  const res = await authFetch(`${API_URL}/work_mode/voice_final_brief`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    void veraSurfaceLlmFetchFailure({ feature: "voice_final_brief", response: res });
+    return { brief: "", skipped: true, skip_reason: "http_error" };
+  }
+  return res.json();
+}
+
+function resolveGroundedStage2BriefText(prep, generatedBrief) {
+  const generated = String(generatedBrief || "").trim();
+  if (!generated) return "";
+  const finalStatus = getWorkModeReasoningFinalStatus(prep);
+  const finalStatusName = String(finalStatus?.status || "").trim().toLowerCase();
+  if (finalStatusName === "cancelled" || finalStatusName === "user_stopped") {
+    return "I stopped that reasoning request.";
+  }
+  if (finalStatusName && /failed|error|timed_out/.test(finalStatusName)) {
+    return VERA_SAFETY_LIMITS.messages.llmFailure;
+  }
+  storeEffectiveStage2ReplyOnPrep(prep, {
+    effective_stage2_reply: generated,
+    generated_stage2_text: generated,
+    used_override: false,
+    override_reason: null
+  });
+  logStage2EffectiveReply(prep, prep.effectiveStage2Reply, generated, generated);
+  return generated;
+}
+
+async function playWorkModeGroundedStage2Brief(prep, briefText, inferOpts = {}) {
+  const inferSignal = inferOpts.signal;
+  const ttsTurn = prep?.ttsTurn;
+  let text = String(briefText || "").trim();
+  if (!text) {
+    logStage2Debug(prep, {
+      transcript: String(prep?.turnContext?.user_text || "").trim(),
+      reasoning_completed: true,
+      reasoning_success: true,
+      stage2_payload_valid: false,
+      fallback_reason: "empty_grounded_brief"
+    });
+    resumeAfterAssistantReplyPlayback();
+    return;
+  }
+  if (inferOpts.stage2AlsoPrefix && !/^also[,]/i.test(text)) {
+    text = `Also, ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+  }
+  const userText = String(prep?.turnContext?.user_text || "").trim();
+  const stage2ReplyBack = buildWorkModeVoiceReplyBack({ prep, userText });
+  ensureStage2VoiceBubble(prep, text, stage2ReplyBack);
+  const decision = getWorkModeStage2TtsDecision(text);
+  try {
+    console.info("[voice_final_brief_render]", {
+      turn_id: prep?.turnContext?.turn_id || null,
+      lane_id: prep?.turnContext?.turn_lane_id || prep?.reasoningLaneId || null,
+      bubble: true,
+      tts: Boolean(decision.should_enqueue_tts),
+      tts_muted: Boolean(decision.tts_muted)
+    });
+  } catch (_) {}
+  logStage2TtsDecision(prep, decision);
+  logStage2Debug(prep, {
+    transcript: userText,
+    reasoning_completed: true,
+    reasoning_success: true,
+    stage2_payload_valid: true,
+    stage2_text: text,
+    stage2_tts_requested: Boolean(decision.should_enqueue_tts),
+    stage2_tts_suppressed_due_to_mute: Boolean(decision.tts_muted),
+    fallback_reason: decision.suppression_reason || ""
+  });
+  if (!decision.should_enqueue_tts) {
+    resumeAfterAssistantReplyPlayback();
+    return;
+  }
+  const playTask = async () => {
+    await playWorkModeTtsOnlyPhrase(text, inferSignal);
+    resumeAfterAssistantReplyPlayback();
+  };
+  if (shouldUseWorkModeTurnTtsQueue(ttsTurn)) {
+    await enqueueWorkModeAssistantTtsPlayback(playTask, ttsTurn, {
+      stage: 2,
+      text: text.slice(0, 120),
+      prep,
+      abortSignal: inferSignal
+    });
+  } else {
+    await playTask();
+  }
+}
+
+/**
+ * Phase A — grounded Voice final after reasoning stream (replaces /infer brief-completion Stage 2).
+ */
+async function runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, inferOpts = {}) {
+  const p = prep || {};
+  const vs = p.voiceTwoStage || {};
+  if (!vs.reasoningRouted) {
+    await p.chain;
+    return;
+  }
+  await p.chain;
+
+  const hasUpload = Boolean(p.reasoningHadFileUpload);
+  const panelPack = resolveGroundedVoiceFinalPanelMarkdown(p);
+  try {
+    console.info("[voice_final_brief_attempt]", {
+      turn_id: p?.turnContext?.turn_id || null,
+      explicit_panel_destination: Boolean(vs.explicitPanelDestination),
+      target_panel: p?.explicitPanelTarget ?? null,
+      lane_id: panelPack.laneId || p?.explicitTargetLaneId || p?.reasoningLaneId || p?.turnContext?.turn_lane_id || null,
+      upload: hasUpload,
+      markdown_len: String(panelPack.markdown || "").length
+    });
+  } catch (_) {}
+
+  const finalStatus = getWorkModeReasoningFinalStatus(p);
+  const finalStatusName = String(finalStatus?.status || "").trim().toLowerCase();
+  if (finalStatusName === "cancelled" || finalStatusName === "user_stopped") {
+    const stopped = resolveGroundedStage2BriefText(p, "I stopped that reasoning request.");
+    await playWorkModeGroundedStage2Brief(p, stopped, inferOpts);
+    return;
+  }
+  if (finalStatusName && /failed|error|timed_out/.test(finalStatusName)) {
+    const failed = resolveGroundedStage2BriefText(p, VERA_SAFETY_LIMITS.messages.llmFailure);
+    await playWorkModeGroundedStage2Brief(p, failed, inferOpts);
+    return;
+  }
+
+  if (!panelPack.ok) {
+    try {
+      console.info("[voice_final_brief_skip]", {
+        turn_id: p?.turnContext?.turn_id || null,
+        lane_id: p?.turnContext?.turn_lane_id || null,
+        reason: panelPack.skipReason || "scope_skip",
+        upload: hasUpload,
+        markdown_len: 0
+      });
+    } catch (_) {}
+    try {
+      console.info("[voice_final_brief]", {
+        turn_id: p?.turnContext?.turn_id || null,
+        lane_id: p?.turnContext?.turn_lane_id || null,
+        skipped: true,
+        skip_reason: panelPack.skipReason,
+        source: "panel_markdown",
+        excerpt_length: 0
+      });
+    } catch (_) {}
+    logStage2Debug(p, {
+      transcript: String(p?.turnContext?.user_text || "").trim(),
+      reasoning_completed: true,
+      reasoning_success: true,
+      stage2_payload_valid: false,
+      fallback_reason: panelPack.skipReason || "scope_skip"
+    });
+    return;
+  }
+
+  prepareWorkModeStage2StatusOnPrep(p, panelPack.markdown);
+
+  const detected = getWorkModeStage2ResultStatusFromPrep(p);
+  if (shouldUseCannedStage2SpokenLine(detected?.status, detected)) {
+    const canned = buildWorkModeStage2SpokenOverride(detected, p);
+    if (canned) {
+      const line = resolveGroundedStage2BriefText(p, canned);
+      await playWorkModeGroundedStage2Brief(p, line, inferOpts);
+      return;
+    }
+  }
+
+  try {
+    console.info("[panel_stream_done]", {
+      turn_id: p?.turnContext?.turn_id || null,
+      lane_id: panelPack.laneId || p?.reasoningLaneId || null,
+      markdown_length: panelPack.markdown.length,
+      source: panelPack.source || null
+    });
+  } catch (_) {}
+
+  let apiResult;
+  try {
+    apiResult = await fetchWorkModeGroundedVoiceFinalBrief(
+      p,
+      panelPack,
+      inferOpts.signal || workModeDeferredStage2AbortController.signal
+    );
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      return;
+    }
+    logStage2Debug(p, {
+      transcript: String(p?.turnContext?.user_text || "").trim(),
+      reasoning_completed: true,
+      reasoning_success: false,
+      stage2_payload_valid: false,
+      stage2_error: e?.message || e,
+      fallback_reason: "voice_final_brief_fetch_error"
+    });
+    return;
+  }
+
+  if (apiResult?.skipped || !String(apiResult?.brief || "").trim()) {
+    try {
+      console.info("[voice_final_brief_skip]", {
+        turn_id: p?.turnContext?.turn_id || null,
+        reason: apiResult?.skip_reason || "empty_brief",
+        upload: hasUpload,
+        markdown_len: panelPack.markdown.length
+      });
+    } catch (_) {}
+    try {
+      console.info("[voice_final_brief]", {
+        turn_id: p?.turnContext?.turn_id || null,
+        lane_id: p?.turnContext?.turn_lane_id || null,
+        skipped: true,
+        skip_reason: apiResult?.skip_reason || "empty_brief",
+        source: apiResult?.source || "panel_markdown",
+        excerpt_length: Number(apiResult?.excerpt_length) || panelPack.markdown.length
+      });
+    } catch (_) {}
+    return;
+  }
+
+  try {
+    console.info("[voice_final_brief]", {
+      turn_id: p?.turnContext?.turn_id || null,
+      lane_id: p?.turnContext?.turn_lane_id || null,
+      summary_text: String(apiResult.brief || "").slice(0, 240),
+      source: apiResult?.source || "panel_markdown",
+      excerpt_length: Number(apiResult?.excerpt_length) || panelPack.markdown.length
+    });
+  } catch (_) {}
+
+  const effective = resolveGroundedStage2BriefText(p, apiResult.brief);
+  await playWorkModeGroundedStage2Brief(p, effective, inferOpts);
 }
 
 /** Last few Voice UI lines (+ queued typed turns) so “example” requests track the latest topic. */
@@ -13014,8 +16384,9 @@ async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
 }
 
 function enqueueWorkModeTypedVoiceInfer(run) {
-  if (workModeTypedVoiceInferDepth >= WORK_MODE_TYPED_VOICE_CHAIN_MAX) return false;
+  if (isWorkModeTypedVoiceInferChainSaturated()) return false;
   workModeTypedVoiceInferDepth += 1;
+  keyboardSubmitInFlight = workModeTypedVoiceInferDepth;
   workModeTypedVoiceInferTail = workModeTypedVoiceInferTail
     .then(() => run())
     .catch((err) => {
@@ -13023,9 +16394,8 @@ function enqueueWorkModeTypedVoiceInfer(run) {
     })
     .finally(() => {
       workModeTypedVoiceInferDepth -= 1;
-      if (workModeTypedTurnQueue.length > 0 && !isWorkModeTypedTurnBlocked()) {
-        scheduleWorkModeTypedQueueDrain();
-      }
+      keyboardSubmitInFlight = workModeTypedVoiceInferDepth;
+      scheduleWorkModeKeyboardQueueDrainIfReady();
     });
   return true;
 }
@@ -13054,7 +16424,14 @@ function bumpWorkModeVoiceInferTurnSeq() {
 }
 
 function enqueueWorkModeVoiceInferPlaybackTurn(run) {
-  const p = workModeVoiceInferPlaybackTail.catch(() => {}).then(() => run());
+  normalInferInFlightForKeyboardGate += 1;
+  const p = workModeVoiceInferPlaybackTail
+    .catch(() => {})
+    .then(() => run())
+    .finally(() => {
+      normalInferInFlightForKeyboardGate = Math.max(0, normalInferInFlightForKeyboardGate - 1);
+      scheduleWorkModeKeyboardQueueDrainIfReady();
+    });
   workModeVoiceInferPlaybackTail = p.catch(() => {});
   return p;
 }
@@ -13710,6 +17087,7 @@ function ensureStage2VoiceBubble(prep, effectiveText, replyBack = null) {
   const convoEl = uiEl("conversation");
   if (prep?.stage2VoiceBubble instanceof HTMLElement && prep.stage2VoiceBubble.isConnected) {
     prep.stage2VoiceBubble.textContent = t;
+    prep.stage2VoiceBubble.classList.add("vera-work-mode-stage2-reply");
     if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
     veraFeedbackMarkFinalFromBubble(prep.stage2VoiceBubble, {
       turn_id: prep?.turnContext?.turn_id || ""
@@ -13720,6 +17098,7 @@ function ensureStage2VoiceBubble(prep, effectiveText, replyBack = null) {
   let opts = { path: "stage2-effective-reply" };
   if (replyBack) opts = mergeReplyBackIntoBubbleMeta(opts, replyBack);
   const bubble = addBubble(t, "vera", opts);
+  if (bubble instanceof HTMLElement) bubble.classList.add("vera-work-mode-stage2-reply");
   if (prep) prep.stage2VoiceBubble = bubble;
   veraFeedbackMarkFinalFromBubble(bubble, {
     turn_id: prep?.turnContext?.turn_id || ""
@@ -13915,6 +17294,7 @@ function enqueueWorkModeAssistantTtsPlayback(
  * Fetch abort is tied to `workModeDeferredStage2AbortController` (reset on VERA session reset), not `activePipelineAbort`.
  */
 function scheduleWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtStage1End }) {
+  if (!prep?.voiceTwoStage?.reasoningRouted) return;
   void (async () => {
     try {
       logStage2Debug(prep, {
@@ -13961,6 +17341,22 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   if (isLikelyWorkChecklistEditIntent(trimmed))
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   if (isExplicitWorkModePanelNavigationIntent(trimmed)) {
+    try {
+      console.info("[panel_navigation_blocked_reasoning]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        path: "maybePrepareWorkModeReasoning",
+      });
+    } catch (_) {}
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
+  if (isPureWorkModePanelOpenRequest(trimmed)) {
+    try {
+      console.info("[panel_open_blocked_reasoning]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        path: "maybePrepareWorkModeReasoning",
+        route_selected: "panel_open_not_reasoning",
+      });
+    } catch (_) {}
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
 
@@ -13991,10 +17387,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
 
+  /* Compound executable commands (music + explain in panel N, timer + homework,
+     etc.) MUST reach the backend multi-action planner BEFORE any explicit-panel
+     reasoning shortcut. Otherwise the gate sets __reasoningGateForceRoute and
+     streams the full raw utterance into Work Mode. */
+  if (deferReasoningGateToCompoundPlanner(trimmed, opts, noRouteMeta)) {
+    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+  }
+
   /* ------------------------------------------------------------------------
    * 2026-05-29 reasoning-gate deterministic short-circuits.
    *
    * Priority (matches CHAT_REASONING.classify_route_reasoning):
+   *   0. Compound executable families            → defer to planner (above)
    *   1. Explicit panel/reasoning wording          → reasoning_panel (force)
    *   2. Brief/quick/short/tl;dr modifier          → voice_ui (force)
    *   3. Simple definition / who-is / what-is      → voice_ui (force)
@@ -14019,56 +17424,98 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const _briefModifier = isBriefExplanationModifier(trimmed);
   const _simpleDefinition = isSimpleDefinitionQuestion(trimmed);
   if (_explicitPanelRef.matched) {
-    /* Resolve "this/that/it" topic to the previous substantive user request
-       when the explicit-panel phrasing was pronoun-only. If no prior topic
-       is on record, fall back to Voice UI so we don't open an empty panel —
-       the backend ack/clarification text can ask "what should I explain?". */
-    let resolvedTopic = _explicitPanelRef.topic || null;
-    let prior_topic_used = false;
-    if (!resolvedTopic && _explicitPanelRef.wasPronoun) {
-      const fromContext = resolveReasoningPanelTopicFromContext();
-      if (fromContext) {
-        resolvedTopic = fromContext;
-        prior_topic_used = true;
-      } else {
-        /* No prior topic to attach — bail to Voice UI; backend chat path
-           will produce a clarifying reply. */
-        logReasoningRouteDebug({
-          raw_text: String(trimmed || "").slice(0, 240),
-          reasoning_gate_called: true,
-          reasoning_gate_result: "voice_ui",
-          reasoning_gate_reason: "explicit_panel_pronoun_without_prior_topic",
-          explicit_panel_reference: true,
-          simple_definition_detected: false,
-          brief_explanation_detected: false,
-          broad_complex_topic_detected: false,
-          complex_task_detected: false,
-          active_work_mode: true,
-          prior_topic_used: false,
-          resolved_topic: null,
-          route_source: "frontend_explicit_panel_pronoun_unresolved",
-          final_action_type: "voice_ui_clarification",
-          final_panel_target: null,
-          final_route: "chat",
-          final_route_reasoning: false,
-          backend_classify_route: null,
-          backend_category: null,
-          backend_confidence: null,
-          heuristic_reasoning: false,
-          personal_statement_veto: false,
-          venting_signals: [],
-          venting_score: 0,
-          explicit_artifact_intent: false,
-          artifact_signals: [],
-          force_active_lane: false,
-          task_follow_up_continuing: false,
-          planning_intent: false,
-          reason: "explicit_panel_pronoun_without_prior_topic",
-          math_router_enabled: MATH_ROUTER_ENABLED,
-          arithmetic_fast_path_match: false
-        });
+    if (shouldBlockExplicitPanelRouteForCompoundExecutable(trimmed, opts).blocked) {
+      if (deferReasoningGateToCompoundPlanner(trimmed, opts, noRouteMeta)) {
         return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
       }
+    }
+    const _panelTopicResolve = resolveExplicitPanelStreamTask(trimmed, _explicitPanelRef);
+    let resolvedTopic = _panelTopicResolve.task || null;
+    if (resolvedTopic && _panelTopicResolve.source !== "deictic_compose") {
+      resolvedTopic = cleanExplicitPanelReasoningTask(resolvedTopic);
+    }
+    const prior_topic_used = Boolean(
+      _panelTopicResolve.source === "prior_substantive_user_text" ||
+        _panelTopicResolve.source === "deictic_compose"
+    );
+    try {
+      console.info("[explicit_panel_route_detected]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        target_panel: _explicitPanelRef.targetPanel ?? null,
+      });
+      console.info("[explicit_panel_target_detected]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        target_panel_number: _explicitPanelRef.targetPanel ?? null,
+        target_lane_index:
+          Number.isFinite(_explicitPanelRef.targetPanel) && _explicitPanelRef.targetPanel >= 1
+            ? _explicitPanelRef.targetPanel - 1
+            : null,
+        was_pronoun: Boolean(_explicitPanelRef.wasPronoun),
+      });
+      console.info("[explicit_panel_task_cleaned]", {
+        raw_text: String(trimmed || "").slice(0, 240),
+        cleaned_task: resolvedTopic ? String(resolvedTopic).slice(0, 240) : null,
+        deictic_used: Boolean(_panelTopicResolve.source === "deictic_compose" || prior_topic_used),
+      });
+      console.info("[deictic_panel_task_resolved]", {
+        original_text: String(trimmed || "").slice(0, 240),
+        resolved_task_preview: resolvedTopic ? String(resolvedTopic).slice(0, 240) : null,
+        referent_source: _panelTopicResolve.source,
+        referent_preview: _panelTopicResolve.referent
+          ? String(_panelTopicResolve.referent).slice(0, 200)
+          : null,
+      });
+      console.info("[voice_to_panel_intent]", {
+        detected_phrase: "explicit_reasoning_panel_reference",
+        raw_preview: String(trimmed || "").slice(0, 240),
+        was_pronoun: Boolean(_explicitPanelRef.wasPronoun),
+        target_panel: _explicitPanelRef.targetPanel ?? null,
+        active_lane_id: getActiveDomReasoningLaneId?.() || getFocusedWorkModeLaneId?.() || null,
+        explicit_panel_destination: true,
+        resolved_topic_source: _panelTopicResolve.source,
+        resolved_topic_preview: resolvedTopic ? String(resolvedTopic).slice(0, 160) : null,
+        consumed_by_reasoning_route: Boolean(resolvedTopic),
+      });
+    } catch (_) {}
+    if (!resolvedTopic && _explicitPanelRef.wasPronoun) {
+      logReasoningRouteDebug({
+        raw_text: String(trimmed || "").slice(0, 240),
+        reasoning_gate_called: true,
+        reasoning_gate_result: "voice_ui",
+        reasoning_gate_reason: "explicit_panel_pronoun_without_prior_topic",
+        explicit_panel_reference: true,
+        simple_definition_detected: false,
+        brief_explanation_detected: false,
+        broad_complex_topic_detected: false,
+        complex_task_detected: false,
+        active_work_mode: true,
+        prior_topic_used: false,
+        resolved_topic: null,
+        route_source: "frontend_explicit_panel_pronoun_unresolved",
+        final_action_type: "voice_ui_clarification",
+        final_panel_target: null,
+        final_route: "chat",
+        final_route_reasoning: false,
+        backend_classify_route: null,
+        backend_category: null,
+        backend_confidence: null,
+        heuristic_reasoning: false,
+        personal_statement_veto: false,
+        venting_signals: [],
+        venting_score: 0,
+        explicit_artifact_intent: false,
+        artifact_signals: [],
+        force_active_lane: false,
+        task_follow_up_continuing: false,
+        planning_intent: false,
+        reason: "explicit_panel_pronoun_without_prior_topic",
+        math_router_enabled: MATH_ROUTER_ENABLED,
+        arithmetic_fast_path_match: false
+      });
+      const substantiveFallback =
+        extractSubstantiveTopicBeforePanelPhrase(trimmed) || String(trimmed || "").trim();
+      rememberWorkModeSubstantiveUserText(substantiveFallback);
+      return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
     }
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
@@ -14109,7 +17556,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     opts.__reasoningGateForceRoute = "reasoning_panel";
     opts.__reasoningGateReason = "explicit_panel_reference";
     opts.__reasoningGateResolvedTopic = resolvedTopic || null;
+    opts.__explicitPanelDestinationConsumed = true;
     opts.__reasoningGateTargetPanel = _explicitPanelRef.targetPanel ?? null;
+    opts.__voiceToPanelResolvedReferent = _panelTopicResolve.referent || null;
   } else if (_conversationalCheck && !callerForcedReasoning) {
     /* 2026-06-13 — narrow conversational / check-in guard. Runs AFTER the
        explicit-panel branch so explicit Work Mode requests always win.
@@ -14232,44 +17681,23 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
   }
 
-  /* 2026-05-29 spec PART 5 — compound-command defer.
-   *
-   * If the transcript references multiple action families (panel +
-   * reasoning + music, panel + reasoning, music + reasoning, etc.), do
-   * NOT open `/work_mode/reasoning_stream` from this gate with the full
-   * unsegmented transcript. Instead, return no-route so the turn flows
-   * straight to /infer, where the backend deterministic planner segments
-   * the transcript and emits one `work_mode_reasoning open_and_stream`
-   * payload per planned `reasoning.request` action — each carrying ONLY
-   * the cleaned reasoning span.
-   *
-   * Without this defer the reasoning model would receive prompts like
-   * "Can you go to panel 2, explain the Vietnam War and play the lo-fi
-   * mix?" and waste compute trying to "explain" the panel/music tokens
-   * — exactly the failing case the spec calls out.
-   */
-  const _compound = detectCompoundActionFamilies(trimmed);
-  if (_compound.isCompound && !callerForcedReasoning) {
+  /* Snapshot before this turn mutates it — used so /classify thread anchor is the *prior* user line, not the current one. */
+  const priorThreadAnchor = String(workModeLastSubstantiveUserText || "").trim();
+  if (
+    typeof isWorkChecklistPlanShortcutIntent === "function" &&
+    isWorkChecklistPlanShortcutIntent(trimmed) &&
+    !(
+      typeof shouldDeferChecklistPlanShortcut === "function" &&
+      shouldDeferChecklistPlanShortcut(trimmed)
+    )
+  ) {
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
-      reasoning_gate_called: true,
-      reasoning_gate_result: "voice_ui",
-      reasoning_gate_reason: "compound_defer_to_backend_planner",
-      explicit_panel_reference: false,
-      simple_definition_detected: false,
-      brief_explanation_detected: false,
-      broad_complex_topic_detected: Boolean(detectBroadComplexTopicFrontend(trimmed)),
-      complex_task_detected: false,
-      active_work_mode: true,
-      prior_topic_used: false,
-      resolved_topic: null,
-      route_source: "frontend_compound_defer_to_backend",
-      final_panel_target: null,
-      final_route: "chat",
-      final_route_reasoning: false,
+      is_likely_request_shape: isLikelyRequestShape(trimmed),
+      looks_personal_statement: false,
+      news_placeholder_triggered: false,
       backend_classify_route: null,
       backend_category: null,
-      backend_confidence: null,
       heuristic_reasoning: false,
       personal_statement_veto: false,
       venting_signals: [],
@@ -14279,24 +17707,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       force_active_lane: false,
       task_follow_up_continuing: false,
       planning_intent: false,
-      reason: _compound.reason,
-      compound_action_families_detected: _compound.families,
+      final_route: "checklist_plan",
+      final_route_reasoning: false,
+      reason: "checklist_plan_shortcut_owned",
       math_router_enabled: MATH_ROUTER_ENABLED,
-      arithmetic_fast_path_match: false
+      arithmetic_fast_path_match: false,
     });
-    try {
-      console.info("[reasoning_gate_deferred_to_compound_planner]", {
-        raw_transcript: String(trimmed || "").slice(0, 240),
-        compound_action_families_detected: _compound.families,
-        clean_reasoning_span_if_available: null, // planner produces the span server-side
-      });
-    } catch (_) {}
-    if (!isGenericExampleFollowUpText(trimmed)) workModeLastSubstantiveUserText = trimmed;
-    return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+    return workModeReasoningPrepOutcome(
+      Promise.resolve(),
+      computeWorkModeInferThreadAnchor(trimmed, priorThreadAnchor, false),
+      undefined,
+      noRouteMeta
+    );
   }
-
-  /* Snapshot before this turn mutates it — used so /classify thread anchor is the *prior* user line, not the current one. */
-  const priorThreadAnchor = String(workModeLastSubstantiveUserText || "").trim();
   const forceActiveLaneReasoningContent =
     shouldForceReasoningActiveLaneContentFollowUp(trimmed, priorThreadAnchor);
   const planningIntent = isLikelyWorkModePlanningIntent(trimmed);
@@ -14326,13 +17749,21 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       priorThreadAnchor ||
       ""
   ).trim();
-  const deicticCompose = composeDeicticVoiceToPanelReasoningTask({
-    userText: effectiveUserText,
-    originalUserText: rawTrimmed,
-    resolvedReferent: priorVoiceTopic,
-    topicAnchor: priorThreadAnchor
-  });
-  const streamUserRequestForReasoning = deicticCompose?.composedTask || effectiveUserText;
+  const gateForcedExplicitPanel = Boolean(opts.__reasoningGateForceRoute === "reasoning_panel");
+  const explicitPanelStreamTopic = String(
+    opts.__reasoningGateResolvedTopic || extractSubstantiveTopicBeforePanelPhrase(rawTrimmed) || ""
+  ).trim();
+  const deicticCompose =
+    !explicitPanelStreamTopic && detectVoiceToPanelDeicticWritingHandoff(rawTrimmed)
+      ? composeDeicticVoiceToPanelReasoningTask({
+          userText: effectiveUserText,
+          originalUserText: rawTrimmed,
+          resolvedReferent: priorVoiceTopic,
+          topicAnchor: priorThreadAnchor
+        })
+      : null;
+  const streamUserRequestForReasoning =
+    explicitPanelStreamTopic || deicticCompose?.composedTask || effectiveUserText;
   if (deicticCompose) {
     try {
       console.info("[voice_to_panel_deictic_compose]", {
@@ -14408,6 +17839,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   let _routeDebugPersonalAdviceVeto = false;
   let _routeDebugArtifactIntent = { matched: [], hasIntent: false };
   let _routeDebugVentingSignals = { matched: [], score: 0, isVenting: false };
+  let _routeDebugPersonalDisclosure = { matched: [], isPersonalStatement: false };
   if (!hasUpload) {
     const taskFollowUpContinuing =
       !planningIntent &&
@@ -14421,7 +17853,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       const domainWords = /\b(binomial|black-?scholes|delta|gamma|vega|volatility|probability|equation|calculus|statistics|finance|histor(y|ical)|economics|algorithm)\b/;
       const codeProblemWords =
         /\b(code|coding|program|debug|bug|error|exception|stack trace|traceback|refactor|compile|build|runtime|test failing|unit test|integration test|typescript|javascript|python|java|c\+\+|sql|api endpoint|null pointer|undefined)\b/;
-      const multiPart = /(\b(step by step|in detail|deep dive|from scratch)\b)|([,:;].+[,:;])/;
+      const multiPart = /\b(step\s+by\s+step|in\s+detail|deep\s+dive|from\s+scratch)\b/i;
       const writingTask =
         /\b(write|draft|compose|polish|rewrite)\b/.test(t) &&
         /\b(email|essay|script|speech|letter|cover letter|proposal|statement|outline)\b/.test(t);
@@ -14478,20 +17910,56 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
        homework today" decisively veto. */
     _routeDebugArtifactIntent = hasExplicitWorkArtifactIntent(trimmed);
     _routeDebugVentingSignals = looksLikePersonalStatementOrVenting(trimmed);
+    _routeDebugPersonalDisclosure = looksLikePersonalDisclosureStatement(trimmed);
     const _isRequestShape = isLikelyRequestShape(trimmed);
+    const _explicitTaskIntent =
+      _isRequestShape || Boolean(_routeDebugArtifactIntent.hasIntent);
+    const explicitWorkModeTarget =
+      Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel") ||
+      Boolean(opts && opts.__explicitPanelDestinationConsumed);
 
     /* Adjusted venting score: if the message has no request shape at all,
        declarative-personal status is even stronger evidence for veto. */
     const _adjustedVentingScore = _routeDebugVentingSignals.score + (_isRequestShape ? 0 : 1);
     const _adjustedIsVenting = _adjustedVentingScore >= 2;
+    const _personalNoTaskSignal =
+      _routeDebugPersonalDisclosure.isPersonalStatement || _adjustedIsVenting;
+    let _routeDebugVentReasoningVeto = false;
+    let _routeDebugPersonalStatementVeto = false;
+    let _blockedReasoningReason = null;
+
+    if (_personalNoTaskSignal && !_routeDebugArtifactIntent.hasIntent && !explicitWorkModeTarget) {
+      try {
+        if (_routeDebugPersonalDisclosure.isPersonalStatement) {
+          console.info("[personal_statement_detected]", {
+            raw_text: String(trimmed || "").slice(0, 240),
+            normalized_text: String(trimmed || "").trim().toLowerCase().slice(0, 240),
+            matched: _routeDebugPersonalDisclosure.matched,
+          });
+        }
+        console.info("[voice_support_detected]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          normalized_text: String(trimmed || "").trim().toLowerCase().slice(0, 240),
+          personal_statement_detected: Boolean(_routeDebugPersonalDisclosure.isPersonalStatement),
+          venting_detected: Boolean(_adjustedIsVenting),
+          explicit_task_intent: Boolean(_explicitTaskIntent),
+          explicit_work_artifact_intent: Boolean(_routeDebugArtifactIntent.hasIntent),
+          work_mode_open: true,
+          venting_signals: _routeDebugVentingSignals.matched,
+          venting_score: _routeDebugVentingSignals.score,
+          adjusted_venting_score: _adjustedVentingScore,
+          disclosure_signals: _routeDebugPersonalDisclosure.matched,
+        });
+      } catch (_) {}
+    }
 
     let effectiveClassifyRoute = classifyRoute;
     const personalAdviceVeto =
       effectiveClassifyRoute === true &&
-      heuristicReasoning === false &&
       !forceActiveLaneReasoningContent &&
-      _adjustedIsVenting &&
-      !_routeDebugArtifactIntent.hasIntent;
+      _personalNoTaskSignal &&
+      !_routeDebugArtifactIntent.hasIntent &&
+      !explicitWorkModeTarget;
     if (personalAdviceVeto) {
       _routeDebugPersonalAdviceVeto = true;
       effectiveClassifyRoute = false;
@@ -14528,6 +17996,88 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       : ((effectiveClassifyRoute || heuristicReasoning || forceActiveLaneReasoningContent) &&
          !taskFollowUpContinuing);
 
+    const personalNoTaskBlocksReasoning =
+      !gateForcedReasoning &&
+      !forceActiveLaneReasoningContent &&
+      _personalNoTaskSignal &&
+      !_routeDebugArtifactIntent.hasIntent &&
+      !explicitWorkModeTarget;
+    if (personalNoTaskBlocksReasoning && routeReasoning) {
+      _routeDebugVentReasoningVeto = Boolean(_adjustedIsVenting);
+      _routeDebugPersonalStatementVeto = Boolean(_routeDebugPersonalDisclosure.isPersonalStatement);
+      _routeDebugPersonalAdviceVeto = true;
+      _blockedReasoningReason = _routeDebugPersonalDisclosure.isPersonalStatement
+        ? "personal_statement_no_task_intent"
+        : "emotional_vent_no_task_intent";
+      routeReasoning = false;
+      effectiveClassifyRoute = false;
+      try {
+        const _gateLogPayload = {
+          raw_text: String(trimmed || "").slice(0, 240),
+          normalized_text: String(trimmed || "").trim().toLowerCase().slice(0, 240),
+          personal_statement_detected: Boolean(_routeDebugPersonalDisclosure.isPersonalStatement),
+          venting_detected: Boolean(_adjustedIsVenting),
+          explicit_task_intent: Boolean(_explicitTaskIntent),
+          explicit_work_artifact_intent: Boolean(_routeDebugArtifactIntent.hasIntent),
+          work_mode_open: true,
+          routeReasoning: false,
+          blocked_reason: _blockedReasoningReason,
+        };
+        if (_routeDebugPersonalDisclosure.isPersonalStatement) {
+          console.info("[reasoning_gate_blocked_personal_statement]", _gateLogPayload);
+        } else {
+          console.info("[reasoning_gate_blocked_for_vent]", {
+            raw_text: _gateLogPayload.raw_text,
+            blocked_reasoning_reason: _blockedReasoningReason,
+            heuristic_reasoning: Boolean(heuristicReasoning),
+            backend_classify_route: Boolean(classifyRoute),
+          });
+        }
+        console.info("[reasoning_gate_blocked]", {
+          raw_text: _gateLogPayload.raw_text,
+          reason: _blockedReasoningReason,
+        });
+      } catch (_) {}
+    } else if (routeReasoning) {
+      try {
+        const _regexHits = [];
+        const _tGate = String(trimmed || "").toLowerCase();
+        if (/\b(step\s+by\s+step|in\s+detail|deep\s+dive|from\s+scratch)\b/i.test(_tGate)) {
+          _regexHits.push("complexity_cue");
+        }
+        if (_regexHits.length) {
+          console.info("[reasoning_gate_regex_match]", {
+            raw_text: String(trimmed || "").slice(0, 240),
+            normalized_text: String(trimmed || "").trim().toLowerCase().slice(0, 240),
+            matched: _regexHits,
+          });
+        }
+        if (_routeDebugArtifactIntent.hasIntent || _explicitTaskIntent) {
+          console.info("[reasoning_gate_allowed_task_intent]", {
+            raw_text: String(trimmed || "").slice(0, 240),
+            normalized_text: String(trimmed || "").trim().toLowerCase().slice(0, 240),
+            personal_statement_detected: Boolean(_routeDebugPersonalDisclosure.isPersonalStatement),
+            venting_detected: Boolean(_adjustedIsVenting),
+            explicit_task_intent: Boolean(_explicitTaskIntent),
+            explicit_work_artifact_intent: Boolean(_routeDebugArtifactIntent.hasIntent),
+            work_mode_open: true,
+            routeReasoning: true,
+            blocked_reason: null,
+          });
+        }
+        console.info("[reasoning_gate_allowed]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          reason: gateForcedReasoning
+            ? (opts && opts.__reasoningGateReason) || "forced_reasoning_panel"
+            : heuristicReasoning
+              ? "heuristic_reasoning"
+              : effectiveClassifyRoute
+                ? "backend_classifier"
+                : "force_active_lane_followup",
+        });
+      } catch (_) {}
+    }
+
     if (gateForcedReasoning && !(effectiveClassifyRoute || heuristicReasoning)) {
       try {
         console.warn("[routing_override]", {
@@ -14550,8 +18100,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     if (gateForcedReasoning) {
       _routeDebugReason =
         (opts && opts.__reasoningGateReason) || "forced_reasoning_panel";
-    } else if (personalAdviceVeto) {
-      _routeDebugReason = "personal_statement_veto";
+    } else if (_routeDebugVentReasoningVeto || _routeDebugPersonalStatementVeto || personalAdviceVeto) {
+      _routeDebugReason = _routeDebugPersonalStatementVeto
+        ? "personal_statement_no_task_intent"
+        : "emotional_vent_no_task_intent";
     } else if (_routeDebugNewsLookupVeto) {
       _routeDebugReason = "news_lookup_veto";
     } else if (taskFollowUpContinuing) {
@@ -14583,7 +18135,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
       is_likely_request_shape: _isRequestShape,
-      looks_personal_statement: Boolean(_routeDebugVentingSignals.isVenting),
+      looks_personal_statement: Boolean(
+        _routeDebugVentingSignals.isVenting || _routeDebugPersonalDisclosure.isPersonalStatement
+      ),
       news_placeholder_triggered: _newsPlaceholderTriggered,
       backend_classify_route: Boolean(classifyRoute),
       backend_category: classifyCategory,
@@ -14594,7 +18148,13 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       backend_target_panel: classifyBackendTargetPanel,
       backend_source: classifyBackendSource,
       heuristic_reasoning: _routeDebugHeuristicReasoning,
-      personal_statement_veto: _routeDebugPersonalAdviceVeto,
+      personal_statement_veto: Boolean(
+        _routeDebugPersonalAdviceVeto || _routeDebugVentReasoningVeto || _routeDebugPersonalStatementVeto
+      ),
+      personal_disclosure_signals: _routeDebugPersonalDisclosure.matched,
+      personal_disclosure_detected: Boolean(_routeDebugPersonalDisclosure.isPersonalStatement),
+      vent_reasoning_veto: Boolean(_routeDebugVentReasoningVeto),
+      blocked_reasoning_reason: _blockedReasoningReason,
       news_lookup_veto: _routeDebugNewsLookupVeto,
       venting_signals: _routeDebugVentingSignals.matched,
       venting_score: _routeDebugVentingSignals.score,
@@ -14681,6 +18241,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   const requestHasComputationalNumericIntent =
     detectWorkModeRequestHasComputationalNumericIntent(effectiveUserText);
   const stage1AckText = buildWorkModeReasoningStage1AckText(effectiveUserText, {
+    explicitPanelDestination: Boolean(opts.__explicitPanelDestinationConsumed),
+    explicitPanelTarget: opts.__reasoningGateTargetPanel,
+    cleanedPanelTask: opts.__reasoningGateResolvedTopic || explicitPanelStreamTopic,
+    userText: effectiveUserText,
     hasUpload,
     planningIntent,
     requestHasComputationalNumericIntent,
@@ -14691,6 +18255,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   });
   const voiceTwoStage = {
     reasoningRouted: true,
+    /* Legacy /infer brief-completion Stage 2 is never used for reasoning-routed
+       voice turns — grounded /work_mode/voice_final_brief runs instead
+       (see runInferAfterWorkModeReasoningPrep). Explicit panel destination
+       must still receive that grounded final summary after the panel stream. */
+    skipStage2Infer: false,
+    explicitPanelDestination: Boolean(opts.__explicitPanelDestinationConsumed),
     requestHasComputationalNumericIntent,
     requestHasCodeIntent,
     requestHasProofIntent,
@@ -14715,15 +18285,23 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
      panel does not exist we fall through to the existing priority chain
      so the planner doesn't deadlock on a missing tab. */
   let explicitTargetLaneIdx = null;
+  let explicitTargetPanel1Based = null;
   try {
     const targetPanel1Based = Number(opts && opts.__reasoningGateTargetPanel);
     if (Number.isFinite(targetPanel1Based) && targetPanel1Based >= 1) {
-      const idxs = (typeof getReasoningPanelIndices === "function")
-        ? getReasoningPanelIndices()
-        : [];
-      const candidate = Array.isArray(idxs) ? idxs[targetPanel1Based - 1] : undefined;
-      if (Number.isFinite(candidate)) {
-        explicitTargetLaneIdx = Number(candidate);
+      explicitTargetPanel1Based = targetPanel1Based;
+      if (typeof ensureReasoningPanelVisualIndexExists === "function") {
+        ensureReasoningPanelVisualIndexExists(targetPanel1Based, {
+          source: "reasoning_gate_explicit_panel",
+        });
+      } else {
+        ensureReasoningPanelIndexExists(targetPanel1Based - 1);
+      }
+      const order =
+        typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder() : [];
+      const entry = Array.isArray(order) ? order[targetPanel1Based - 1] : null;
+      if (entry && Number.isFinite(entry.tabIndex)) {
+        explicitTargetLaneIdx = Number(entry.tabIndex);
       }
     }
   } catch (_) {}
@@ -14754,8 +18332,44 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     forceActiveLane: Boolean(forceActiveLaneReasoningContent),
     path: "maybePrepareWorkModeReasoning",
   });
-  const reasoningLaneId = turnContext?.turn_lane_id || getWorkModeReasoningLaneId(laneIdx);
+  const reasoningLaneId = (() => {
+    const renderLaneId =
+      getWorkModeReasoningLaneId(laneIdx) || String(turnContext?.turn_lane_id || "").trim() || "";
+    if (turnContext && renderLaneId) {
+      const prevFrozen = String(turnContext.turn_lane_id || "").trim();
+      if (prevFrozen && prevFrozen !== renderLaneId) {
+        try {
+          console.info("[lane_handoff]", {
+            turn_id: turnContext.turn_id || null,
+            frozen_lane_id: prevFrozen,
+            stream_lane_id: renderLaneId,
+            snapshot_lane_id: null,
+            active_dom_lane_id: getActiveDomReasoningLaneId() || null,
+            reconciled_at: "reasoning_route"
+          });
+        } catch (_) {}
+      }
+      turnContext.turn_lane_id = renderLaneId;
+    }
+    return renderLaneId || turnContext?.turn_lane_id || getWorkModeReasoningLaneId(laneIdx);
+  })();
+  const renderLaneId = reasoningLaneId;
+  if (explicitTargetLaneIdx != null && typeof activateReasoningTab === "function") {
+    try {
+      activateReasoningTab(explicitTargetLaneIdx, {
+        commandText: streamUserRequestForReasoning || effectiveUserText,
+        requestedIndex: explicitTargetPanel1Based || explicitTargetLaneIdx + 1,
+        resolvedFrom: "explicit_panel_voice_target"
+      });
+    } catch (_) {}
+  }
   try {
+    console.info("[reasoning_lane_target]", {
+      requested_panel: explicitTargetPanel1Based,
+      selected_lane_idx: laneIdx,
+      render_lane_id: renderLaneId,
+      explicit_target_lane_idx: explicitTargetLaneIdx,
+    });
     console.info("[reasoning_stream_panel]", {
       prompt_preview: String(effectiveUserText || "").slice(0, 160),
       target_panel_index_1based: explicitTargetLaneIdx != null ? Number(opts.__reasoningGateTargetPanel) : null,
@@ -14769,20 +18383,52 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
   if (turnContext && reasoningLaneId !== turnContext.turn_lane_id) {
     workModeTurnLaneGuard(turnContext, reasoningLaneId, "reasoning_route_lane_mismatch");
   }
-  const lanePriorForInfer = getWorkModeLanePriorUserRequest(reasoningLaneId) || priorThreadAnchor;
+  const reasoningInputSource =
+    String(opts.__reasoningInputSource || turnContext?.source || "").toLowerCase() === "voice"
+      ? "voice"
+      : "keyboard";
+  const reasoningContextScope = buildReasoningContextScope({
+    userText: streamUserRequestForReasoning,
+    cleanedPanelTask: explicitPanelStreamTopic || streamUserRequestForReasoning,
+    inputSource: reasoningInputSource,
+    explicitPanelTarget: explicitTargetPanel1Based,
+    targetLaneId: reasoningLaneId,
+    activeLaneId: getActiveDomReasoningLaneId(),
+    topicAnchor: priorThreadAnchor,
+  });
+  logReasoningContextScope(reasoningContextScope, {
+    active_panel:
+      reasoningContextScope.active_lane_id &&
+      typeof getReasoningLaneIndexFromLaneId === "function"
+        ? (() => {
+            const idx = getReasoningLaneIndexFromLaneId(reasoningContextScope.active_lane_id);
+            return idx != null ? idx + 1 : null;
+          })()
+        : null,
+    context_panel: explicitTargetPanel1Based,
+  });
+  const lanePriorOnTarget = getWorkModeLanePriorUserRequest(reasoningLaneId);
+  const useGlobalPriorAnchor = !(
+    reasoningContextScope.explicit_panel_target &&
+    reasoningContextScope.is_fresh_topic &&
+    !reasoningContextScope.is_deictic
+  );
+  const lanePriorForInfer = lanePriorOnTarget || (useGlobalPriorAnchor ? priorThreadAnchor : "");
   const inferThreadAnchor = computeWorkModeInferThreadAnchor(
     effectiveUserText,
     lanePriorForInfer,
     continueLaneForThisTurn
   );
   if (!isGenericExampleFollowUpText(effectiveUserText)) {
-    laneTopicSeedByIdx[laneIdx] = deicticCompose?.resolvedReferent || effectiveUserText;
+    laneTopicSeedByIdx[laneIdx] =
+      explicitPanelStreamTopic || deicticCompose?.resolvedReferent || effectiveUserText;
     workModeLastSubstantiveLaneIdx = laneIdx;
-    workModeLastSubstantiveUserText = rawTrimmed || effectiveUserText;
+    workModeLastSubstantiveUserText =
+      explicitPanelStreamTopic || rawTrimmed || effectiveUserText;
   }
   /* Voice /infer waits for the full reasoning NDJSON stream (summary + markdown + done) so handoff context is complete. */
   const chainP = runOnLaneReasoningChain(laneIdx, async () => {
-    const streamLaneId = turnContext?.turn_lane_id || reasoningLaneId;
+    const streamLaneId = renderLaneId || turnContext?.turn_lane_id || reasoningLaneId;
     const streamLaneTitleAtStart =
       turnContext?.turn_lane_title ||
       (() => {
@@ -14795,8 +18441,22 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       turn_id: turnContext?.turn_id || null
     });
     console.info("[reasoning_stream_start]", {
+      request_id: opts?.__reasoningRequestId || turnContext?.reasoning_request_id || null,
+      parent_turn_id: opts?.__reasoningParentTurnId || turnContext?.parent_turn_id || turnContext?.turn_id || null,
+      task: String(effectiveUserText || "").slice(0, 240),
+      target_panel: explicitTargetPanel1Based ?? (explicitTargetLaneIdx != null ? explicitTargetLaneIdx + 1 : null),
+      context_sources: {
+        input_source: reasoningContextScope.input_source,
+        voice_context: !reasoningContextScope.block_voice_context,
+        target_lane_only: Boolean(
+          reasoningContextScope.explicit_panel_target && !reasoningContextScope.is_deictic
+        ),
+        is_deictic: reasoningContextScope.is_deictic,
+        is_fresh_topic: reasoningContextScope.is_fresh_topic,
+      },
       turn_id: turnContext?.turn_id || null,
-      stream_lane_id: streamLaneId
+      stream_lane_id: streamLaneId,
+      source: opts?.__reasoningStreamSource || "maybePrepareWorkModeReasoning",
     });
     try {
       console.info("[reasoning_queue_start]", {
@@ -14825,6 +18485,10 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       requestHasCodeIntent,
       planningIntent,
       currentAttachmentMeta,
+      inputSource: reasoningContextScope.input_source,
+      explicitPanelTarget: reasoningContextScope.target_panel,
+      activeLaneId: reasoningContextScope.active_lane_id,
+      contextScope: reasoningContextScope,
       voiceToPanelContextOpts: {
         originalUserText: String(opts.__voiceToPanelOriginalText || rawTrimmed || trimmed || "").trim(),
         cleanedPanelTask: streamUserRequest,
@@ -14885,8 +18549,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           cleared_busy: true
         });
         logLaneBusyStateForReasoning("cleanup", laneIdx, turnIdForLifecycle, streamLaneId);
+        logWmUploadLayoutDebug("cleanup", {
+          reason: String(st || ""),
+          turn_id: turnIdForLifecycle,
+          lane_id: streamLaneId
+        });
+      } catch (_) {}
+      try {
+        closeWorkModeAttachmentPreviewModal();
       } catch (_) {}
       endWorkModeReasoningLaneRun(laneIdx);
+      scheduleRecalcWorkModeLayoutAfterReasoning(st);
     }
     startWorkModeReasoningWatchdog(
       laneIdx,
@@ -14918,6 +18591,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     } catch (_) {}
     try {
     if (hasUpload && turnContext?.turn_id) {
+      logWmUploadLayoutDebug("upload_start", {
+        turn_id: turnContext?.turn_id ?? null,
+        lane_id: streamLaneId,
+        file_count: attachmentList.length
+      });
       const uploadDescriptors = attachmentList.map((file) => {
         const pending = workModePendingAttachments.find((p) => p.file === file);
         const attachment_id = pending?.id || generateWorkModeAttachmentId();
@@ -14959,6 +18637,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       clearComposerAttachmentsAfterSubmit(turnContext, "lane_attachment_block_enqueued");
     }
     laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
+
+    const reasoningUsageStreamT0 = performance.now();
+    try {
+      window.veraUsageOnReasoningPanelMessageSent?.({
+        lane_id: laneId,
+        panel_index: laneIdx,
+        source: turnContext?.source || "reasoning",
+        request_id: turnContext?.turn_id || undefined,
+        input_chars: String(streamReasoningText || "").length,
+      });
+    } catch (_) {}
 
     let sr;
     try {
@@ -15017,7 +18706,7 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
               feature: "reasoning_stream_upload",
               response: sr
             });
-          } else if (sr.status === 413) {
+          } else if (sr.status === 413 || sr.status === 429) {
             void veraSurfaceLlmFetchFailure({
               feature: "reasoning_stream_upload",
               response: sr
@@ -15031,6 +18720,11 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           safeReasoningLaneRelease("upload_empty_body");
           return "reasoning-upload-failed";
         }
+        logWmUploadLayoutDebug("stream_start", {
+          turn_id: turnContext?.turn_id ?? null,
+          lane_id: streamLaneId,
+          status: sr.status
+        });
       } else {
         sr = await authFetch(`${API_URL}/work_mode/reasoning_stream`, {
           method: "POST",
@@ -15120,6 +18814,20 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
               } catch (_) {}
               break;
             }
+            if (
+              typeof shouldSuppressChecklistPlanGenericUnavailable === "function" &&
+              shouldSuppressChecklistPlanGenericUnavailable()
+            ) {
+              try {
+                console.info("[checklist_plan_generic_unavailable_suppressed]", {
+                  turn_id: turnContext?.turn_id || null,
+                  lane_id: streamLaneId || null,
+                  raw_error_message: String(o.message || "").slice(0, 200),
+                  stage: "reasoning_stream_error_chunk",
+                });
+              } catch (_) {}
+              break;
+            }
             logVeraCapabilityFailure("llm", "reasoning_stream_error", {
               message: String(o.message || "").slice(0, 200)
             });
@@ -15163,7 +18871,14 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         onDone: ({ markdownAcc, summaryText }) => {
           const mdFromDom = String(turnEl?.dataset?.markdownAcc || "").trim();
           const mdDone = mdFromDom || String(markdownAcc || "").trim();
-          const panelForTitle = getReasoningPanelElementByLaneId(streamLaneId) || turnEl.closest(".vera-reasoning-tab-panel");
+          const turnPanel = turnEl?.closest?.(".vera-reasoning-tab-panel");
+          const commitLaneForDone =
+            (turnPanel instanceof HTMLElement &&
+              (String(turnPanel.dataset.laneId || "").trim() ||
+                getWorkModeReasoningLaneId(Number(turnPanel.dataset.tabIndex)))) ||
+            streamLaneId;
+          const panelForTitle =
+            getReasoningPanelElementByLaneId(commitLaneForDone) || turnPanel;
           if (panelForTitle instanceof HTMLElement) {
             panelForTitle.dataset.generationStatus = "complete";
             panelForTitle.dataset.generating = "0";
@@ -15172,6 +18887,13 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           }
           const excerptCap = 12000;
           const excerpt = mdDone.length > excerptCap ? `${mdDone.slice(0, excerptCap)}\n…` : mdDone;
+          try {
+            console.info("[panel_stream_done]", {
+              turn_id: turnContext?.turn_id || null,
+              lane_id: streamLaneId || null,
+              markdown_length: mdDone.length
+            });
+          } catch (_) {}
           const summaryLine = extractWorkModeReasoningSummaryAnswerLine(summaryText);
           const codeOrMath = Boolean(
             mdDone &&
@@ -15183,8 +18905,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
           );
           commitActiveWorkModeReasoningContext(
             {
-              stream_started_lane_id: streamLaneId,
-              active_lane_id: streamLaneId,
+              stream_started_lane_id: commitLaneForDone,
+              active_lane_id: commitLaneForDone,
               lane_title: streamLaneTitleAtStart,
               last_user_request: streamUserRequest,
               prior_problem_anchor: streamPriorAnchor || "",
@@ -15195,8 +18917,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
             },
             {
               source_function: "maybePrepareWorkModeReasoning.onDone",
-              stream_started_lane_id: streamLaneId,
-              frozen_lane_id: turnContext?.turn_lane_id || streamLaneId,
+              stream_started_lane_id: commitLaneForDone,
+              frozen_lane_id: turnContext?.turn_lane_id || commitLaneForDone,
               frozen_turn_id: turnContext?.turn_id || "",
               turn_el: turnEl
             }
@@ -15306,6 +19028,17 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
               );
             }
           }
+          try {
+            window.veraUsageOnReasoningPanelReplyDone?.({
+              lane_id: streamLaneId,
+              panel_index: laneIdx,
+              source: turnContext?.source || "reasoning",
+              request_id: turnContext?.turn_id || undefined,
+              latency_ms: Math.round(performance.now() - reasoningUsageStreamT0),
+              response_chars: String(mdDone || "").length,
+              success: true,
+            });
+          } catch (_) {}
           safeReasoningLaneRelease("stream_completed");
         }
       });
@@ -15332,7 +19065,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     reasoningHadFileUpload: hasUpload,
     reasoningUploadState,
     voiceTwoStage,
-    reasoningLaneId: turnContext?.turn_lane_id || reasoningLaneId,
+    reasoningLaneId: renderLaneId || turnContext?.turn_lane_id || reasoningLaneId,
+    explicitPanelTarget: explicitTargetPanel1Based,
+    explicitTargetLaneId: renderLaneId || turnContext?.turn_lane_id || reasoningLaneId,
     turnContext
   });
 }
@@ -15387,11 +19122,26 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
   logWorkModeLaneInvariant("reasoning_stream_start", turnContext?.turn_lane_id || streamLaneId, streamLaneId, {
     turn_id: turnContext?.turn_id || null
   });
+  const streamUserRequest = String(text || "").trim();
+  const composerContextScope = buildReasoningContextScope({
+    userText: streamUserRequest,
+    cleanedPanelTask: streamUserRequest,
+    inputSource: "keyboard",
+    targetLaneId: streamLaneId,
+    activeLaneId: getActiveDomReasoningLaneId(),
+  });
+  logReasoningContextScope(composerContextScope);
   console.info("[reasoning_stream_start]", {
     turn_id: turnContext?.turn_id || null,
-    stream_lane_id: streamLaneId
+    stream_lane_id: streamLaneId,
+    task: String(text || "").slice(0, 240),
+    target_panel: null,
+    context_sources: {
+      input_source: "keyboard",
+      voice_context: !composerContextScope.block_voice_context,
+      is_deictic: composerContextScope.is_deictic,
+    },
   });
-  const streamUserRequest = String(text || "").trim();
   const streamPriorAnchor = getWorkModeLanePriorUserRequest(streamLaneId);
   const requestHasCodeIntent = detectWorkModeRequestHasCodeVoiceIntent(streamUserRequest);
   const modelPrep = prepareWorkModeReasoningModelCall({
@@ -15399,6 +19149,8 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
     userText: streamUserRequest,
     turnContext,
     requestHasCodeIntent,
+    inputSource: "keyboard",
+    contextScope: composerContextScope,
     voiceToPanelContextOpts: {
       originalUserText: streamUserRequest,
       cleanedPanelTask: streamUserRequest,
@@ -15448,8 +19200,18 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         cleared_busy: true
       });
       logLaneBusyStateForReasoning("composer_stream", laneIdx, turnIdLc, streamLaneId);
+      logWmUploadLayoutDebug("cleanup", {
+        reason: String(st || ""),
+        turn_id: turnIdLc,
+        lane_id: streamLaneId,
+        path: "composer"
+      });
+    } catch (_) {}
+    try {
+      closeWorkModeAttachmentPreviewModal();
     } catch (_) {}
     endWorkModeReasoningLaneRun(laneIdx);
+    scheduleRecalcWorkModeLayoutAfterReasoning(st);
   }
   startWorkModeReasoningWatchdog(
     laneIdx,
@@ -15482,8 +19244,18 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
   laneReasoningTurnCountByIdx[laneIdx] = (laneReasoningTurnCountByIdx[laneIdx] ?? 0) + 1;
   let summaryText = "";
   let markdownAcc = "";
+  const reasoningUsageStreamT0 = performance.now();
   try {
-    const sr = await fetch(`${API_URL}/work_mode/reasoning_stream`, {
+    window.veraUsageOnReasoningPanelMessageSent?.({
+      lane_id: laneId,
+      panel_index: laneIdx,
+      source: turnContext?.source || "keyboard",
+      request_id: turnContext?.turn_id || undefined,
+      input_chars: String(text || "").length,
+    });
+  } catch (_) {}
+  try {
+    const sr = await authFetch(`${API_URL}/work_mode/reasoning_stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -15504,10 +19276,37 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         /* ignore */
       }
       setWorkModeAttachmentMeta(msg);
-      void veraSurfaceLlmFetchFailure({
-        feature: "reasoning_stream_secondary",
-        response: sr
-      });
+      const checklistPlanActive =
+        Boolean(opts.isChecklistPlanRequest) ||
+        (typeof shouldSuppressChecklistPlanGenericUnavailable === "function" &&
+          shouldSuppressChecklistPlanGenericUnavailable());
+      if (checklistPlanActive) {
+        try {
+          console.info("[checklist_plan_failed]", {
+            stage: "stream_http_error",
+            status: sr.status,
+            message: msg.slice(0, 200),
+          });
+        } catch (_) {}
+        if (turnContext?.source === "voice") {
+          finalizeChecklistPlanVoiceTurn({
+            transcript: streamUserRequest,
+            source: "checklist_plan_stream",
+            isVoice: true,
+            success: false,
+            message: CHECKLIST_PLAN_FAILURE_MESSAGE,
+          });
+        } else {
+          try {
+            flashWorkChecklistPlanHint(CHECKLIST_PLAN_FAILURE_MESSAGE);
+          } catch (_) {}
+        }
+      } else {
+        void veraSurfaceLlmFetchFailure({
+          feature: "reasoning_stream_secondary",
+          response: sr
+        });
+      }
       safeComposerLaneRelease("stream_http_error");
       return;
     }
@@ -15655,6 +19454,18 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
       reasoningTitleUpdateDebugLog(streamLaneId || null, "(unknown)", "", false, "skip_title_panel_dom_miss_composer_path");
     }
     if (mdDone) {
+      if (opts.isChecklistPlanRequest) {
+        try {
+          if (typeof markChecklistPlanRendered === "function") {
+            markChecklistPlanRendered();
+          }
+          console.info("[checklist_plan_rendered]", {
+            turn_id: turnContext?.turn_id || null,
+            lane_id: streamLaneId || null,
+            markdown_length: mdDone.length,
+          });
+        } catch (_) {}
+      }
       const hasSyncHeading = /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdDone);
       if (hasSyncHeading) {
         const rows = buildChecklistProposalFromMarkdown(mdDone);
@@ -15690,8 +19501,27 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         flashWorkChecklistPlanHint("Updated plan in reasoning — tap Sync to refresh checklist bullets.");
       }
     }
+    try {
+      window.veraUsageOnReasoningPanelReplyDone?.({
+        lane_id: streamLaneId,
+        panel_index: laneIdx,
+        source: turnContext?.source || "keyboard",
+        request_id: turnContext?.turn_id || undefined,
+        latency_ms: Math.round(performance.now() - reasoningUsageStreamT0),
+        response_chars: String(mdDone || "").length,
+        success: true,
+      });
+    } catch (_) {}
     safeComposerLaneRelease("stream_completed");
     maybeReasoningScrollToLatest(scrollEl);
+    if (opts.isChecklistPlanRequest && turnContext?.source === "voice") {
+      finalizeChecklistPlanVoiceTurn({
+        transcript: streamUserRequest,
+        source: "checklist_plan_stream",
+        isVoice: true,
+        success: true,
+      });
+    }
   } catch (streamErr) {
     try {
       console.info("[turn_error]", {
@@ -15700,8 +19530,29 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
         error: String(streamErr?.message || streamErr)
       });
     } catch (_) {}
+    if (opts.isChecklistPlanRequest) {
+      try {
+        console.info("[checklist_plan_failed]", {
+          stage: "stream_throw",
+          error: String(streamErr?.message || streamErr || "").slice(0, 200),
+        });
+      } catch (_) {}
+      if (turnContext?.source === "voice") {
+        finalizeChecklistPlanVoiceTurn({
+          transcript: streamUserRequest,
+          source: "checklist_plan_stream",
+          isVoice: true,
+          success: false,
+          message: CHECKLIST_PLAN_FAILURE_MESSAGE,
+        });
+      } else {
+        try {
+          flashWorkChecklistPlanHint(CHECKLIST_PLAN_FAILURE_MESSAGE);
+        } catch (_) {}
+      }
+    }
     if (!composerLifecycleReleased) safeComposerLaneRelease("error");
-    throw streamErr;
+    if (!opts.isChecklistPlanRequest) throw streamErr;
   } finally {
     if (!composerLifecycleReleased) safeComposerLaneRelease("finally_guard");
   }
@@ -15882,6 +19733,143 @@ function finalizeWorkChecklistSyncCommandTurn({
   }
 }
 
+function getChecklistPlanStage1AckText(userText) {
+  return buildWorkModeReasoningStage1AckText(userText, { checklistPlanIntent: true });
+}
+
+const CHECKLIST_PLAN_FAILURE_MESSAGE =
+  "I couldn't create the checklist plan. Please try again.";
+
+async function beginChecklistPlanVoiceTurn({ transcript, source, ackText, signal } = {}) {
+  const finalTranscript = String(transcript || "").trim();
+  const spokenAck =
+    String(ackText || "").trim() || getChecklistPlanStage1AckText(finalTranscript);
+  try {
+    if (finalTranscript) {
+      commitServerUserTranscriptBubble(
+        finalTranscript,
+        `work-mode-plan-${source || "voice"}`
+      );
+    }
+  } catch (_) {}
+  try {
+    abortBrowserSpeechRecognizers();
+  } catch (_) {}
+  try {
+    clearVoiceMaxDurationTimer();
+  } catch (_) {}
+  processing = true;
+  requestInFlight = true;
+  beginVoiceUxTurn();
+  waveState = "idle";
+  setStatus("Thinking", "thinking");
+  updateMuteInputButton();
+  try {
+    await playWorkModeTtsOnlyPhrase(spokenAck, signal);
+  } catch (_) {}
+  return spokenAck;
+}
+
+function finalizeChecklistPlanVoiceTurn({ transcript, source, isVoice, success, message } = {}) {
+  const fromVoice = Boolean(isVoice);
+  if (!fromVoice) {
+    if (!success && message) {
+      try {
+        flashWorkChecklistPlanHint(String(message));
+      } catch (_) {}
+    }
+    try {
+      if (typeof resetActiveChecklistPlanContext === "function") {
+        resetActiveChecklistPlanContext();
+      }
+    } catch (_) {}
+    return;
+  }
+  const replyText = success
+    ? ""
+    : String(message || CHECKLIST_PLAN_FAILURE_MESSAGE).trim() || CHECKLIST_PLAN_FAILURE_MESSAGE;
+  if (replyText) {
+    try {
+      addBubble(replyText, "vera", { path: "work-mode-plan-failed" });
+    } catch (_) {}
+    void playWorkModeTtsOnlyPhrase(replyText).catch(() => {});
+  }
+  requestInFlight = false;
+  processing = false;
+  voiceUxTurn = null;
+  setStatus("Ready", "idle");
+  updateMuteInputButton();
+  try {
+    if (typeof resetActiveChecklistPlanContext === "function") {
+      resetActiveChecklistPlanContext();
+    }
+  } catch (_) {}
+  if (listeningMode === "continuous" && listening && !inputMuted) {
+    window.setTimeout(() => {
+      if (!listening || processing || inputMuted) return;
+      startListening();
+    }, 80);
+  }
+}
+
+function finalizeWorkChecklistPlanBlockedTurn({
+  transcript,
+  source,
+  isVoice,
+  message
+} = {}) {
+  const finalTranscript = String(transcript || "").trim();
+  const fromVoice = Boolean(isVoice);
+  const replyText = String(message || "").trim() || getChecklistPlanLimitMessage?.(0) || "I can't make that plan right now.";
+  try {
+    if (finalTranscript) {
+      commitServerUserTranscriptBubble(
+        finalTranscript,
+        fromVoice ? `work-mode-plan-${source || "voice"}` : "work-mode-plan-typed"
+      );
+    }
+  } catch (_) {}
+  if (fromVoice) {
+    try {
+      abortBrowserSpeechRecognizers();
+    } catch (_) {}
+    try {
+      clearVoiceMaxDurationTimer();
+    } catch (_) {}
+    try {
+      audioChunks = [];
+      hasSpoken = false;
+      mainBrowserFinalTranscript = "";
+      mainBrowserLastInterim = "";
+      mainBrowserFinalizeKind = "main";
+      interruptPartialLastText = "";
+      interruptBargeInLatched = false;
+    } catch (_) {}
+  }
+  try {
+    addBubble(replyText, "vera", { path: "work-mode-plan-blocked" });
+  } catch (_) {}
+  if (fromVoice) {
+    void playWorkModeTtsOnlyPhrase(replyText).catch(() => {});
+  }
+  try {
+    if (typeof resetActiveChecklistPlanContext === "function") {
+      resetActiveChecklistPlanContext();
+    }
+  } catch (_) {}
+  requestInFlight = false;
+  processing = false;
+  voiceUxTurn = null;
+  setStatus("Ready", "idle");
+  updateMuteInputButton();
+  if (fromVoice && listeningMode === "continuous" && listening && !inputMuted) {
+    window.setTimeout(() => {
+      if (!listening || processing || inputMuted) return;
+      startListening();
+    }, 80);
+  }
+}
+
 async function maybeHandleWorkChecklistSyncShortcut(text, opts = {}) {
   const userText = String(text || "").trim();
   if (userText && lastCompletedWorkChecklistSyncCommandTurn) {
@@ -16015,68 +20003,195 @@ async function maybeHandleWorkChecklistSyncShortcut(text, opts = {}) {
   return true;
 }
 
-async function runWorkChecklistHelpPlan({ signal } = {}) {
-  if (!isVeraWorkModeOn()) return false;
-  if (workChecklistPlanRequestInFlight) return true;
-  const lines = collectWorkChecklistOngoingTexts();
-  if (!lines.length) {
-    flashWorkChecklistPlanHint("Add text to at least one ongoing item first.");
-    return true;
-  }
-  const text = buildWorkChecklistHelpPlanUserMessage(lines);
-  const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
-  workChecklistPlanRequestInFlight = true;
-  if (helpPlanBtn instanceof HTMLButtonElement) helpPlanBtn.disabled = true;
+async function runWorkChecklistHelpPlan({ signal, isVoice, source, userText } = {}) {
+  if (typeof executeChecklistPlanAction !== "function") return false;
+  const result = await executeChecklistPlanAction({ signal, isVoice, source, userText });
+  return result?.ok !== false || result?.reason === "already_in_flight";
+}
+
+function finalizeChecklistUndoShortcutTurn({ transcript, source, isVoice, success, message } = {}) {
+  const finalTranscript = String(transcript || "").trim();
+  const fromVoice = Boolean(isVoice);
+  const replyText = String(
+    message || (success ? "Restored the checklist." : "I don't have a recent checklist change to undo.")
+  ).trim();
   try {
-    const reasoningScroll = getActiveReasoningScrollEl();
-    if (reasoningScroll instanceof HTMLElement) {
-      reasoningScroll.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (finalTranscript) {
+      commitServerUserTranscriptBubble(
+        finalTranscript,
+        fromVoice ? `work-mode-checklist-undo-${source || "voice"}` : "work-mode-checklist-undo-typed"
+      );
     }
-    const turnContext = createWorkModeFrozenTurnContext({
-      userText: text,
-      source: "keyboard"
-    });
-    await streamWorkModeReasoningComposer(text, signal, { turnContext });
-    const mdAfterHelp = getLatestWorkModeReasoningMarkdown();
-    if (mdAfterHelp && /#{1,6}\s*SYNC CHECKLIST\b/i.test(mdAfterHelp)) {
-      const rows = buildChecklistProposalFromMarkdown(mdAfterHelp);
-      const activeLaneId = getActiveDomReasoningLaneId();
-      const panelMeta = getPlanSyncPanelMetaForLane(activeLaneId);
-      workChecklistSyncPlanVersion += 1;
-      workChecklistSyncPendingMarkdown = mdAfterHelp;
-      workChecklistSyncPendingPlanMeta = {
-        ...panelMeta,
-        source: "checklist_help_plan",
-        created_at: Date.now()
-      };
-      logPlanSyncDebug("created", {
-        lane_id: panelMeta.lane_id || null,
-        panel_id: panelMeta.panel_id || null,
-        panel_title: panelMeta.panel_title || "",
-        active_panel_id: panelMeta.active_panel_id || null,
-        is_plan_detected: true,
-        syncable: rows.length > 0,
-        has_sync_metadata: true,
-        sync_candidate_count: rows.length,
-        sync_candidates_preview: planSyncPreviewRows(rows),
-        reason_if_not_syncable: rows.length ? "" : "no_checklist_candidates_extracted",
-        response_kind: "sync_checklist_markdown",
-        route_kind: "checklist_help_plan",
-        source: "checklist_shortcut"
-      });
-      syncWorkChecklistSyncPlanButton();
-    }
-  } finally {
-    workChecklistPlanRequestInFlight = false;
-    syncWorkChecklistHelpPlanButton();
+  } catch (_) {}
+  if (fromVoice) {
+    try {
+      abortBrowserSpeechRecognizers();
+    } catch (_) {}
+    try {
+      clearVoiceMaxDurationTimer();
+    } catch (_) {}
+    try {
+      audioChunks = [];
+      hasSpoken = false;
+      mainBrowserFinalTranscript = "";
+      mainBrowserLastInterim = "";
+      mainBrowserFinalizeKind = "main";
+      interruptPartialLastText = "";
+      interruptBargeInLatched = false;
+    } catch (_) {}
   }
+  try {
+    addBubble(replyText, "vera", {
+      path: success ? "work-mode-checklist-undo-success" : "work-mode-checklist-undo-failed"
+    });
+  } catch (_) {}
+  requestInFlight = false;
+  processing = false;
+  voiceUxTurn = null;
+  setStatus("Ready", "idle");
+  updateMuteInputButton();
+  if (fromVoice && replyText) {
+    void playWorkModeTtsOnlyPhrase(replyText).catch(() => {});
+  }
+  if (listeningMode === "continuous" && listening && !inputMuted) {
+    window.setTimeout(() => {
+      if (!listening || processing || inputMuted) return;
+      startListening();
+    }, 80);
+  }
+}
+
+async function maybeHandleChecklistUndoShortcut(text, opts) {
+  const raw = String(text || "").trim();
+  const isVoice = Boolean(opts && typeof opts === "object" && opts.isVoice);
+  const source = (opts && opts.source) || (isVoice ? "voice_or_typed_shortcut" : "keyboard");
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
+  if (typeof isChecklistUndoFollowupIntent !== "function" || !isChecklistUndoFollowupIntent(raw)) {
+    return false;
+  }
+  const snap =
+    typeof readChecklistUndoSnapshotFromStorage === "function"
+      ? readChecklistUndoSnapshotFromStorage()
+      : null;
+  if (!snap || !Array.isArray(snap.items) || !snap.items.length) {
+    return false;
+  }
+  try {
+    console.info("[checklist_undo_lookup]", {
+      session_id: String(getSessionId?.() || "").slice(0, 64),
+      pending_undo_exists: true,
+      snapshot_id: snap.snapshot_id || "",
+      snapshot_exists: true,
+      snapshot_item_count: snap.items.length,
+      ttl_remaining_ms: Math.max(0, Number(snap.expires_at_ms || 0) - Date.now()),
+      current_checklist_item_count:
+        typeof readChecklistItemsFromStorage === "function"
+          ? readChecklistItemsFromStorage().filter((x) => String(x?.text || "").trim()).length
+          : 0
+    });
+    console.info("[checklist_undo_restore_attempt]", {
+      session_id: String(getSessionId?.() || "").slice(0, 64),
+      snapshot_id: snap.snapshot_id || "",
+      snapshot_item_count: snap.items.length
+    });
+  } catch (_) {}
+  let mutation = { ok: false };
+  try {
+    mutation =
+      typeof applyChecklistControlVoicePayload === "function"
+        ? applyChecklistControlVoicePayload({
+            op: "checklist.undo_clear",
+            items: snap.items,
+            completed_collapsed: Boolean(snap.completed_collapsed)
+          })
+        : { ok: false, reason: "apply_fn_missing" };
+  } catch (_) {
+    mutation = { ok: false };
+  }
+  if (!mutation?.ok) return false;
+  try {
+    queueWorkChecklistSyncToServer();
+  } catch (_) {}
+  finalizeChecklistUndoShortcutTurn({
+    transcript: raw,
+    source,
+    isVoice,
+    success: true,
+    message: "Restored the checklist."
+  });
   return true;
 }
 
-async function maybeHandleWorkChecklistPlanShortcut(text, signal) {
-  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return false;
-  if (!isWorkChecklistPlanShortcutIntent(text)) return false;
-  await runWorkChecklistHelpPlan({ signal });
+async function maybeHandleWorkChecklistPlanShortcut(text, opts) {
+  const raw = String(text || "").trim();
+  const signal = opts instanceof AbortSignal ? opts : opts?.signal;
+  const isVoice = Boolean(opts && typeof opts === "object" && !(opts instanceof AbortSignal) && opts.isVoice);
+  const source =
+    opts && typeof opts === "object" && !(opts instanceof AbortSignal)
+      ? opts.source || (isVoice ? "voice_or_typed_shortcut" : "keyboard")
+      : "keyboard";
+  if (!isVeraWorkModeOn() || appModePrefix() !== "vera") {
+    try {
+      console.info("[checklist_plan_fell_through_to_voice_answer]", {
+        reason: "not_work_mode",
+        raw_text: raw.slice(0, 240),
+        source,
+      });
+    } catch (_) {}
+    return false;
+  }
+  if (!isWorkChecklistPlanShortcutIntent(raw)) return false;
+  try {
+    console.info("[checklist_plan_route_detected]", {
+      raw_text: raw.slice(0, 240),
+      source,
+      input_source: isVoice ? "voice" : "keyboard",
+    });
+  } catch (_) {}
+  if (typeof shouldDeferChecklistPlanShortcut === "function" && shouldDeferChecklistPlanShortcut(raw)) {
+    try {
+      console.info("[checklist_plan_fell_through_to_voice_answer]", {
+        reason: "deferred_to_compound_planner",
+        raw_text: raw.slice(0, 240),
+        source,
+      });
+    } catch (_) {}
+    return false;
+  }
+  try {
+    console.info("[checklist_plan_action_dispatched]", {
+      raw_text: raw.slice(0, 240),
+      source,
+      executor: "executeChecklistPlanAction",
+    });
+  } catch (_) {}
+  try {
+    await runWorkChecklistHelpPlan({ signal, isVoice, source, userText: raw });
+  } catch (err) {
+    try {
+      console.info("[checklist_plan_failed]", {
+        raw_text: raw.slice(0, 240),
+        source,
+        error: String(err?.message || err || "").slice(0, 200),
+      });
+    } catch (_) {}
+    if (isVoice) {
+      finalizeChecklistPlanVoiceTurn({
+        transcript: raw,
+        source,
+        isVoice: true,
+        success: false,
+        message: CHECKLIST_PLAN_FAILURE_MESSAGE,
+      });
+    } else {
+      try {
+        flashWorkChecklistPlanHint(CHECKLIST_PLAN_FAILURE_MESSAGE);
+      } catch (_) {}
+      try {
+        resetActiveChecklistPlanContext?.();
+      } catch (_) {}
+    }
+  }
   return true;
 }
 
@@ -16236,7 +20351,7 @@ function wireWorkModeChecklistAndComposer() {
   if (eraseAllBtn && eraseAllBtn.dataset.wiredEraseAll !== "1") {
     eraseAllBtn.dataset.wiredEraseAll = "1";
     eraseAllBtn.addEventListener("click", () => {
-      eraseEntireWorkChecklist();
+      void eraseEntireWorkChecklist();
     });
   }
   const helpPlanBtn = document.getElementById("vera-wm-checklist-help-plan");
@@ -16244,7 +20359,7 @@ function wireWorkModeChecklistAndComposer() {
     helpPlanBtn.dataset.wiredHelpPlan = "1";
     helpPlanBtn.addEventListener("click", async () => {
       try {
-        await runWorkChecklistHelpPlan();
+        await executeChecklistPlanAction({ source: "button", isVoice: false, userText: "plan my checklist" });
       } catch (err) {
         console.warn("[WorkMode] help me plan", err);
       }
@@ -16344,7 +20459,11 @@ loadWorkChecklistItems();
 window.loadWorkModeChecklist = loadWorkChecklistItems;
 window.hydrateWorkModeChecklistFromServer = hydrateWorkChecklistFromServer;
 migrateLegacyVeraChatStorageKey();
-restoreVeraChatState();
+if (typeof scheduleDeferredVeraChatRestoreIfAnonymous === "function") {
+  scheduleDeferredVeraChatRestoreIfAnonymous();
+} else {
+  restoreVeraChatState();
+}
 wireReasoningTabStrip();
 
 /* [reasoning_close_handler_registered] PART 8: post-boot diagnostic — prove
@@ -16529,40 +20648,64 @@ function isRecentSameMusicPlay(payload, op) {
 }
 
 /**
- * Collapse NDJSON double ``applyActionPayload`` (finalize + first audio).
- * Applies to non-idempotent music controls only:
- *   - ``skip_next`` / ``skip_previous`` — each call advances/rewinds a track.
- *   - ``volume_delta`` — each call adds ``payload.delta`` to volume, so the
- *     double-dispatch path was actually doubling the user's "turn up / turn
- *     down the music" command (+10% per turn instead of +5%). Keyed by
- *     sign-of-delta so that "volume up then volume down" within the dedupe
- *     window still applies both directions.
- *
- * ``pause`` / ``resume`` are idempotent (calling pause on an already-paused
- * stream is a no-op) so we don't dedupe them.
- *
- * 900 ms window is short enough that legitimate consecutive commands still
- * fire — humans don't realistically issue the same transport command twice
- * within a second.
+ * Collapse duplicate music transport dispatch within one assistant turn.
+ * Uses per-request ``action_id`` (30s) when ``data.request_id`` is present
+ * so NDJSON ``meta`` (onPlayStart) + ``done``/finalize cannot double-skip.
+ * Falls back to a 900 ms op-key window when no request context (UI buttons).
  */
-function shouldApplyMusicTransportAction(payload, op) {
-  let key;
-  if (op === "skip_next" || op === "skip_previous") {
-    key = `music_transport:${op}`;
-  } else if (op === "volume_delta") {
-    const rawDelta = Number((payload && payload.delta) || 0);
-    if (!Number.isFinite(rawDelta) || rawDelta === 0) return true;
-    const dir = rawDelta > 0 ? "+1" : "-1";
-    key = `music_transport:volume_delta:${dir}`;
-  } else {
+function shouldApplyMusicTransportAction(payload, op, data = null) {
+  const opName = String(op || "").trim();
+  if (opName !== "skip_next" && opName !== "skip_previous" && opName !== "volume_delta") {
     return true;
   }
+  if (opName === "volume_delta") {
+    const rawDelta = Number((payload && payload.delta) || 0);
+    if (!Number.isFinite(rawDelta) || rawDelta === 0) return true;
+  }
   const now = performance.now();
+  const actionId =
+    typeof buildMusicTransportActionId === "function"
+      ? buildMusicTransportActionId(payload, data, opName)
+      : "";
+  if (actionId && typeof wasMusicTransportActionApplied === "function") {
+    if (wasMusicTransportActionApplied(actionId, now)) {
+      try {
+        console.info("[music_transport_duplicate_blocked]", {
+          action_name: opName,
+          action_id: actionId,
+          request_id: data?.request_id || data?.client_request_id || null,
+          source: data?.type || null,
+          frontend_prehandled: true,
+          backend_action_received: true,
+          apply_count: 2,
+        });
+      } catch (_) {}
+      if (opName === "skip_previous") {
+        console.log("[MUSIC][SKIP_PREV] dedupe-drop", { action_id: actionId, reason: "request_scoped" });
+      } else if (opName === "volume_delta") {
+        console.log("[MUSIC][VOLUME] dedupe-drop", {
+          action_id: actionId,
+          reason: "request_scoped",
+          delta: Number((payload && payload.delta) || 0),
+        });
+      }
+      return false;
+    }
+  }
+
+  let shortKey;
+  if (opName === "skip_next" || opName === "skip_previous") {
+    shortKey = `music_transport:${opName}`;
+  } else {
+    const rawDelta = Number((payload && payload.delta) || 0);
+    const dir = rawDelta > 0 ? "+1" : "-1";
+    shortKey = `music_transport:volume_delta:${dir}`;
+  }
   const prev = window.__veraMusicTransportDedupe;
-  if (prev && prev.key === key && now - prev.at < 900) {
-    if (op === "skip_previous") {
+  if (prev && prev.key === shortKey && now - prev.at < 900) {
+    if (opName === "skip_previous") {
       console.log("[MUSIC][SKIP_PREV] dedupe-drop", { delta_ms: Math.round(now - prev.at) });
-    } else if (op === "volume_delta") {
+    } else if (opName === "volume_delta") {
       console.log("[MUSIC][VOLUME] dedupe-drop", {
         delta_ms: Math.round(now - prev.at),
         delta: Number((payload && payload.delta) || 0),
@@ -16570,11 +20713,25 @@ function shouldApplyMusicTransportAction(payload, op) {
     }
     return false;
   }
-  window.__veraMusicTransportDedupe = { key, at: now };
+  window.__veraMusicTransportDedupe = { key: shortKey, at: now };
+  if (actionId && typeof markMusicTransportActionApplied === "function") {
+    markMusicTransportActionApplied(actionId, now);
+  }
+  try {
+    console.info("[music_transport_execute_once]", {
+      action_name: opName,
+      action_id: actionId || shortKey,
+      request_id: data?.request_id || data?.client_request_id || null,
+      source: data?.type || null,
+      frontend_prehandled: false,
+      backend_action_received: true,
+      apply_count: 1,
+    });
+  } catch (_) {}
   return true;
 }
 
-function invokeSpotifyTransport(op, { source = "unknown" } = {}) {
+async function invokeSpotifyTransport(op, { source = "unknown" } = {}) {
   const fn =
     op === "skip_previous"
       ? window.VeraSpotify?.skipPrevious
@@ -16586,35 +20743,132 @@ function invokeSpotifyTransport(op, { source = "unknown" } = {}) {
     return false;
   }
   console.log("[MUSIC][TRANSPORT] invoke", { op, source });
-  void fn();
+  await Promise.resolve(fn());
+  await new Promise((r) => setTimeout(r, 180));
   return true;
 }
 
-function builtinMusicTransportSkipNext(prefix) {
-  const st = window.__veraFreeMusicPlayback;
-  if (st?.mode === "playlist" && st.queue?.length > 1) {
-    const next = ((Number(st.index) || 0) + 1) % st.queue.length;
-    void freeMusicPlayQueueIndex(prefix, next);
-    return true;
-  }
-  return false;
-}
-
-function builtinMusicTransportSkipPrevious(prefix) {
+async function navigateBuiltinMusicTrack(prefix, delta, source) {
   const st = window.__veraFreeMusicPlayback;
   const a = document.getElementById(`${prefix}-free-music-audio`);
-  if (st?.mode === "playlist" && st.queue?.length > 1) {
+  if (!st || st.mode !== "playlist" || !st.queue?.length || st.queue.length < 2) return false;
+  if (delta < 0) {
     const pos = Math.round((a?.currentTime || 0) * 1000);
     if (pos > SPOTIFY_PREVIOUS_RESTART_MS && a) {
       a.currentTime = 0;
       freeMusicSyncNowFromAudio(prefix);
       return true;
     }
-    const prev = ((Number(st.index) || 0) + st.queue.length - 1) % st.queue.length;
-    void freeMusicPlayQueueIndex(prefix, prev);
+    const prev = freeMusicGetAdjacentQueueIndex(prefix, "previous");
+    if (prev == null) return false;
+    await freeMusicPlayQueueIndex(prefix, prev);
     return true;
   }
-  return false;
+  const next = freeMusicGetAdjacentQueueIndex(prefix, "next");
+  if (next == null) return false;
+  await freeMusicPlayQueueIndex(prefix, next);
+  return true;
+}
+
+/**
+ * Central manual track navigation (+1 next / -1 previous).
+ * All button clicks, voice payloads, and builtin transport use this path.
+ */
+async function navigateMusicTrack(delta, source = "unknown", actionId = null) {
+  const direction =
+    typeof musicNavigationDirectionLabel === "function"
+      ? musicNavigationDirectionLabel(delta)
+      : Number(delta) >= 0
+        ? "next"
+        : "previous";
+  const nowMs = performance.now();
+  const navState =
+    typeof ensureMusicNavigationState === "function" ? ensureMusicNavigationState() : null;
+  if (typeof logMusicNavigation === "function") {
+    logMusicNavigation("detected", {
+      direction,
+      delta: Number(delta) >= 0 ? 1 : -1,
+      source: String(source || "unknown"),
+      action_id: actionId || null,
+    });
+  }
+  if (navState && typeof shouldIgnoreMusicNavigationDuplicate === "function") {
+    const dup = shouldIgnoreMusicNavigationDuplicate(navState, {
+      delta,
+      source: String(source || "unknown"),
+      actionId,
+      nowMs,
+    });
+    if (dup.ignore) {
+      if (typeof logMusicNavigation === "function") {
+        logMusicNavigation("ignored_duplicate", {
+          direction,
+          reason: dup.reason,
+          source: String(source || "unknown"),
+          action_id: actionId || null,
+        });
+      }
+      return { ok: false, reason: "duplicate", direction };
+    }
+  }
+
+  const prefix = appModePrefix();
+  const stBefore = window.__veraFreeMusicPlayback;
+  const indexBefore = stBefore?.index ?? null;
+  const trackBefore =
+    stBefore?.currentTrackId || stBefore?.queue?.[Number(indexBefore) || 0]?.name || null;
+  if (typeof logMusicNavigation === "function") {
+    logMusicNavigation("execute_start", {
+      direction,
+      playlist_index_before: indexBefore,
+      track_before: trackBefore,
+      source: String(source || "unknown"),
+      action_id: actionId || null,
+    });
+  }
+  if (navState && typeof markMusicNavigationExecuted === "function") {
+    markMusicNavigationExecuted(navState, {
+      delta,
+      source: String(source || "unknown"),
+      actionId,
+      nowMs,
+    });
+  }
+
+  const transportProvider = resolveMusicTransportProvider(prefix, {});
+  let ok = false;
+  if (transportProvider === "builtin") {
+    ok = await navigateBuiltinMusicTrack(prefix, delta, source);
+  } else if (Number(delta) >= 0) {
+    ok = await invokeSpotifyTransport("skip_next", { source });
+  } else {
+    ok = await invokeSpotifyTransport("skip_previous", { source });
+  }
+
+  const stAfter = window.__veraFreeMusicPlayback;
+  const indexAfter = stAfter?.index ?? null;
+  const trackAfter =
+    stAfter?.currentTrackId || stAfter?.queue?.[Number(indexAfter) || 0]?.name || null;
+  if (typeof logMusicNavigation === "function") {
+    logMusicNavigation("execute_done", {
+      direction,
+      playlist_index_after: indexAfter,
+      track_after: trackAfter,
+      source: String(source || "unknown"),
+      ok,
+    });
+  }
+  return { ok, direction };
+}
+
+async function builtinMusicTransportSkipNext(prefix) {
+  const res = await navigateMusicTrack(1, "music_control_builtin", null);
+  return res?.ok === true;
+}
+
+async function builtinMusicTransportSkipPrevious(prefix) {
+  const res = await navigateMusicTrack(-1, "music_control_builtin", null);
+  return res?.ok === true;
 }
 
 /** Returns false when the same play was already started a few seconds ago (NDJSON finalize + first-audio both call this). */
@@ -16628,6 +20882,79 @@ function shouldPlayMusicThisInvocation(payload, op) {
   return true;
 }
 
+const VERA_REASONING_REQUEST_DEDUPE_TTL_MS = 120000;
+
+function cleanReasoningTaskForDedupe(text) {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .slice(0, 200);
+}
+
+function resolveReasoningTargetPanelKey(payload) {
+  if (!payload || typeof payload !== "object") return "active";
+  if (payload.target_panel === "new" || payload.target_new_panel === true) return "new";
+  const t1 = Number(payload.target_panel_index_1based);
+  if (Number.isFinite(t1) && t1 >= 1) return `panel:${t1}`;
+  const t0 = Number(payload.target_panel_index_0based);
+  if (Number.isFinite(t0) && t0 >= 0) return `panel:${t0 + 1}`;
+  return "active";
+}
+
+function makeReasoningRequestStableIds(payload) {
+  const requestId = String(payload?.reasoning_request_id || payload?.request_id || "").trim();
+  const actionId = String(payload?.action_id || "").trim();
+  const actionPlanId = String(payload?.action_plan_id || "").trim();
+  const plannerIdx = Number(payload?.planner_action_index);
+  const parentTurnId = String(payload?.parent_turn_id || "").trim();
+  return { requestId, actionId, actionPlanId, plannerIdx, parentTurnId };
+}
+
+function makeReasoningRequestDedupeKeys(payload) {
+  const ids = makeReasoningRequestStableIds(payload);
+  const task = cleanReasoningTaskForDedupe(payload?.prompt || payload?.content_task || "");
+  const panel = resolveReasoningTargetPanelKey(payload);
+  const keys = [];
+  if (ids.requestId) keys.push(`req:${ids.requestId}`);
+  if (ids.actionId) keys.push(`act:${ids.actionId}`);
+  if (ids.actionPlanId && Number.isFinite(ids.plannerIdx)) {
+    keys.push(`plan:${ids.actionPlanId}:${ids.plannerIdx}:open_and_stream`);
+  }
+  if (ids.parentTurnId && task) keys.push(`turn:${ids.parentTurnId}:${panel}:${task}`);
+  return keys;
+}
+
+function veraReasoningRequestDedupeStore() {
+  if (!window.__veraReasoningRequestDedupe || !(window.__veraReasoningRequestDedupe instanceof Map)) {
+    window.__veraReasoningRequestDedupe = new Map();
+  }
+  return window.__veraReasoningRequestDedupe;
+}
+
+function shouldStartReasoningOpenAndStream(payload, opts = {}) {
+  const allowRerun =
+    opts.allowRerun === true ||
+    payload?.reasoning_rerun === true ||
+    payload?.reasoning_refinement === true ||
+    payload?.reasoning_follow_up === true;
+  if (allowRerun) return { allow: true, keys: [] };
+  const store = veraReasoningRequestDedupeStore();
+  const now = Date.now();
+  for (const [k, at] of store.entries()) {
+    if (now - Number(at || 0) > VERA_REASONING_REQUEST_DEDUPE_TTL_MS) store.delete(k);
+  }
+  const keys = makeReasoningRequestDedupeKeys(payload);
+  if (!keys.length) return { allow: true, keys: [] };
+  for (const key of keys) {
+    if (store.has(key)) {
+      return { allow: false, reason: `duplicate_key:${key}`, dedupeKey: key, keys };
+    }
+  }
+  for (const key of keys) store.set(key, now);
+  return { allow: true, keys };
+}
+
 /** NDJSON may invoke ``applyActionPayload`` twice (finalize + first audio) — skip duplicate reasoning ops. */
 function workModeReasoningDedupeKey(payload) {
   if (!payload || payload.panel_type !== "work_mode_reasoning") return "";
@@ -16639,9 +20966,18 @@ function workModeReasoningDedupeKey(payload) {
       : `open_new:${Math.max(1, Number(payload.count) || 1)}`;
   }
   if (op === "open_and_stream") {
-    const requestId = String(payload.new_panel_request_id || payload.panel_open_request_id || "").trim();
-    const prompt = String(payload.prompt || "").trim().toLowerCase().slice(0, 120);
-    return requestId ? `open_and_stream:${requestId}:${prompt}` : "";
+    const ids = makeReasoningRequestStableIds(payload);
+    if (ids.requestId) return `open_and_stream:req:${ids.requestId}`;
+    if (ids.actionId) return `open_and_stream:act:${ids.actionId}`;
+    const prompt = cleanReasoningTaskForDedupe(payload.prompt);
+    const panel = resolveReasoningTargetPanelKey(payload);
+    if (ids.parentTurnId && prompt) return `open_and_stream:turn:${ids.parentTurnId}:${panel}:${prompt}`;
+    if (ids.actionPlanId && Number.isFinite(ids.plannerIdx)) {
+      return `open_and_stream:plan:${ids.actionPlanId}:${ids.plannerIdx}`;
+    }
+    const legacyRequestId = String(payload.new_panel_request_id || payload.panel_open_request_id || "").trim();
+    if (legacyRequestId && prompt) return `open_and_stream:${legacyRequestId}:${prompt}`;
+    return "";
   }
   if (op === "activate" && payload.panel_index != null) {
     return `activate:${Number(payload.panel_index)}`;
@@ -17004,6 +21340,11 @@ function stopCurrentMusicPlaybackBeforeNewPlay(source) {
   let spotifyStopped = false;
   try {
     if (free && !free.paused) {
+      musicPlaybackDiag("[builtin_pause_called]", {
+        reason: `stop_before_${newSource}`,
+        source: "stopCurrentMusicPlaybackBeforeNewPlay",
+        prefix,
+      });
       free.pause();
       builtinStopped = true;
       if (typeof freeMusicSyncNowFromAudio === "function") freeMusicSyncNowFromAudio(prefix);
@@ -17024,6 +21365,11 @@ function stopCurrentMusicPlaybackBeforeNewPlay(source) {
   try {
     const pause = window.VeraSpotify && window.VeraSpotify.pausePlayback;
     if (typeof pause === "function" && (spotifyWasPlaying || newSource === "builtin")) {
+      musicPlaybackDiag("[spotify_pause_called]", {
+        reason: `stop_before_${newSource}`,
+        source: "stopCurrentMusicPlaybackBeforeNewPlay",
+        prefix,
+      });
       // Pause Spotify whenever we're switching TO built-in. When switching
       // between Spotify tracks (play_track / play_album) Spotify itself
       // replaces the current track on the next play call, so an explicit
@@ -17069,10 +21415,47 @@ function makeNdjsonPayloadDedupeKey(event, payload, index) {
     "no_request";
   const type = payload?.panel_type || payload?.type || "unknown_payload";
   const op = payload?.op || payload?.action || payload?.action_name || "no_op";
-  return `${req}:${Number(index) || 0}:${type}:${op}`;
+  const planId = String(payload?.action_plan_id || "").trim() || "noplan";
+  const seqIdx = Number.isFinite(Number(payload?.planner_action_index))
+    ? Number(payload.planner_action_index)
+    : Number(index) || 0;
+  if (type === "music_control" && op) {
+    const target = String(
+      payload?.uri ||
+        payload?.playlist_name ||
+        payload?.query ||
+        payload?.playlist_id ||
+        payload?.sound_id ||
+        ""
+    ).slice(0, 120);
+    return `${req}:${planId}:${seqIdx}:${type}:${op}:${target}`;
+  }
+  if (type === "work_mode_reasoning" && op === "open_and_stream") {
+    const reasoningReqId = String(payload?.reasoning_request_id || payload?.request_id || "").trim();
+    if (reasoningReqId) return `${req}:${reasoningReqId}`;
+    const actionId = String(payload?.action_id || "").trim();
+    if (actionId) return `${req}:${actionId}`;
+    const task = cleanReasoningTaskForDedupe(payload?.prompt || "");
+    const panel = resolveReasoningTargetPanelKey(payload);
+    const parentTurnId = String(payload?.parent_turn_id || "").trim();
+    if (parentTurnId && task) return `${req}:${parentTurnId}:${panel}:${task}`;
+    return `${req}:${planId}:${seqIdx}:${type}:${op}:${panel}:${task}`;
+  }
+  return `${req}:${planId}:${seqIdx}:${type}:${op}`;
 }
 
-function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown") {
+const CHECKLIST_VOICE_MUTATION_FAILED_REPLY =
+  "I found that item, but couldn't update the checklist.";
+
+async function applyNdjsonDonePayloadsBeforeFinalize(ndjsonMeta, done, streamReplyState) {
+  await applyNdjsonActionPayloadEvent(done, "done");
+  if (done?.__checklistMutationFailed) {
+    done.reply = CHECKLIST_VOICE_MUTATION_FAILED_REPLY;
+  }
+  finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
+}
+
+async function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown") {
   const plural = Array.isArray(event?.action_payloads)
     ? event.action_payloads.filter(Boolean)
     : [];
@@ -17091,8 +21474,10 @@ function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown") {
     request_id: event?.request_id || null
   });
 
-  payloads.forEach((payload, idx) => {
-    if (!payload || typeof payload !== "object") return;
+  const deduped = [];
+  for (let idx = 0; idx < payloads.length; idx++) {
+    const payload = payloads[idx];
+    if (!payload || typeof payload !== "object") continue;
     const key = makeNdjsonPayloadDedupeKey(event, payload, idx);
     const panelType = payload.panel_type || payload.type || "";
     const op = payload.op || "";
@@ -17106,10 +21491,40 @@ function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown") {
       skipped_duplicate_payload: duplicate,
       music_control_received: panelType === "music_control"
     });
-    if (duplicate) return;
+    if (duplicate) continue;
     store.set(key, now);
-    applyActionPayload({ ...event, action_payload: payload, action_payloads: null });
-  });
+    deduped.push(payload);
+  }
+
+  if (deduped.length > 1 && typeof window.veraApplyActionPayloadsInOrder === "function") {
+    await window.veraApplyActionPayloadsInOrder(
+      deduped,
+      (payload, ctx) =>
+        applyActionPayload({ ...event, action_payload: payload, action_payloads: null }, ctx),
+      { requestId: event?.request_id || null, source: ndjsonEventType }
+    );
+    return;
+  }
+
+  for (let idx = 0; idx < deduped.length; idx++) {
+    const payload = deduped[idx];
+    if (payload?.panel_type === "checklist_control") {
+      try {
+        console.info("[checklist_voice_action_detected]", {
+          action: payload.op || null,
+          target_text: null,
+          target_id: null,
+          ndjson_event_type: ndjsonEventType,
+          payload_item_count: Array.isArray(payload.items) ? payload.items.length : 0
+        });
+      } catch (_) {}
+    }
+    const pack = { ...event, action_payload: deduped[idx], action_payloads: null };
+    await applyActionPayload(pack, { orderIndex: idx, source: ndjsonEventType });
+    if (pack.__checklistMutationFailed) {
+      event.__checklistMutationFailed = true;
+    }
+  }
 }
 
 /**
@@ -17156,11 +21571,41 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
     String(payload?.target_panel || "").toLowerCase() === "new";
   const newPanelRequestId = String(payload?.new_panel_request_id || payload?.panel_open_request_id || "").trim();
   const actionPlanId = String(payload?.action_plan_id || "").trim();
+  const reasoningRequestId = String(payload?.reasoning_request_id || payload?.request_id || "").trim();
+  const actionId = String(payload?.action_id || "").trim();
+  const parentTurnId = String(payload?.parent_turn_id || data?.parent_turn_id || "").trim();
   /* 2026-06-12 — the user gave an explicit panel destination ("... in
      panel N", "... in a new panel"). The recursive reasoning turn must be
      FORCED into the reasoning panel even if the bare task ("explain
      tennis") would otherwise qualify as a simple Voice-UI answer. */
   const explicitPanelDestination = payload?.explicit_panel_destination === true;
+
+  try {
+    console.info("[open_and_stream_payload_received]", {
+      action_id: actionId || null,
+      request_id: reasoningRequestId || null,
+      parent_turn_id: parentTurnId || null,
+      target_panel: wantsNewPanel ? "new" : target1based,
+      task: promptClean.slice(0, 240),
+      action_plan_id: actionPlanId || null,
+      planner_action_index: Number.isFinite(Number(payload?.planner_action_index))
+        ? Number(payload.planner_action_index)
+        : null,
+    });
+  } catch (_) {}
+
+  const openStreamDedupe = shouldStartReasoningOpenAndStream(payload);
+  if (!openStreamDedupe.allow) {
+    try {
+      console.info("[open_and_stream_payload_deduped]", {
+        action_id: actionId || null,
+        request_id: reasoningRequestId || null,
+        parent_turn_id: parentTurnId || null,
+        reason: openStreamDedupe.reason || "duplicate",
+      });
+    } catch (_) {}
+    return;
+  }
 
   /* Hard warning: a contaminated prompt would let the reasoning model see
      "play lo-fi" or "go to panel 2" — which would either produce a noisy
@@ -17265,21 +21710,25 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
      exist yet (e.g. user asked for Panel 4 but only Panel 1-2 are open),
      create extra panels until the index is reachable. ``addReasoningTab``
      enforces ``REASONING_TABS_MAX`` so we can't open more than the limit. */
+  if (panelsRoot && resolvedIdx0 == null && !wantsNewPanel && typeof getActiveReasoningLaneIndex === "function") {
+    const activeIdx = getActiveReasoningLaneIndex();
+    if (Number.isFinite(activeIdx) && activeIdx >= 0) {
+      resolvedIdx0 = activeIdx;
+      target1based = activeIdx + 1;
+    }
+  }
   if (panelsRoot && resolvedIdx0 != null) {
-    let panelEl = panelsRoot.querySelector(
+    const explicitVisual1 = Number.isFinite(target1based) ? target1based : null;
+    if (explicitVisual1 != null && typeof ensureReasoningPanelVisualIndexExists === "function") {
+      const tabIdx = ensureReasoningPanelVisualIndexExists(explicitVisual1, {
+        source: "open_and_stream_dispatcher",
+        requestId: newPanelRequestId || actionPlanId,
+      });
+      if (Number.isFinite(tabIdx)) resolvedIdx0 = tabIdx;
+    }
+    const panelEl = panelsRoot.querySelector(
       `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
     );
-    while (!panelEl && typeof addReasoningTab === "function") {
-      const opened = addReasoningTab({ source: "planner_reasoning_request_open_and_stream" });
-      if (!opened) break;
-      panelEl = panelsRoot.querySelector(
-        `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
-      );
-      if (!panelEl) {
-        const allPanels = panelsRoot.querySelectorAll(".vera-reasoning-tab-panel");
-        if (allPanels.length >= 8) break;
-      }
-    }
     if (panelEl && typeof activateReasoningTab === "function") {
       activateReasoningTab(resolvedIdx0, {
         commandText: promptClean,
@@ -17288,6 +21737,14 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
       });
       activatedPanelLaneId = String(panelEl.dataset.laneId || activatedPanelLaneId || "");
     }
+    try {
+      console.info("[reasoning_lane_target]", {
+        requested_panel: target1based,
+        selected_lane_id: activatedPanelLaneId || getActiveDomReasoningLaneId?.() || null,
+        render_lane_id: getActiveDomReasoningLaneId?.() || null,
+        target_panel_index_0based: resolvedIdx0,
+      });
+    } catch (_) {}
   }
 
   try {
@@ -17331,6 +21788,17 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
 
   if (!promptClean) return;
 
+  try {
+    console.info("[reasoning_task_cleaned]", {
+      raw_text: String(data?.transcript || data?.user_text || "").slice(0, 240),
+      cleaned_task: promptClean.slice(0, 240),
+      target_panel_index_1based: target1based,
+      action_id: actionId || null,
+      request_id: reasoningRequestId || null,
+      parent_turn_id: parentTurnId || null,
+    });
+  } catch (_) {}
+
   /* Submit the clean prompt as a typed Work Mode turn — fire-and-forget.
      The recursive turn:
        - sees a single-action utterance ("explain the Vietnam War"), so
@@ -17357,10 +21825,16 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
       void sendVeraWorkModeTypedInferTurn(promptClean, {
         path: "wm-multi-action:reasoning.request.open_and_stream",
         __skipMultiActionPlanner: true,
+        __reasoningRequestId: reasoningRequestId || null,
+        __reasoningActionId: actionId || null,
+        __reasoningParentTurnId: parentTurnId || null,
+        __reasoningStreamSource: "open_and_stream_dispatcher",
         /* Explicit panel destination overrides the simple-chat shortcut:
            force the recursive turn's reasoning gate to route to the panel. */
         __reasoningGateForceRoute: explicitPanelDestination ? "reasoning_panel" : undefined,
         __reasoningGateReason: explicitPanelDestination ? "explicit_panel_destination" : undefined,
+        __reasoningGateResolvedTopic: explicitPanelDestination ? promptClean : undefined,
+        __explicitPanelDestinationConsumed: explicitPanelDestination,
         /* 2026-06-01 — thread the explicit target panel into the recursive
            turn so the reasoning prep's lane acquisition cannot drift onto
            a different panel between the activate-tab call above and the
@@ -17409,7 +21883,585 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
 }
 
 
-function applyActionPayload(data) {
+async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
+  const prefix = appModePrefix();
+  const op = payload.op || "open_panel";
+  console.info("[music_action_payload_received]", {
+    action: op,
+    playlist_id: payload.playlist_id || "",
+    sound_id: payload.sound_id || "",
+    playlist_name: payload.playlist_name || "",
+    request_id: data?.request_id || null,
+    source_event_type: data?.type || seqCtx?.source || "",
+  });
+  console.info("[music_control_payload]", {
+    music_control_received: true,
+    op,
+    playlist_id: payload.playlist_id || "",
+    sound_id: payload.sound_id || "",
+    source_event_type: data?.type || "",
+    request_id: data?.request_id || null,
+    sequence_active_provider: seqCtx?.activeProvider || window.__veraMusicSequenceActiveProvider || null,
+  });
+  if (op === "close_panel") {
+    hideSidePanel();
+    return;
+  }
+  const transportProvider = resolveMusicTransportProvider(prefix, seqCtx);
+  if (op === "skip_next" || op === "skip_previous") {
+    try {
+      console.info("[music_transport_intent_detected]", {
+        raw_text: String(data?.transcript || data?.user_text || "").slice(0, 240),
+        action_name: op,
+        request_id: data?.request_id || null,
+        source: seqCtx?.source || data?.type || "music_control_payload",
+        player_mode: transportProvider === "builtin" ? "builtin" : "spotify",
+      });
+      console.info("[music_transport_backend_action_received]", {
+        action_name: op,
+        request_id: data?.request_id || null,
+        source: seqCtx?.source || data?.type || "music_control_payload",
+      });
+    } catch (_) {}
+    if (!shouldApplyMusicTransportAction(payload, op, data)) return;
+    const delta = op === "skip_previous" ? -1 : 1;
+    const actionId =
+      typeof buildMusicTransportActionId === "function"
+        ? buildMusicTransportActionId(payload, data, op)
+        : typeof buildMusicNavigationActionId === "function"
+          ? buildMusicNavigationActionId(payload, data, op)
+          : "";
+    try {
+      console.info("[music_transport_apply_action_payload]", {
+        action_name: op,
+        action_id: actionId || null,
+        request_id: data?.request_id || null,
+        source: seqCtx?.source || data?.type || "music_control_payload",
+        player_mode: transportProvider === "builtin" ? "builtin" : "spotify",
+      });
+      console.info("[music_transport_frontend_execute]", {
+        action_name: op,
+        action_id: actionId || null,
+        request_id: data?.request_id || null,
+        source: seqCtx?.source || data?.type || "music_control_payload",
+        player_mode: transportProvider === "builtin" ? "builtin" : "spotify",
+      });
+    } catch (_) {}
+    if (typeof logMusicNavigation === "function") {
+      logMusicNavigation("payload", {
+        action_id: actionId || null,
+        direction: op === "skip_previous" ? "previous" : "next",
+        source: seqCtx?.source || data?.type || "music_control_payload",
+      });
+    }
+    console.warn("[music_transport_route]", {
+      op,
+      transportProvider,
+      uiTab: getProductivityMusicSource(prefix),
+      sequenceActiveProvider: seqCtx?.activeProvider || null,
+      navigation_action_id: actionId || null,
+    });
+    await navigateMusicTrack(
+      delta,
+      seqCtx?.source || data?.type || "music_control_payload",
+      actionId || null
+    );
+    return { op, transportProvider };
+  }
+  if (op === "pause") {
+    const activeForPause = resolveMusicTransportProvider(prefix, seqCtx);
+    const free = document.getElementById(`${prefix}-free-music-audio`);
+    musicPlaybackDiag("[music_pause_called]", {
+      reason: "voice_command_pause",
+      source: "applyMusicControlPayload",
+      prefix,
+      transport_provider: activeForPause,
+    });
+    if (activeForPause === "builtin" && free && !free.paused) free.pause();
+    else if (activeForPause !== "builtin") {
+      const pause = window.VeraSpotify?.pausePlayback;
+      if (typeof pause === "function") await Promise.resolve(pause());
+    } else {
+      if (free && !free.paused) free.pause();
+      const pause = window.VeraSpotify?.pausePlayback;
+      if (typeof pause === "function") await Promise.resolve(pause());
+    }
+    if (free && activeForPause === "builtin") {
+      freeMusicSyncNowFromAudio(prefix);
+      spotifySyncPlayButtonUi(prefix);
+    }
+    musicSourceMarkPausedByUser();
+    return { op, transportProvider: activeForPause };
+  }
+  if (op === "resume") {
+    try {
+      console.info("[music_resume_dispatch]", {
+        source: seqCtx?.source || data?.type || "music_control_payload",
+        request_id: data?.request_id || null,
+      });
+    } catch (_) {}
+    const activeForResume = resolveMusicTransportProvider(prefix, seqCtx);
+    if (activeForResume === "builtin") {
+      const free = document.getElementById(`${prefix}-free-music-audio`);
+      if (free?.src) {
+        await free.play().then(() => {
+          freeMusicSyncNowFromAudio(prefix);
+          spotifySyncPlayButtonUi(prefix);
+        });
+        try {
+          console.info("[music_resume_execute_done]", { transport_provider: "builtin", success: true });
+        } catch (_) {}
+        return { op, transportProvider: "builtin" };
+      }
+    }
+    const resume = window.VeraSpotify?.resumePlayback;
+    if (typeof resume === "function") await Promise.resolve(resume());
+    try {
+      console.info("[music_resume_execute_done]", {
+        transport_provider: activeForResume,
+        success: true,
+      });
+    } catch (_) {}
+    return { op, transportProvider: activeForResume };
+  }
+  if (op === "volume_delta") {
+    if (!shouldApplyMusicTransportAction(payload, op, data)) return;
+    const cur = typeof window.VeraSpotify?.getVolume === "function"
+      ? window.VeraSpotify.getVolume()
+      : spotifyGetVolume();
+    const setVolume = window.VeraSpotify?.setVolume;
+    const next = Math.max(0, Math.min(SPOTIFY_VOLUME_MAX, Number(cur) + (Number(payload.delta) || 0)));
+    if (typeof setVolume === "function") await Promise.resolve(setVolume(next));
+    else {
+      window.__veraSpotifyVolume = next;
+      const free = document.getElementById(`${prefix}-free-music-audio`);
+      if (free) free.volume = next;
+      const preview = document.getElementById(`${prefix}-spotify-preview-audio`);
+      if (preview) preview.volume = next;
+    }
+    return { op, transportProvider: resolveMusicTransportProvider(prefix, seqCtx) };
+  }
+  if (!MUSIC_CONTROL_TRANSPORT_ONLY_OPS.has(op)) {
+    ensureMusicPanelOpenForVoicePlayback("voice_music_play");
+  }
+  if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
+    console.info("[music_voice_action_detected]", {
+      query: payload.playlist_id || payload.sound_id || "",
+      source: "builtin",
+      op,
+    });
+    await ensureSingleActiveMusicProvider("builtin", { reason: "play_builtin" });
+    const sourceStateBeforeBuiltinPlay = veraMusicSourceState();
+    const preservedBuiltinTime =
+      sourceStateBeforeBuiltinPlay.builtin.state === "suspended_for_spotify"
+        ? Number(sourceStateBeforeBuiltinPlay.builtin.currentTime || 0)
+        : 0;
+    musicSourceMarkPlaying("builtin", {
+      playlistId: payload.playlist_id || "",
+      soundId: payload.sound_id || "",
+      currentTime: preservedBuiltinTime
+    });
+    const pfx = appModePrefix();
+    console.info("[music_control_payload]", {
+      music_play_op: "play_builtin",
+      play_builtin_called: true,
+      playback_backend: "builtin_audio",
+      playlist_id: payload.playlist_id || "",
+      sound_id: payload.sound_id || "",
+      request_id: data?.request_id || null
+    });
+    try {
+      await runBuiltinVoicePlayback(pfx, {
+        playlistId: payload.playlist_id,
+        soundId: payload.sound_id
+      });
+      if (preservedBuiltinTime > 0) {
+        const free = document.getElementById(`${pfx}-free-music-audio`);
+        if (free && Number.isFinite(free.duration) && preservedBuiltinTime < free.duration) {
+          try {
+            free.currentTime = preservedBuiltinTime;
+            freeMusicSyncNowFromAudio(pfx);
+          } catch (_) {
+            /* keep playback going even if seeking fails */
+          }
+        }
+      }
+      console.info("[music_playback_start]", {
+        source: "builtin",
+        track_id: payload.playlist_id || payload.sound_id || "",
+        name: payload.playlist_id || payload.sound_id || "",
+        request_id: data?.request_id || null,
+      });
+      console.info("[music_control_payload]", {
+        music_play_op: "play_builtin",
+        playback_started: true,
+        playback_backend: "builtin_audio",
+        request_id: data?.request_id || null
+      });
+      logMusicRenderState(pfx, { reason: "play_builtin" });
+    } catch (err) {
+      console.warn("[music_control_payload]", {
+        music_play_op: "play_builtin",
+        playback_error: String(err && err.message || err || "unknown"),
+        playback_backend: "builtin_audio",
+        request_id: data?.request_id || null
+      });
+    }
+    return { op, targetProvider: "builtin" };
+  }
+  if (op === "play_track" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
+    await ensureSingleActiveMusicProvider("spotify", { reason: "play_track" });
+    musicSourceMarkPlaying("spotify", {
+      uri: payload.uri,
+      title: payload.title || "",
+      artist: payload.artist || ""
+    });
+    const play = window.VeraSpotify?.playTrack;
+    console.info("[music_control_payload]", {
+      music_play_op: "play_track",
+      playback_backend: "spotify",
+      spotify_playtrack_available: typeof play === "function",
+      title: payload.title || "",
+      artist: payload.artist || "",
+      requested_spotify_uri: String(payload.uri || ""),
+      request_id: data?.request_id || null
+    });
+    if (typeof play === "function") {
+      try {
+        await Promise.resolve(play(String(payload.uri), {
+          title: payload.title || "",
+          artist: payload.artist || "",
+          preview_url: payload.preview_url || "",
+          open_url: payload.open_url || ""
+        }));
+        console.info("[music_control_payload]", {
+          music_play_op: "play_track",
+          playback_started: true,
+          playback_backend: "spotify",
+          request_id: data?.request_id || null
+        });
+      } catch (err) {
+        console.warn("[music_control_payload]", {
+          music_play_op: "play_track",
+          playback_error: String(err && err.message || err || "unknown"),
+          playback_backend: "spotify",
+          request_id: data?.request_id || null
+        });
+      }
+    }
+    return { op, targetProvider: "spotify", expectedTrack: payload.title || "" };
+  }
+  if (op === "play_playlist_scoped" && shouldPlayMusicThisInvocation(payload, op)) {
+    const rawQuery = String(payload.query || "").trim();
+    const playlistId = String(payload.playlist_id || window.__veraSpotifyActivePlaylistId || "").trim();
+    const playlistName = String(payload.playlist_name || window.__veraSpotifyActivePlaylistName || "").trim();
+    console.info("[music_control_payload]", {
+      music_play_op: "play_playlist_scoped",
+      playback_backend: "spotify",
+      playlist_scope_query: rawQuery,
+      selected_playlist_id: playlistId,
+      selected_playlist_name: playlistName,
+      request_id: data?.request_id || null
+    });
+    const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+    if (!playlistId) {
+      if (artistEl) artistEl.textContent = "Which playlist should I search?";
+      return;
+    }
+    await ensureSingleActiveMusicProvider("spotify", { reason: "play_playlist_scoped" });
+    const getTracks = window.VeraSpotify?.getPlaylistTracks;
+    if (typeof getTracks !== "function") {
+      if (artistEl) artistEl.textContent = "Playlist search is not available right now.";
+      return;
+    }
+    let tracks = [];
+    try {
+      tracks = await getTracks(playlistId);
+    } catch (err) {
+      if (artistEl) artistEl.textContent = "Couldn't load that playlist's tracks.";
+      console.warn("[music_control_payload]", {
+        music_play_op: "play_playlist_scoped",
+        playback_error: String(err && err.message || err || "unknown"),
+        request_id: data?.request_id || null
+      });
+      return;
+    }
+    const needle = rawQuery.toLowerCase();
+    const tokens = needle.split(/\s+/).filter((t) => t && t.length >= 3);
+    let best = null;
+    let bestScore = 0;
+    for (const t of (tracks || [])) {
+      const title = String(t.name || t.title || "").toLowerCase();
+      const artistLine = (Array.isArray(t.artists)
+        ? t.artists.map((a) => a?.name || "").join(", ")
+        : String(t.artist || "")).toLowerCase();
+      let score = 0;
+      if (title === needle) score = 1.0;
+      else if (title.includes(needle)) score = 0.9;
+      else if (tokens.length && tokens.every((tok) => title.includes(tok))) score = 0.75;
+      else if (artistLine.includes(needle)) score = 0.5;
+      if (score > bestScore) {
+        bestScore = score;
+        best = t;
+      }
+    }
+    const confident = best && bestScore >= 0.75;
+    if (!confident) {
+      if (artistEl) artistEl.textContent = `I couldn't find "${rawQuery}" in ${playlistName || "that playlist"}.`;
+      return;
+    }
+    const uri = String(best.uri || "");
+    if (!uri) {
+      if (artistEl) artistEl.textContent = `Found "${best.name || best.title}" but couldn't play it.`;
+      return;
+    }
+    const title = String(best.name || best.title || "");
+    const artistStr = Array.isArray(best.artists)
+      ? best.artists.map((a) => a?.name || "").filter(Boolean).join(", ")
+      : String(best.artist || "");
+    musicSourceMarkPlaying("spotify", {
+      uri,
+      title,
+      artist: artistStr,
+      playlist_id: playlistId,
+      playlist_name: playlistName
+    });
+    const playFn = window.VeraSpotify?.playTrack;
+    if (typeof playFn !== "function") {
+      if (artistEl) artistEl.textContent = "Spotify playback is not available.";
+      return;
+    }
+    try {
+      await playFn(uri, { title, artist: artistStr });
+      console.info("[music_control_payload]", {
+        music_play_op: "play_playlist_scoped",
+        playback_started: true,
+        playback_backend: "spotify",
+        requested_spotify_uri: uri,
+        new_spotify_track: `${title} — ${artistStr}`,
+        request_id: data?.request_id || null
+      });
+    } catch (err) {
+      console.warn("[music_control_payload]", {
+        music_play_op: "play_playlist_scoped",
+        playback_error: String(err && err.message || err || "unknown"),
+        request_id: data?.request_id || null
+      });
+    }
+    return { op, targetProvider: "spotify", expectedTrack: rawQuery };
+  }
+  if (op === "play_album" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
+    await ensureSingleActiveMusicProvider("spotify", { reason: "play_album" });
+    musicSourceMarkPlaying("spotify", {
+      uri: payload.uri,
+      title: payload.title || "",
+      artist: payload.artist || ""
+    });
+    const playCtx = window.VeraSpotify?.playPlaylist;
+    if (typeof playCtx === "function") {
+      const base = localBackendBase();
+      const uri = String(payload.uri || "").trim();
+      const title = payload.title || "";
+      const artist = payload.artist || "";
+      const sub = artist ? `"${title}" by "${artist}"` : `"${title}"`;
+      const openUrl = String(payload.open_url || spotifyUriToOpenUrl(uri) || "").trim();
+      const st = await fetch(`${base}/api/spotify/connection-status`, {
+        credentials: "include",
+        headers: { ...veraSpotifyAuthHeaders() }
+      })
+        .then((r) => (r.ok ? r.json() : { connected: false }))
+        .catch(() => ({ connected: false }));
+      const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+      if (st.connected) {
+        await playCtx(uri, { playlist_name: title, context_subtitle: sub });
+      } else if (openUrl) {
+        window.open(openUrl, "_blank", "noopener,noreferrer");
+        if (artistEl) {
+          artistEl.textContent =
+            `${artist ? `${artist} — ` : ""}Opened Spotify in a new tab (connect for in-page playback).`.trim();
+        }
+      } else if (artistEl) {
+        artistEl.textContent = "Connect Spotify to play this album in VERA.";
+      }
+    }
+    return { op, targetProvider: "spotify", expectedTrack: payload.title || "" };
+  }
+  if (op === "play_playlist_by_name") {
+    const rawName = String(payload.playlist_name || "").trim();
+    if (!rawName || !shouldPlayMusicThisInvocation(payload, op)) return;
+    const built = matchBuiltinPlaylistOrSoundNameForClient(rawName);
+    if (built) {
+      await ensureSingleActiveMusicProvider("builtin", { reason: "play_playlist_by_name_builtin" });
+      musicSourceMarkPlaying("builtin", {
+        playlistId: built.playlistId || "",
+        soundId: built.soundId || ""
+      });
+      await runBuiltinVoicePlayback(prefix, built);
+      return { op, targetProvider: "builtin", expectedTrack: rawName };
+    }
+    const getLists = window.VeraSpotify?.getPlaylists;
+    const playCtx = window.VeraSpotify?.playPlaylist;
+    const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+    if (typeof getLists !== "function" || typeof playCtx !== "function") {
+      if (artistEl) artistEl.textContent = "Playlist playback is not available.";
+      return;
+    }
+    const lists = await getLists().catch(() => []);
+    const needle = rawName.toLowerCase();
+    let hit =
+      lists.find((p) => String(p.name || "").toLowerCase() === needle) ||
+      lists.find((p) => String(p.name || "").toLowerCase().includes(needle));
+    if (!hit && needle.length >= 3) {
+      hit = lists.find((p) => needle.includes(String(p.name || "").toLowerCase()));
+    }
+    if (!hit?.uri) {
+      if (artistEl) artistEl.textContent = `No playlist in your library matched "${rawName}".`;
+      return;
+    }
+    const disp = hit.name || rawName;
+    await ensureSingleActiveMusicProvider("spotify", { reason: "play_playlist_by_name_spotify" });
+    musicSourceMarkPlaying("spotify", {
+      uri: hit.uri,
+      playlist_id: String(hit.id || hit.uri || ""),
+      playlist_name: disp
+    });
+    await playCtx(hit.uri, {
+      playlist_name: disp,
+      context_subtitle: `"${disp}" in my playlist`
+    });
+    return { op, targetProvider: "spotify", expectedTrack: disp };
+  }
+}
+
+function _usageTrackActionExecuted(payload, data, seqCtx, extra) {
+  try {
+    if (payload?.panel_type === "checklist_control") {
+      const hasIdx =
+        Number.isFinite(Number(seqCtx?.orderIndex)) ||
+        Number.isFinite(Number(payload?.planner_action_index));
+      if (!hasIdx) return;
+    }
+    window.veraUsageOnActionExecuted?.(
+      payload,
+      {
+        requestId: data?.request_id,
+        actionPlanId: payload?.action_plan_id || data?.action_plan_id,
+        orderIndex: seqCtx?.orderIndex,
+        source: seqCtx?.source || data?.type || "unknown",
+      },
+      extra
+    );
+  } catch (_) {}
+}
+
+function _usageSkipFinalizeActionApply(payload, merged) {
+  const panelType = payload?.panel_type || "";
+  if (panelType === "checklist_control") return true;
+  const planned = Array.isArray(merged?.action_payloads) ? merged.action_payloads.filter(Boolean) : [];
+  if (planned.length >= 1) return true;
+  const op = String(payload?.op || "");
+  if (
+    panelType === "music_control" &&
+    (op === "skip_next" || op === "skip_previous" || op === "volume_delta")
+  ) {
+    const actionId =
+      typeof buildMusicTransportActionId === "function"
+        ? buildMusicTransportActionId(payload, merged, op)
+        : "";
+    if (
+      actionId &&
+      typeof wasMusicTransportActionApplied === "function" &&
+      wasMusicTransportActionApplied(actionId, performance.now())
+    ) {
+      try {
+        console.info("[music_transport_duplicate_blocked]", {
+          action_name: op,
+          action_id: actionId,
+          request_id: merged?.request_id || null,
+          source: "finalize_ndjson_streaming_reply",
+          frontend_prehandled: true,
+          backend_action_received: true,
+          apply_count: 2,
+        });
+      } catch (_) {}
+      return true;
+    }
+  }
+  return false;
+}
+
+function _musicPanelExistsInSidePane(sidePaneEl) {
+  return Boolean(
+    sidePaneEl &&
+    sidePaneEl.dataset.sidePaneKind === "productivity" &&
+    String(sidePaneEl.innerHTML || "").trim()
+  );
+}
+
+const _INFO_PANEL_TYPES_THAT_MUST_NOT_REPLACE_MUSIC = new Set([
+  "media_tabs",
+  "news_results",
+  "finance_chart",
+  "product_results_panel",
+  "location_map_panel",
+  "weather_forecast_panel",
+]);
+
+/** Work Mode pins the productivity (music) surface in #side-pane; info panels must not replace it. */
+function _blockInfoPanelOverwriteMusicInWorkMode(payload) {
+  const panelType = String(payload?.panel_type || "");
+  if (!panelType) return false;
+  const workModeActive = isVeraWorkModeOn() && appModePrefix() === "vera";
+  if (!workModeActive) return false;
+  if (!_INFO_PANEL_TYPES_THAT_MUST_NOT_REPLACE_MUSIC.has(panelType)) return false;
+
+  const sidePaneEl = uiEl("side-pane");
+  const musicBefore = _musicPanelExistsInSidePane(sidePaneEl);
+
+  try {
+    console.info("[side_panel_replace_attempt]", {
+      action_name: panelType,
+      work_mode_active: workModeActive,
+      target_container_id: sidePaneEl?.id || "side-pane",
+      music_panel_exists_before: musicBefore,
+      blocked: true,
+      reason: "work_mode_music_panel_pinned",
+    });
+    console.info("[music_panel_preserve_check]", {
+      panel_type: panelType,
+      work_mode_active: workModeActive,
+      music_panel_exists_before: musicBefore,
+    });
+  } catch (_) {}
+
+  if (sidePaneEl) {
+    if (musicBefore) {
+      if (sidePaneEl.hidden) restoreProductivityPanel("vera");
+    } else {
+      renderProductivityPanel();
+    }
+  }
+
+  const musicAfter = _musicPanelExistsInSidePane(uiEl("side-pane"));
+  try {
+    console.info("[music_panel_overwrite_blocked]", {
+      action_name: panelType,
+      music_panel_exists_before: musicBefore,
+      music_panel_exists_after: musicAfter,
+      reason: "work_mode_music_panel_pinned",
+    });
+    if (musicAfter || musicBefore) {
+      console.info("[music_panel_preserved]", {
+        action_name: panelType,
+        music_panel_exists_after: musicAfter,
+      });
+    }
+  } catch (_) {}
+
+  return true;
+}
+
+async function applyActionPayload(data, seqCtx = {}) {
   // 2026-05-29 — multi-action planner pass-through.
   // When the backend executed a typed compound command, every action's
   // ui_payload arrives in data.action_payloads in execution order. We
@@ -17420,47 +22472,39 @@ function applyActionPayload(data) {
   // when both are present — skip in that case to avoid double-render).
   const planned = Array.isArray(data?.action_payloads) ? data.action_payloads.filter(Boolean) : [];
   if (planned.length > 1) {
+    if (typeof window.veraApplyActionPayloadsInOrder === "function") {
+      await window.veraApplyActionPayloadsInOrder(
+        planned,
+        (payload, ctx) =>
+          applyActionPayload({ ...data, action_payload: payload, action_payloads: null }, ctx),
+        { requestId: data?.request_id || null, source: seqCtx?.source || "multi_action_payloads" }
+      );
+      return;
+    }
     const seen = new WeakSet();
-    planned.forEach((p, idx) => {
-      if (!p || typeof p !== "object") return;
-      if (seen.has(p)) return;
+    for (let idx = 0; idx < planned.length; idx++) {
+      const p = planned[idx];
+      if (!p || typeof p !== "object") continue;
+      if (seen.has(p)) continue;
       seen.add(p);
       try {
-        applyActionPayload({ ...data, action_payload: p, action_payloads: null });
+        await applyActionPayload({ ...data, action_payload: p, action_payloads: null }, { orderIndex: idx });
       } catch (err) {
         console.warn("[planner] action_payloads dispatch failed", { idx, err });
       }
-    });
+    }
     return;
   }
   const payload = data?.action_payload;
-  const lockToMusicPanel =
-    isVeraWorkModeOn() && appModePrefix() === "vera";
 
-  if (
-    lockToMusicPanel &&
-    (payload?.panel_type === "media_tabs" ||
-      payload?.panel_type === "news_results" ||
-      payload?.panel_type === "finance_chart" ||
-      payload?.panel_type === "product_results_panel" ||
-      payload?.panel_type === "location_map_panel")
-  ) {
-    const sidePaneEl = uiEl("side-pane");
-    if (sidePaneEl) {
-      const hasProductivityMarkup =
-        Boolean(sidePaneEl.innerHTML.trim()) && sidePaneEl.dataset.sidePaneKind === "productivity";
-      if (hasProductivityMarkup) {
-        if (sidePaneEl.hidden) restoreProductivityPanel("vera");
-      } else {
-        renderProductivityPanel();
-      }
-    }
+  if (_blockInfoPanelOverwriteMusicInWorkMode(payload)) {
     return;
   }
 
   if (payload?.panel_type === "media_tabs" || payload?.panel_type === "news_results") {
     /* Large innerHTML (news + images + video embeds) can block the main thread; defer so BMO mouth RAF keeps up. */
     requestAnimationFrame(() => renderMediaTabsPanel(payload));
+    _usageTrackActionExecuted(payload, data, seqCtx);
     return;
   }
 
@@ -17474,6 +22518,7 @@ function applyActionPayload(data) {
     if (op === "close") {
       hideSidePanel();
       console.info("[news_panel_ui]", { stage: "frontend", op: "close" });
+      _usageTrackActionExecuted(payload, data, seqCtx);
       return;
     }
     /* op === "open" — render the news panel shell. If we have no fresh
@@ -17492,6 +22537,7 @@ function applyActionPayload(data) {
     };
     requestAnimationFrame(() => renderMediaTabsPanel(openPayload));
     console.info("[news_panel_ui]", { stage: "frontend", op: "open" });
+    _usageTrackActionExecuted(payload, data, seqCtx);
     return;
   }
 
@@ -17510,21 +22556,87 @@ function applyActionPayload(data) {
     return;
   }
 
+  if (payload?.panel_type === "weather_forecast_panel") {
+    requestAnimationFrame(() => {
+      if (typeof renderWeatherForecastPanel === "function") {
+        renderWeatherForecastPanel(payload);
+      }
+    });
+    _usageTrackActionExecuted(payload, data, seqCtx);
+    return;
+  }
+
+  if (payload?.panel_type === "checklist_plan" && payload?.op === "run") {
+    try {
+      console.info("[checklist_plan_client_action_received]", {
+        source: payload.source || null,
+        main_count: payload.main_count ?? null,
+      });
+      if (typeof executeChecklistPlanAction === "function") {
+        await executeChecklistPlanAction({
+          source: payload.source || "voice",
+          isVoice: Boolean(seqCtx?.isVoice),
+          userText: data?.transcript || data?.user_text || "",
+        });
+      }
+      _usageTrackActionExecuted(payload, data, seqCtx);
+    } catch (err) {
+      console.warn("[checklist_plan_client_action_failed]", {
+        reason: String(err?.message || err || "").slice(0, 200),
+      });
+    }
+    return;
+  }
+
   if (payload?.panel_type === "checklist_control") {
     try {
+      console.info("[checklist_client_action_received]", {
+        action: payload.op || null,
+        payload_mode: payload.payload_mode || "full_state",
+        payload_item_count: Array.isArray(payload.items) ? payload.items.length : 0
+      });
       markWorkChecklistLocalMutation();
-      if (Array.isArray(payload.items)) {
-        localStorage.setItem(WORK_CHECKLIST_STORAGE_KEY, JSON.stringify(payload.items));
+      const mutation =
+        typeof applyChecklistControlVoicePayload === "function"
+          ? applyChecklistControlVoicePayload(payload)
+          : { ok: false, reason: "apply_fn_missing" };
+      if (!mutation?.ok) {
+        data.__checklistMutationFailed = true;
+        try {
+          console.warn("[checklist_voice_action_result]", {
+            action: payload.op || null,
+            success: false,
+            reason: mutation?.reason || "mutation_failed"
+          });
+        } catch (_) {}
+      } else {
+        try {
+          console.info("[checklist_voice_action_result]", {
+            action: payload.op || null,
+            success: true,
+            before_count: mutation.beforeCount,
+            after_count: mutation.afterCount
+          });
+        } catch (_) {}
+        const n = Number(mutation.afterCount) || 0;
+        window.veraUsageOnChecklistMutation?.({
+          op: String(payload.op || "voice").replace(/^checklist\./, ""),
+          item_count: n,
+          batch_size: n || undefined,
+          source: "voice",
+          sync_kind: "voice_full_state",
+          client_key: String(data?.request_id || "")
+        });
+        _usageTrackActionExecuted(payload, data, seqCtx);
       }
-      if (typeof payload.completed_collapsed === "boolean") {
-        localStorage.setItem(
-          WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
-          payload.completed_collapsed ? "1" : "0"
-        );
-      }
-      loadWorkChecklistItems();
-      syncWorkChecklistHelpPlanButton();
-    } catch (_) {}
+    } catch (err) {
+      data.__checklistMutationFailed = true;
+      try {
+        console.warn("[checklist_client_mutation_missing]", {
+          reason: String(err?.message || err || "apply_throw")
+        });
+      } catch (_) {}
+    }
     return;
   }
 
@@ -17597,6 +22709,7 @@ function applyActionPayload(data) {
           });
         } catch (_) {}
       }
+      _usageTrackActionExecuted(payload, data, seqCtx);
       return;
     }
     /* PART 3: backend can also drive panel close (e.g. the LLM router sent
@@ -17631,22 +22744,47 @@ function applyActionPayload(data) {
         });
         return;
       }
-      const parsedRaw = payload.parsed && typeof payload.parsed === "object"
-        ? payload.parsed
-        : parseCloseReasoningPanelsCommand(userTextForClose, getReasoningPanelOrder().length);
+      const panelCount = getReasoningPanelOrder().length;
+      const parsedFromText = parseCloseReasoningPanelsCommand(userTextForClose, panelCount);
+      const parsedRaw =
+        payload.parsed && typeof payload.parsed === "object" ? payload.parsed : null;
+      let parsedFull = parsedFromText;
+      if (
+        parsedRaw?.intent === "close_reasoning_panels" &&
+        parsedFromText.intent !== "close_reasoning_panels" &&
+        (Array.isArray(parsedRaw.indices) || parsedRaw.closeScope)
+      ) {
+        parsedFull = {
+          ...parsedFromText,
+          intent: "close_reasoning_panels",
+          closeScope: parsedRaw.closeScope || "specific_indices",
+          parsedRangeType: parsedRaw.closeScope || parsedFromText.parsedRangeType,
+          indices: Array.isArray(parsedRaw.indices) ? parsedRaw.indices.slice() : parsedFromText.indices,
+          titleQuery: parsedRaw.titleQuery || parsedFromText.titleQuery || "",
+          refillToMinimum: parsedRaw.refillToMinimum !== false,
+          reason: "backend_parsed_fallback",
+        };
+      } else if (parsedRaw && parsedRaw.allCloseSpans) {
+        parsedFull = parsedRaw;
+      }
       /* Backend "parsed" shape is the minimal subset; rerun the parser on
          the user text so we get the full scan/rank metadata and avoid
          losing the close-span deduplication logic. */
-      const parsedFull = (parsedRaw && parsedRaw.allCloseSpans)
-        ? parsedRaw
-        : parseCloseReasoningPanelsCommand(userTextForClose, getReasoningPanelOrder().length);
-      /* Use backend-provided slot if it carries info the user text doesn't
-         expose (e.g. by_title where title came from LLM extraction). */
       const parsed = {
         ...parsedFull,
         ...(parsedRaw && parsedRaw.titleQuery ? { titleQuery: parsedRaw.titleQuery } : {}),
         ...(parsedRaw && (parsedRaw.closeScope === "by_title" || parsedRaw.closeScope === "reopen_last")
           ? { closeScope: parsedRaw.closeScope, parsedRangeType: parsedRaw.closeScope }
+          : {}),
+        ...(parsedRaw &&
+        parsedRaw.intent === "close_reasoning_panels" &&
+        Array.isArray(parsedRaw.indices) &&
+        parsedRaw.indices.length
+          ? {
+              intent: "close_reasoning_panels",
+              closeScope: parsedRaw.closeScope || parsedFull.closeScope || "specific_indices",
+              indices: parsedRaw.indices.slice(),
+            }
           : {}),
       };
       const exec = executeCloseReasoningPanelsCommand(parsed, {
@@ -17689,6 +22827,7 @@ function applyActionPayload(data) {
           source: payload.reason || "backend_action_payload",
         });
       }
+      _usageTrackActionExecuted(payload, data, seqCtx, { success: Boolean(exec?.ok) });
       return;
     }
     if (op === "reopen_last") {
@@ -17748,10 +22887,33 @@ function applyActionPayload(data) {
           requestedIndex: idx + 1,
           resolvedFrom: "visible_order",
         });
+        _usageTrackActionExecuted(payload, data, seqCtx);
       }
       return;
     }
     if (op === "open_and_stream") {
+      try {
+        const stableIds = makeReasoningRequestStableIds(payload);
+        console.info("[apply_action_payload_reasoning]", {
+          action_id: stableIds.actionId || null,
+          request_id: stableIds.requestId || null,
+          parent_turn_id: stableIds.parentTurnId || null,
+          target_panel: resolveReasoningTargetPanelKey(payload),
+          task: String(payload?.prompt || "").slice(0, 240),
+          source: seqCtx?.source || data?.type || "unknown",
+        });
+        console.info("[reasoning_action_received]", {
+          op,
+          prompt_preview: String(payload?.prompt || "").slice(0, 160),
+          target_panel_index_1based: payload?.target_panel_index_1based ?? null,
+          active_lane_id: getActiveDomReasoningLaneId?.() || null,
+          source: seqCtx?.source || data?.type || "unknown",
+        });
+        console.info("[reasoning_action_execute_start]", {
+          op,
+          active_lane_id: getActiveDomReasoningLaneId?.() || null,
+        });
+      } catch (_) {}
       /* 2026-05-29 spec PART 3 — open + stream a CLEAN reasoning prompt
          into a target panel. Driven by the backend planner's
          reasoning.request direct dispatcher; the prompt arrives
@@ -17759,442 +22921,35 @@ function applyActionPayload(data) {
          reuse the existing Work Mode reasoning lane machinery rather
          than open a brand-new surface. */
       applyWorkModeReasoningOpenAndStreamPayload(payload, data);
+      try {
+        console.info("[reasoning_action_execute_done]", {
+          op,
+          active_lane_id: getActiveDomReasoningLaneId?.() || null,
+        });
+      } catch (_) {}
+      _usageTrackActionExecuted(payload, data, seqCtx);
       return;
     }
     return;
   }
 
   if (payload?.panel_type === "music_control") {
-    const prefix = appModePrefix();
-    const op = payload.op || "open_panel";
-    console.info("[music_control_payload]", {
-      music_control_received: true,
-      op,
-      playlist_id: payload.playlist_id || "",
-      sound_id: payload.sound_id || "",
-      source_event_type: data?.type || "",
-      request_id: data?.request_id || null
-    });
-    if (op === "close_panel") {
-      hideSidePanel();
-      return;
+    const musicResult = await applyMusicControlPayloadAsync(payload, data, seqCtx);
+    if (musicResult && typeof musicResult === "object" && musicResult.op) {
+      try {
+        window.veraUsageOnMusicControlApplied?.(
+          payload,
+          {
+            requestId: data?.request_id,
+            actionPlanId: payload?.action_plan_id || data?.action_plan_id,
+            orderIndex: seqCtx?.orderIndex,
+            source: seqCtx?.source || data?.type || "unknown",
+          },
+          musicResult
+        );
+      } catch (_) {}
     }
-    if (op === "skip_next") {
-      if (!shouldApplyMusicTransportAction(payload, op)) return;
-      if (getProductivityMusicSource(prefix) === "builtin") {
-        builtinMusicTransportSkipNext(prefix);
-        return;
-      }
-      invokeSpotifyTransport("skip_next", { source: "command" });
-      return;
-    }
-    if (op === "skip_previous") {
-      if (!shouldApplyMusicTransportAction(payload, op)) return;
-      console.log("[MUSIC][SKIP_PREV] applyActionPayload dispatch", {
-        source: data?.type || "unknown",
-        has_payload: Boolean(payload),
-      });
-      if (getProductivityMusicSource(prefix) === "builtin") {
-        builtinMusicTransportSkipPrevious(prefix);
-        return;
-      }
-      invokeSpotifyTransport("skip_previous", { source: "command" });
-      return;
-    }
-    if (op === "pause") {
-      const free = document.getElementById(`${prefix}-free-music-audio`);
-      if (free && !free.paused) free.pause();
-      const pause = window.VeraSpotify?.pausePlayback;
-      if (typeof pause === "function") void pause();
-      if (free && getProductivityMusicSource(prefix) === "builtin") {
-        freeMusicSyncNowFromAudio(prefix);
-        spotifySyncPlayButtonUi(prefix);
-      }
-      // Mark whichever source was active as paused_by_user and ensure
-      // we never auto-resume the OTHER source (spec rule 6: a pause for
-      // one source must not resurrect another).
-      musicSourceMarkPausedByUser();
-      return;
-    }
-    if (op === "resume") {
-      if (getProductivityMusicSource(prefix) === "builtin") {
-        const free = document.getElementById(`${prefix}-free-music-audio`);
-        if (free?.src) {
-          void free.play().then(() => {
-            freeMusicSyncNowFromAudio(prefix);
-            spotifySyncPlayButtonUi(prefix);
-          });
-          return;
-        }
-      }
-      const resume = window.VeraSpotify?.resumePlayback;
-      if (typeof resume === "function") void resume();
-      return;
-    }
-    if (op === "volume_delta") {
-      if (!shouldApplyMusicTransportAction(payload, op)) return;
-      const cur = typeof window.VeraSpotify?.getVolume === "function"
-        ? window.VeraSpotify.getVolume()
-        : spotifyGetVolume();
-      const setVolume = window.VeraSpotify?.setVolume;
-      const next = Math.max(0, Math.min(SPOTIFY_VOLUME_MAX, Number(cur) + (Number(payload.delta) || 0)));
-      if (typeof setVolume === "function") void setVolume(next);
-      else {
-        window.__veraSpotifyVolume = next;
-        const free = document.getElementById(`${prefix}-free-music-audio`);
-        if (free) free.volume = next;
-        const preview = document.getElementById(`${prefix}-spotify-preview-audio`);
-        if (preview) preview.volume = next;
-      }
-      return;
-    }
-    const skipPanelRepeat = isRecentSameMusicPlay(payload, op);
-    const sidePaneEl = uiEl("side-pane");
-    if (sidePaneEl && !skipPanelRepeat) {
-      const hasProductivityMarkup =
-        Boolean(sidePaneEl.innerHTML.trim()) && sidePaneEl.dataset.sidePaneKind === "productivity";
-      document.querySelectorAll(".productivity-mode-btn").forEach((b) => b.classList.remove("is-active"));
-      if (hasProductivityMarkup) {
-        if (sidePaneEl.hidden) restoreProductivityPanel(prefix);
-      } else {
-        renderProductivityPanel();
-      }
-      document.getElementById(`${prefix}-productivity-mode`)?.classList.add("is-active");
-    }
-    if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
-      const sourceStateBeforeBuiltinPlay = veraMusicSourceState();
-      const preservedBuiltinTime =
-        sourceStateBeforeBuiltinPlay.builtin.state === "suspended_for_spotify"
-          ? Number(sourceStateBeforeBuiltinPlay.builtin.currentTime || 0)
-          : 0;
-      stopCurrentMusicPlaybackBeforeNewPlay("builtin");
-      musicSourceMarkPlaying("builtin", {
-        playlistId: payload.playlist_id || "",
-        soundId: payload.sound_id || "",
-        currentTime: preservedBuiltinTime
-      });
-      void (async () => {
-        const pfx = appModePrefix();
-        console.info("[music_control_payload]", {
-          music_play_op: "play_builtin",
-          play_builtin_called: true,
-          playback_backend: "builtin_audio",
-          playlist_id: payload.playlist_id || "",
-          sound_id: payload.sound_id || "",
-          request_id: data?.request_id || null
-        });
-        try {
-          await runBuiltinVoicePlayback(pfx, {
-            playlistId: payload.playlist_id,
-            soundId: payload.sound_id
-          });
-          if (preservedBuiltinTime > 0) {
-            const free = document.getElementById(`${pfx}-free-music-audio`);
-            if (free && Number.isFinite(free.duration) && preservedBuiltinTime < free.duration) {
-              try {
-                free.currentTime = preservedBuiltinTime;
-                freeMusicSyncNowFromAudio(pfx);
-                console.info("[music_source_state]", {
-                  builtin_resume_from_preserved_time: true,
-                  builtin_current_time_preserved: preservedBuiltinTime,
-                  active_music_source_after: "builtin"
-                });
-              } catch (_) {
-                /* keep playback going even if seeking fails */
-              }
-            }
-          }
-          console.info("[music_control_payload]", {
-            music_play_op: "play_builtin",
-            playback_started: true,
-            playback_backend: "builtin_audio",
-            playlist_id: payload.playlist_id || "",
-            sound_id: payload.sound_id || "",
-            request_id: data?.request_id || null
-          });
-        } catch (err) {
-          console.warn("[music_control_payload]", {
-            music_play_op: "play_builtin",
-            playback_error: String(err && err.message || err || "unknown"),
-            playback_backend: "builtin_audio",
-            request_id: data?.request_id || null
-          });
-        }
-      })();
-    } else if (op === "play_track" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
-      stopCurrentMusicPlaybackBeforeNewPlay("spotify");
-      musicSourceMarkPlaying("spotify", {
-        uri: payload.uri,
-        title: payload.title || "",
-        artist: payload.artist || ""
-      });
-      const play = window.VeraSpotify?.playTrack;
-      console.info("[music_control_payload]", {
-        music_play_op: "play_track",
-        playback_backend: "spotify",
-        spotify_playtrack_available: typeof play === "function",
-        title: payload.title || "",
-        artist: payload.artist || "",
-        requested_spotify_uri: String(payload.uri || ""),
-        spotify_play_called_with_uri: Boolean(payload.uri),
-        blocked_resume_for_new_track: true,
-        request_id: data?.request_id || null
-      });
-      if (typeof play === "function") {
-        void Promise.resolve(play(String(payload.uri), {
-          title: payload.title || "",
-          artist: payload.artist || "",
-          preview_url: payload.preview_url || "",
-          open_url: payload.open_url || ""
-        })).then(() => {
-          console.info("[music_control_payload]", {
-            music_play_op: "play_track",
-            playback_started: true,
-            playback_backend: "spotify",
-            request_id: data?.request_id || null
-          });
-        }).catch((err) => {
-          console.warn("[music_control_payload]", {
-            music_play_op: "play_track",
-            playback_error: String(err && err.message || err || "unknown"),
-            playback_backend: "spotify",
-            request_id: data?.request_id || null
-          });
-        });
-      }
-    } else if (op === "play_playlist_scoped" && shouldPlayMusicThisInvocation(payload, op)) {
-      // New op for "play X in my playlist" — search WITHIN the user's
-      // active Spotify playlist (set by their last interaction with a
-      // playlist context) instead of doing a global Spotify search.
-      // If no playlist context is known we surface a clear "which
-      // playlist" message in the spotify-track-artist line.
-      const rawQuery = String(payload.query || "").trim();
-      const playlistId = String(payload.playlist_id || window.__veraSpotifyActivePlaylistId || "").trim();
-      const playlistName = String(payload.playlist_name || window.__veraSpotifyActivePlaylistName || "").trim();
-      console.info("[music_control_payload]", {
-        music_play_op: "play_playlist_scoped",
-        playback_backend: "spotify",
-        playlist_scope_query: rawQuery,
-        selected_playlist_id: playlistId,
-        selected_playlist_name: playlistName,
-        current_playlist_context_available: Boolean(playlistId),
-        generic_track_search_blocked: true,
-        request_id: data?.request_id || null
-      });
-      const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-      if (!playlistId) {
-        if (artistEl) artistEl.textContent = "Which playlist should I search?";
-        console.info("[music_control_payload]", {
-          music_play_op: "play_playlist_scoped",
-          clarification_asked: true,
-          request_id: data?.request_id || null
-        });
-        return;
-      }
-      stopCurrentMusicPlaybackBeforeNewPlay("spotify");
-      void (async () => {
-        const getTracks = window.VeraSpotify?.getPlaylistTracks;
-        if (typeof getTracks !== "function") {
-          if (artistEl) artistEl.textContent = "Playlist search is not available right now.";
-          return;
-        }
-        let tracks = [];
-        try {
-          tracks = await getTracks(playlistId);
-        } catch (err) {
-          if (artistEl) artistEl.textContent = "Couldn't load that playlist's tracks.";
-          console.warn("[music_control_payload]", {
-            music_play_op: "play_playlist_scoped",
-            playback_error: String(err && err.message || err || "unknown"),
-            request_id: data?.request_id || null
-          });
-          return;
-        }
-        const needle = rawQuery.toLowerCase();
-        // Light fuzzy match: exact title substring beats artist substring,
-        // and we require at least one needle token (length >= 3) to appear
-        // in the title to call it a confident match. Without this guard
-        // the planner would pick a random track for short queries.
-        const tokens = needle.split(/\s+/).filter((t) => t && t.length >= 3);
-        let best = null;
-        let bestScore = 0;
-        for (const t of (tracks || [])) {
-          const title = String(t.name || t.title || "").toLowerCase();
-          const artistLine = (Array.isArray(t.artists)
-            ? t.artists.map((a) => a?.name || "").join(", ")
-            : String(t.artist || "")).toLowerCase();
-          let score = 0;
-          if (title === needle) score = 1.0;
-          else if (title.includes(needle)) score = 0.9;
-          else if (tokens.length && tokens.every((tok) => title.includes(tok))) score = 0.75;
-          else if (artistLine.includes(needle)) score = 0.5;
-          if (score > bestScore) {
-            bestScore = score;
-            best = t;
-          }
-        }
-        const confident = best && bestScore >= 0.75;
-        console.info("[music_control_payload]", {
-          music_play_op: "play_playlist_scoped",
-          playlist_match_title: best ? (best.name || best.title || "") : "",
-          playlist_match_confidence: bestScore,
-          playlist_track_played: Boolean(confident),
-          playlist_track_not_found: !confident,
-          request_id: data?.request_id || null
-        });
-        if (!confident) {
-          if (artistEl) artistEl.textContent = `I couldn't find "${rawQuery}" in ${playlistName || "that playlist"}.`;
-          return;
-        }
-        const uri = String(best.uri || "");
-        if (!uri) {
-          if (artistEl) artistEl.textContent = `Found "${best.name || best.title}" but couldn't play it.`;
-          return;
-        }
-        const title = String(best.name || best.title || "");
-        const artistStr = Array.isArray(best.artists)
-          ? best.artists.map((a) => a?.name || "").filter(Boolean).join(", ")
-          : String(best.artist || "");
-        musicSourceMarkPlaying("spotify", {
-          uri,
-          title,
-          artist: artistStr,
-          playlist_id: playlistId,
-          playlist_name: playlistName
-        });
-        const playFn = window.VeraSpotify?.playTrack;
-        if (typeof playFn !== "function") {
-          if (artistEl) artistEl.textContent = "Spotify playback is not available.";
-          return;
-        }
-        try {
-          await playFn(uri, { title, artist: artistStr });
-          console.info("[music_control_payload]", {
-            music_play_op: "play_playlist_scoped",
-            playback_started: true,
-            playback_backend: "spotify",
-            spotify_play_called_with_uri: true,
-            requested_spotify_uri: uri,
-            new_spotify_track: `${title} — ${artistStr}`,
-            request_id: data?.request_id || null
-          });
-        } catch (err) {
-          console.warn("[music_control_payload]", {
-            music_play_op: "play_playlist_scoped",
-            playback_error: String(err && err.message || err || "unknown"),
-            request_id: data?.request_id || null
-          });
-        }
-      })();
-    } else if (op === "play_album" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
-      stopCurrentMusicPlaybackBeforeNewPlay("spotify");
-      musicSourceMarkPlaying("spotify", {
-        uri: payload.uri,
-        title: payload.title || "",
-        artist: payload.artist || ""
-      });
-      const playCtx = window.VeraSpotify?.playPlaylist;
-      if (typeof playCtx === "function") {
-        void (async () => {
-          const prefix = appModePrefix();
-          const base = localBackendBase();
-          const uri = String(payload.uri || "").trim();
-          const title = payload.title || "";
-          const artist = payload.artist || "";
-          const sub = artist ? `"${title}" by "${artist}"` : `"${title}"`;
-          const openUrl = String(payload.open_url || spotifyUriToOpenUrl(uri) || "").trim();
-          const st = await fetch(`${base}/api/spotify/connection-status`, {
-            credentials: "include",
-            headers: { ...veraSpotifyAuthHeaders() }
-          })
-            .then((r) => (r.ok ? r.json() : { connected: false }))
-            .catch(() => ({ connected: false }));
-          const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-          if (st.connected) {
-            await playCtx(uri, { playlist_name: title, context_subtitle: sub });
-          } else if (openUrl) {
-            window.open(openUrl, "_blank", "noopener,noreferrer");
-            if (artistEl) {
-              artistEl.textContent =
-                `${artist ? `${artist} — ` : ""}Opened Spotify in a new tab (connect for in-page playback).`.trim();
-            }
-          } else if (artistEl) {
-            artistEl.textContent = "Connect Spotify to play this album in VERA.";
-          }
-        })();
-      }
-    } else if (op === "play_playlist_by_name") {
-      const rawName = String(payload.playlist_name || "").trim();
-      if (rawName && shouldPlayMusicThisInvocation(payload, op)) {
-        void (async () => {
-          const prefix = appModePrefix();
-          const built = matchBuiltinPlaylistOrSoundNameForClient(rawName);
-          if (built) {
-            stopCurrentMusicPlaybackBeforeNewPlay("builtin");
-            musicSourceMarkPlaying("builtin", {
-              playlistId: built.playlistId || "",
-              soundId: built.soundId || ""
-            });
-            console.info("[music_control_payload]", {
-              music_play_op: "play_playlist_by_name",
-              playback_backend: "builtin_audio",
-              playlist_name: rawName,
-              request_id: data?.request_id || null
-            });
-            await runBuiltinVoicePlayback(prefix, built);
-            return;
-          }
-          const getLists = window.VeraSpotify?.getPlaylists;
-          const playCtx = window.VeraSpotify?.playPlaylist;
-          const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-          if (typeof getLists !== "function" || typeof playCtx !== "function") {
-            if (artistEl) artistEl.textContent = "Playlist playback is not available.";
-            return;
-          }
-          const lists = await getLists().catch(() => []);
-          const needle = rawName.toLowerCase();
-          let hit =
-            lists.find((p) => String(p.name || "").toLowerCase() === needle) ||
-            lists.find((p) => String(p.name || "").toLowerCase().includes(needle));
-          if (!hit && needle.length >= 3) {
-            hit = lists.find((p) => needle.includes(String(p.name || "").toLowerCase()));
-          }
-          if (!hit?.uri) {
-            if (artistEl) artistEl.textContent = `No playlist in your library matched "${rawName}".`;
-            console.info("[music_control_payload]", {
-              music_play_op: "play_playlist_by_name",
-              playlist_match_title: "",
-              playlist_track_not_found: true,
-              generic_track_search_blocked: true,
-              request_id: data?.request_id || null
-            });
-            return;
-          }
-          const disp = hit.name || rawName;
-          stopCurrentMusicPlaybackBeforeNewPlay("spotify");
-          musicSourceMarkPlaying("spotify", {
-            uri: hit.uri,
-            playlist_id: String(hit.id || hit.uri || ""),
-            playlist_name: disp
-          });
-          console.info("[music_control_payload]", {
-            music_play_op: "play_playlist_by_name",
-            playback_backend: "spotify",
-            requested_spotify_query: rawName,
-            requested_spotify_uri: hit.uri,
-            spotify_playlist_play_called_with_uri: true,
-            blocked_resume_for_new_play_request: true,
-            generic_track_search_blocked: true,
-            request_id: data?.request_id || null
-          });
-          await playCtx(hit.uri, {
-            playlist_name: disp,
-            context_subtitle: `"${disp}" in my playlist`
-          });
-        })();
-      }
-    }
-    return;
+    return musicResult;
   }
 
   /* Keep the music panel open across normal assistant replies unless a new panel payload replaces it. */
@@ -18298,9 +23053,11 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   }
   const pay = merged?.action_payload;
   const op = pay?.op;
+  /* Music transport is applied once via applyNdjsonActionPayloadEvent (meta/done).
+     Do not pre-apply here — finalize used to double-skip when TTS lasted >900ms. */
   if (
     pay?.panel_type === "music_control" &&
-    (op === "skip_next" || op === "skip_previous" || op === "play_builtin")
+    op === "play_builtin"
   ) {
     applyActionPayload(merged);
   }
@@ -18319,7 +23076,9 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
     return;
   }
   /* Must assign state.bubble so applyNdjsonStreamingReplySoFar doesn't add a second bubble if done arrives before first audio (defer path). */
-  applyActionPayload(merged);
+  if (!_usageSkipFinalizeActionApply(pay, merged)) {
+    applyActionPayload(merged);
+  }
   // Streaming finalized without ever calling onReplyProgress (no partials),
   // so we drop the pending bubble here just before creating the final one.
   cancelPendingNewsStatusBubble("ndjson_finalize");
@@ -18337,6 +23096,17 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
 
 /** Stops TTS and resets interrupt UI counters (shared by heuristic + browser barge-in). */
 function cancelBrowserInterruptTtsOnly() {
+  const a = getAudioEl();
+  const audioPausedBefore = a ? Boolean(a.paused) : null;
+  const audioEndedBefore = a ? Boolean(a.ended) : null;
+  logInterruptChain("tts_stop_attempt", {
+    hasAudioEl: Boolean(a),
+    audioPausedBefore,
+    audioEndedBefore,
+    mainTtsPlaybackActive,
+    activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+  });
+
   /* PART 1 — record entry into the shared cancel path. */
   _recordInterruptTimingPoint("t5_interruptSpeech_entered", {
     extra: { gatePath: "cancelBrowserInterruptTtsOnly" },
@@ -18352,11 +23122,16 @@ function cancelBrowserInterruptTtsOnly() {
   setStatus("Listening… (interrupted)", "recording");
   resetAudioHandlers();
   cancelMainTtsPlayback();
-  const a = getAudioEl();
   if (a) {
     a.pause();
     a.currentTime = 0;
   }
+  logInterruptChain("tts_stop_done", {
+    audioPausedAfter: a ? Boolean(a.paused) : null,
+    audioEndedAfter: a ? Boolean(a.ended) : null,
+    mainTtsPlaybackActive,
+    activeMainTtsBufferSourcesCount: activeMainTtsBufferSources.length,
+  });
   /* PART 1 — t11: audio element paused after cancel. */
   _recordInterruptTimingPoint("t11_audio_audibly_stopped", {
     extra: { path: "cancelBrowserInterruptTtsOnly" },
@@ -18561,12 +23336,316 @@ function detectInterrupt() {
       lastInterruptDetectTime = now;
 
       const heuristicChecks = computeHeuristicInterruptChecks(rms, zcr, crest);
-      const speechLike = heuristicChecks.passes;
+      const rawSpeechLike = heuristicChecks.passes;
+      const whisperVadPath =
+        whisperInterruptCaptureNeeded() && !browserAsrParallelMode;
+      const speechWindowMsBefore =
+        interruptSpeechStart > 0 ? now - interruptSpeechStart : 0;
+      const frameClass = whisperVadPath
+        ? classifyWhisperInterruptFrame(rms, zcr, crest, speechWindowMsBefore)
+        : { valid: rawSpeechLike, rejectedReason: null };
+      const validInterruptSpeechFrame = frameClass.valid;
+      const rejectedReason = frameClass.rejectedReason;
+      const effectiveSpeechLike = whisperVadPath
+        ? validInterruptSpeechFrame
+        : rawSpeechLike;
+      if (whisperVadPath) {
+        if (
+          isWhisperHarshOnsetSignal(
+            rms,
+            zcr,
+            crest,
+            speechWindowMsBefore,
+            rejectedReason
+          )
+        ) {
+          whisperInterruptSpikyOrRaspyStart = true;
+        }
+        if (whisperInterruptSpikyOrRaspyStart) {
+          if (
+            isWhisperSmoothContinuationFrame(
+              rms,
+              zcr,
+              crest,
+              validInterruptSpeechFrame
+            )
+          ) {
+            whisperInterruptSmoothFrames++;
+          } else {
+            whisperInterruptSmoothFrames = 0;
+          }
+        }
+      }
+      const gapResetMs = whisperVadPath
+        ? WHISPER_INTERRUPT_GAP_RESET_MS
+        : INTERRUPT_GAP_RESET_MS;
+      const sustainMs = whisperVadPath
+        ? getWhisperInterruptSustainMs()
+        : getInterruptSustainMs();
+      const cooldownActive = whisperVadPath && now < whisperInterruptCooldownUntil;
+      const smoothFramesRequired = WHISPER_SMOOTH_FRAMES_AFTER_RASPY_START;
+      const smoothGateAllowsTrigger =
+        !whisperVadPath ||
+        !whisperInterruptSpikyOrRaspyStart ||
+        whisperInterruptSmoothFrames >= smoothFramesRequired;
+      const smoothContinuationReady = smoothGateAllowsTrigger;
+      const strongFrame =
+        whisperVadPath &&
+        isWhisperStrongInterruptFrame(rms, zcr, crest, speechWindowMsBefore);
 
-      /* DEBUG: throttled VAD frame log (max ~once per 250ms) so we can
-         see whether detectInterrupt is firing at all while news TTS
-         plays, and whether accumulated speech is approaching the sustain
-         threshold. */
+      if (whisperVadPath ? validInterruptSpeechFrame : effectiveSpeechLike) {
+        if (whisperInterruptValidFrames === 0 && interruptSpeechFrames === 0) {
+          interruptSpeechStart = now;
+          _recordInterruptTimingPoint("t0_user_speech_audio_detected", {
+            autoStart: true,
+            extra: {
+              rms: Number(rms.toFixed(5)),
+              zcr: Number(zcr.toFixed(4)),
+              crest: Number(crest.toFixed(2)),
+              browserAsrParallelMode,
+              timeSinceTtsStartMs: Number((now - (audioStartedAt || now)).toFixed(1)),
+            },
+          });
+        }
+        if (whisperVadPath) {
+          whisperInterruptValidFrames++;
+          if (
+            whisperInterruptValidFrames >= WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN &&
+            smoothGateAllowsTrigger
+          ) {
+            interruptSpeechAccumMs += dt;
+            interruptSpeechFrames++;
+            interruptLastSpeechLikeTime = now;
+            lastInterruptSpeechLikeSnapshot = {
+              rms,
+              zcr,
+              crest,
+              heuristicChecks,
+              at: now,
+            };
+            if (strongFrame) {
+              whisperInterruptStrongFrames++;
+            } else {
+              whisperInterruptStrongFrames = 0;
+            }
+          }
+        } else {
+          interruptSpeechAccumMs += dt;
+          if (interruptSpeechFrames === 0) {
+            interruptSpeechStart = now;
+          }
+          interruptSpeechFrames++;
+          interruptLastSpeechLikeTime = now;
+          lastInterruptSpeechLikeSnapshot = {
+            rms,
+            zcr,
+            crest,
+            heuristicChecks,
+            at: now,
+          };
+        }
+      } else if (
+        interruptLastSpeechLikeTime &&
+        now - interruptLastSpeechLikeTime <= gapResetMs
+      ) {
+        // Allow tiny gaps so normal speech doesn't need a perfect uninterrupted stream.
+      } else {
+        interruptSpeechFrames = 0;
+        interruptSpeechStart = 0;
+        interruptSpeechAccumMs = 0;
+        interruptLastSpeechLikeTime = 0;
+        lastInterruptSpeechLikeSnapshot = null;
+        resetWhisperInterruptCandidateState();
+      }
+
+      const speechWindowMs = interruptSpeechStart ? now - interruptSpeechStart : 0;
+      const requiredStrongFrames = whisperVadPath ? getWhisperStrongFramesRequired() : 0;
+      const sustainArmed =
+        !whisperVadPath ||
+        whisperInterruptValidFrames >= WHISPER_MIN_VALID_FRAMES_BEFORE_SUSTAIN;
+      const sustainReadyRaw =
+        sustainArmed &&
+        validInterruptSpeechFrame &&
+        interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
+        interruptSpeechAccumMs >= sustainMs;
+      const strongCountOk =
+        whisperVadPath && whisperInterruptStrongFrames >= requiredStrongFrames;
+      const strongWindowOk = speechWindowMs >= WHISPER_STRONG_MIN_WINDOW_MS;
+      const spikyShortBurst =
+        whisperVadPath &&
+        !validInterruptSpeechFrame &&
+        (rejectedReason === "spiky_short_burst" ||
+          (crest > WHISPER_SPIKY_CREST_REJECT &&
+            speechWindowMs < WHISPER_SPIKY_BURST_WINDOW_MS));
+      const strongReadyRaw =
+        WHISPER_STRONG_INTERRUPT_PATH_ENABLED &&
+        whisperVadPath &&
+        strongCountOk &&
+        strongWindowOk &&
+        validInterruptSpeechFrame &&
+        !spikyShortBurst;
+      const sustainReady = sustainReadyRaw && smoothGateAllowsTrigger;
+      const strongReady = strongReadyRaw && smoothGateAllowsTrigger;
+      const triggerReady = !cooldownActive && (sustainReady || strongReady);
+      const triggerGate = strongReady
+        ? "whisper_strong_frames"
+        : sustainReady
+          ? "whisper_sustain"
+          : strongReadyRaw && !smoothGateAllowsTrigger
+            ? "strong_ready_blocked_by_smooth_gate"
+            : sustainReadyRaw && !smoothGateAllowsTrigger
+              ? "sustain_ready_blocked_by_smooth_gate"
+              : null;
+
+      if (whisperVadPath) {
+        const reasonIfNotTriggering = whisperVadReasonIfNotTriggering({
+          rawSpeechLike,
+          validInterruptSpeechFrame,
+          rejectedReason:
+            !validInterruptSpeechFrame && (rawSpeechLike || rejectedReason)
+              ? rejectedReason
+              : null,
+          validFrameCount: whisperInterruptValidFrames,
+          consecutiveSpeechFrames: interruptSpeechFrames,
+          requiredSpeechFrames: INTERRUPT_MIN_FRAMES,
+          accumMs: interruptSpeechAccumMs,
+          sustainMs,
+          strongFrames: whisperInterruptStrongFrames,
+          requiredStrongFrames,
+          speechWindowMs,
+          requiredStrongWindowMs: WHISPER_STRONG_MIN_WINDOW_MS,
+          cooldownActive,
+          interruptRecording,
+          sustainReady,
+          strongReady,
+          sustainReadyRaw,
+          strongReadyRaw,
+          smoothGateAllowsTrigger,
+          spikyShortBurst,
+          crest,
+          spikyOrRaspyStart: whisperInterruptSpikyOrRaspyStart,
+          smoothFrameCount: whisperInterruptSmoothFrames,
+          smoothFramesRequired,
+          smoothContinuationReady,
+        });
+        logInterruptChain(
+          "vad_trigger_eval",
+          {
+            rms: Number(rms.toFixed(5)),
+            zcr: Number(zcr.toFixed(4)),
+            crest: Number(crest.toFixed(2)),
+            rawSpeechLike,
+            validInterruptSpeechFrame,
+            effectiveSpeechLike,
+            rejectedReason,
+            validFrameCount: whisperInterruptValidFrames,
+            strongFrameCount: whisperInterruptStrongFrames,
+            interruptSpeechAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+            sustainTargetMs: sustainMs,
+            spikyOrRaspyStart: whisperInterruptSpikyOrRaspyStart,
+            smoothFrameCount: whisperInterruptSmoothFrames,
+            smoothFramesRequired,
+            smoothContinuationReady,
+            smoothGateAllowsTrigger,
+            sustainReadyRaw,
+            strongReadyRaw,
+            sustainReady,
+            strongReady,
+            triggerReady,
+            triggerGate,
+            interruptRecording,
+            ttsPlaying: true,
+            asrMode: (function () {
+              try {
+                return getVeraAsrMode();
+              } catch (_) {
+                return null;
+              }
+            })(),
+            consecutiveSpeechFrames: interruptSpeechFrames,
+            requiredSpeechFrames: INTERRUPT_MIN_FRAMES,
+            requiredStrongFrames,
+            speechWindowMs: Number(speechWindowMs.toFixed(1)),
+            requiredStrongWindowMs: WHISPER_STRONG_MIN_WINDOW_MS,
+            spikyShortBurst,
+            sustainArmed,
+            interruptCooldownActive: cooldownActive,
+            inputMuted,
+            listeningMode,
+            sustainReady,
+            strongReady,
+            reasonIfNotTriggering,
+          },
+          {
+            throttleKey:
+              rawSpeechLike || validInterruptSpeechFrame
+                ? "vad_trigger_eval_speech"
+                : "vad_trigger_eval",
+            throttleMs: rawSpeechLike || validInterruptSpeechFrame ? 120 : 400,
+          }
+        );
+        if (
+          (rawSpeechLike || validInterruptSpeechFrame) &&
+          !triggerReady &&
+          reasonIfNotTriggering
+        ) {
+          logInterruptChain(
+            "vad_speechlike_no_interrupt",
+            {
+              reason: reasonIfNotTriggering,
+              rawSpeechLike,
+              validInterruptSpeechFrame,
+              rejectedReason,
+              validFrameCount: whisperInterruptValidFrames,
+              consecutiveSpeechFrames: interruptSpeechFrames,
+              strongFrameCount: whisperInterruptStrongFrames,
+              requiredStrongFrames,
+              speechWindowMs: Number(speechWindowMs.toFixed(1)),
+              requiredStrongWindowMs: WHISPER_STRONG_MIN_WINDOW_MS,
+              interruptSpeechAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+              sustainTargetMs: sustainMs,
+              interruptRecording,
+              ttsPlaying: true,
+              asrMode: (function () {
+                try {
+                  return getVeraAsrMode();
+                } catch (_) {
+                  return null;
+                }
+              })(),
+            },
+            { throttleKey: "vad_speechlike_no_interrupt", throttleMs: 150 }
+          );
+        }
+        logInterruptChain(
+          "vad_during_tts",
+          {
+            rms: Number(rms.toFixed(5)),
+            zcr: Number(zcr.toFixed(4)),
+            crest: Number(crest.toFixed(2)),
+            rawSpeechLike,
+            validInterruptSpeechFrame,
+            effectiveSpeechLike,
+            rejectedReason,
+            strongFrame,
+            ttsPlaying: true,
+            interruptRecording,
+            validFrameCount: whisperInterruptValidFrames,
+            strongFrameCount: whisperInterruptStrongFrames,
+            interruptSpeechAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
+            sustainTargetMs: sustainMs,
+            asrMode: (function () {
+              try {
+                return getVeraAsrMode();
+              } catch (_) {
+                return null;
+              }
+            })(),
+          },
+          { throttleKey: "vad_during_tts_whisper", throttleMs: 250 }
+        );
+      }
+
       logVeraInterruptDebug(
         {
           tag: "interrupt_vad_frame",
@@ -18582,13 +23661,11 @@ function detectInterrupt() {
           rms: Number(rms.toFixed(5)),
           zcr: Number(zcr.toFixed(4)),
           crest: Number(crest.toFixed(2)),
-          speechLike,
+          speechLike: rawSpeechLike,
+          validInterruptSpeechFrame: whisperVadPath ? validInterruptSpeechFrame : undefined,
           vadAccumMs: Number(interruptSpeechAccumMs.toFixed(1)),
-          sustainThresholdMs: getInterruptSustainMs(),
-          vadThresholdPassed:
-            speechLike &&
-            interruptSpeechFrames + 1 >= INTERRUPT_MIN_FRAMES &&
-            interruptSpeechAccumMs + dt >= getInterruptSustainMs(),
+          sustainThresholdMs: sustainMs,
+          vadThresholdPassed: triggerReady,
           interruptRecording,
           vadFastStopArmed,
           activeNdjsonBodyReaderPresent: Boolean(activeNdjsonBodyReader),
@@ -18599,56 +23676,24 @@ function detectInterrupt() {
         { throttleKey: "interrupt_vad_frame", throttleMs: 250 }
       );
 
-      if (speechLike) {
-        interruptSpeechAccumMs += dt;
-        if (interruptSpeechFrames === 0) {
-          interruptSpeechStart = now;
-          /* PART 1 — t0: first speech-like VAD frame. autoStart=true so
-             the trace begins here even if the browser SR never reports
-             interim transcripts (single-ASR / whisper mode). */
-          _recordInterruptTimingPoint("t0_user_speech_audio_detected", {
-            autoStart: true,
-            extra: {
-              rms: Number(rms.toFixed(5)),
-              zcr: Number(zcr.toFixed(4)),
-              crest: Number(crest.toFixed(2)),
-              browserAsrParallelMode,
-              timeSinceTtsStartMs: Number((now - (audioStartedAt || now)).toFixed(1)),
-            },
-          });
-        }
-        interruptSpeechFrames++;
-        interruptLastSpeechLikeTime = now;
-        lastInterruptSpeechLikeSnapshot = {
-          rms,
-          zcr,
-          crest,
-          heuristicChecks,
-          at: now,
-        };
-      } else if (
-        interruptLastSpeechLikeTime &&
-        now - interruptLastSpeechLikeTime <= INTERRUPT_GAP_RESET_MS
-      ) {
-        // Allow tiny gaps so normal speech doesn't need a perfect uninterrupted stream (time here does not add to interruptSpeechAccumMs).
-      } else {
-        interruptSpeechFrames = 0;
-        interruptSpeechStart = 0;
-        interruptSpeechAccumMs = 0;
-        interruptLastSpeechLikeTime = 0;
-        lastInterruptSpeechLikeSnapshot = null;
-      }
-
-      if (
-        speechLike &&
-        interruptSpeechFrames >= INTERRUPT_MIN_FRAMES &&
-        interruptSpeechAccumMs >= getInterruptSustainMs()
-      ) {
-        const gate = "heuristic";
+      if (triggerReady) {
+        const gate = strongReady
+          ? "whisper_strong_frames"
+          : whisperVadPath
+            ? "whisper_sustain"
+            : "heuristic";
+        const triggerKind =
+          gate === "whisper_strong_frames"
+            ? `whisper_strong_frames (${whisperInterruptStrongFrames} strong frames, window ≥ ${WHISPER_STRONG_MIN_WINDOW_MS}ms)`
+            : gate === "whisper_sustain"
+              ? `whisper_sustain (accumulated valid speech ≥ ${sustainMs}ms)`
+              : `heuristic (accumulated speechLike time ≥ ${sustainMs}ms)`;
         const snap = lastInterruptSpeechLikeSnapshot;
+        const triggerSpeechLike = whisperVadPath ? validInterruptSpeechFrame : rawSpeechLike;
         logInterruptTriggerReason({
           gate,
-          triggerFrame: { rms, zcr, crest, speechLike },
+          triggerKind,
+          triggerFrame: { rms, zcr, crest, speechLike: triggerSpeechLike },
           lastSpeechLike: snap,
           speechAccumMs: interruptSpeechAccumMs,
           wallMsSinceFirstSpeech: interruptSpeechStart
@@ -18657,10 +23702,10 @@ function detectInterrupt() {
           rafFrames: interruptSpeechFrames,
         });
         lastInterruptProbe = {
-          atTrigger: { rms, zcr, crest, speechLike },
+          atTrigger: { rms, zcr, crest, speechLike: triggerSpeechLike },
           lastSpeechLike: snap,
           interruptGate: gate,
-          interruptReason: "heuristic",
+          interruptReason: gate,
           heuristicChecks: snap?.heuristicChecks ?? heuristicChecks,
           speechAccumMs: interruptSpeechAccumMs,
           wallMsSinceFirstSpeech: interruptSpeechStart
@@ -18673,11 +23718,11 @@ function detectInterrupt() {
           time_since_tts_start_ms: Number((now - (audioStartedAt || now)).toFixed(1)),
           speech_confirm_delay_ms: Number((interruptSpeechAccumMs || 0).toFixed(1)),
           rms: Number(rms.toFixed(5)),
-          vad_score: Number((speechLike ? 1 : 0).toFixed(2)),
+          vad_score: Number((triggerSpeechLike ? 1 : 0).toFixed(2)),
           preroll_available_ms: interruptPrearmStartedAt
             ? Number(Math.min(MAX_INTERRUPTION_PREROLL_MS, now - interruptPrearmStartedAt).toFixed(1))
             : 0,
-          gate: browserAsrParallelMode ? "heuristic_fast_stop" : "heuristic"
+          gate: browserAsrParallelMode ? "heuristic_fast_stop" : gate
         });
 
         /* DEBUG: VAD threshold passed — log before dispatch so we know
@@ -18720,8 +23765,23 @@ function detectInterrupt() {
           /* PART 1 — t4: gate passed, intent confirmed (single-ASR heuristic). */
           _recordInterruptTimingPoint("t4_interrupt_intent_detected", {
             autoStart: true,
-            extra: { gate: "heuristic_single_asr" },
+            extra: { gate: "heuristic_single_asr", whisperStrong: strongReady },
           });
+          logInterruptChain("vad_calling_interrupt_speech", {
+            consecutiveSpeechFrames: interruptSpeechFrames,
+            strongFrames: whisperInterruptStrongFrames,
+            rms: Number(rms.toFixed(5)),
+            zcr: Number(zcr.toFixed(4)),
+            asrMode: (function () {
+              try {
+                return getVeraAsrMode();
+              } catch (_) {
+                return null;
+              }
+            })(),
+            gate,
+          });
+          whisperInterruptCooldownUntil = now + WHISPER_INTERRUPT_COOLDOWN_MS;
           interruptSpeech();
         }
         interruptSpeechFrames = 0;
@@ -18729,6 +23789,7 @@ function detectInterrupt() {
         interruptSpeechAccumMs = 0;
         interruptLastSpeechLikeTime = 0;
         lastInterruptSpeechLikeSnapshot = null;
+        resetWhisperInterruptCandidateState();
       }
 
       if (
@@ -18748,6 +23809,7 @@ function detectInterrupt() {
     lastInterruptDetectTime = 0;
     interruptLastSpeechLikeTime = 0;
     lastInterruptSpeechLikeSnapshot = null;
+    resetWhisperInterruptCandidateState();
   }
 
   requestAnimationFrame(detectInterrupt);
@@ -18827,8 +23889,41 @@ function computeHeuristicInterruptChecks(rms, zcr, crest) {
   };
 }
 
+function logWhisperInterruptQa(stage, detail, fields = {}) {
+  try {
+    console.warn(detail ? `[${stage}] ${detail}` : `[${stage}]`, {
+      timestamp: new Date().toISOString(),
+      ...fields,
+    });
+  } catch (_) {}
+  try {
+    window.veraUsageOnInterruptQa?.(stage, detail, fields);
+  } catch (_) {}
+}
+
+function getWhisperInterruptConfirmationState() {
+  let asrMode = null;
+  let whisperCaptureNeeded = false;
+  let browserParallel = false;
+  let confirmationEnabled = false;
+  try {
+    asrMode = getVeraAsrMode();
+    whisperCaptureNeeded = whisperInterruptCaptureNeeded();
+    browserParallel =
+      browserAsrPreferred() && !isNarrowViewport() && !!interruptDetectRecognition;
+    confirmationEnabled = whisperCaptureNeeded && !browserParallel;
+  } catch (_) {}
+  return {
+    asrMode,
+    whisperCaptureNeeded,
+    browserParallel,
+    confirmationEnabled,
+  };
+}
+
 function logInterruptTriggerReason({
   gate,
+  triggerKind,
   triggerFrame,
   lastSpeechLike,
   speechAccumMs,
@@ -18840,7 +23935,9 @@ function logInterruptTriggerReason({
     speechAccumMs: Number(speechAccumMs.toFixed(1)),
     wallMsSinceFirstSpeech: Number(wallMsSinceFirstSpeech.toFixed(1)),
     rafFrames,
-    triggerKind: `speech_frame (accumulated speechLike time ≥ ${getInterruptSustainMs()}ms)`,
+    triggerKind:
+      triggerKind ||
+      `speech_frame (accumulated speechLike time ≥ ${getInterruptSustainMs()}ms)`,
     triggerFrame: {
       rms: Number(triggerFrame.rms.toFixed(5)),
       zcr: Number(triggerFrame.zcr.toFixed(5)),
@@ -18860,28 +23957,24 @@ function logInterruptTriggerReason({
   if (h.rmsBelowMax) checks.push("rms_max");
   if (h.zcrInRange) checks.push("zcr");
   if (h.crestOk) checks.push("crest");
-  console.log(
-    "[INTERRUPT] trigger — heuristic (RMS/ZCR/crest + sustain; all must pass on speech frames)",
-    {
-      ...base,
-      lastSpeechLike: lastSpeechLike
-        ? {
-            rms: Number(lastSpeechLike.rms.toFixed(5)),
-            zcr: Number(lastSpeechLike.zcr.toFixed(5)),
-            crest: Number(lastSpeechLike.crest.toFixed(4)),
-            heuristicChecks: checks.join("+"),
-            flags: {
-              rmsAboveMin: h.rmsAboveMin,
-              rmsBelowMax: h.rmsBelowMax,
-              zcrInRange: h.zcrInRange,
-              crestOk: h.crestOk,
-            },
-          }
-        : null,
-    }
-  );
+  const isWhisperCandidateGate =
+    gate === "whisper_sustain" || gate === "whisper_strong_frames";
+  logWhisperInterruptQa("INTERRUPT_CANDIDATE", gate, {
+    ...base,
+    note: isWhisperCandidateGate
+      ? "VAD candidate only — awaiting Whisper transcript confirmation"
+      : "VAD candidate",
+    lastSpeechLike: lastSpeechLike
+      ? {
+          rms: Number(lastSpeechLike.rms.toFixed(5)),
+          zcr: Number(lastSpeechLike.zcr.toFixed(5)),
+          crest: Number(lastSpeechLike.crest.toFixed(4)),
+          heuristicChecks: checks.join("+"),
+        }
+      : null,
+  });
   pushMobileInterruptVadLog(
-    `[INTERRUPT] gate=${gate} accumMs=${speechAccumMs.toFixed(1)} rms=${triggerFrame.rms.toFixed(5)} zcr=${triggerFrame.zcr.toFixed(5)} crest=${triggerFrame.crest.toFixed(4)} checks=${checks.join("+")}`
+    `[INTERRUPT_CANDIDATE] ${gate} accumMs=${speechAccumMs.toFixed(1)} rms=${triggerFrame.rms.toFixed(5)} zcr=${triggerFrame.zcr.toFixed(5)} crest=${triggerFrame.crest.toFixed(4)} checks=${checks.join("+")}`
   );
 }
 
@@ -19016,6 +24109,105 @@ function wireMobileInterruptDebugUi() {
   });
 }
 
+function getInterruptMicTrackStates() {
+  try {
+    return (micStream?.getAudioTracks?.() || []).map((t) => ({
+      readyState: t.readyState,
+      enabled: t.enabled,
+      muted: t.muted,
+    }));
+  } catch (_) {
+    return [];
+  }
+}
+
+function isMicStreamLiveForInterrupt() {
+  if (!micStream) return false;
+  try {
+    const tracks = micStream.getAudioTracks?.() || [];
+    if (!tracks.length) return Boolean(micStream.active);
+    return tracks.some((t) => t.readyState === "live");
+  } catch (_) {
+    return false;
+  }
+}
+
+async function ensureMicStreamForInterrupt() {
+  if (isMicStreamLiveForInterrupt()) {
+    if (!inputMuted) {
+      try {
+        micStream.getAudioTracks?.().forEach((t) => {
+          if (t.readyState === "live") t.enabled = true;
+        });
+      } catch (_) {}
+    }
+    return true;
+  }
+  if (micStream) {
+    try {
+      micStream.getTracks().forEach((t) => t.stop());
+    } catch (_) {}
+    micStream = null;
+  }
+  try {
+    await initMic();
+  } catch (_) {
+    return false;
+  }
+  return isMicStreamLiveForInterrupt();
+}
+
+function whisperInterruptCaptureNeeded() {
+  try {
+    if (isWhisperAsrMode()) return true;
+    if (isHybridAsrMode() && !browserAsrPreferred()) return true;
+  } catch (_) {}
+  return false;
+}
+
+async function armInterruptCaptureAtTtsStart({ ttsId = "" } = {}) {
+  const asrMode = (function () {
+    try {
+      return getVeraAsrMode();
+    } catch (_) {
+      return null;
+    }
+  })();
+
+  logInterruptChain("tts_start", {
+    asrMode,
+    listeningMode,
+    continuousListen: listeningMode === "continuous",
+    ttsPlaying: (function () {
+      try {
+        return isAssistantTtsPlaying();
+      } catch (_) {
+        return null;
+      }
+    })(),
+    micStreamExists: Boolean(micStream),
+    micStreamActive: Boolean(micStream?.active),
+    micStreamLive: isMicStreamLiveForInterrupt(),
+    interruptRecording,
+    hasInterruptRecorder: Boolean(interruptRecorder),
+  });
+
+  if (whisperInterruptCaptureNeeded() && listeningMode === "continuous" && !inputMuted) {
+    const micOk = await ensureMicStreamForInterrupt();
+    if (!micOk) {
+      logInterruptChain("start_capture_skipped", {
+        reason: "mic_stream_unavailable_after_reacquire",
+        asrMode,
+      });
+    }
+  }
+
+  logInterruptChain("start_capture_called", { asrMode });
+  resetWhisperInterruptVadTriggerState();
+  startInterruptCapture();
+  void prearmInterruptCaptureForTts({ ttsId });
+}
+
 function startInterruptCapture() {
   /* DEBUG: log every call to startInterruptCapture and every early exit
      so we can confirm interruptRecording is flipped true for single-ASR
@@ -19039,11 +24231,31 @@ function startInterruptCapture() {
     ...(extra || {})
   });
 
+  const asrMode = (function () {
+    try {
+      return getVeraAsrMode();
+    } catch (_) {
+      return null;
+    }
+  })();
+
+  logInterruptChain("start_capture_state", {
+    asrMode,
+    micStreamExists: Boolean(micStream),
+    micStreamActive: Boolean(micStream?.active),
+    micStreamLive: isMicStreamLiveForInterrupt(),
+    trackStates: getInterruptMicTrackStates(),
+    interruptRecording,
+    hasInterruptRecorder: Boolean(interruptRecorder),
+    recorderState: interruptRecorder?.state ?? null,
+  });
+
   _dbgState("start_called");
 
   if (listeningMode !== "continuous") {
     interruptRecording = false;
     interruptChunks = [];
+    logInterruptChain("start_capture_skipped", { reason: "not_continuous", asrMode });
     _dbgState("start_aborted", { reason: "not_continuous" });
     return;
   }
@@ -19052,11 +24264,16 @@ function startInterruptCapture() {
     interruptChunks = [];
     stopAllBrowserSpeechRecognizers();
     showMutedStatusIfIdle();
+    logInterruptChain("start_capture_skipped", { reason: "input_muted", asrMode });
     _dbgState("start_aborted", { reason: "input_muted" });
     return;
   }
   if (browserAsrPreferred() && !isNarrowViewport()) {
     startInterruptBrowserPartialDetection();
+    logInterruptChain("start_capture_skipped", {
+      reason: "browser_asr_partial_detection_used",
+      asrMode,
+    });
     _dbgState("start_aborted", { reason: "browser_asr_partial_detection_used" });
     return;
   }
@@ -19105,13 +24322,29 @@ function startInterruptCapture() {
     };
     interruptRecorder.onstop = () => {
       _dbgState("recorder_stopped", { path: "prearm_commit" });
+      const chunksCount = interruptChunks.length;
       const blob = new Blob(interruptChunks, { type: "audio/webm" });
+      logInterruptChain("interrupt_audio_finalized", {
+        blobSize: blob.size,
+        chunksCount,
+        durationMsApprox: interruptPrearmStartedAt
+          ? Number(Math.max(0, performance.now() - interruptPrearmStartedAt).toFixed(1))
+          : null,
+        willSendToWhisper: blob.size >= MIN_AUDIO_BYTES && whisperInterruptCaptureNeeded(),
+        path: "prearm_commit",
+      });
       interruptRecorder = null;
       interruptRecording = false;
       interruptChunks = [];
       handleInterruptUtterance(blob);
     };
     interruptRecording = true;
+    logInterruptChain("start_capture_started", {
+      recorderState: interruptRecorder?.state ?? null,
+      timesliceMs: 100,
+      path: "prearm_commit",
+      asrMode,
+    });
     _dbgState("recorder_started", { path: "prearm_commit" });
     logInterruptTranscriptDebug("capture_committed", {
       included_preroll_ms: Math.min(
@@ -19126,7 +24359,7 @@ function startInterruptCapture() {
   }
 
   // ---------- START FRESH RECORDER ----------
-  if (!micStream || !micStream.active) {
+  if (!isMicStreamLiveForInterrupt()) {
     interruptRecording = false;
     interruptChunks = [];
     logInterruptTranscriptDebug("prearm", {
@@ -19135,6 +24368,11 @@ function startInterruptCapture() {
       rolling_buffer_enabled: false,
       preroll_ms: INTERRUPTION_PREROLL_MS,
       reason: "no_active_mic_stream"
+    });
+    logInterruptChain("start_capture_skipped", {
+      reason: "no_active_mic_stream",
+      asrMode,
+      trackStates: getInterruptMicTrackStates(),
     });
     _dbgState("start_aborted", { reason: "no_active_mic_stream" });
     return;
@@ -19151,7 +24389,17 @@ function startInterruptCapture() {
 
   interruptRecorder.onstop = () => {
     _dbgState("recorder_stopped", { path: "fresh_recorder" });
+    const chunksCount = interruptChunks.length;
     const blob = new Blob(interruptChunks, { type: "audio/webm" });
+    logInterruptChain("interrupt_audio_finalized", {
+      blobSize: blob.size,
+      chunksCount,
+      durationMsApprox: interruptPrearmStartedAt
+        ? Number(Math.max(0, performance.now() - interruptPrearmStartedAt).toFixed(1))
+        : null,
+      willSendToWhisper: blob.size >= MIN_AUDIO_BYTES && whisperInterruptCaptureNeeded(),
+      path: "fresh_recorder",
+    });
 
     interruptRecorder = null;
     interruptRecording = false;
@@ -19162,6 +24410,12 @@ function startInterruptCapture() {
 
   interruptRecorder.start(100);
   interruptRecording = true;
+  logInterruptChain("start_capture_started", {
+    recorderState: interruptRecorder?.state ?? null,
+    timesliceMs: 100,
+    path: "fresh_recorder",
+    asrMode,
+  });
   _dbgState("recorder_started", { path: "fresh_recorder" });
 }
 
@@ -19204,7 +24458,7 @@ async function prearmInterruptCaptureForTts({ turnId = "", ttsId = "" } = {}) {
   const micPermissionState = await getMicPermissionStateForInterrupt();
   const attempted =
     micPermissionState === "granted" ||
-    Boolean(micStream?.active) ||
+    isMicStreamLiveForInterrupt() ||
     (browserAsrPreferred() && !isNarrowViewport());
   logInterruptTranscriptDebug("tts_start", {
     turn_id: turnId || null,
@@ -19242,7 +24496,7 @@ async function prearmInterruptCaptureForTts({ turnId = "", ttsId = "" } = {}) {
     return interruptPrearmSuccess;
   }
 
-  if (!micStream || !micStream.active || typeof MediaRecorder === "undefined") {
+  if (!micStream || !isMicStreamLiveForInterrupt() || typeof MediaRecorder === "undefined") {
     logInterruptTranscriptDebug("prearm", {
       stream_active: Boolean(micStream?.active),
       media_recorder_ready: false,
@@ -19316,6 +24570,11 @@ async function prearmInterruptCaptureForTts({ turnId = "", ttsId = "" } = {}) {
 }
 
 async function handleInterruptUtterance(blob) {
+  const confirmationState = getWhisperInterruptConfirmationState();
+  logWhisperInterruptQa("INTERRUPT_CANDIDATE_PIPELINE_ENTER", "handleInterruptUtterance", {
+    blobSize: blob?.size ?? null,
+    ...confirmationState,
+  });
   /* DEBUG: log upload entry so we can see whether the interrupt capture
      made it all the way to the server upload step. If we never see this
      during a failed news interruption, the recorder either never started
@@ -19330,6 +24589,17 @@ async function handleInterruptUtterance(blob) {
     actionType: _veraCurrentTtsDebugContext?.actionType ?? null,
   });
   if (blob.size < MIN_AUDIO_BYTES) {
+    logInterruptChain("interrupt_early_return", {
+      reason: "blob_too_small",
+      asrMode: (function () {
+        try {
+          return getVeraAsrMode();
+        } catch (_) {
+          return null;
+        }
+      })(),
+      blobSize: blob.size,
+    });
     listening = true;
     return;
   }
@@ -19375,6 +24645,207 @@ async function handleInterruptUtterance(blob) {
     blob_size: blob.size
   });
   await runInferInterruptPipeline(formData);
+}
+
+function shouldConfirmWhisperInterruptTranscript() {
+  return getWhisperInterruptConfirmationState().confirmationEnabled;
+}
+
+function handleWhisperInterruptTranscriptMissing(context = {}) {
+  return rejectWhisperInterruptNoTranscript({
+    ...context,
+    via: "explicit_missing_handler",
+  });
+}
+
+function describeInterruptTranscriptFlags(obj) {
+  const o = obj && typeof obj === "object" ? obj : {};
+  return {
+    has_transcript: o.transcript != null && String(o.transcript).trim().length > 0,
+    has_transcript_key: Object.prototype.hasOwnProperty.call(o, "transcript"),
+    has_meta_transcript:
+      o.meta?.transcript != null && String(o.meta.transcript).trim().length > 0,
+    has_data_transcript:
+      o.data?.transcript != null && String(o.data.transcript).trim().length > 0,
+    has_text: o.text != null && String(o.text).trim().length > 0,
+    has_asr_text: o.asr_text != null && String(o.asr_text).trim().length > 0,
+    has_user_text: o.user_text != null && String(o.user_text).trim().length > 0,
+    has_delta: o.delta != null && String(o.delta).trim().length > 0,
+  };
+}
+
+function pickInterruptTranscriptFromObject(obj) {
+  if (!obj || typeof obj !== "object") return "";
+  for (const key of ["transcript", "asr_text", "user_text", "text"]) {
+    if (obj[key] != null) return String(obj[key]).trim();
+  }
+  if (obj.meta?.transcript != null) return String(obj.meta.transcript).trim();
+  if (obj.data?.transcript != null) return String(obj.data.transcript).trim();
+  return "";
+}
+
+function shouldAttemptInterruptTranscriptConfirmationFromNdjsonLine(obj) {
+  const eventType = String(obj?.type || obj?.event_type || "");
+  if (eventType === "asr") return true;
+  if (eventType === "meta") {
+    return (
+      Object.prototype.hasOwnProperty.call(obj, "transcript") ||
+      Object.prototype.hasOwnProperty.call(obj, "user_text") ||
+      Object.prototype.hasOwnProperty.call(obj, "asr_text") ||
+      Object.prototype.hasOwnProperty.call(obj, "text") ||
+      Boolean(pickInterruptTranscriptFromObject(obj))
+    );
+  }
+  return Boolean(pickInterruptTranscriptFromObject(obj));
+}
+
+function rejectWhisperInterruptNoTranscript(context = {}) {
+  logWhisperInterruptQa("WHISPER_INTERRUPT_NO_TRANSCRIPT_BEFORE_DONE", null, context);
+  if (!shouldConfirmWhisperInterruptTranscript()) return true;
+  logWhisperInterruptQa("INTERRUPT_REJECTED", "missing_transcript", context);
+  ignoreWhisperInterruptCandidate("missing_transcript", {
+    transcriptLen: 0,
+    wordCount: 0,
+  });
+  return false;
+}
+
+function processWhisperInterruptNdjsonLine(obj, state, confirmationEnabled) {
+  const eventType = String(obj?.type || obj?.event_type || "unknown");
+  state.ndjsonEventCount += 1;
+  if (eventType === "meta") state.sawMeta = true;
+  if (eventType === "done") state.sawDone = true;
+  if (eventType === "asr") state.sawAsr = true;
+
+  logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_LINE", null, {
+    event_type: eventType,
+    top_level_keys: Object.keys(obj || {}).slice(0, 24),
+    ...describeInterruptTranscriptFlags(obj),
+    responseMode: "ndjson",
+  });
+
+  if (!confirmationEnabled) return;
+  if (state.whisperInterruptTranscriptRejected || state.whisperInterruptTranscriptConfirmed) {
+    return;
+  }
+  if (!shouldAttemptInterruptTranscriptConfirmationFromNdjsonLine(obj)) return;
+
+  state.sawTranscript = true;
+  state.whisperInterruptTranscriptSeen = true;
+  const transcriptText = pickInterruptTranscriptFromObject(obj);
+  if (!handleWhisperInterruptTranscriptConfirmation(transcriptText)) {
+    state.whisperInterruptTranscriptRejected = true;
+    activePipelineAbort?.abort();
+    return;
+  }
+  state.whisperInterruptTranscriptConfirmed = true;
+}
+
+function ignoreWhisperInterruptCandidate(rejectReason, { transcriptLen = 0, wordCount = 0 } = {}) {
+  logInterruptChain("whisper_interrupt_ignored", {
+    rejectReason,
+    transcript_len: transcriptLen,
+    word_count: wordCount,
+  });
+  _veraTtsCancelSource = "whisper_interrupt_ignored";
+  activePipelineAbort?.abort();
+  activePipelineAbort = null;
+  cancelMainTtsPlayback();
+  resetAudioHandlers();
+  const a = getAudioEl();
+  if (a) {
+    a.pause();
+    a.currentTime = 0;
+  }
+  hideSidePanel();
+  cancelPendingNewsStatusBubble("whisper_interrupt_ignored");
+  clearInterruptDetectionBubble();
+  interruptBargeInLatched = false;
+  processing = false;
+  requestInFlight = false;
+  voiceUxTurn = null;
+  _logVoiceStateTransition(
+    typeof waveState !== "undefined" ? waveState : null,
+    listeningMode === "ptt" ? "idle" : "listening",
+    "whisper_interrupt_ignored",
+    "ignoreWhisperInterruptCandidate"
+  );
+  if (listeningMode === "ptt") {
+    listening = false;
+    pttRecording = false;
+    waveState = "idle";
+    setStatus("Ready", "idle");
+    updateMuteInputButton();
+  } else {
+    waveState = "listening";
+    listening = true;
+    if (inputMuted) {
+      showMutedStatusIfIdle();
+    } else {
+      setStatus("Listening…", "listening");
+      window.setTimeout(() => {
+        if (!listening || processing || inputMuted) return;
+        startListening();
+      }, 80);
+    }
+  }
+  logWhisperInterruptQa("INTERRUPT_REJECTED_CLEANUP_DONE", null, {
+    rejectReason,
+    transcript_len: transcriptLen,
+    word_count: wordCount,
+  });
+}
+
+/**
+ * Whisper stage-2 gate. Returns true when interrupt processing should continue.
+ */
+function handleWhisperInterruptTranscriptConfirmation(transcript) {
+  const confirmation = evaluateWhisperInterruptTranscriptConfirmation(transcript);
+  if (!shouldConfirmWhisperInterruptTranscript()) {
+    logWhisperInterruptQa("WHISPER_INTERRUPT_TRANSCRIPT_RECEIVED", null, {
+      transcript_len: confirmation.transcriptLen,
+      word_count: confirmation.wordCount,
+      accepted: true,
+      rejectReason: null,
+      confirmationSkipped: true,
+      skipReason: "confirmation_not_enabled_for_asr_mode",
+      ...getWhisperInterruptConfirmationState(),
+    });
+    return true;
+  }
+  logWhisperInterruptQa("WHISPER_INTERRUPT_TRANSCRIPT_RECEIVED", null, {
+    transcript_len: confirmation.transcriptLen,
+    word_count: confirmation.wordCount,
+    accepted: confirmation.accepted,
+    rejectReason: confirmation.rejectReason,
+  });
+  logInterruptChain("whisper_interrupt_transcript_received", {
+    transcript_len: confirmation.transcriptLen,
+    word_count: confirmation.wordCount,
+    accepted: confirmation.accepted,
+    rejectReason: confirmation.rejectReason,
+  });
+  if (!confirmation.accepted) {
+    logWhisperInterruptQa("INTERRUPT_REJECTED", "whisper_transcript_rejected", {
+      rejectReason: confirmation.rejectReason,
+      transcript_len: confirmation.transcriptLen,
+      word_count: confirmation.wordCount,
+    });
+    ignoreWhisperInterruptCandidate(confirmation.rejectReason, {
+      transcriptLen: confirmation.transcriptLen,
+      wordCount: confirmation.wordCount,
+    });
+    return false;
+  }
+  logWhisperInterruptQa("INTERRUPT_CONFIRMED", "whisper_transcript_accepted", {
+    transcript_len: confirmation.transcriptLen,
+    word_count: confirmation.wordCount,
+  });
+  logInterruptChain("whisper_interrupt_accepted", {
+    transcript_len: confirmation.transcriptLen,
+    word_count: confirmation.wordCount,
+  });
+  return true;
 }
 
 async function playInterruptAnswer(data) {
@@ -19643,7 +25114,7 @@ function resumeAfterAssistantReplyPlayback() {
   processing = false;
   requestInFlight = false;
   stopInterruptPrearmRecorder("");
-  if (workModeTypedTurnQueue.length > 0) scheduleWorkModeTypedQueueDrain();
+  if (workModeTypedTurnQueue.length > 0) scheduleWorkModeKeyboardQueueDrainIfReady();
   clearInterruptDetectionBubble();
   if (listeningMode === "ptt") {
     listening = false;
@@ -20303,7 +25774,13 @@ async function tryPeekApplyWorkModeTimerFromNdjsonClone(res) {
 /* runNdjsonTtsPlayback → moved to voice/ttsQueue.js (Stage 5, 2026-05-27). */
 
 async function initMic() {
-  if (micStream) return;
+  if (micStream && isMicStreamLiveForInterrupt()) return;
+  if (micStream) {
+    try {
+      micStream.getTracks().forEach((t) => t.stop());
+    } catch (_) {}
+    micStream = null;
+  }
 
   const audioConstraints = isNarrowViewport()
     ? {
@@ -20933,6 +26410,10 @@ async function runInferAfterWorkModeReasoningPrep(formData, prep, inferOpts = {}
   const p = prep || {};
   await p.inferGate;
   if (p.reasoningUploadState?.failed) return "reasoning-upload-failed";
+  if (p?.voiceTwoStage?.reasoningRouted) {
+    await runWorkModeGroundedVoiceFinalAfterReasoningPrep(formData, prep, inferOpts);
+    return;
+  }
   // Snapshot was taken before reasoning prep; after the summary gate the panel often has much more
   // markdown. Refresh so /infer grounding matches what the user sees (and Voice UI excerpts stay aligned).
   try {
@@ -20998,6 +26479,13 @@ function maybePlayWorkModeReasoningStage1FromPrep(prep, abortSignal, userTranscr
 
 async function finalizeMainBrowserTranscript(text) {
   const trimmed = (text || "").trim();
+  try {
+    console.info("[turn_route_start]", {
+      raw_text: String(text || "").slice(0, 240),
+      normalized: trimmed.slice(0, 240),
+      path: "main-browser-asr",
+    });
+  } catch (_) {}
   if (inputMuted) {
     stopAllBrowserSpeechRecognizers();
     processing = false;
@@ -21032,7 +26520,16 @@ async function finalizeMainBrowserTranscript(text) {
   ) {
     return;
   }
-  if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
+  if (await maybeHandleChecklistUndoShortcut(trimmed, { isVoice: true, source: "main-browser-asr" })) {
+    return;
+  }
+  if (await maybeHandleWorkChecklistPlanShortcut(trimmed, { isVoice: true, source: "main-browser-asr" })) {
+    return;
+  }
+  if (maybeHandleWorkModePanelOpenShortcut(trimmed, { reason: "main-browser-asr", isVoice: true })) {
+    return;
+  }
+  if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "main-browser-asr", isVoice: true })) {
     return;
   }
   /* PART 3: close-reasoning-panel client shortcut. Runs BEFORE /infer so
@@ -21162,7 +26659,9 @@ async function finalizeMainBrowserTranscript(text) {
   formData.append("use_browser_asr", "1");
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
-  formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
+  const voiceContextSnap = buildClientContextSnapshot();
+  formData.append("context_snapshot", JSON.stringify(voiceContextSnap));
+  logVoiceContextSnapshot(voiceContextSnap, trimmed);
   // 2026-05-29 — multi-action planner: voice/mic path stays SHADOW only.
   formData.append("input_source", "continuous");
   formData.append("typed", "0");
@@ -21230,6 +26729,11 @@ async function finalizeMainBrowserTranscript(text) {
       bumpWorkModeVoiceInferTurnSeq();
       const ttsTurn = workModeTtsMetaFromTurnContext(turnContext);
       const prep = attachWorkModeTtsTurnAfterPrep(await prepP, ttsTurn, trimmed);
+      logVoiceRouteDecision(trimmed, {
+        reasoning_routed: Boolean(prep?.voiceTwoStage?.reasoningRouted),
+        schedule_followup: isWorkModePlanOrScheduleFollowUp(trimmed),
+        route_reason: prep?.voiceTwoStage?.reasoningRouted ? "reasoning_panel" : "voice_ui",
+      });
       if (prep?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prep.inferThreadAnchor);
       if (prep?.voiceTwoStage?.reasoningRouted) {
         const stage1P = maybePlayWorkModeReasoningStage1FromPrep(prep, pipelineSig, trimmed);
@@ -21755,7 +27259,14 @@ async function maybeRunInterruptionClientShortcuts(routedText, originalText) {
       });
       return true;
     }
-    if (await maybeHandleWorkChecklistPlanShortcut(routedText)) {
+    if (await maybeHandleChecklistUndoShortcut(routedText, { isVoice: true, source: "voice_interruption" })) {
+      logInterruptTranscriptDebug("routed_to_checklist_undo_shortcut", {
+        original_transcript: String(originalText || "").slice(0, 120),
+        normalized_command_text: routedText.slice(0, 120)
+      });
+      return true;
+    }
+    if (await maybeHandleWorkChecklistPlanShortcut(routedText, { isVoice: true, source: "voice_interruption" })) {
       logInterruptTranscriptDebug("routed_to_normal_user_turn", {
         original_transcript: String(originalText || "").slice(0, 120),
         normalized_command_text: routedText.slice(0, 120),
@@ -21780,6 +27291,24 @@ async function maybeRunInterruptionClientShortcuts(routedText, originalText) {
         original_transcript: String(originalText || "").slice(0, 120),
         normalized_command_text: routedText.slice(0, 120),
         shortcut: "move_voice_task_to_reasoning",
+        checklist_sync_intent_detected: false,
+        sync_action_started: false,
+        sync_source: "voice_interruption",
+        active_panel_id_at_interruption: baseCtx.active_panel_id,
+        latest_reasoning_output_available: hasReasoningOutput,
+        checklist_state_available: Boolean(checklistState.exists),
+        handled: true
+      });
+      return true;
+    }
+    if (maybeHandleWorkModePanelOpenShortcut(routedText, { reason: "voice_interruption", isVoice: true })) {
+      return;
+    }
+    if (maybeHandleWorkModePanelNavigationShortcut(routedText, { reason: "voice_interruption", isVoice: true })) {
+      logInterruptTranscriptDebug("routed_to_normal_user_turn", {
+        original_transcript: String(originalText || "").slice(0, 120),
+        normalized_command_text: routedText.slice(0, 120),
+        shortcut: "panel_navigation",
         checklist_sync_intent_detected: false,
         sync_action_started: false,
         sync_source: "voice_interruption",
@@ -22160,8 +27689,7 @@ async function processInferMainJsonPayload(data, inferTtfbMs, opts = {}) {
           resetVadFastStopState("voice_tts_start");
           const interruptTtsId = interruptTranscriptNewTtsId();
           interruptPrearmTtsId = interruptTtsId;
-          if (micStream?.active) startInterruptCapture();
-          void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
+          void armInterruptCaptureAtTtsStart({ ttsId: interruptTtsId });
           if (!(inferPrep?.stage2VoiceBubble instanceof HTMLElement && inferPrep.stage2VoiceBubble.isConnected)) {
             applyAssistantReplyAndPanels(playData);
           }
@@ -22210,6 +27738,12 @@ function _readInferFormDataTranscript(formData) {
 }
 
 async function runInferMainPipeline(formData, opts = {}) {
+  const inferUserTextEarly = inferTranscriptFromFormData(formData);
+  logVoiceReplyStart(inferUserTextEarly, {
+    path: opts.path || "main",
+    tts_stage: opts.ttsStage ?? 2,
+    schedule_followup: isWorkModePlanOrScheduleFollowUp(inferUserTextEarly),
+  });
   // Earliest possible point inside the pipeline — fires BEFORE the network
   // round-trip when the caller pushed a transcript into FormData (browser
   // ASR + typed work-mode + interrupt voice). For server-ASR audio uploads
@@ -22267,6 +27801,15 @@ async function runInferMainPipeline(formData, opts = {}) {
     });
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (main — TTFB)");
+
+    if (!res.ok) {
+      processing = false;
+      requestInFlight = false;
+      if (!failPendingNewsStatusBubble("infer_main_http")) {
+        void veraSurfaceLlmFetchFailure({ feature: "infer_main", response: res });
+      }
+      return;
+    }
 
     const responseIsNdjson = res.ok && isNdjsonTtsResponse(res);
     const ttsSuppressedDueToMute =
@@ -22340,7 +27883,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                 onReplyProgress: (replySoFar) => {
                   applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
                 },
-                onDone: (done) => {
+                onDone: async (done) => {
                   logInferLatency(done, "main", inferTtfbMs);
                   let effectiveReply = String(done?.reply || "").trim();
                   if (isWmStage2Voice) {
@@ -22403,12 +27946,24 @@ async function runInferMainPipeline(formData, opts = {}) {
                     streamReplyState.pendingReplyBack ||
                     stage2ReplyBack ||
                     buildWorkModeVoiceReplyBack({ prep: inferPrep, userText: inferUserText });
+                  const donePack = { ...done, reply: effectiveReply };
+                  await applyNdjsonActionPayloadEvent(donePack, "done");
+                  if (donePack.__checklistMutationFailed) {
+                    effectiveReply = CHECKLIST_VOICE_MUTATION_FAILED_REPLY;
+                  }
                   finalizeNdjsonStreamingReply(
                     ndjsonMeta,
                     { ...done, reply: effectiveReply },
                     streamReplyState
                   );
-                  applyNdjsonActionPayloadEvent({ ...done, reply: effectiveReply }, "done");
+                  if (!effectiveReply) {
+                    logVoiceReplyDropped(inferUserText, "empty_ndjson_reply", { path: "main-ndjson" });
+                  } else {
+                    logVoiceReplyDone(inferUserText, {
+                      path: "main-ndjson",
+                      reply_chars: effectiveReply.length,
+                    });
+                  }
                   if (isWmStage2Voice && effectiveReply) {
                     const bubble = ensureStage2VoiceBubble(
                       inferPrep,
@@ -22426,8 +27981,7 @@ async function runInferMainPipeline(formData, opts = {}) {
                   resetVadFastStopState("voice_tts_start_ndjson");
                   const interruptTtsId = interruptTranscriptNewTtsId();
                   interruptPrearmTtsId = interruptTtsId;
-                  if (micStream?.active) startInterruptCapture();
-                  void prearmInterruptCaptureForTts({ ttsId: interruptTtsId });
+                  void armInterruptCaptureAtTtsStart({ ttsId: interruptTtsId });
                   applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
                   setStatus(
                     listeningMode === "ptt" ? "Speaking" : "Speaking… (Interruptible)",
@@ -22582,7 +28136,23 @@ async function runInferInterruptPipeline(formData) {
   // Same early-arm policy as runInferMainPipeline so the placeholder appears
   // during the interrupt search/thinking window.
   armPendingNewsStatusBubble(_readInferFormDataTranscript(formData));
+  const confirmationState = getWhisperInterruptConfirmationState();
   try {
+    const audioPart = formData?.get?.("audio");
+    const audioBlobSize =
+      audioPart && typeof audioPart.size === "number" ? audioPart.size : null;
+    logWhisperInterruptQa("INTERRUPT_CANDIDATE_SUBMITTED_TO_WHISPER", null, {
+      blobSize: audioBlobSize,
+      endpoint: `${API_URL}/infer`,
+      mode: formData?.get?.("mode") || null,
+      ...confirmationState,
+    });
+    logInterruptChain("whisper_interrupt_submit", {
+      blobSize: audioBlobSize,
+      endpoint: `${API_URL}/infer`,
+      sessionIdPresent: Boolean(formData?.get?.("session_id")),
+      mode: formData?.get?.("mode") || null,
+    });
     logVoicePipe("POST /infer starting (interrupt, upload in flight)");
     const inferFetchStart = performance.now();
     const res = await authFetch(`${API_URL}/infer`, {
@@ -22592,9 +28162,30 @@ async function runInferInterruptPipeline(formData) {
     });
     const inferTtfbMs = performance.now() - inferFetchStart;
     logVoicePipe("POST /infer response headers (interrupt)");
+    const responsePath =
+      shouldStreamTts() && res.ok && isNdjsonTtsResponse(res) ? "ndjson" : "json";
+    logWhisperInterruptQa("WHISPER_INTERRUPT_RESPONSE_HEADERS", null, {
+      ok: res.ok,
+      status: res.status,
+      contentType: res.headers.get("content-type") || null,
+      responsePath,
+      responseMode: responsePath,
+      ttfbMs: Number(inferTtfbMs.toFixed(1)),
+      ...confirmationState,
+    });
 
     if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
+      const interruptNdjsonState = {
+        ndjsonEventCount: 0,
+        sawMeta: false,
+        sawDone: false,
+        sawAsr: false,
+        sawTranscript: false,
+        whisperInterruptTranscriptSeen: false,
+        whisperInterruptTranscriptConfirmed: false,
+        whisperInterruptTranscriptRejected: false,
+      };
 
       const runStream = async () => {
         let ndjsonMeta = null;
@@ -22602,7 +28193,21 @@ async function runInferInterruptPipeline(formData) {
         resetAudioHandlers();
         try {
           await runNdjsonTtsPlayback(res, {
+            onNdjsonLine: (obj) => {
+              processWhisperInterruptNdjsonLine(
+                obj,
+                interruptNdjsonState,
+                confirmationState.confirmationEnabled
+              );
+            },
             onMeta: (meta) => {
+              logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
+                event_type: "meta_callback",
+                hasTranscript: Boolean(pickInterruptTranscriptFromObject(meta)),
+                ...describeInterruptTranscriptFlags(meta),
+                responsePath: "ndjson",
+              });
+              if (interruptNdjsonState.whisperInterruptTranscriptRejected) return;
               ndjsonMeta = { ...ndjsonMeta, ...meta };
               if (
                 !streamReplyState.pendingReplyBack &&
@@ -22623,26 +28228,27 @@ async function runInferInterruptPipeline(formData) {
               if (meta.work_mode_timer) {
                 applyWorkModeTimerPayload(meta.work_mode_timer);
               }
-              if (meta.transcript) {
-                applyNdjsonUserTranscriptBubble(meta.transcript, "interrupt-ndjson");
-                armPendingNewsStatusBubble(meta.transcript);
-                const tr = String(meta.transcript || "").trim();
+              const transcriptText = pickInterruptTranscriptFromObject(meta);
+              if (
+                transcriptText &&
+                (!confirmationState.confirmationEnabled ||
+                  interruptNdjsonState.whisperInterruptTranscriptConfirmed)
+              ) {
+                applyNdjsonUserTranscriptBubble(transcriptText, "interrupt-ndjson");
+                armPendingNewsStatusBubble(transcriptText);
                 logInterruptTranscriptDebug("asr_result", {
-                  transcript: tr.slice(0, 120),
-                  transcript_char_count: tr.length,
-                  possibly_cutoff: /^(explain|second|part|music)\b/i.test(tr)
+                  transcript: transcriptText.slice(0, 120),
+                  transcript_char_count: transcriptText.length,
+                  possibly_cutoff: /^(explain|second|part|music)\b/i.test(transcriptText)
                 });
-                /* Stage 1 stabilization: pure-whisper interrupt path. Skip
-                   when the client already sent a transcript (browser-ASR
-                   interrupt path logs at its own fetch site). */
                 try {
                   const _clientTranscript = inferTranscriptFromFormData(formData);
                   if (!_clientTranscript) {
                     logTurnTextIntegrity({
                       source: "whisper",
                       raw_asr_text: null,
-                      normalized_text: meta.transcript,
-                      router_input_text: meta.transcript,
+                      normalized_text: transcriptText,
+                      router_input_text: transcriptText,
                       backend_payload_text: "",
                       request_id: null,
                       path: "interrupt-ndjson-whisper",
@@ -22652,14 +28258,62 @@ async function runInferInterruptPipeline(formData) {
               }
             },
             onReplyProgress: (replySoFar) => {
+              logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
+                event_type: "reply_progress",
+                hasTranscript: false,
+                replyChars: String(replySoFar || "").length,
+                responsePath: "ndjson",
+              });
               applyNdjsonStreamingReplySoFar(replySoFar, streamReplyState);
             },
             onDone: (done) => {
+              interruptNdjsonState.sawDone = true;
+              logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
+                event_type: "done",
+                hasTranscript: interruptNdjsonState.sawTranscript,
+                responsePath: "ndjson",
+              });
+              if (
+                confirmationState.confirmationEnabled &&
+                !interruptNdjsonState.whisperInterruptTranscriptSeen &&
+                !interruptNdjsonState.whisperInterruptTranscriptRejected
+              ) {
+                interruptNdjsonState.whisperInterruptTranscriptRejected =
+                  !rejectWhisperInterruptNoTranscript({
+                    responseMode: "ndjson",
+                    responsePath: "ndjson",
+                    status: res.status,
+                    sawMeta: interruptNdjsonState.sawMeta,
+                    sawDone: interruptNdjsonState.sawDone,
+                    sawAsr: interruptNdjsonState.sawAsr,
+                    sawTranscript: interruptNdjsonState.sawTranscript,
+                    ndjsonEventCount: interruptNdjsonState.ndjsonEventCount,
+                  });
+                if (interruptNdjsonState.whisperInterruptTranscriptRejected) {
+                  activePipelineAbort?.abort();
+                  return;
+                }
+              }
+              if (interruptNdjsonState.whisperInterruptTranscriptRejected) {
+                activePipelineAbort?.abort();
+                return;
+              }
               logInferLatency(done, "interrupt", inferTtfbMs);
-              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
-              applyNdjsonActionPayloadEvent(done, "done");
+              void applyNdjsonDonePayloadsBeforeFinalize(ndjsonMeta, done, streamReplyState);
             },
             onPlayStart: () => {
+              logWhisperInterruptQa("WHISPER_INTERRUPT_NDJSON_EVENT", null, {
+                event_type: "play_start",
+                hasTranscript: interruptNdjsonState.sawTranscript,
+                responsePath: "ndjson",
+              });
+              if (
+                interruptNdjsonState.whisperInterruptTranscriptRejected ||
+                (confirmationState.confirmationEnabled &&
+                  !interruptNdjsonState.whisperInterruptTranscriptConfirmed)
+              ) {
+                return;
+              }
               logVoiceFirstAudio("main-reply");
               logVoiceMainReplyAudio();
               applyNdjsonActionPayloadEvent(ndjsonMeta, "meta");
@@ -22674,15 +28328,50 @@ async function runInferInterruptPipeline(formData) {
             }
           });
         } catch (e) {
-          if (e?.name !== "AbortError") console.warn(e);
+          if (
+            e?.name !== "AbortError" &&
+            !interruptNdjsonState.whisperInterruptTranscriptRejected
+          ) {
+            console.warn(e);
+          }
         }
       };
 
       await runStream();
+      if (interruptNdjsonState.whisperInterruptTranscriptRejected) return;
+      if (
+        confirmationState.confirmationEnabled &&
+        !interruptNdjsonState.whisperInterruptTranscriptConfirmed
+      ) {
+        if (
+          !rejectWhisperInterruptNoTranscript({
+            responseMode: "ndjson",
+            responsePath: "ndjson",
+            status: res.status,
+            sawMeta: interruptNdjsonState.sawMeta,
+            sawDone: interruptNdjsonState.sawDone,
+            sawAsr: interruptNdjsonState.sawAsr,
+            sawTranscript: interruptNdjsonState.sawTranscript,
+            ndjsonEventCount: interruptNdjsonState.ndjsonEventCount,
+            via: "post_stream_guard",
+          })
+        ) {
+          return;
+        }
+      }
       return;
     }
 
     const data = await res.json();
+    logWhisperInterruptQa("WHISPER_INTERRUPT_JSON_RESPONSE", null, {
+      ok: res.ok,
+      status: res.status,
+      contentType: res.headers.get("content-type") || null,
+      responseMode: "json",
+      top_level_keys: Object.keys(data || {}).slice(0, 24),
+      ...describeInterruptTranscriptFlags(data || {}),
+      ...confirmationState,
+    });
     logInferLatency(data, "interrupt", inferTtfbMs);
 
     requestInFlight = false;
@@ -22713,9 +28402,40 @@ async function runInferInterruptPipeline(formData) {
     }
     applyClientUiAction(data.client_action);
 
-    commitServerUserTranscriptBubble(data.transcript, "interrupt-json");
-    {
-      const tr = String(data.transcript || "").trim();
+    const jsonTranscript = pickInterruptTranscriptFromObject(data);
+    if (confirmationState.confirmationEnabled) {
+      const hasTranscriptSignal =
+        shouldAttemptInterruptTranscriptConfirmationFromNdjsonLine(data) ||
+        Object.prototype.hasOwnProperty.call(data, "transcript") ||
+        Object.prototype.hasOwnProperty.call(data, "asr_text") ||
+        Object.prototype.hasOwnProperty.call(data, "user_text") ||
+        Object.prototype.hasOwnProperty.call(data, "text");
+      if (!hasTranscriptSignal) {
+        if (
+          !rejectWhisperInterruptNoTranscript({
+            responseMode: "json",
+            responsePath: "json",
+            status: res.status,
+            sawMeta: false,
+            sawDone: false,
+            sawAsr: false,
+            sawTranscript: false,
+            ndjsonEventCount: 0,
+            via: "json_body_no_transcript",
+          })
+        ) {
+          return;
+        }
+      } else if (!handleWhisperInterruptTranscriptConfirmation(jsonTranscript)) {
+        return;
+      }
+    } else if (jsonTranscript && !handleWhisperInterruptTranscriptConfirmation(jsonTranscript)) {
+      return;
+    }
+
+    commitServerUserTranscriptBubble(jsonTranscript || data.transcript, "interrupt-json");
+    if (jsonTranscript) {
+      const tr = jsonTranscript;
       logInterruptTranscriptDebug("asr_result", {
         transcript: tr.slice(0, 120),
         transcript_char_count: tr.length,
@@ -22914,12 +28634,24 @@ async function handleUtterance() {
         updateMuteInputButton();
         return;
       }
-      if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
+      if (await maybeHandleChecklistUndoShortcut(trimmed, { isVoice: true, source: "server-asr-preflight" })) {
+        requestInFlight = false;
+        processing = false;
+        voiceUxTurn = null;
+        return;
+      }
+      if (await maybeHandleWorkChecklistPlanShortcut(trimmed, { isVoice: true, source: "server-asr-preflight" })) {
         requestInFlight = false;
         processing = false;
         voiceUxTurn = null;
         setStatus("Ready", "idle");
         updateMuteInputButton();
+        return;
+      }
+      if (maybeHandleWorkModePanelOpenShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
+        return;
+      }
+      if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
         return;
       }
       if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: "server-asr-preflight", isVoice: true })) {
@@ -23143,6 +28875,13 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
 
   const modeBeforeSubmit = appModePrefix();
   const workModeBeforeSubmit = isVeraWorkModeOn();
+  try {
+    console.info("[turn_route_start]", {
+      raw_text: rawText.slice(0, 240),
+      normalized: trimmed.slice(0, 240),
+      path: path || "work-typed",
+    });
+  } catch (_) {}
   const hardWorkLimit = VERA_SAFETY_LIMITS.charLimits.workReasoning;
   if (!fromQueue && !fromPanelQueue && rawText.length > hardWorkLimit) {
     logInputLimitDebug({
@@ -23180,10 +28919,49 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
      is not a reasoning request; if we let it fall through, the user can see
      the generic "Reasoning is temporarily unavailable" bubble. */
   if (!fromQueue && !fromPanelQueue &&
+      maybeHandleWorkModePanelOpenShortcut(trimmed, {
+        reason: path || "work-typed-preflight",
+        isVoice: Boolean(opts?.isVoice),
+      })) {
+    return;
+  }
+  if (!fromQueue && !fromPanelQueue &&
+      maybeHandleWorkModePanelNavigationShortcut(trimmed, {
+        reason: path || "work-typed-preflight",
+        isVoice: Boolean(opts?.isVoice),
+      })) {
+    return;
+  }
+  if (!fromQueue && !fromPanelQueue &&
       maybeHandleCloseReasoningPanelShortcut(trimmed, {
         reason: path || "work-typed-preflight",
         isVoice: Boolean(opts?.isVoice)
       })) {
+    return;
+  }
+
+  if (
+    await maybeHandleWorkChecklistSyncShortcut(trimmed, {
+      source: path || "work-typed-preflight",
+      isVoice: Boolean(opts?.isVoice),
+    })
+  ) {
+    return;
+  }
+  if (
+    await maybeHandleChecklistUndoShortcut(trimmed, {
+      source: path || "work-typed-preflight",
+      isVoice: Boolean(opts?.isVoice)
+    })
+  ) {
+    return true;
+  }
+  if (
+    await maybeHandleWorkChecklistPlanShortcut(trimmed, {
+      source: path || "work-typed-preflight",
+      isVoice: Boolean(opts?.isVoice),
+    })
+  ) {
     return;
   }
 
@@ -23321,15 +29099,10 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     });
   }
 
-  if (
-    await maybeHandleWorkChecklistSyncShortcut(trimmed, {
-      source: path || "work-typed",
-      isVoice: false
-    })
-  ) {
+  if (maybeHandleWorkModePanelOpenShortcut(trimmed, { reason: path || "work-typed", isVoice: false })) {
     return;
   }
-  if (await maybeHandleWorkChecklistPlanShortcut(trimmed)) {
+  if (maybeHandleWorkModePanelNavigationShortcut(trimmed, { reason: path || "work-typed", isVoice: false })) {
     return;
   }
   if (maybeHandleCloseReasoningPanelShortcut(trimmed, { reason: path || "work-typed", isVoice: false })) {
@@ -23438,8 +29211,21 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     return;
   }
 
-  if (isWorkModeTypedTurnBlocked()) {
+  if (shouldQueueKeyboardSubmit(fromQueue)) {
     if (!fromQueue) {
+      try {
+        console.info("[keyboard_queue_candidate]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          busy_reason: getKeyboardQueueBusyReason(fromQueue),
+          keyboard_submit_in_flight: keyboardSubmitInFlight,
+          normal_infer_in_flight: normalInferInFlightForKeyboardGate,
+        });
+        console.info("[keyboard_queue_busy_reason]", {
+          reason: getKeyboardQueueBusyReason(fromQueue),
+          keyboard_submit_in_flight: keyboardSubmitInFlight,
+          normal_infer_in_flight: normalInferInFlightForKeyboardGate,
+        });
+      } catch (_) {}
       const queueSnap = getWorkModePendingAttachmentFiles();
       logComposerAttachmentsBeforeSubmit(queueSnap, null);
       const queued = enqueueWorkModeTypedTurn(trimmed, {
@@ -23448,15 +29234,16 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
         reasoningAttachments: queueSnap
       });
       if (queued) {
-        clearComposerAttachmentsAfterSubmit(null, "typed_turn_queue_enqueue");
+        clearComposerAttachmentsAfterSubmit(null, "keyboard_queue_enqueue");
+        setStatus(`Queued (${keyboardQueue.length}) — will send when ready`, "idle");
       } else {
-        setStatus(`Work queue full (max ${WORK_MODE_TYPED_TURN_QUEUE_MAX})`, "idle");
-        preserveComposerAttachments("typed_turn_queue_full", null);
+        setStatus(`Keyboard queue full (max ${WORK_MODE_TYPED_TURN_QUEUE_MAX})`, "idle");
+        preserveComposerAttachments("keyboard_queue_full", null);
         try {
           console.info("[reasoning_queue_omitted]", {
             turn_id: null,
             lane_id: null,
-            reason: "typed_turn_queue_full_while_voice_infer_busy"
+            reason: "keyboard_queue_full_while_infer_busy"
           });
         } catch (_) {}
       }
@@ -23479,7 +29266,21 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   formData.append("use_browser_asr", "1");
   formData.append("session_id", getSessionId());
   formData.append("client", appModePrefix());
-  formData.append("context_snapshot", JSON.stringify(buildClientContextSnapshot()));
+  const _veraInputSourceEarly =
+    (opts && opts.isVoice) || String(path || "").includes("voice") ? "voice" : "keyboard";
+  const _forwardedTargetPanelEarly = Number.isFinite(Number(opts && opts.__reasoningGateTargetPanel))
+    ? Number(opts.__reasoningGateTargetPanel)
+    : null;
+  formData.append(
+    "context_snapshot",
+    JSON.stringify(
+      buildClientContextSnapshot({
+        userText: trimmed,
+        inputSource: _veraInputSourceEarly,
+        explicitPanelTarget: _forwardedTargetPanelEarly,
+      })
+    )
+  );
   formData.append("stream_tts", shouldStreamTts() ? "1" : "0");
   for (const f of pendingFiles) {
     const forInfer = f.slice(0, f.size, f.type || undefined);
@@ -23557,14 +29358,19 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   const reasoningPrepP = maybePrepareWorkModeReasoning(formData, trimmed || transcriptLine, undefined, {
     attachments: pendingFiles,
     turnContext,
+    __reasoningInputSource: _veraInputSource,
     __reasoningGateTargetPanel: _forwardedTargetPanel,
     __reasoningGateForceRoute: _forwardedForceRoute,
-    __reasoningGateReason: opts && opts.__reasoningGateReason ? opts.__reasoningGateReason : undefined
+    __reasoningGateReason: opts && opts.__reasoningGateReason ? opts.__reasoningGateReason : undefined,
+    __reasoningRequestId: opts?.__reasoningRequestId || null,
+    __reasoningActionId: opts?.__reasoningActionId || null,
+    __reasoningParentTurnId: opts?.__reasoningParentTurnId || null,
+    __reasoningStreamSource: opts?.__reasoningStreamSource || null
   });
 
   const enqueued = enqueueWorkModeTypedVoiceInfer(async () => {
     try {
-      listening = false;
+      /* Do not set listening=false — keyboard submit must not take microphone ownership. */
       waveState = "idle";
       processing = true;
       requestInFlight = true;
@@ -23688,6 +29494,24 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
   }
 }
 
+/**
+ * Pure gate for non–work-mode keyboard `/text` submit (smoke-tested).
+ * Returns a block reason string, or "" when the normal `/text` path may proceed.
+ */
+function normalFlowKeyboardSubmitBlockReason({
+  text,
+  inVeraWorkMode,
+  consecutiveUserTail,
+  serverPipelineBusy
+} = {}) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return "empty_text";
+  if (inVeraWorkMode) return "work_mode_branch";
+  if (Number(consecutiveUserTail) >= 3) return "consecutive_user_tail";
+  if (serverPipelineBusy) return "server_pipeline_busy";
+  return "";
+}
+
 async function sendTextMessage() {
   const textInput = uiEl("text-input");
   const statusLine = uiEl("status");
@@ -23711,6 +29535,15 @@ async function sendTextMessage() {
         isVoice: false
       })
     ) {
+      if (textInput) textInput.value = "";
+      setStatus("Ready", "idle");
+      updateMuteInputButton();
+      return;
+    }
+    if (maybeHandleWorkModePanelOpenShortcut(text, { reason: "main-work-text-input", isVoice: false })) {
+      return;
+    }
+    if (maybeHandleWorkModePanelNavigationShortcut(text, { reason: "main-work-text-input", isVoice: false })) {
       if (textInput) textInput.value = "";
       setStatus("Ready", "idle");
       updateMuteInputButton();
@@ -23796,45 +29629,55 @@ async function sendTextMessage() {
     interruptAssistantPipelineForTypedMessage();
   }
 
-  if (isServerPipelineBusy()) return;
+  if (isServerPipelineBusy()) {
+    setStatus("Wait for VERA to finish — send again to interrupt", "idle");
+    try {
+      console.warn("[Keyboard] blocked: server pipeline busy", {
+        requestInFlight,
+        processing,
+        ttsPlaying: isMainTtsOrHtmlAudioPlaying()
+      });
+    } catch (_) {}
+    return;
+  }
   if (textInput) textInput.value = "";
 
-  beginTextUxTurn();
-  listening = false;
-  processing = true;
-  requestInFlight = true;
-  waveState = "idle";
+  try {
+    beginTextUxTurn();
+    listening = false;
+    processing = true;
+    requestInFlight = true;
+    waveState = "idle";
 
-  setStatus("Thinking", "thinking");
+    setStatus("Thinking", "thinking");
 
-  addBubble(text, "user", { path: "typed-text" });
-  ensureChatStartedLayout();
-  // PART 14 (2026-05-28): emit the structured frontend route log on every
-  // typed turn so the browser console shows our route classification side
-  // by side with the backend's matching [news_router_route] line. Pure
-  // instrumentation; backend remains the authoritative router.
-  try {
-    if (typeof classifyVeraTurnRoute === "function" && typeof logNewsRouterRouteFrontend === "function") {
-      const _veraTurnRouteClassification = classifyVeraTurnRoute(text);
-      logNewsRouterRouteFrontend(text, _veraTurnRouteClassification);
-    }
-  } catch (_) {}
-  // 2026-05-28 PART 1 — emit the info-tool router classification too. The
-  // backend is the authoritative router; this is purely instrumentation so
-  // the browser console shows our intended dispatch side by side with the
-  // backend's matching [info_tool_route] line.
-  try {
-    if (typeof classifyInfoTool === "function" && typeof logInfoToolRouteFrontend === "function") {
-      const _infoToolClassification = classifyInfoTool(text);
-      logInfoToolRouteFrontend(text, _infoToolClassification);
-    }
-  } catch (_) {}
-  // Show "Searching news…" immediately for likely Serper-backed requests.
-  // Cancelled when a real reply arrives via applyAssistantReplyAndPanels /
-  // applyNdjsonStreamingReplySoFar / finalizeNdjsonStreamingReply, and
-  // replaced with the failure message on network/server errors or timeout.
-  armPendingNewsStatusBubble(text);
-  try {
+    addBubble(text, "user", { path: "typed-text" });
+    ensureChatStartedLayout();
+    // PART 14 (2026-05-28): emit the structured frontend route log on every
+    // typed turn so the browser console shows our route classification side
+    // by side with the backend's matching [news_router_route] line. Pure
+    // instrumentation; backend remains the authoritative router.
+    try {
+      if (typeof classifyVeraTurnRoute === "function" && typeof logNewsRouterRouteFrontend === "function") {
+        const _veraTurnRouteClassification = classifyVeraTurnRoute(text);
+        logNewsRouterRouteFrontend(text, _veraTurnRouteClassification);
+      }
+    } catch (_) {}
+    // 2026-05-28 PART 1 — emit the info-tool router classification too. The
+    // backend is the authoritative router; this is purely instrumentation so
+    // the browser console shows our intended dispatch side by side with the
+    // backend's matching [info_tool_route] line.
+    try {
+      if (typeof classifyInfoTool === "function" && typeof logInfoToolRouteFrontend === "function") {
+        const _infoToolClassification = classifyInfoTool(text);
+        logInfoToolRouteFrontend(text, _infoToolClassification);
+      }
+    } catch (_) {}
+    // Show "Searching news…" immediately for likely Serper-backed requests.
+    // Cancelled when a real reply arrives via applyAssistantReplyAndPanels /
+    // applyNdjsonStreamingReplySoFar / finalizeNdjsonStreamingReply, and
+    // replaced with the failure message on network/server errors or timeout.
+    armPendingNewsStatusBubble(text);
     await flushWorkChecklistSyncBeforeCommand();
     const textFetchStart = performance.now();
     /* PART 10/11: attach a client-side request_id so the dev console can
@@ -23876,6 +29719,16 @@ async function sendTextMessage() {
     });
     const textTtfbMs = performance.now() - textFetchStart;
 
+    if (!res.ok) {
+      requestInFlight = false;
+      processing = false;
+      textUxTurn = null;
+      if (!failPendingNewsStatusBubble("text_endpoint_http")) {
+        void veraSurfaceLlmFetchFailure({ feature: "text_endpoint", response: res });
+      }
+      return;
+    }
+
     if (shouldStreamTts() && res.ok && isNdjsonTtsResponse(res)) {
       requestInFlight = false;
 
@@ -23913,8 +29766,7 @@ async function sendTextMessage() {
             },
             onDone: (done) => {
               logInferLatency(done, "text", textTtfbMs);
-              finalizeNdjsonStreamingReply(ndjsonMeta, done, streamReplyState);
-              applyNdjsonActionPayloadEvent(done, "done");
+              void applyNdjsonDonePayloadsBeforeFinalize(ndjsonMeta, done, streamReplyState);
             },
             onPlayStart: () => {
               logTextFirstAudio("main-reply");
@@ -23933,7 +29785,15 @@ async function sendTextMessage() {
             }
           });
         } catch (e) {
-          if (e?.name !== "AbortError") console.warn(e);
+          if (e?.name === "AbortError") return;
+          console.warn(e);
+          requestInFlight = false;
+          processing = false;
+          textUxTurn = null;
+          setStatus("Ready", "idle");
+          if (!failPendingNewsStatusBubble("ndjson_text_stream_error")) {
+            void veraSurfaceLlmFetchFailure({ feature: "text_endpoint", error: e });
+          }
         }
       })();
       return;
@@ -24067,9 +29927,20 @@ async function onPttClick() {
       updateMuteInputButton();
       return;
     }
-    if (await maybeHandleWorkChecklistPlanShortcut(text)) {
+    if (await maybeHandleChecklistUndoShortcut(text, { isVoice: true, source: "ptt-browser-asr" })) {
       setStatus("Ready", "idle");
       updateMuteInputButton();
+      return;
+    }
+    if (await maybeHandleWorkChecklistPlanShortcut(text, { isVoice: true, source: "ptt-browser-asr" })) {
+      setStatus("Ready", "idle");
+      updateMuteInputButton();
+      return;
+    }
+    if (maybeHandleWorkModePanelOpenShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
+      return;
+    }
+    if (maybeHandleWorkModePanelNavigationShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
       return;
     }
     if (maybeHandleCloseReasoningPanelShortcut(text, { reason: "ptt-browser-asr", isVoice: true })) {
@@ -24210,18 +30081,30 @@ document.addEventListener("visibilitychange", () => {
   }, 280);
 });
 
-if (!IS_MOBILE) {
+function wireNormalKeyboardSubmitHandlers() {
   ["vera", "bmo"].forEach((prefix) => {
     const sendTextBtn = document.getElementById(`${prefix}-send-text`);
     const textInput = document.getElementById(`${prefix}-text-input`);
-    sendTextBtn?.addEventListener("click", sendTextMessage);
-    textInput?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        sendTextMessage();
-      }
-    });
+    const wireKey = `${prefix}-keyboard-submit`;
+    if (!sendTextBtn && !textInput) return;
+    if (sendTextBtn?.dataset.veraKeyboardSubmitWired === wireKey) return;
+    if (sendTextBtn) {
+      sendTextBtn.dataset.veraKeyboardSubmitWired = wireKey;
+      sendTextBtn.addEventListener("click", () => {
+        void sendTextMessage();
+      });
+    }
+    if (textInput) {
+      textInput.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" || e.shiftKey) return;
+        e.preventDefault();
+        void sendTextMessage();
+      });
+    }
   });
 }
+window.wireNormalKeyboardSubmitHandlers = wireNormalKeyboardSubmitHandlers;
+wireNormalKeyboardSubmitHandlers();
 
 /* =========================
    FEEDBACK
@@ -24466,7 +30349,28 @@ function wireVeraSettingsPanel() {
     }
   };
 
-  const open = () => {
+  const scrollSettingsCardTo = (target = "top") => {
+    const card = modal.querySelector(".vera-settings-card");
+    if (!(card instanceof HTMLElement)) return;
+    requestAnimationFrame(() => {
+      if (target === "account") {
+        const section = document.getElementById("vera-account-section");
+        if (section instanceof HTMLElement) {
+          card.scrollTo({ top: Math.max(0, section.offsetTop - 12), behavior: "smooth" });
+          const email = document.getElementById("vera-account-email");
+          if (email instanceof HTMLInputElement && !email.disabled) {
+            try {
+              email.focus({ preventScroll: true });
+            } catch (_) {}
+          }
+          return;
+        }
+      }
+      card.scrollTo({ top: 0, behavior: "auto" });
+    });
+  };
+
+  const open = (options = {}) => {
     hydrate();
     void refreshCostLogDevUi();
     logVeraSettings("open_modal", {
@@ -24478,10 +30382,18 @@ function wireVeraSettingsPanel() {
       main_asr_partial_min_chars: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
     });
     modal.removeAttribute("hidden");
+    scrollSettingsCardTo(options.scrollTo === "account" ? "account" : "top");
   };
   const close = () => {
     modal.setAttribute("hidden", "");
   };
+
+  try {
+    if (typeof window !== "undefined") {
+      window.veraOpenSettingsModal = () => open();
+      window.veraOpenSettingsToAccountSection = () => open({ scrollTo: "account" });
+    }
+  } catch (_) {}
 
   openVeraBtn?.addEventListener("click", open);
   openBmoBtn?.addEventListener("click", open);
@@ -24615,10 +30527,25 @@ function wireVeraSettingsPanel() {
 wireVeraUserSignInHoldAndModal();
 wireVeraSettingsPanel();
 if (typeof wireSupabaseAccountUi === "function") wireSupabaseAccountUi();
+console.info("[boot] app init start");
 if (typeof initSupabaseAuth === "function") {
-  initSupabaseAuth().finally(() => refreshVeraActiveUserLabel());
+  initSupabaseAuth()
+    .then(() => console.info("[boot] app init done"))
+    .catch((err) => console.error("[boot] app init fail", err))
+    .finally(() => {
+      refreshVeraActiveUserLabel();
+      window.veraRefreshUsageCredits?.();
+      window.veraRefreshFeedbackStatus?.();
+    });
 } else {
-  refreshVeraActiveUserLabel();
+  try {
+    refreshVeraActiveUserLabel();
+    window.veraRefreshUsageCredits?.();
+    window.veraRefreshFeedbackStatus?.();
+    console.info("[boot] app init done");
+  } catch (err) {
+    console.error("[boot] app init fail", err);
+  }
 }
 
 (function stripSpotifyOAuthQueryParams() {
@@ -25277,6 +31204,11 @@ window.VeraSpotify = {
   },
   async pausePlayback() {
     const prefix = appModePrefix();
+    musicPlaybackDiag("[spotify_pause_called]", {
+      reason: "explicit_pause_playback",
+      source: "VeraSpotify.pausePlayback",
+      prefix,
+    });
     const web = window.__veraSpotifyPlayer;
     if (web && typeof web.pause === "function") {
       await web.pause();

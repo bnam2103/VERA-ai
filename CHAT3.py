@@ -631,6 +631,7 @@ class VeraAI:
                 temperature=0.6,
                 max_completion_tokens=1536,
                 stream=True,
+                stream_options={"include_usage": True},
             )
         except Exception as e:
             print(f"[CHAT3] stream API error: {e}")

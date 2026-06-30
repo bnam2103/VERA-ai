@@ -85,6 +85,9 @@ function buildLoadedSandbox() {
     isSecureContext: true,
     setTimeout,
     clearTimeout,
+    setInterval,
+    clearInterval,
+    addEventListener: () => {},
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
     confirm: () => true,
     matchMedia: () => ({ matches: false }),
@@ -96,6 +99,7 @@ function buildLoadedSandbox() {
     getElementById: () => null,
     querySelector: () => null,
     querySelectorAll: () => [],
+    addEventListener: () => {},
     createElement: (tag) => ({
       tagName: String(tag || "").toUpperCase(),
       className: "",
@@ -201,6 +205,7 @@ const declCheck = vm.runInContext(`({
   WORK_CHECKLIST_STORAGE_KEY,
   WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY,
   WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS,
+  WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT,
   WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS,
   WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX,
   markWorkChecklistLocalMutation: typeof markWorkChecklistLocalMutation,
@@ -283,12 +288,97 @@ const declCheck = vm.runInContext(`({
 
 ok(declCheck.WORK_CHECKLIST_STORAGE_KEY === "vera_wm_checklist_v1", "WORK_CHECKLIST_STORAGE_KEY === 'vera_wm_checklist_v1'");
 ok(declCheck.WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY === "vera_wm_checklist_completed_collapsed_v1", "WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY preserved");
-ok(declCheck.WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS === 24, "WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS === 24");
+ok(declCheck.WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT === 5, "WORK_CHECKLIST_PLAN_MAIN_ITEM_LIMIT === 5");
 ok(declCheck.WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS === 12000, "WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS === 12000");
 ok(declCheck.WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX === 26, "WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX === 26");
 ok(declCheck.CHECKLIST_ORDINAL_WORD_MAP_first === 1, "CHECKLIST_ORDINAL_WORD_MAP.first === 1");
 ok(declCheck.CHECKLIST_ORDINAL_WORD_MAP_twelfth === 12, "CHECKLIST_ORDINAL_WORD_MAP.twelfth === 12");
 ok(declCheck.NON_CANCELABLE_AFTER_COMMIT_ACTIONS_size === 6, "NON_CANCELABLE_AFTER_COMMIT_ACTIONS has 6 entries");
+
+section("Suite R — checklist plan hierarchy + 5 main-item limit");
+function setChecklistItemsForPlan(items) {
+  vm.runInContext(
+    `localStorage.setItem(getAnonymousChecklistStorageKey(), ${JSON.stringify(
+      JSON.stringify({
+        auth_mode: "anonymous",
+        session_id: "session_smoke",
+        saved_at: Date.now(),
+        items,
+      })
+    )});`,
+    sandbox
+  );
+}
+setChecklistItemsForPlan([
+  { id: "m1", text: "english homework", done: false, parent_id: null },
+  { id: "s1", text: "essay about odyssey", done: false, parent_id: "m1" },
+]);
+const planA = vm.runInContext("buildChecklistPlanHierarchyFromStorage()", sandbox);
+eq(planA.main_count, 1, "parent/subitem → main_count = 1");
+eq(planA.subitem_count, 1, "parent/subitem → subitem_count = 1");
+const planAMsg = vm.runInContext(
+  `buildWorkChecklistHelpPlanUserMessage(${JSON.stringify(planA)})`,
+  sandbox
+);
+ok(planAMsg.includes("english homework"), "plan prompt includes main task");
+ok(planAMsg.includes("essay about odyssey"), "plan prompt includes sub-detail as bullet");
+ok(!/1\. english homework[\s\S]*2\. essay about odyssey/.test(planAMsg), "subitem not second numbered main");
+
+setChecklistItemsForPlan([
+  { id: "m1", text: "english homework", done: false, parent_id: null },
+  { id: "s1", text: "essay about odyssey", done: false, parent_id: "m1" },
+  { id: "m2", text: "physics homework", done: false, parent_id: null },
+  { id: "s2", text: "chapter 5 problems", done: false, parent_id: "m2" },
+]);
+const planB = vm.runInContext("buildChecklistPlanHierarchyFromStorage()", sandbox);
+eq(planB.main_count, 2, "two main items with subdetails");
+eq(planB.subitem_count, 2, "two subitems total");
+
+setChecklistItemsForPlan(
+  Array.from({ length: 5 }, (_, i) => ({
+    id: `m${i}`,
+    text: `task ${i + 1}`,
+    done: false,
+    parent_id: null,
+  }))
+);
+ok(vm.runInContext("validateChecklistPlanRequest().ok", sandbox), "five main items → plan allowed");
+
+setChecklistItemsForPlan(
+  Array.from({ length: 6 }, (_, i) => ({
+    id: `m${i}`,
+    text: `task ${i + 1}`,
+    done: false,
+    parent_id: null,
+  }))
+);
+const planD = vm.runInContext("validateChecklistPlanRequest()", sandbox);
+ok(!planD.ok, "six main items → blocked");
+eq(planD.reason, "too_many_main_items", "six main items blocked reason");
+
+setChecklistItemsForPlan([
+  ...Array.from({ length: 4 }, (_, i) => ({
+    id: `m${i}`,
+    text: `main ${i + 1}`,
+    done: false,
+    parent_id: null,
+  })),
+  ...Array.from({ length: 10 }, (_, i) => ({
+    id: `s${i}`,
+    text: `sub ${i + 1}`,
+    done: false,
+    parent_id: `m${i % 4}`,
+  })),
+]);
+const planE = vm.runInContext("validateChecklistPlanRequest()", sandbox);
+ok(planE.ok, "four mains + ten subitems → allowed");
+eq(planE.context.main_count, 4, "four mains + subs → main_count 4");
+
+setChecklistItemsForPlan([
+  { id: "m1", text: "english homework", done: false, parent_id: null },
+  { id: "s1", text: "essay about odyssey", done: false, parent_id: "m1" },
+]);
+eq(vm.runInContext("collectWorkChecklistOngoingTexts()", sandbox), ["english homework"], "collectWorkChecklistOngoingTexts is main-only");
 
 const expectedFns = [
   "markWorkChecklistLocalMutation",
@@ -491,7 +581,7 @@ const dbg = vm.runInContext(`getChecklistDebugState()`, sandbox);
 ok(dbg && typeof dbg === "object", "getChecklistDebugState returns object");
 ok(dbg.storage_key === "vera_wm_checklist_v1", "storage_key preserved");
 ok(dbg.completed_collapsed_key === "vera_wm_checklist_completed_collapsed_v1", "completed_collapsed_key preserved");
-ok(dbg.help_plan_max_items === 24, "help_plan_max_items === 24");
+ok(dbg.help_plan_max_main_items === 5, "help_plan_max_main_items === 5");
 ok(dbg.sync_preview_max_chars === 12000, "sync_preview_max_chars === 12000");
 ok(dbg.subitem_indent_threshold_px === 26, "subitem_indent_threshold_px === 26");
 ok(dbg.stored_item_count === 3, `stored_item_count === 3 (got ${dbg.stored_item_count})`);
@@ -611,6 +701,9 @@ for (const name of [
   "runWorkChecklistSyncFromLatestPlan",
   "flashWorkChecklistPlanHint",
   "buildWorkChecklistHelpPlanUserMessage",
+  "buildChecklistPlanHierarchyFromStorage",
+  "validateChecklistPlanRequest",
+  "getChecklistPlanLimitMessage",
   "isWorkChecklistPlanShortcutIntent",
   "isWorkChecklistSyncCommandIntent",
   "queueWorkChecklistRowEnterAnimation",

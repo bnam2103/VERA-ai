@@ -44,6 +44,7 @@ assert specific words are covered.
 
 from __future__ import annotations
 
+import json
 import re
 
 __all__ = [
@@ -163,12 +164,28 @@ _PAIR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Hyphenated compound adjectives: "10-minute timer" → "10 minute timer"
+_HYPHENATED_DURATION_RE = re.compile(
+    rf"\b(\d+|(?:{_WORD_NUMBER_ALT}))-({_UNIT_ALT})\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_timer_duration_text(text: str) -> str:
+    """Expand hyphenated duration adjectives so the pair walker can parse them."""
+    s = (text or "").strip().lower()
+    if not s:
+        return s
+    return _HYPHENATED_DURATION_RE.sub(r"\1 \2", s)
+
 
 def _count_token_to_int(token: str) -> int | None:
     """Convert a count token (digits, single word, or ``"twenty one"``) to int."""
     t = (token or "").strip().lower()
     if not t:
         return None
+    # "a one hour" / "an hour" — article before a word number is not an extra count.
+    t = re.sub(r"^(?:a|an)\s+", "", t)
     if t.isdigit():
         try:
             return int(t)
@@ -200,11 +217,12 @@ def parse_timer_duration_seconds(text: str) -> int | None:
     minutes"`` resolve to ``5400``. Returns ``None`` when no
     count+unit pair is present.
     """
-    s = (text or "").strip().lower()
+    s = _normalize_timer_duration_text(text)
     if not s:
         return None
     total = 0
     found = False
+    matched_pattern = None
     for m in _PAIR_RE.finditer(s):
         count = _count_token_to_int(m.group("count"))
         if count is None:
@@ -215,4 +233,21 @@ def parse_timer_duration_seconds(text: str) -> int | None:
             continue
         total += count * per_unit
         found = True
+        matched_pattern = m.group(0)
+    if found:
+        try:
+            print(
+                "[timer_intent_detected] "
+                + json.dumps(
+                    {
+                        "raw_text": (text or "")[:200],
+                        "duration_seconds": total,
+                        "pattern": matched_pattern,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
     return total if found else None

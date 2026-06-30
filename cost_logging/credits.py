@@ -34,20 +34,45 @@ from typing import Any, Iterable
 # these on first run and merged on every load (file values win for keys it
 # defines; defaults fill in anything missing).
 DEFAULT_CREDIT_CONFIG: dict[str, int] = {
+    "local_action": 0,
+    "failed_request": 0,
+    "weather": 1,
+    "simple_llm": 3,
+    "voice_assistant": 3,
+    "search_or_news": 6,
+    "work_mode_reasoning": 12,
+    "work_mode_reasoning_deep": 20,
+    "work_mode_voice_summary": 2,
+    "image_pdf_reasoning": 20,
+    "bmo_tts": 0,
+    # Legacy aliases (older logs / classifiers)
     "state_sync": 0,
     "local_command": 0,
-    "failed_request": 0,
-    "simple_llm_command": 1,
-    "normal_chat_short": 2,
-    "normal_chat_long": 4,
-    "checklist_generation": 3,
+    "simple_llm_command": 3,
+    "normal_chat_short": 3,
+    "normal_chat_long": 3,
+    "checklist_generation": 0,
     "checklist_edit_local": 0,
-    "checklist_edit_llm": 1,
-    "work_mode_reasoning_short": 5,
-    "work_mode_reasoning_long": 10,
-    "serper_search_bundle": 3,
-    "image_file_reasoning": 15,
-    "bmo_tts": 0,
+    "checklist_edit_llm": 0,
+    "work_mode_reasoning_short": 12,
+    "work_mode_reasoning_long": 20,
+    "serper_search_bundle": 6,
+    "image_file_reasoning": 20,
+}
+
+_LEGACY_CREDIT_ALIASES: dict[str, str] = {
+    "state_sync": "local_action",
+    "local_command": "local_action",
+    "checklist_generation": "local_action",
+    "checklist_edit_local": "local_action",
+    "checklist_edit_llm": "local_action",
+    "simple_llm_command": "simple_llm",
+    "normal_chat_short": "voice_assistant",
+    "normal_chat_long": "voice_assistant",
+    "work_mode_reasoning_short": "work_mode_reasoning",
+    "work_mode_reasoning_long": "work_mode_reasoning_deep",
+    "serper_search_bundle": "search_or_news",
+    "image_file_reasoning": "image_pdf_reasoning",
 }
 
 # Output-size thresholds used by the classifier (combined across all OpenAI
@@ -116,8 +141,10 @@ def credit_config_source() -> str:
 
 def compute_credits(action: str | None) -> int:
     cfg = load_credit_config()
+    key = str(action or "")
+    key = _LEGACY_CREDIT_ALIASES.get(key, key)
     try:
-        return int(cfg.get(str(action or ""), 0))
+        return int(cfg.get(key, 0))
     except Exception:
         return 0
 
@@ -163,6 +190,7 @@ def classify_credit_action(
     has_openai = any(e.get("provider") == "openai" for e in evs)
     has_fish = any(e.get("provider") == "fish_audio" for e in evs)
     has_serper = any(e.get("provider") == "serper" for e in evs)
+    has_weather = any(e.get("provider") == "openweather" for e in evs)
 
     # Combined output + reasoning tokens across all OpenAI events.
     out_tokens = 0
@@ -174,12 +202,10 @@ def classify_credit_action(
         reasoning_tokens += _safe_int(e.get("reasoning_tokens"))
     reasoning_total = out_tokens + reasoning_tokens
 
-    # 1) Generic state-sync — explicit type tag or known no-LLM routes
-    #    (timer polls, etc.). Checklist paths are handled below by the more
-    #    specific checklist_* family so they never collapse into state_sync.
+    # 1) Local / state-sync — timers, checklist local edits, panel UI, etc.
     if rt == "state_sync" or "/timer" in path:
         return (
-            "state_sync",
+            "local_action",
             f"state_sync_route_or_type(path={path or '-'},type={rt or '-'})",
         )
 
@@ -187,62 +213,71 @@ def classify_credit_action(
     if rt == "bmo_tts" or (has_fish and not has_openai and not has_serper):
         return "bmo_tts", "fish_tts_only_no_llm_or_search"
 
-    # 3) Image / file reasoning — overrides everything else (including Serper)
-    #    because the dominant cost is the multimodal LLM call.
+    # 3) Image / file reasoning — dominant cost is multimodal LLM.
     if (
         rt == "file_image"
         or ex.get("has_image")
         or ex.get("has_file")
         or _safe_int(ex.get("file_attachment_count")) > 0
     ):
-        return "image_file_reasoning", "image_or_file_attachment_present"
+        return "image_pdf_reasoning", "image_or_file_attachment_present"
 
-    # 4) Checklist generation (LLM build) vs LLM-assisted edit vs local edit.
-    if "/checklist" in path and (
-        "/generate" in path or ex.get("checklist_generation")
-    ):
-        return "checklist_generation", "checklist_generation_route_or_flag"
+    # 4) Checklist — local edits are free; generation uses LLM but not user credits.
     if "/checklist" in path:
-        if has_openai:
-            return "checklist_edit_llm", "checklist_route_with_openai_event"
-        return "checklist_edit_local", "checklist_route_no_provider_event"
+        if has_openai and ("/generate" in path or ex.get("checklist_generation")):
+            return "local_action", "checklist_generation_no_credit"
+        return "local_action", "checklist_route_local"
 
-    # 5) Work-mode reasoning lanes — short vs long.
-    if md == "work_mode" and ("reasoning" in path or rt == "reasoning"):
-        if reasoning_total >= REASONING_LONG_TOKEN_MIN:
-            return (
-                "work_mode_reasoning_long",
-                f"reasoning+output={reasoning_total}>={REASONING_LONG_TOKEN_MIN}",
-            )
+    # 5a) Grounded Voice UI final brief after Work Mode panel (small add-on LLM).
+    if "/work_mode/voice_final_brief" in path:
         return (
-            "work_mode_reasoning_short",
-            f"reasoning+output={reasoning_total}<{REASONING_LONG_TOKEN_MIN}",
+            "work_mode_voice_summary",
+            "grounded_panel_voice_final_brief",
         )
 
-    # 6) Serper-touching turn (any non-reasoning request that did a search).
+    # 5) Work-mode reasoning lanes — normal vs deep.
+    is_wm_reasoning = (md == "work_mode" or "/work_mode/" in path) and (
+        "reasoning" in path or rt == "reasoning"
+    )
+    if is_wm_reasoning:
+        deep_effort = ex.get("deep_reasoning_effort_active")
+        if (
+            deep_effort is True
+            or reasoning_total >= REASONING_LONG_TOKEN_MIN
+            or ("reasoning_stream" in path and deep_effort is not False)
+        ):
+            return (
+                "work_mode_reasoning_deep",
+                f"work_mode_deep(effort={deep_effort},tokens={reasoning_total},path={path or '-'})",
+            )
+        return (
+            "work_mode_reasoning",
+            f"work_mode_normal(effort={deep_effort},tokens={reasoning_total})",
+        )
+
+    # 6) Weather API turn (OpenWeather geocode + forecast).
+    if has_weather or rt == "weather" or ex.get("action_type") == "weather":
+        return "weather", "openweather_event_or_weather_route"
+
+    # 7) Serper-touching turn (search / news / web / finance / sports).
     if has_serper:
-        return "serper_search_bundle", "serper_event_present"
+        return "search_or_news", "serper_event_present"
 
-    # 7) Logged route that fired no paid provider events — local command.
-    if not (has_openai or has_fish or has_serper):
-        return "local_command", "no_provider_events_on_logged_route"
+    # 8) Logged route with no paid provider events — local command.
+    if not (has_openai or has_fish or has_serper or has_weather):
+        return "local_action", "no_provider_events_on_logged_route"
 
-    # 8) Simple LLM command — command-style turn with a tiny one-shot reply.
+    # 9) Simple LLM command — tiny one-shot reply.
     if rt == "command" and out_tokens <= SIMPLE_LLM_OUTPUT_TOKEN_MAX:
         return (
-            "simple_llm_command",
+            "simple_llm",
             f"command_request_with_output_tokens={out_tokens}<={SIMPLE_LLM_OUTPUT_TOKEN_MAX}",
         )
 
-    # 9) Normal chat — short vs long based on cumulative output tokens.
-    if out_tokens >= NORMAL_CHAT_LONG_OUTPUT_TOKEN_MIN:
-        return (
-            "normal_chat_long",
-            f"output_tokens={out_tokens}>={NORMAL_CHAT_LONG_OUTPUT_TOKEN_MIN}",
-        )
+    # 10) Normal voice assistant chat.
     return (
-        "normal_chat_short",
-        f"output_tokens={out_tokens}<{NORMAL_CHAT_LONG_OUTPUT_TOKEN_MIN}",
+        "voice_assistant",
+        f"voice_assistant_output_tokens={out_tokens}",
     )
 
 

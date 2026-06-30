@@ -1,13 +1,9 @@
-import os
 import requests
 import time
 
 LAT = 33.7092
 LON = -117.9540
-
-
-def _weather_api_key() -> str:
-    return (os.getenv("OPENWEATHER_API_KEY") or os.getenv("WEATHER_API_KEY") or "").strip()
+API_KEY = "9406cd799a8355297a79841d07a313d1"
 
 CACHE_TTL = 300  # 5 minutes
 _weather_cache = {
@@ -33,7 +29,7 @@ def handle_weather_request(vera):
             params={
                 "lat": LAT,
                 "lon": LON,
-                "appid": _weather_api_key(),
+                "appid": API_KEY,
                 "units": "imperial",  # Fahrenheit
             },
             timeout=2,

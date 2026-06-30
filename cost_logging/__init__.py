@@ -38,6 +38,7 @@ from .logger import (  # noqa: F401
     list_open_session_ids,
     log_fish_event,
     log_openai_event,
+    log_openweather_event,
     log_serper_event,
     request_context,
     set_scenario,

@@ -39,6 +39,48 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").lower().strip())
 
 
+_PANEL_QUERY_ORD_MAP = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+}
+
+
+def _panel_query_ordinal_visual_index(q: str) -> int | None:
+    """Resolve bare ordinal tokens in panel_query before fuzzy title matching."""
+    s = re.sub(r"^\s*the\s+", "", (q or "").strip(), flags=re.IGNORECASE)
+    s = re.sub(
+        r"\s+(?:reasoning\s+)?(?:panel|space|tab|page)\s*$",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not s:
+        return None
+    low = s.lower()
+    if low in _PANEL_QUERY_ORD_MAP:
+        return _PANEL_QUERY_ORD_MAP[low]
+    if re.fullmatch(r"\d+", low):
+        return int(low)
+    m = re.fullmatch(r"(\d+)(?:st|nd|rd|th)", low, flags=re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def _strip_panel_query_boilerplate(q: str) -> str:
     """Remove leading command phrases and trailing 'panel' so slots match tab titles."""
     s = (q or "").strip()
@@ -180,7 +222,13 @@ def _resolve_target_panel(slots: dict, reasoning: dict) -> tuple[dict | None, st
         for candidate in (core, pq):
             if not (candidate or "").strip():
                 continue
-            hit = _best_label_match(panels, candidate.strip())
+            cand = candidate.strip()
+            ord_visual = _panel_query_ordinal_visual_index(cand)
+            if ord_visual is not None:
+                if 1 <= ord_visual <= len(panels):
+                    return panels[ord_visual - 1], None
+                return None, "range"
+            hit = _best_label_match(panels, cand)
             if hit:
                 return hit, None
 

@@ -17,6 +17,55 @@ VIDEO_RESULT_LIMIT = 3
 SYMBOL_RESOLUTION_CACHE_TTL = 3600
 SYMBOL_RESOLUTION_CONFIDENCE_THRESHOLD = 0.65
 
+GENERIC_FINANCE_SYMBOL_BLOCKLIST = frozenset({
+    "STOCK",
+    "STOCKS",
+    "SHARE",
+    "SHARES",
+    "PRICE",
+    "QUOTE",
+    "QUOTES",
+    "TICKER",
+    "TICKERS",
+    "FUND",
+    "FUNDS",
+    "ETF",
+    "ETFS",
+    "INDEX",
+    "EQUITY",
+    "EQUITIES",
+    "MARKET",
+    "TRADE",
+    "TRADING",
+    "CHART",
+    "ASSET",
+    "ASSETS",
+})
+
+GENERIC_FINANCE_SUBJECT_BLOCKLIST = frozenset({
+    "stock",
+    "stocks",
+    "share",
+    "shares",
+    "price",
+    "quote",
+    "quotes",
+    "ticker",
+    "tickers",
+    "fund",
+    "funds",
+    "etf",
+    "etfs",
+    "index",
+    "equity",
+    "equities",
+    "market",
+    "trading",
+    "chart",
+    "asset",
+    "assets",
+})
+
 SYMBOL_EXCHANGE_OVERRIDES = {
     "AAPL": "NASDAQ",
     "NVDA": "NASDAQ",
@@ -140,10 +189,19 @@ def _normalize_finance_subject(query: str | None) -> str:
     if not text:
         return ""
 
+    extracted = _extract_ticker_from_finance_query(text)
+    if extracted:
+        return extracted
+
     patterns = [
+        r"^can\s+you\s+tell\s+me\s+the\s+(?:stock\s+)?price\s+of\s+",
         r"^can\s+you\s+tell\s+me\s+the\s+stock\s+price\s+of\s+",
         r"^can\s+you\s+tell\s+me\s+about\s+",
+        r"^what(?:'s|s|\s+is)\s+the\s+(?:stock\s+)?price\s+of\s+",
         r"^what\s+is\s+the\s+stock\s+price\s+of\s+",
+        r"^what(?:'s|s|\s+is)\s+",
+        r"^how\s+much\s+is\s+",
+        r"^tell\s+me\s+the\s+(?:stock\s+)?price\s+of\s+",
         r"^stock\s+price\s+of\s+",
         r"^share\s+price\s+of\s+",
         r"^price\s+of\s+",
@@ -155,7 +213,46 @@ def _normalize_finance_subject(query: str | None) -> str:
     for pattern in patterns:
         text = re.sub(pattern, "", text, flags=re.IGNORECASE)
 
-    return text.strip(" ?!.,")
+    text = text.strip(" ?!.,")
+    if not text:
+        return ""
+
+    extracted = _extract_ticker_from_finance_query(text)
+    if extracted:
+        return extracted
+
+    if _is_direct_ticker_like_subject(text):
+        return _normalize_symbol(text)
+
+    return text
+
+
+def _is_blocked_finance_symbol(symbol: str | None) -> bool:
+    return str(symbol or "").upper() in GENERIC_FINANCE_SYMBOL_BLOCKLIST
+
+
+def _is_generic_finance_subject(subject: str | None) -> bool:
+    return _normalize_subject_key(subject) in GENERIC_FINANCE_SUBJECT_BLOCKLIST
+
+
+def _extract_ticker_from_finance_query(query: str | None) -> str:
+    text = (query or "").strip()
+    if not text:
+        return ""
+
+    patterns = [
+        r"(?:price|quote|trading(?:\s+at)?)\s+(?:of|for)\s+\$?([A-Za-z]{1,5})\b",
+        r"\b\$?([A-Za-z]{1,5})\s+(?:stock|share|etf|fund)\s+price\b",
+        r"\b(?:for|of)\s+\$?([A-Za-z]{1,5})\b\s*[?.!]*$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        symbol = _normalize_symbol(match.group(1))
+        if symbol and _is_direct_ticker_like_subject(symbol):
+            return symbol
+    return ""
 
 
 def _normalize_serper_items(payload: dict) -> list[dict]:
@@ -297,6 +394,18 @@ def _search_serper(query: str, limit: int = SEARCH_RESULT_LIMIT) -> dict:
     response.raise_for_status()
     payload = response.json()
 
+    try:
+        from cost_logging.serper_helpers import log_serper_http_call
+
+        log_serper_http_call(
+            endpoint=SERPER_SEARCH_ENDPOINT,
+            query=query,
+            payload=payload,
+            extra={"source": "finance._search_serper"},
+        )
+    except Exception as _serper_log_err:
+        print(f"[cost_logger] serper log skipped: {_serper_log_err}")
+
     _finance_cache[cache_key] = {
         "payload": payload,
         "timestamp": now,
@@ -325,6 +434,18 @@ def _search_media_serper(endpoint: str, query: str, limit: int, cache_prefix: st
     )
     response.raise_for_status()
     payload = response.json()
+
+    try:
+        from cost_logging.serper_helpers import log_serper_http_call
+
+        log_serper_http_call(
+            endpoint=endpoint,
+            query=query,
+            payload=payload,
+            extra={"source": "finance._search_media_serper", "cache_prefix": cache_prefix},
+        )
+    except Exception as _serper_log_err:
+        print(f"[cost_logger] serper log skipped: {_serper_log_err}")
 
     _finance_cache[cache_key] = {
         "payload": payload,
@@ -436,6 +557,8 @@ def _extract_exchange_candidates(text: str | None) -> list[str]:
 def _normalize_symbol(candidate: str | None) -> str:
     symbol = re.sub(r"[^A-Z.\-]", "", str(candidate or "").upper())
     if re.fullmatch(r"[A-Z]{1,5}(?:\.[A-Z]{1,2})?", symbol):
+        if _is_blocked_finance_symbol(symbol):
+            return ""
         return symbol
     return ""
 
@@ -502,15 +625,23 @@ def _extract_chart_symbol(subject: str, payload: dict, items: list[dict]) -> tup
     if alias_symbol:
         return alias_symbol, f"{alias_exchange}:{alias_symbol}"
 
-    subject_symbol = _normalize_symbol(subject) if _is_direct_ticker_like_subject(subject) else ""
+    query_ticker = _extract_ticker_from_finance_query(subject) or (
+        _normalize_symbol(subject) if _is_direct_ticker_like_subject(subject) else ""
+    )
+    subject_symbol = query_ticker
     if subject_symbol:
         explicit_symbol_candidates.append(subject_symbol)
 
     for container in (payload.get("answerBox") or {}, payload.get("knowledgeGraph") or {}):
-        for key in ("ticker", "symbol", "stock", "stockSymbol"):
+        for key in ("ticker", "symbol", "stockSymbol"):
             value = container.get(key)
             if value:
                 explicit_symbol_candidates.append(value)
+        stock_value = container.get("stock")
+        if stock_value:
+            normalized_stock = _normalize_symbol(stock_value)
+            if normalized_stock:
+                explicit_symbol_candidates.append(normalized_stock)
         for key in ("title", "answer", "snippet", "description"):
             value = container.get(key)
             regex_symbol_candidates.extend(_extract_symbol_candidates(value))
@@ -594,7 +725,7 @@ def _resolve_chart_symbol_with_llm(vera, subject: str, payload: dict, items: lis
     confidence = float(resolved.get("confidence") or 0.0)
     is_valid = bool(resolved.get("is_valid"))
 
-    if symbol and is_valid and confidence >= SYMBOL_RESOLUTION_CONFIDENCE_THRESHOLD:
+    if symbol and is_valid and confidence >= SYMBOL_RESOLUTION_CONFIDENCE_THRESHOLD and not _is_blocked_finance_symbol(symbol):
         override_exchange = SYMBOL_EXCHANGE_OVERRIDES.get(symbol)
         if override_exchange:
             exchange = override_exchange
@@ -663,6 +794,37 @@ def _fetch_finance_media(subject: str) -> tuple[list[dict], list[dict]]:
     return images, videos
 
 
+def _log_finance_panel_payload(
+    *,
+    user_text: str = "",
+    extracted_ticker: str = "",
+    resolved_ticker: str = "",
+    panel_symbol: str = "",
+    tradingview_symbol: str = "",
+    asset_type: str = "",
+    source: str = "",
+) -> None:
+    try:
+        import json as _json
+
+        print(
+            "[finance_panel_payload] "
+            + _json.dumps(
+                {
+                    "user_text": (user_text or "")[:200],
+                    "extractedTicker": (extracted_ticker or "")[:32],
+                    "resolvedTicker": (resolved_ticker or "")[:32],
+                    "panelSymbol": (panel_symbol or "")[:32],
+                    "tradingviewSymbol": (tradingview_symbol or "")[:48],
+                    "assetType": (asset_type or "")[:32],
+                    "source": (source or "")[:64],
+                }
+            )
+        )
+    except Exception:
+        pass
+
+
 def prepare_finance_quote_streaming(vera, query: str):
     """
     Serper + symbol resolution + messages for async_generate_stream (no main LLM).
@@ -672,18 +834,35 @@ def prepare_finance_quote_streaming(vera, query: str):
     subject = _normalize_finance_subject(query)
     if not subject:
         return None
+    generic_subject = _is_generic_finance_subject(subject)
+    extracted_ticker = _extract_ticker_from_finance_query(query) or (
+        subject if _is_direct_ticker_like_subject(subject) else ""
+    )
     try:
         payload = _search_serper(f"{subject} stock price")
         items = _rank_finance_items(_normalize_serper_items(payload), subject)
         prompt = _build_quote_prompt(subject, payload, items)
         messages = vera.build_messages([], FINANCE_QUOTE_PREAMBLE + prompt)
         symbol, tradingview_symbol = _resolve_chart_symbol_with_llm(vera, subject, payload, items)
-        # 2026-05-28 — panel title used to be a generic "Stock Chart" string,
-        # which made the header indistinguishable for VGT / AAPL / NVDA. Lead
-        # with the resolved ticker (or, if symbol resolution failed, the
-        # cleaned subject phrase) so users see the actual entity at a glance.
-        # Format: `VGT — Quote` / `AAPL — Quote` / `Bitcoin — Quote`.
-        quote_title_entity = (symbol or subject or "").strip()
+        if _is_blocked_finance_symbol(symbol):
+            symbol = ""
+        if generic_subject and not extracted_ticker:
+            symbol = ""
+            tradingview_symbol = ""
+        panel_symbol = symbol or extracted_ticker or (
+            _normalize_symbol(subject) if _is_direct_ticker_like_subject(subject) else ""
+        )
+        if panel_symbol and (
+            not tradingview_symbol
+            or tradingview_symbol.split(":")[-1] != panel_symbol
+        ):
+            override_exchange = SYMBOL_EXCHANGE_OVERRIDES.get(panel_symbol)
+            if override_exchange:
+                tradingview_symbol = f"{override_exchange}:{panel_symbol}"
+            else:
+                exchange = "AMEX" if _looks_like_etf_or_fund(subject, payload, items) else "NASDAQ"
+                tradingview_symbol = f"{exchange}:{panel_symbol}"
+        quote_title_entity = panel_symbol or subject or ""
         if not quote_title_entity:
             quote_title_entity = "Stock"
         quote_title = f"{quote_title_entity} — Quote"
@@ -692,11 +871,20 @@ def prepare_finance_quote_streaming(vera, query: str):
             "title": quote_title,
             "entity": quote_title_entity,
             "query": subject,
-            "symbol": symbol,
+            "symbol": panel_symbol,
             "tradingview_symbol": tradingview_symbol,
             "chart_url": _build_tradingview_chart_url(tradingview_symbol),
             "source_url": items[0]["url"] if items else "",
         }
+        _log_finance_panel_payload(
+            user_text=query,
+            extracted_ticker=extracted_ticker,
+            resolved_ticker=symbol,
+            panel_symbol=panel_symbol,
+            tradingview_symbol=tradingview_symbol,
+            asset_type="etf" if panel_symbol in {"VGT", "VOO", "SPY", "IVV", "SMH"} else "equity",
+            source="prepare_finance_quote_streaming",
+        )
         try:
             _log_panel_routing(
                 selected_route="finance_quote_tool",
@@ -718,7 +906,7 @@ def prepare_finance_quote_streaming(vera, query: str):
                 "data": {
                     "mode": "quote",
                     "query": subject,
-                    "symbol": symbol,
+                    "symbol": panel_symbol,
                     "tradingview_symbol": tradingview_symbol,
                     "results": items,
                 },

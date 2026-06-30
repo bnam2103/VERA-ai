@@ -140,7 +140,7 @@ ALLOWED_ACTION_TYPES: frozenset[str] = frozenset({
     "panel.navigate", "panel.open", "panel.close",
     "music.play", "music.pause", "music.resume",
     "music.next", "music.previous", "music.volume",
-    "checklist.add", "checklist.remove", "checklist.complete",
+    "checklist.add", "checklist.remove", "checklist.complete", "checklist.uncomplete",
     "timer.set", "timer.cancel",
     # Info / tool
     "info.time", "info.weather", "info.finance",
@@ -209,6 +209,7 @@ _CLARIFICATION_PROMPTS: dict[str, str] = {
     "checklist.add":     "What should I add to the checklist?",
     "checklist.remove":  "Which item should I remove?",
     "checklist.complete":"Which item should I mark complete?",
+    "checklist.uncomplete":"Which item should I mark incomplete?",
     "reasoning.request": "What would you like me to think through?",
     "voice.answer":      "Could you say a bit more?",
 }

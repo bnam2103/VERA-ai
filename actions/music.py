@@ -303,7 +303,8 @@ def match_builtin_productivity_music(q: str) -> dict | None:
         return {"kind": "sound", "id": "white_noise"}
     if re.search(
         r"\b("
-        r"rain\s*(?:and|,|&|n)\s*(?:thunder|storm)"
+        r"rain\s+sounds?"
+        r"|rain\s*(?:and|,|&|n)\s*(?:thunder|storm)"
         r"|rain(?:ing)?\s+sound|raining"
         r"|rain\s+noise|thunder\s*storm|thunder\s+and\s+rain"
         r")\b",
@@ -355,6 +356,21 @@ def handle_music_play_builtin(
         spoken = f"Playing {sid.replace('_', ' ')}."
     else:
         return _fail_open_panel("I am not sure which built-in track to play.")
+
+    try:
+        print(
+            "[music_builtin_play_success] "
+            + json.dumps(
+                {
+                    "playlist_id": pid or None,
+                    "sound_id": sid or None,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
 
     return {
         "spoken_reply": spoken,

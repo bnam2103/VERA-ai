@@ -656,6 +656,89 @@ finally:
     _af_panel._resolve_chart_symbol_with_llm = _OriginalResolve
     _af_panel._fetch_finance_media = _OriginalFetchMedia
 
+section("Finance quote — natural-language VGT/VOO ticker extraction + STOCK blocklist")
+def _fake_vgt_kg_search(q, limit=5):
+    return {
+        "knowledgeGraph": {
+            "title": "Vanguard Information Technology ETF",
+            "stock": "Stock",
+            "type": "ETF",
+        },
+        "organic": [
+            {"title": "VGT stock price", "link": "https://example.com/vgt",
+             "snippet": "VGT is quoted at $116.07"},
+        ],
+    }
+
+
+def _fake_resolve_stock_trap(vera, subject, payload, items):
+    sym, tv = _af_panel._extract_chart_symbol(subject, payload, items)
+    return sym, tv
+
+
+_af_panel._search_serper = _fake_vgt_kg_search
+_af_panel._resolve_chart_symbol_with_llm = _fake_resolve_stock_trap
+try:
+    for user_query, expected_symbol in [
+        ("Can you tell me the price of VGT?", "VGT"),
+        ("What's the price of VGT?", "VGT"),
+        ("What's the price of VOO?", "VOO"),
+        ("What's the price of Apple?", "AAPL"),
+        ("What's the price of AAPL?", "AAPL"),
+    ]:
+        subject = _af_panel._normalize_finance_subject(user_query)
+        ok(subject in {expected_symbol, "Apple"},
+           f"subject normalized for {user_query!r} → {subject!r}",
+           detail=f"expected {expected_symbol!r}")
+        prepared = _af_panel.prepare_finance_quote_streaming(_FakeVeraQuote(), user_query)
+        ok(prepared is not None, f"finance.quote prepared for {user_query!r}")
+        _msgs, ui_payload, _fin = prepared
+        ok(ui_payload.get("symbol") == expected_symbol,
+           f"panel symbol is {expected_symbol!r} for {user_query!r}",
+           detail=str(ui_payload))
+        tv = ui_payload.get("tradingview_symbol") or ""
+        ok(tv.endswith(f":{expected_symbol}"),
+           f"tradingview symbol ends with :{expected_symbol} for {user_query!r}",
+           detail=tv)
+        ok("STOCK" not in tv.upper() or expected_symbol == "STOCK",
+           f"no AMEX:STOCK trap for {user_query!r}",
+           detail=tv)
+
+    sym, tv = _af_panel._extract_chart_symbol(
+        "VGT",
+        {"knowledgeGraph": {"stock": "Stock", "ticker": ""}},
+        [],
+    )
+    ok(sym == "VGT" and tv == "AMEX:VGT",
+       "knowledgeGraph stock=Stock does not resolve to STOCK",
+       detail=f"{sym!r} {tv!r}")
+
+    blocked = _af_panel._normalize_symbol("Stock")
+    ok(blocked == "", "generic word Stock is blocked as symbol")
+
+    _af_panel._search_serper = lambda q, limit=5: {
+        "knowledgeGraph": {"stock": "Stock", "type": "Financial product"},
+        "organic": [
+            {"title": "Stock market today", "link": "https://example.com/",
+             "snippet": "Markets moved higher today."},
+        ],
+    }
+    stock_query = _af_panel.prepare_finance_quote_streaming(
+        _FakeVeraQuote(), "What's the price of stock?"
+    )
+    if stock_query:
+        _m, stock_payload, _f = stock_query
+        ok(not stock_payload.get("symbol"),
+           "price of stock does not resolve a chart symbol",
+           detail=str(stock_payload))
+        ok(not stock_payload.get("chart_url"),
+           "price of stock does not emit a chart URL",
+           detail=str(stock_payload))
+finally:
+    _af_panel._search_serper = _OriginalSearchSerper
+    _af_panel._resolve_chart_symbol_with_llm = _OriginalResolve
+    _af_panel._fetch_finance_media = _OriginalFetchMedia
+
 section("Panel routing — finance.analytics → media_tabs (Articles/Images/Video)")
 _OriginalSearchSerperA = _af_panel._search_serper
 _OriginalFetchMediaA = _af_panel._fetch_finance_media
