@@ -26,33 +26,6 @@
   <source src="../background.mp4" type="video/mp4">
 </video>
 
-<!-- =========================
-     INTRO OVERLAY (TRAILER)
-========================= -->
-<div id="intro" class="intro">
-  <video
-    id="intro-video"
-    muted
-    playsinline
-    preload="metadata"
-    poster="../vera_poster.jpg"
-  >
-    <source src="../VERA_commercial_2.mp4" type="video/mp4">
-  </video>
-
-  <button id="enable-sound" class="intro-btn sound">
-    Watch the trailer
-  </button>
-
-  <button id="skip-intro" class="intro-btn skip">
-    Skip the trailer
-  </button>
-  <div class="intro-disclaimer">
-    <p>VERA is an ongoing personal research project.</p>
-    <p>The trailer highlights system concepts and interaction goals rather than a finished product.</p>
-  </div>
-</div>
-
 <div id="boot-loader" class="boot-loader">
   <div class="boot-inner">
     <div class="boot-label">Initializing VERA...</div>
@@ -73,7 +46,7 @@
   <main class="chat-centered">
     <div id="vera-guide" class="vera-guide">
       <div class="guide-item guide-vera">
-        <div class="guide-arrow arrow-left">←</div>
+        <div class="guide-arrow arrow-left">↝</div>
         <div class="guide-text">
           Click here to learn more about the system.
         </div>
@@ -318,7 +291,7 @@
         title="Switch input mode"
         type="button"
       >
-        ⌨️
+        ⌨︝
       </button>
       <div id="vera-voice-bar" class="input-bar">
         <div class="mic-status">
@@ -328,7 +301,7 @@
         <div class="wave-container">
           <canvas id="vera-waveform"></canvas>
         </div>
-        <button id="vera-ptt" class="ptt-btn" type="button">🎙️</button>
+        <button id="vera-ptt" class="ptt-btn" type="button">🎙︝</button>
         <span
           id="vera-server-status-inline"
           class="server-status offline mobile-only"
@@ -458,7 +431,7 @@
   <main class="bmo-shell chat-centered">
     <div id="bmo-guide" class="vera-guide">
       <div class="guide-item guide-vera">
-        <div class="guide-arrow arrow-left">←</div>
+        <div class="guide-arrow arrow-left">↝</div>
         <div class="guide-text">
           Click here to learn more about the system.
         </div>
@@ -680,7 +653,7 @@
           title="Switch input mode"
           type="button"
         >
-          ⌨️
+          ⌨︝
         </button>
         <div id="bmo-voice-bar" class="input-bar">
           <div class="mic-status">
@@ -690,7 +663,7 @@
           <div class="wave-container">
             <canvas id="bmo-waveform"></canvas>
           </div>
-          <button id="bmo-ptt" class="ptt-btn" type="button">🎙️</button>
+          <button id="bmo-ptt" class="ptt-btn" type="button">🎙︝</button>
           <span
             id="bmo-server-status-inline"
             class="server-status offline mobile-only"
@@ -737,17 +710,6 @@
   /* =========================
      DOM REFERENCES
   ========================= */
-
-  const intro = document.getElementById("intro");
-  if (intro) {
-    document.body.classList.add("intro-lock");
-  }
-  const introVideo = document.getElementById("intro-video");
-  const skipBtn = document.getElementById("skip-intro");
-  const soundBtn = document.getElementById("enable-sound");
-  soundBtn?.addEventListener("click", unlockAudio);
-  skipBtn?.addEventListener("click", unlockAudio);
-  const disclaimer = document.querySelector(".intro-disclaimer");
 
   const home = document.getElementById("home");
   const bmoLoadingScreen = document.getElementById("bmo-loading-screen");
@@ -874,44 +836,6 @@ function revealHomeLaunchButtonAfterTitle() {
 
 function showHomeLanding() {
   window.location.href = "../";
-}
-
-/* =========================
-   INTRO LOGIC (FINAL)
-========================= */
-
-function hideIntro() {
-  disclaimer?.classList.add("hidden");
-  intro.style.transition = "opacity 0.8s ease";
-  intro.style.opacity = "0";
-  setTimeout(() => {
-    intro.remove();
-    document.body.classList.remove("intro-lock");
-    sessionStorage.setItem(INTRO_SEEN_KEY, "true");
-    void startBootSequence();
-  }, 800);
-}
-
-soundBtn.onclick = () => {
-  introVideo.muted = false;
-  introVideo.play();
-  soundBtn.remove();
-
-  // fade disclaimer when trailer starts
-  disclaimer?.classList.add("hidden");
-};
-
-skipBtn.onclick = hideIntro;
-introVideo.onended = hideIntro;
-
-/* =========================
-   RETURN VISITS / REFRESH
-========================= */
-
-if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
-  intro?.remove();
-  document.body.classList.remove("intro-lock");
-  setTimeout(() => { void startBootSequence(); }, 60);
 }
 
   /* =========================
@@ -1871,7 +1795,7 @@ function wireInputModeToggles() {
       const showKeyboard = !keyboardVisible;
       voiceBar.classList.toggle("hidden", showKeyboard);
       keyboardBar.classList.toggle("hidden", !showKeyboard);
-      toggleBtn.textContent = showKeyboard ? "🎙️" : "⌨️";
+      toggleBtn.textContent = showKeyboard ? "🎙︝" : "⌨︝";
       if (showKeyboard) {
         document.getElementById(`${prefix}-text-input`)?.focus();
       }
@@ -2122,11 +2046,11 @@ document.addEventListener("click", () => {
           <p class="vera-settings-guide-card-text">Best with headphones or AirPods so VERA's voice does not echo back into the mic.</p>
         </article>
         <article class="vera-settings-guide-card">
-          <h4 class="vera-settings-guide-card-title">🎙️ Push-to-Talk</h4>
+          <h4 class="vera-settings-guide-card-title">🎙︝ Push-to-Talk</h4>
           <p class="vera-settings-guide-card-text">Works without headphones. Press to speak, then VERA listens and responds one turn at a time.</p>
         </article>
         <article class="vera-settings-guide-card">
-          <h4 class="vera-settings-guide-card-title">⌨️ Keyboard</h4>
+          <h4 class="vera-settings-guide-card-title">⌨︝ Keyboard</h4>
           <p class="vera-settings-guide-card-text">Type when voice is inconvenient, noisy, or unavailable.</p>
         </article>
       </div>
@@ -2471,9 +2395,13 @@ document.addEventListener("click", () => {
     console.info("[boot] scripts loaded");
   }
 })();
+(function veraAppDirectBoot() {
+  if (typeof startBootSequence !== "function") {
+    console.error("[boot] startBootSequence missing — inline app shell did not load");
+    return;
+  }
+  void startBootSequence();
+})();
 </script>
-</body>
-</html>
-
 </body>
 </html>
