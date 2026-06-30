@@ -53,14 +53,28 @@ const AUTH_PASSWORD_RESET_SUCCESS_MSG =
   "If an account exists for this email, a reset link has been sent.";
 const AUTH_MIN_PASSWORD_LENGTH = 6;
 const AUTH_PASSWORD_UPDATED_MSG = "Password updated. You can now use your account.";
-/** Deployed Vera frontend (GitHub Pages). Password-reset emails always use this URL. */
-const VERA_PASSWORD_RESET_REDIRECT_URL =
-  "https://bnam2103.github.io/VERA-ai/?mode=reset-password";
 const AUTH_PASSWORD_RESET_EXPIRED_MSG =
   "This reset link expired or is invalid. Please request a new password reset link.";
+/** Deployed Vera app entry (GitHub Pages + workwithvera.com). */
+function getVeraAppBasePath() {
+  try {
+    const p = String(window.location?.pathname || "");
+    const m = p.match(/^(.*\/app)(?:\/|$)/i);
+    if (m) return m[1];
+    const meta = document.querySelector('meta[name="vera-app-base"]')?.content?.trim();
+    if (meta) return meta.replace(/\/$/, "");
+  } catch (_) {}
+  return "/app";
+}
 
 function getVeraPasswordResetRedirectUrl() {
-  return VERA_PASSWORD_RESET_REDIRECT_URL;
+  try {
+    const origin = String(window.location?.origin || "").replace(/\/$/, "");
+    if (origin && origin !== "null") {
+      return `${origin}${getVeraAppBasePath()}/?mode=reset-password`;
+    }
+  } catch (_) {}
+  return "https://workwithvera.com/app/?mode=reset-password";
 }
 
 function _parseAuthHashParams(hashOverride) {
