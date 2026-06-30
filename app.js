@@ -146,6 +146,7 @@ function resetVeraSessionAndUi() {
   workModeReasoningLaneWaitQueue.length = 0;
   workModeTypedTurnQueue.length = 0;
   workModeTypedQueueDraining = false;
+  clearWorkModeTypedPendingTurn("work_mode_reset", { silent: true });
   workModeLastSubstantiveUserText = "";
   workModeLastSubstantiveLaneIdx = null;
   laneTopicSeedByIdx[0] = "";
@@ -2659,6 +2660,20 @@ function commitServerUserTranscriptBubble(text, path) {
         if (b instanceof HTMLElement && b.classList.contains("interrupt-preview")) continue;
         const existing = ((b && b.textContent) || "").trim();
         if (existing !== t) break;
+        if (row instanceof HTMLElement && row.dataset.veraWorkModeTypedPendingUser === "1") {
+          row.dataset.workModeTypedPendingState = "confirmed";
+          try {
+            delete row.dataset.veraWorkModeTypedPendingUser;
+          } catch (_) {}
+          persistVeraChatState();
+          ensureChatStartedLayout();
+          try {
+            if (typeof window !== "undefined") {
+              window.__veraLastInferUserTextForLaneGuard = t;
+            }
+          } catch (_) {}
+          return;
+        }
         let sawStage1Below = false;
         let anotherUserBelow = false;
         for (let j = i + 1; j < rows.length; j++) {
@@ -11732,6 +11747,16 @@ function isLikelyRequestShape(text) {
   }
 
   /* Direct task asks ("I need to...", "I want to..."). */
+  /* FYI / disclosure openers are not task requests ("I want to let you know…"). */
+  if (
+    /\b(?:i\s+)?(?:just\s+)?(?:want(?:ed|s)?|would\s+like)\s+to\s+(?:let\s+you\s+know|tell\s+you|share|mention|say)\b/.test(
+      low
+    ) ||
+    /\bjust\s+so\s+you\s+know\b/.test(low) ||
+    /\bi\s+wanted\s+to\s+(?:let\s+you\s+know|tell\s+you|share|mention|say)\b/.test(low)
+  ) {
+    return false;
+  }
   if (/\b(i\s+need|i\s+want|i'?d\s+like|i\s+would\s+like)\s+(?:to|you|a|an|some|help|the)\b/.test(low)) {
     return true;
   }
@@ -11819,6 +11844,52 @@ function looksLikePersonalAdviceOrVenting(text) {
 const looksLikePersonalStatementOrVenting = looksLikePersonalAdviceOrVenting;
 
 /**
+ * Personal preference / FYI / feeling disclosures with no explicit work task.
+ * These stay in Voice UI even when Work Mode is open and the backend classifier
+ * returns prompt_reasoning for the topic words alone.
+ */
+function detectPersonalStatementNoTaskIntent(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return { matched: false, reason: null, signals: [] };
+  const low = raw.toLowerCase();
+  const artifact = hasExplicitWorkArtifactIntent(raw);
+  if (artifact.hasIntent) {
+    return { matched: false, reason: null, signals: ["explicit_artifact_override"] };
+  }
+  const signals = [];
+  if (
+    /\b(?:i\s+)?(?:just\s+)?(?:want(?:ed|s)?|would\s+like|needed)\s+to\s+(?:let\s+you\s+know|tell\s+you|share|mention|say)\b/i.test(
+      low
+    ) ||
+    /\bjust\s+so\s+you\s+know\b/i.test(low) ||
+    /\bi\s+wanted\s+to\s+(?:let\s+you\s+know|tell\s+you|share|mention|say)\b/i.test(low) ||
+    /\b(?:fyi|for\s+your\s+information)\b/i.test(low)
+  ) {
+    signals.push("fyi_disclosure");
+  }
+  if (
+    /\bi\s+(?:really\s+|just\s+)?(?:love|like|enjoy|prefer|adore)\b/i.test(low) ||
+    /\bi\s+am\s+(?:really\s+|just\s+)?(?:into|interested\s+in)\b/i.test(low) ||
+    /\bi\s+don'?t\s+(?:really\s+)?(?:like|love|enjoy|prefer)\b/i.test(low)
+  ) {
+    signals.push("preference_statement");
+  }
+  if (
+    /\bi'?m\s+feeling\b/i.test(low) ||
+    /\bi\s+feel\s+(?:like|kind\s+of|pretty|really|so|very|a\s+bit|kinda|sort\s+of)?\s*(?:tired|exhausted|homesick|sick|sad|down|bad|off|anxious|stressed|overwhelmed|burnt?\s*out|burned\s*out|lonely|meh|blah|low|worn\s*out)\b/i.test(
+      low
+    ) ||
+    /\bi'?m\s+(?:tired|exhausted|homesick|sick|sad|anxious|stressed|overwhelmed|burnt?\s*out|burned\s*out|lonely|worn\s*out)\b/i.test(
+      low
+    )
+  ) {
+    signals.push("feeling_statement");
+  }
+  const matched = signals.length > 0;
+  return { matched, reason: matched ? signals[0] : null, signals };
+}
+
+/**
  * Heuristic: explicit work-artifact verb that overrides the personal-advice
  * veto (user is asking us to actually produce / analyze something structured).
  */
@@ -11844,6 +11915,7 @@ function hasExplicitWorkArtifactIntent(text) {
     /\b(?:upload(?:ed)?|attach(?:ed|ment)?|the\s+(?:pdf|file|image|screenshot|doc|document|spreadsheet))\b/i;
   const helpDoArtifact =
     /\b(help\s+me\s+(?:write|draft|plan|organize|organise|prepare|build|make|create|do|solve|analy[sz]e|study|outline|debug|fix|figure\s+out|work\s+(?:through|on)|put\s+together)|i\s+need\s+(?:help|to)\s+(?:write|draft|plan|organize|prepare|build|make|create|outline)|can\s+you\s+(?:write|draft|plan|organize|prepare|build|make|create|outline|analy[sz]e|review))\b/i;
+  const thinkThrough = /\bthink\s+through\b/i;
 
   if (writeVerb.test(low)) matched.push("write_artifact");
   if (planVerb.test(low)) matched.push("plan_verb");
@@ -11853,6 +11925,7 @@ function hasExplicitWorkArtifactIntent(text) {
   if (makeArtifact.test(low)) matched.push("make_artifact");
   if (fileTask.test(low)) matched.push("file_task");
   if (helpDoArtifact.test(low)) matched.push("help_do_artifact");
+  if (thinkThrough.test(low)) matched.push("think_through");
 
   return { matched, hasIntent: matched.length > 0 };
 }
@@ -17777,16 +17850,34 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
        homework today" decisively veto. */
     _routeDebugArtifactIntent = hasExplicitWorkArtifactIntent(trimmed);
     _routeDebugVentingSignals = looksLikePersonalStatementOrVenting(trimmed);
+    const _personalStatementCheck = detectPersonalStatementNoTaskIntent(trimmed);
     const _isRequestShape = isLikelyRequestShape(trimmed);
     const explicitWorkModeTarget =
       Boolean(opts && opts.__reasoningGateForceRoute === "reasoning_panel") ||
       Boolean(opts && opts.__explicitPanelDestinationConsumed);
+
+    if (_personalStatementCheck.matched && !_routeDebugArtifactIntent.hasIntent) {
+      try {
+        console.info("[personal_statement_detected]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          normalized_text: String(trimmed || "").trim().slice(0, 240),
+          personal_statement_detected: true,
+          venting_detected: Boolean(_routeDebugVentingSignals.isVenting),
+          explicit_task_intent: false,
+          explicit_work_artifact_intent: false,
+          work_mode_open: true,
+          signals: _personalStatementCheck.signals,
+          reason: _personalStatementCheck.reason,
+        });
+      } catch (_) {}
+    }
 
     /* Adjusted venting score: if the message has no request shape at all,
        declarative-personal status is even stronger evidence for veto. */
     const _adjustedVentingScore = _routeDebugVentingSignals.score + (_isRequestShape ? 0 : 1);
     const _adjustedIsVenting = _adjustedVentingScore >= 2;
     let _routeDebugVentReasoningVeto = false;
+    let _routeDebugPersonalStatementVeto = false;
     let _blockedReasoningReason = null;
 
     if (_adjustedIsVenting && !_routeDebugArtifactIntent.hasIntent && !explicitWorkModeTarget) {
@@ -17849,7 +17940,37 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       _adjustedIsVenting &&
       !_routeDebugArtifactIntent.hasIntent &&
       !explicitWorkModeTarget;
-    if (ventBlocksReasoning && routeReasoning) {
+    const personalStatementBlocksReasoning =
+      !gateForcedReasoning &&
+      !forceActiveLaneReasoningContent &&
+      _personalStatementCheck.matched &&
+      !_routeDebugArtifactIntent.hasIntent &&
+      !explicitWorkModeTarget;
+    if (personalStatementBlocksReasoning && routeReasoning) {
+      _routeDebugPersonalStatementVeto = true;
+      _routeDebugPersonalAdviceVeto = true;
+      _blockedReasoningReason = "personal_statement_no_task_intent";
+      routeReasoning = false;
+      effectiveClassifyRoute = false;
+      try {
+        console.info("[reasoning_gate_blocked_personal_statement]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          normalized_text: String(trimmed || "").trim().slice(0, 240),
+          personal_statement_detected: true,
+          venting_detected: Boolean(_routeDebugVentingSignals.isVenting),
+          explicit_task_intent: false,
+          explicit_work_artifact_intent: false,
+          work_mode_open: true,
+          routeReasoning: false,
+          blocked_reason: _blockedReasoningReason,
+          signals: _personalStatementCheck.signals,
+        });
+        console.info("[reasoning_gate_blocked]", {
+          raw_text: String(trimmed || "").slice(0, 240),
+          reason: _blockedReasoningReason,
+        });
+      } catch (_) {}
+    } else if (ventBlocksReasoning && routeReasoning) {
       _routeDebugVentReasoningVeto = true;
       _routeDebugPersonalAdviceVeto = true;
       _blockedReasoningReason = "emotional_vent_no_task_intent";
@@ -17869,6 +17990,19 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       } catch (_) {}
     } else if (routeReasoning) {
       try {
+        if (_routeDebugArtifactIntent.hasIntent) {
+          console.info("[reasoning_gate_allowed_task_intent]", {
+            raw_text: String(trimmed || "").slice(0, 240),
+            normalized_text: String(trimmed || "").trim().slice(0, 240),
+            personal_statement_detected: Boolean(_personalStatementCheck.matched),
+            venting_detected: Boolean(_routeDebugVentingSignals.isVenting),
+            explicit_task_intent: true,
+            explicit_work_artifact_intent: true,
+            work_mode_open: true,
+            routeReasoning: true,
+            artifact_signals: _routeDebugArtifactIntent.matched,
+          });
+        }
         const _regexHits = [];
         const _tGate = String(trimmed || "").toLowerCase();
         if (/\b(step\s+by\s+step|in\s+detail|deep\s+dive|from\s+scratch)\b/i.test(_tGate)) {
@@ -17915,6 +18049,8 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     if (gateForcedReasoning) {
       _routeDebugReason =
         (opts && opts.__reasoningGateReason) || "forced_reasoning_panel";
+    } else if (_routeDebugPersonalStatementVeto) {
+      _routeDebugReason = "personal_statement_no_task_intent";
     } else if (_routeDebugVentReasoningVeto || personalAdviceVeto) {
       _routeDebugReason = "emotional_vent_no_task_intent";
     } else if (_routeDebugNewsLookupVeto) {
@@ -17959,7 +18095,13 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       backend_target_panel: classifyBackendTargetPanel,
       backend_source: classifyBackendSource,
       heuristic_reasoning: _routeDebugHeuristicReasoning,
-      personal_statement_veto: Boolean(_routeDebugPersonalAdviceVeto || _routeDebugVentReasoningVeto),
+      personal_statement_veto: Boolean(
+        _routeDebugPersonalAdviceVeto ||
+          _routeDebugVentReasoningVeto ||
+          _routeDebugPersonalStatementVeto
+      ),
+      personal_statement_detected: Boolean(_personalStatementCheck.matched),
+      personal_statement_signals: _personalStatementCheck.signals,
       vent_reasoning_veto: Boolean(_routeDebugVentReasoningVeto),
       blocked_reasoning_reason: _blockedReasoningReason,
       news_lookup_veto: _routeDebugNewsLookupVeto,
@@ -22784,6 +22926,7 @@ function applyAssistantReplyAndPanels(data) {
   // before the actual assistant bubble appears so the user only sees the
   // final answer (no double-bubble flash).
   cancelPendingNewsStatusBubble("assistant_reply_applied");
+  clearWorkModeTypedPendingOnResponse();
   const bubble = addBubble(data.reply, "vera");
   veraFeedbackMarkFinalFromBubble(bubble, data, null);
 }
@@ -22820,6 +22963,7 @@ function applyNdjsonStreamingReplySoFar(replySoFar, state) {
     // Streaming reply is about to create the real bubble — drop the
     // "Searching news…" placeholder so they don't sit side-by-side.
     cancelPendingNewsStatusBubble("ndjson_reply_so_far");
+    clearWorkModeTypedPendingOnResponse();
     let opts = { path: "ndjson-reply-so-far" };
     if (state.pendingReplyBack) {
       opts = mergeReplyBackIntoBubbleMeta(opts, state.pendingReplyBack);
@@ -22889,6 +23033,7 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   // Streaming finalized without ever calling onReplyProgress (no partials),
   // so we drop the pending bubble here just before creating the final one.
   cancelPendingNewsStatusBubble("ndjson_finalize");
+  clearWorkModeTypedPendingOnResponse();
   let finOpts = { path: "ndjson-final" };
   if (state.pendingReplyBack) {
     finOpts = mergeReplyBackIntoBubbleMeta(finOpts, state.pendingReplyBack);
@@ -27613,7 +27758,15 @@ async function runInferMainPipeline(formData, opts = {}) {
       processing = false;
       requestInFlight = false;
       if (!failPendingNewsStatusBubble("infer_main_http")) {
-        void veraSurfaceLlmFetchFailure({ feature: "infer_main", response: res });
+        if (workModeTypedPendingTurn) {
+          renderWorkModeTypedPendingError("Something went wrong — try again.", {
+            error: `http_${res.status}`
+          });
+        } else {
+          void veraSurfaceLlmFetchFailure({ feature: "infer_main", response: res });
+        }
+      } else if (workModeTypedPendingTurn) {
+        clearWorkModeTypedPendingOnResponse({ response_received: false, reason: "news_failure_bubble" });
       }
       return;
     }
@@ -27934,7 +28087,15 @@ async function runInferMainPipeline(formData, opts = {}) {
       });
     }
     if (!failPendingNewsStatusBubble("infer_main_error")) {
-      void veraSurfaceLlmFetchFailure({ feature: "infer_main", error: e });
+      if (workModeTypedPendingTurn) {
+        renderWorkModeTypedPendingError("Server error — try again.", {
+          error: String(e?.message || e || "infer_main_error")
+        });
+      } else {
+        void veraSurfaceLlmFetchFailure({ feature: "infer_main", error: e });
+      }
+    } else if (workModeTypedPendingTurn) {
+      clearWorkModeTypedPendingOnResponse({ response_received: false, reason: "news_failure_bubble" });
     }
   }
 }
@@ -28659,6 +28820,185 @@ async function handleUtterance() {
  * logs, and backend planner integration are unchanged. */
 
 /* =========================
+   WORK MODE TYPED PENDING UX (keyboard submit feedback)
+========================= */
+/** @type {{ id: string, userText: string, userRow: HTMLElement|null, processingRow: HTMLElement|null, state: string, route: string|null } | null} */
+let workModeTypedPendingTurn = null;
+let workModeTypedPendingSeq = 0;
+
+function _nextWorkModeTypedPendingId() {
+  workModeTypedPendingSeq += 1;
+  return `wm-typed-pending-${workModeTypedPendingSeq}`;
+}
+
+function logWorkTypedPending(tag, fields = {}) {
+  const p = workModeTypedPendingTurn;
+  try {
+    console.info(tag, {
+      text: String(fields.text ?? p?.userText ?? "").slice(0, 240),
+      route: fields.route ?? p?.route ?? null,
+      entered_work_mode_reasoning:
+        fields.entered_work_mode_reasoning ??
+        (fields.route === "reasoning_panel" || p?.route === "reasoning_panel"
+          ? true
+          : fields.route || p?.route
+            ? false
+            : null),
+      sent_to_infer:
+        fields.sent_to_infer ??
+        (fields.route === "infer" || fields.route === "voice_ui" || p?.route === "infer"
+          ? true
+          : fields.route || p?.route
+            ? false
+            : null),
+      pending_bubble_id: fields.pending_bubble_id ?? p?.id ?? null,
+      queue_chip_id: fields.queue_chip_id ?? null,
+      response_received: fields.response_received ?? null,
+      error: fields.error != null ? String(fields.error).slice(0, 240) : null,
+      ...fields
+    });
+  } catch (_) {}
+}
+
+function _removeWorkModeTypedPendingProcessingRow() {
+  const proc = workModeTypedPendingTurn?.processingRow;
+  if (proc?.isConnected) {
+    try {
+      proc.remove();
+    } catch (_) {}
+  }
+  if (workModeTypedPendingTurn) workModeTypedPendingTurn.processingRow = null;
+}
+
+function clearWorkModeTypedPendingTurn(reason = "cleared", opts = {}) {
+  if (!workModeTypedPendingTurn) return;
+  _removeWorkModeTypedPendingProcessingRow();
+  if (opts.removeUserRow && workModeTypedPendingTurn.userRow?.isConnected) {
+    try {
+      workModeTypedPendingTurn.userRow.remove();
+    } catch (_) {}
+  }
+  if (!opts.silent) {
+    logWorkTypedPending("[work_typed_pending_cleared]", { reason: String(reason || "") });
+  }
+  workModeTypedPendingTurn = null;
+}
+
+function renderWorkModeTypedPendingTurn(text, opts = {}) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed || !isVeraWorkModeOn() || appModePrefix() !== "vera") return null;
+  clearWorkModeTypedPendingTurn("superseded", { silent: true });
+  ensureChatStartedLayout();
+  const id = _nextWorkModeTypedPendingId();
+  const userBubble = addBubble(trimmed, "user", {
+    path: opts.path || "work-typed-pending",
+    bubbleClass: "vera-work-mode-typed-pending-user"
+  });
+  const userRow = userBubble instanceof HTMLElement ? userBubble.closest(".message-row") : null;
+  if (userRow instanceof HTMLElement) {
+    userRow.dataset.veraWorkModeTypedPendingUser = "1";
+    userRow.dataset.workModeTypedPendingId = id;
+    userRow.dataset.workModeTypedPendingState = "pending";
+  }
+  const procBubble = addBubble("Thinking…", "vera", {
+    path: "work-typed-pending-processing",
+    bubbleClass: "vera-pending-status vera-work-mode-typed-pending-processing"
+  });
+  const procRow = procBubble instanceof HTMLElement ? procBubble.closest(".message-row") : null;
+  if (procRow instanceof HTMLElement) {
+    procRow.dataset.workModeTypedPendingId = id;
+    procRow.dataset.workModeTypedPendingState = "processing";
+  }
+  workModeTypedPendingTurn = {
+    id,
+    userText: trimmed,
+    userRow: userRow instanceof HTMLElement ? userRow : null,
+    processingRow: procRow instanceof HTMLElement ? procRow : null,
+    state: "processing",
+    route: null
+  };
+  try {
+    setStatus("Thinking", "thinking");
+  } catch (_) {}
+  logWorkTypedPending("[work_typed_submit]", { text: trimmed, pending_bubble_id: id });
+  logWorkTypedPending("[work_typed_pending_rendered]", { text: trimmed, pending_bubble_id: id });
+  return workModeTypedPendingTurn;
+}
+
+function markWorkModeTypedPendingRoute(route, fields = {}) {
+  if (!workModeTypedPendingTurn) return;
+  workModeTypedPendingTurn.route = String(route || "");
+  logWorkTypedPending("[work_typed_route_selected]", {
+    route: workModeTypedPendingTurn.route,
+    entered_work_mode_reasoning: workModeTypedPendingTurn.route === "reasoning_panel",
+    sent_to_infer:
+      workModeTypedPendingTurn.route === "infer" || workModeTypedPendingTurn.route === "voice_ui",
+    ...fields
+  });
+}
+
+function handoffWorkModeTypedPendingToReasoning(opts = {}) {
+  if (!workModeTypedPendingTurn) return;
+  workModeTypedPendingTurn.state = "handed_off";
+  if (workModeTypedPendingTurn.userRow?.isConnected) {
+    workModeTypedPendingTurn.userRow.dataset.workModeTypedPendingState = "handed_off";
+  }
+  _removeWorkModeTypedPendingProcessingRow();
+  markWorkModeTypedPendingRoute("reasoning_panel", opts);
+  logWorkTypedPending("[work_typed_reasoning_queue_handoff]", {
+    entered_work_mode_reasoning: true,
+    queue_chip_id: opts.queue_chip_id ?? null,
+    ...opts
+  });
+  workModeTypedPendingTurn = null;
+}
+
+function markWorkModeTypedNonReasoningProcessing() {
+  if (!workModeTypedPendingTurn || workModeTypedPendingTurn.state === "handed_off") return;
+  markWorkModeTypedPendingRoute("infer", { sent_to_infer: true });
+  workModeTypedPendingTurn.state = "processing";
+  logWorkTypedPending("[work_typed_nonreasoning_processing]", { sent_to_infer: true });
+}
+
+function clearWorkModeTypedPendingOnResponse(opts = {}) {
+  if (!workModeTypedPendingTurn) return;
+  _removeWorkModeTypedPendingProcessingRow();
+  if (workModeTypedPendingTurn.userRow?.isConnected) {
+    workModeTypedPendingTurn.userRow.dataset.workModeTypedPendingState = "done";
+    try {
+      delete workModeTypedPendingTurn.userRow.dataset.veraWorkModeTypedPendingUser;
+    } catch (_) {}
+  }
+  logWorkTypedPending("[work_typed_nonreasoning_response_rendered]", {
+    response_received: true,
+    ...opts
+  });
+  logWorkTypedPending("[work_typed_pending_cleared]", { reason: "response" });
+  workModeTypedPendingTurn = null;
+}
+
+function renderWorkModeTypedPendingError(message, opts = {}) {
+  if (!workModeTypedPendingTurn) return;
+  const msg = String(message || "Something went wrong — try again.").trim();
+  _removeWorkModeTypedPendingProcessingRow();
+  if (workModeTypedPendingTurn.userRow?.isConnected) {
+    workModeTypedPendingTurn.userRow.dataset.workModeTypedPendingState = "error";
+    try {
+      delete workModeTypedPendingTurn.userRow.dataset.veraWorkModeTypedPendingUser;
+    } catch (_) {}
+  }
+  try {
+    addBubble(msg, "vera", {
+      path: "work-typed-pending-error",
+      bubbleClass: "vera-pending-status vera-work-mode-typed-pending-error"
+    });
+  } catch (_) {}
+  logWorkTypedPending("[work_typed_error_rendered]", { error: msg, ...opts });
+  logWorkTypedPending("[work_typed_pending_cleared]", { reason: "error" });
+  workModeTypedPendingTurn = null;
+}
+
+/* =========================
    TEXT INPUT PIPELINE
 ========================= */
 
@@ -28996,10 +29336,21 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     }
   }
 
+  const typedPendingDisplayText =
+    trimmed || (pendingFiles.length ? "[Uploaded attachment(s)] — see attached file(s)." : "");
+  let typedPendingRendered = false;
+  if (!fromQueue && !fromPanelQueue && typedPendingDisplayText) {
+    renderWorkModeTypedPendingTurn(typedPendingDisplayText, { path: path || "work-typed" });
+    typedPendingRendered = true;
+  }
+
   /* Hard cap: at most WORK_MODE_TYPED_PENDING_MAX typed turns in flight or queued.
      Matches the non-work-mode "3 user turns before VERA replies" guard. Refuse
      instead of queueing the 4th so the user gets the same clear feedback. */
   if (!fromQueue && isWorkModeTypedTurnAtHardCap()) {
+    if (typedPendingRendered) {
+      clearWorkModeTypedPendingTurn("typed_hard_cap_reached", { silent: true });
+    }
     setStatus("Wait for VERA response before sending more", "idle");
     preserveComposerAttachments("typed_hard_cap_reached", null);
     try {
@@ -29044,13 +29395,17 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     return;
   }
 
-  /* User bubble: do not addBubble here — /infer NDJSON first `asr` line calls commitServerUserTranscriptBubble
-     (same as voice). A prior addBubble would duplicate the row in Voice UI. */
+  /* User bubble: pre-rendered above for typed keyboard UX; /infer NDJSON `asr` still calls
+     commitServerUserTranscriptBubble for dedupe (same as voice). A duplicate addBubble here
+     would duplicate the row in Voice UI. */
   ensureChatStartedLayout();
   // Arm pending news bubble BEFORE POST /infer so the placeholder appears
   // during the thinking/searching window, not right before the final answer.
   // Idempotent — duplicate calls for the same transcript are no-ops.
   armPendingNewsStatusBubble(trimmed);
+  if (pendingNewsStatusBubble?.isConnected && workModeTypedPendingTurn?.processingRow?.isConnected) {
+    _removeWorkModeTypedPendingProcessingRow();
+  }
 
   const transcriptLine =
     trimmed || (pendingFiles.length ? "[Uploaded attachment(s)] — see attached file(s)." : "");
@@ -29177,6 +29532,13 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
         const prepWrap = attachWorkModeTtsTurnAfterPrep(await reasoningPrepP, ttsTurn, trimmed);
         if (prepWrap?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
         if (prepWrap?.voiceTwoStage?.reasoningRouted) {
+          if (typedPendingRendered) {
+            handoffWorkModeTypedPendingToReasoning({
+              text: trimmed,
+              pending_bubble_id: null,
+              queue_chip_id: prepWrap?.turnContext?.turn_id ?? null
+            });
+          }
           const stage1P = maybePlayWorkModeReasoningStage1FromPrep(prepWrap, inferSig, trimmed);
           await Promise.resolve(stage1P).catch(() => {});
           const seqAtStage1End = workModeVoiceInferTurnSeq;
@@ -29187,6 +29549,9 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
           });
           resumeAfterAssistantReplyPlayback();
           return;
+        }
+        if (typedPendingRendered) {
+          markWorkModeTypedNonReasoningProcessing();
         }
         /* 2026-06-12 investigation guard — a reasoning.request that arrived via
            the backend planner's open_and_stream payload (with a resolved/forwarded
@@ -29231,6 +29596,11 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
         }
         const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prepWrap, { signal: inferSig });
         if (prepFail === "reasoning-upload-failed") {
+          if (typedPendingRendered) {
+            renderWorkModeTypedPendingError("Could not upload — try again.", {
+              error: "reasoning-upload-failed"
+            });
+          }
           processing = false;
           requestInFlight = false;
           voiceUxTurn = null;
@@ -29256,10 +29626,16 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
       requestInFlight = false;
       voiceUxTurn = null;
       setStatus("Server error", "offline");
-      void veraSurfaceLlmFetchFailure({
-        feature: "infer_workmode_typed",
-        error: err
-      });
+      if (typedPendingRendered) {
+        renderWorkModeTypedPendingError("Server error — try again.", {
+          error: String(err?.message || err || "typed_infer_error")
+        });
+      } else {
+        void veraSurfaceLlmFetchFailure({
+          feature: "infer_workmode_typed",
+          error: err
+        });
+      }
     }
   });
 

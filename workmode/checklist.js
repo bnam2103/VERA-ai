@@ -633,6 +633,8 @@ function applyChecklistControlVoicePayload(payload = {}) {
   const beforeCount = before.filter((x) => String(x?.text || "").trim()).length;
   const isClearOp = /\bclear_all\b/i.test(op);
   const isUndoOp = /\bundo_clear\b/i.test(op);
+  const isAddOp = /\badd_item\b/i.test(op);
+  const isMutatingOp = isAddOp || /\b(?:remove|complete|uncomplete|update)_item\b/i.test(op);
   if (isClearOp && beforeCount > 0) {
     try {
       console.info("[checklist_clear_requested]", {
@@ -709,6 +711,31 @@ function applyChecklistControlVoicePayload(payload = {}) {
         session_id: String(getSessionId?.() || "").slice(0, 64),
         item_count_after_clear: afterCount
       });
+      console.info("[checklist_current_state_after_clear]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        current_item_count: afterCount,
+        current_titles: _checklistUndoItemTitles(after),
+        undo_snapshot_exists: Boolean(readChecklistUndoSnapshotFromStorage()?.items?.length),
+        pending_undo_exists: Boolean(readChecklistUndoSnapshotFromStorage()?.items?.length)
+      });
+    } catch (_) {}
+  }
+  if (isAddOp) {
+    try {
+      const undoSnap = readChecklistUndoSnapshotFromStorage();
+      console.info("[checklist_add_requested]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        item_text: String(
+          (Array.isArray(payload.items) ? payload.items : [])
+            .map((x) => String(x?.text || x || "").trim())
+            .filter(Boolean)[0] || ""
+        ).slice(0, 200),
+        current_item_count_before_add: beforeCount,
+        current_titles_before_add: _checklistUndoItemTitles(before),
+        undo_snapshot_exists: Boolean(undoSnap?.items?.length),
+        undo_snapshot_item_count: Array.isArray(undoSnap?.items) ? undoSnap.items.length : 0,
+        pending_undo_exists: Boolean(undoSnap?.items?.length)
+      });
     } catch (_) {}
   }
   if (isUndoOp && afterCount > 0) {
@@ -731,6 +758,29 @@ function applyChecklistControlVoicePayload(payload = {}) {
       });
     } catch (_) {}
     return { ok: false, beforeCount, afterCount, reason: "no_state_change" };
+  }
+  if (changed && isMutatingOp && !isUndoOp) {
+    const hadUndo = Boolean(readChecklistUndoSnapshotFromStorage()?.items?.length);
+    clearChecklistUndoSnapshot();
+    if (hadUndo) {
+      try {
+        console.info("[checklist_add_pending_undo_cleared]", {
+          session_id: String(getSessionId?.() || "").slice(0, 64),
+          action: op,
+          reason: "superseded_by_checklist_mutation"
+        });
+      } catch (_) {}
+    }
+  }
+  if (changed && isAddOp) {
+    try {
+      console.info("[checklist_add_state_after]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        current_item_count_after_add: afterCount,
+        current_titles_after_add: _checklistUndoItemTitles(after),
+        pending_undo_cleared: !readChecklistUndoSnapshotFromStorage()?.items?.length
+      });
+    } catch (_) {}
   }
   return { ok: true, beforeCount, afterCount, reason: "" };
 }
