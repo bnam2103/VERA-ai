@@ -178,6 +178,20 @@ body.vera-mode {
 .intro-btn.sound { left: 32px; }
 .intro-btn.skip  { right: 32px; }
 
+body.vera-app-route #bg-video,
+body.vera-app-route .intro,
+body.vera-app-route #home {
+  display: none !important;
+}
+
+body.vera-app-route::before {
+  background: radial-gradient(
+    circle at top,
+    rgb(6, 14, 28),
+    rgb(2, 6, 12)
+  ) !important;
+}
+
 .boot-loader[hidden] {
   display: none !important;
 }
