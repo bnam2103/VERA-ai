@@ -826,6 +826,15 @@ async function syncWorkChecklistToServerNow() {
 
 async function flushWorkChecklistSyncBeforeCommand() {
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
+  try {
+    const stored = readChecklistItemsFromStorage();
+    const visible = stored.filter((x) => String(x?.text || "").trim());
+    console.info("[checklist_precommand_sync_snapshot]", {
+      visible_item_count: visible.length,
+      localStorage_item_count: visible.length,
+      titles: _checklistUndoItemTitles(stored),
+    });
+  } catch (_) {}
   if (workChecklistSyncTimer) {
     window.clearTimeout(workChecklistSyncTimer);
     workChecklistSyncTimer = null;
