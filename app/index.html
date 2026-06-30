@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+Ôªø<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="styles.css?v=15">
+  <link rel="stylesheet" href="../styles.css?v=15">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -61,7 +61,7 @@
     </div>
     <div class="boot-percent" id="boot-percent">0%</div>
     <div class="boot-note">
-      First launch from idle may take 10ñ30 seconds while the server wakes up.
+      First launch from idle may take 10‚Äì30 seconds while the server wakes up.
     </div>
   </div>
 </div>
@@ -69,575 +69,24 @@
 <audio id="bg-music" loop preload="auto">
   <source src="../background-music.mp3" type="audio/mpeg">
 </audio>
-<!-- =========================
-     LANDING / HOME
-========================= -->
-<section id="home">
-
-  <!-- TOP NAV -->
-  <!-- TOP NAV -->
-  <nav class="top-nav">
-    <div class="nav-left">
-      <button class="nav-logo" id="nav-home" type="button">VERA</button>
-    </div>
-
-    <div class="nav-right">
-      <button
-        class="nav-link music-toggle"
-        id="music-toggle"
-        aria-label="Toggle background music"
-      >
-        MUSIC
-        <span class="music-indicator" aria-hidden="true">
-          <i></i><i></i><i></i>
-        </span>
-      </button>
-      <button class="nav-link" id="nav-about-vera">About VERA</button>
-      <button class="nav-link" id="nav-about-me">About Me</button>
-      <button class="nav-link" id="nav-projects">My Other Projects</button>
-
-    </div>
-  </nav>
-
-  <header class="title-hero">
-    <h1 class="title-text">
-      VIRTUAL EXECUTIVE RESPONSE ASSISTANT
-    </h1>
-    <button id="launch-vera-home" class="home-launch-btn" type="button" aria-label="Launch VERA app">
-      Launch VERA
-    </button>
-
-    <div class="scroll-hint">?</div>
-  </header>
-
-  <!-- HERO -->
-  <header class="hero" id="about-vera">
-    <div class="hero-split">
-
-      <div class="hero-left">
-        <button
-          id="enter-vera"
-          class="hero-label scroll-reveal"
-          aria-label="Enter VERA app"
-        >
-          ABOUT VERA
-        </button>
-      </div>
-
-      <div class="hero-right">
-        <h3 class="hero-headline">
-          <span id="typed-headline"></span>
-        </h3>
-
-        <p class="hero-text scroll-reveal">
-          VERA is a conversational AI that demonstrates real-time
-          speech recognition, reasoning, and voice synthesis. It listens,
-          understands, and responds through speech or actions (though mostly speech).
-          While inspired by fictional assistants like JARVIS from the Ironman series, 
-          VERA is designed as a human-in-the-loop system, with
-          user control and bounded capabilities.
-        </p>
-      </div>
-
-    </div>
-  </header>
-  <section id="vera-use-cases" class="vera-use-cases">
-  <div class="vera-use-cases-inner">
-    
-    <h2 class="vera-section-title soft type-title" data-text="How does VERA work?"></h2>
-
-
-    <div class="vera-use-cases-content">
-      
-      <div class="use-cases-layout">
-      <div class="use-cases-nav scroll-reveal delay-1">
-
-        <button class="use-case-btn" data-case="realtime">
-          ??? Real-time Conversation
-        </button>
-        <button class="use-case-btn" data-case="interrupt">
-          ?? Interruptibility
-        </button>
-        <button class="use-case-btn" data-case="personalization">
-          ?? Personalization
-        </button>
-        <button class="use-case-btn" data-case="actions">
-          ?? System Actions
-        </button>
-      </div>
-
-      <div class="use-cases-panel use-cases-window scroll-reveal delay-2">
-
-        <div class="use-case-content" id="case-realtime">
-          <h3>Real-time Voice Processing</h3>
-          <p>
-            VERA lets you talk naturally and get spoken responses back in real time,
-            similar to a human conversation. Users can switch between continuous 
-            listening, push-to-talk, and keyboard mode depending on the environment.
-          </p>
-        </div>
-
-        <div class="use-case-content" id="case-interrupt">
-          <h3>Interruptibility</h3>
-          <p>
-            Users can interrupt VERA mid-response to correct, redirect, 
-            or add context. This creates a more fluid and natural conversational 
-            flow, similar to speaking with another person rather than a turn-based conversation.
-          </p>
-        </div>
-
-        <div class="use-case-content" id="case-personalization">
-          <h3>Personalization</h3>
-          <p>
-            VERA uses context like habits and preferences to give more helpful responses.
-            Personal data is planned to stay local on the userís device.
-          </p>
-        </div>
-
-        <div class="use-case-content" id="case-actions">
-          <h3>Actions and Queries</h3>
-          <p>
-            VERA can answer utility questions like time, date, weather, countdowns, 
-            news, and stock prices through voice. For richer interactions, 
-            the prototype currently includes dedicated panels for news and music.
-          </p>
-        </div>
-      </div>
-    </div>
-    </div>
-  </div>
-</section>
-  <section class="vera-log">
-  <div class="vera-log-inner">
-
-    <!-- MAIN COLLAPSE -->
-    <details class="patch-collapse">
-      <summary class="patch-main-title">
-        PATCH NOTES / DEV LOGS
-      </summary>
-
-      <!-- VERSION 1.0 -->
-      <details class="patch-version">
-        <summary>VERSION 1.0</summary>
-        <div class="patch-content">
-        <p class="vera-log-intro">
-          A usable conversational AI using speech as both input and output.
-          Turn-based interaction: user speaks ? AI responds.
-          Transcriptions appear as chat bubbles in real time.
-        </p>
-
-        <p class="vera-log-stack">
-          <strong>Core Stack:</strong>
-          ASR (Whisper-large) ∑ LLM (LLaMA 3.2) ∑ TTS (fine-tuned)
-        </p>
-
-        <h3>Features / Implementations</h3>
-      <ul>
-        <li>Pause / Unpause via voice commands or physical button</li>
-        <li>Real-time time and date queries</li>
-        <li>Multi-user support via session-based history isolation</li>
-        <li>Feedback system (PC)</li>
-        <li>Responsive UI for mobile and desktop</li>
-        <li>Visible server health check</li>
-        <li>
-          Two personas:
-          <ul>
-            <li><strong>Default (LLaMA 3.2)</strong>: task-oriented</li>
-            <li><strong>JARVIS</strong>: conversational and affirming</li>
-          </ul>
-        </li>
-        <li>Balanced, informative UX</li>
-      </ul>
-
-      <h3>Issues Fixed</h3>
-      <ul>
-        <li>
-          Audio robustness using layered filtering:
-          ZCR, RMS volume threshold, VAD, ASR confidence
-        </li>
-        <li>
-          Prevented empty or accidental audio from entering history
-        </li>
-        <li>
-          GPU concurrency handling via module-level locking
-          (ASR / LLM / TTS)
-        </li>
-        <li>
-          Edge-case protections:
-          feedback limits, max users, hidden tunnel name,
-          capped history (40 messages), idle session cleanup
-        </li>
-        <li>
-          Privacy improvement:
-          no user audio saved locally;
-          transcriptions only logged temporarily for debugging (will be removed in future)
-        </li>
-      </ul>
-      </div>
-      </details>
-      <hr />
-      <details class="patch-version">
-        <summary>VERSION 2.0</summary>
-        <div class="patch-content">
-      <p class="vera-log-intro">
-        This version focuses on making interaction with VERA feel more natural, flexible, 
-        and intentional. Building on the stable voice pipeline from Version 1.0, 
-        this release expands input modes, extends actions (e.g., news summaries, weather checks),
-        introduces early interruptibility and conversational pacing strategies, and begins deeper persona refinement.
-      </p>
-      <h3>Features / Implementations</h3>
-      <ul>
-        <li><strong>Expanded Actions</strong>: current news summaries and weather checks, alongside a restructured intent classification pipeline to separate actionable queries from free-form generation</li>
-        <li>
-          <strong>Natural Conversation (Early Strategies; Continuous Listening):</strong>
-          <ul>
-            <li><strong>Interruptibility</strong> enabled via concurrent audio recording and explicit microphone state management</li>
-          </ul>
-        </li>
-        <li>
-          <strong>Persona Optimization and Personalization:</strong>
-          increased wit and dry humor, tailored to user behavior patterns via JSON-based prompt-level personalization injection 
-        </li>
-      </ul>  
-      <h3>Presentation</h3>
-        <ul>
-          <li>
-            <strong>Trailer Concept:</strong>
-            all-caps typography, Alan Watts narration, All Caps ñ MF DOOM instrumental
-          </li>
-          <li>
-            <strong>Main page UI:</strong>
-            smoother animations, simplified layout, scroll-based explanation
-          </li>
-        </ul>
-      <h3>Quality of Life Improvements / Issues Fixed</h3>
-        <ul>
-          <li>
-              <strong>More User Inputs</strong>: 
-              <ul>
-                <li><strong>Push-to-Talk Button:</strong> mainly used in a noisy environments. This ensures so each speech input is properly isolated and more intentional</li>
-                <li><strong>Keyboard Input:</strong> mainly used in a environment where users cannot speak</li>
-              </ul>
-            </li>
-          <li>
-            Reduced latency by adjusting LLM parameters
-          </li>  
-        </ul>
-        </div>
-      </details>
-      <hr />
-      <details class="patch-version">
-        <summary>VERSION 2.5</summary>
-        <div class="patch-content">
-      <p class="vera-log-intro">
-        Version 2.5 is a refinement release mainly focused on
-        <strong>response reliability, latency reduction, and conversational correctness</strong>.
-        Rather than introducing new features, this version addresses
-        systemic weaknesses observed during extended testing.
-      </p>
-
-      <h3>Key Improvements</h3>
-      <ul>
-        <li>
-          <strong>Hallucination Reduction via Confidence Gating:</strong>
-          introduced a confidence-aware filter that reroutes
-          low-confidence generations, significantly reducing incorrect outputs
-          during ambiguous queries
-        </li>
-        <li>
-          <strong>Interruptibility Latency Reduction:</strong>
-          restructured frontend audio handling and interrupt detection logic to
-          reduce delay when users interject mid-response
-        </li>
-        <li>
-          <strong>Improved Response Quality:</strong>
-          upgraded the LLM backend to a higher-quality model (Qwen2.5-3B-Instruct), alllowing a
-          more coherent reasoning and improved conversational tone
-        </li>
-      </ul>
-      </div>
-      </details>
-      <hr />
-      <details class="patch-version">
-        <summary>VERSION 3.0</summary>
-        <div class="patch-content">
-      <p class="vera-log-intro">
-        Version 3.0 is a major upgrade focused on deeper conversational awareness and
-        stronger action handling.
-        This release improves multi-turn reasoning, ambiguity handling, and side-panel support.
-      </p>
-
-      <h3>Core Intelligence Upgrades</h3>
-      <ul>
-        <li><strong>Improved instruction tuning and model routing:</strong> expanded instructions and updated LLM model usage for stronger response quality</li>
-        <li><strong>Multi-turn awareness and ambiguity handling:</strong> VERA now tracks follow-up intent more reliably and responds better when user requests are underspecified</li>
-        <li><strong>Deeper follow-up structure:</strong> follow-up requests were added and the request pipeline was reworked to support more natural continuation across turns</li>
-        <li><strong>Intent and action refactor:</strong> `intent_router` and system action handling were restructured for cleaner routing and more reliable execution</li>
-      </ul>
-
-      <h3>Admin, User, and Query Features</h3>
-      <ul>
-        <li><strong>Admin and user implementation:</strong> added clearer separation for privileged and standard interaction paths</li>
-        <li><strong>News system expansion:</strong> introduced two news modes, <strong>BBC</strong> and <strong>SERPER</strong>, with broader support for general and breaking-news requests</li>
-        <li><strong>Financial information support:</strong> added quote retrieval and finance-context handling for market-related requests</li>
-      </ul>
-
-      <h3>UI and Interaction Enhancements</h3>
-      <ul>
-        <li><strong>Side panel upgrade:</strong> supports images, video links, and stock-price charts for richer response presentation</li>
-        <li><strong>News split-screen view:</strong> introduced a dedicated split-screen experience for news-related results</li>
-        <li><strong>Waveform improvement:</strong> changed the visualizer to use frequency bins for more accurate motion</li>
-        <li><strong>Mute control update:</strong> added mute support as part of the voice interaction workflow</li>
-        <li><strong>General UI fixes:</strong> resolved several interface issues and smoothed interaction behavior</li>
-      </ul>
-
-      <h3>Latency and Conversation Flow</h3>
-      <ul>
-        <li><strong>Faster interruption response:</strong> reduced the interruption window to 500ms for quicker turn-taking</li>
-      </ul>
-      </div>
-      </details>
-      <hr />
-      <details class="patch-version">
-        <summary>VERSION 4.0</summary>
-        <div class="patch-content">
-      <p class="vera-log-intro">
-        Version 4.0 focuses on work-focused usability and command-driven workflow expansion.
-        This release adds music querying, a dedicated music panel, and a hidden Work mode that
-        is now activated by command instead of a visible UI toggle.
-      </p>
-
-      <h3>New Features</h3>
-      <ul>
-        <li><strong>Music query support:</strong> voice and text routing now support direct music requests inside the main interaction flow</li>
-        <li><strong>Music panel added:</strong> a dedicated panel was introduced for music-focused controls and results while staying inside the same workspace</li>
-        <li><strong>Hidden Work mode (command-activated):</strong> Work mode is now intentionally hidden from the physical UI and is activated through command only</li>
-      </ul>
-
-      <h3>Work Mode (Reference Layout)</h3>
-      <ul>
-        <li><strong>Multi-panel workspace:</strong> designed as a comprehensive UI for focused execution</li>
-        <li><strong>Checklist system:</strong> planning-oriented checklist flow with add/remove/update commands, persistent memory, and subsection support</li>
-        <li><strong>Reasoning space:</strong> supports file uploads, special routing, advanced models, multi-thread behavior, and image input</li>
-        <li><strong>Queue-based keyboard flow:</strong> keyboard requests can be queued for smoother multi-request handling</li>
-      </ul>
-
-      <h3>Quality of Life Improvements</h3>
-      <ul>
-        <li><strong>ASR accuracy improvements:</strong> speech recognition tuning was refined for better transcript reliability</li>
-        <li><strong>Settings adaptability:</strong> additional settings controls were added to improve runtime flexibility and user adaptation</li>
-      </ul>
-      </div>
-      </details>
-      <hr />
-      <details class="patch-version">
-        <summary>VERSION BMO</summary>
-        <div class="patch-content">
-          <p class="vera-log-intro">
-            <strong>BMO</strong> adds a dedicated character page with an <strong>SVG-driven mouth</strong> that
-            reacts while TTS plays. The face isnít tied to parsing the words on screen; it follows the
-            <strong>audio</strong> (loudness and short-term energy) so motion feels aligned with
-            <strong>prosody</strong> (syllables and pauses), not the literal phrase.
-          </p>
-
-          <h3>Emotion / mouth (SVG)</h3>
-          <ul>
-            <li>
-              <strong>Three discrete states</strong> (instant cuts, no smooth morph):
-              <strong>idle</strong> (stroke smile only),
-              <strong>surprised</strong> (rounded ìOî mouth),
-              <strong>happy</strong> (open mouth: cavity, teeth band, tongue).
-            </li>
-            <li>
-              <strong>While <code>#bmo-audio</code> is playing,</strong> Web Audio analysis updates
-              <code>data-bmo-tts-emotion</code> on the smile SVG so CSS can show the right layer.
-            </li>
-            <li>
-              <strong>Styling tweaks:</strong> thicker outline on filled happy/surprised shapes vs the idle smile;
-              teeth nudged up to meet the cavity ìroof.î
-            </li>
-          </ul>
-
-          <h3>Layout</h3>
-          <ul>
-            <li>
-              <strong>Phone / narrow screens:</strong> the side <strong>chat log column is hidden</strong> so the view
-              centers on the character and input dock (messages still attach in the DOM for the app).
-            </li>
-          </ul>
-
-          <h3>Reference</h3>
-          <ul>
-            <li><code>bmo-emotions-test.html</code> - standalone layout check for the three mouth slots.</li>
-          </ul>
-        </div>
-      </details>
-
-    </details>
-
-    </div>
-  </section>
-  <!-- =========================
-        HERO ó ABOUT ME
-    ========================= -->
-  <header class="hero" id="about-me">
-    <div class="hero-split about-me-layout">
-
-      <!-- LEFT: LABEL (CLICKABLE) + TEXT -->
-      <div class="hero-left about-me-text">
-        <a
-          href="https://www.linkedin.com/in/nam-nguyen-0aa9102a9/"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="about-me-label pulse"
-          aria-label="Open LinkedIn profile"
-        >
-          ABOUT ME
-        </a>
-
-        <p class="hero-text">
-          My name is Nam. I'm a third-year undergraduate student majoring in Data Science
-          at the University of California, Irvine. Over the past few years, I have developed a strong
-          interest in machine learning and artificial intelligence, which led me to participate
-          in Kaggle competitions and work on transformer models. These experiences ultimately
-          brought me to this project VERA. My goal with VERA is to build a functional conversational
-          AI that integrates modern machine learning techniques with software engineering best 
-          practices to deliver a seamless user experience.
-        </p>
-      </div>
-
-      <!-- RIGHT: PHOTO SPACE -->
-      <div class="hero-right about-me-media">
-        <img
-          src="../me.jpg"
-          alt="Nam Nguyen"
-          class="about-me-photo"
-        >
-      </div>
-
-    </div>
-  </header>
-
-  <!-- =========================
-        HERO ó OTHER PROJECTS
-    ========================= -->
-  <header class="hero" id="other-projects">
-    <div class="other-projects-wrap">
-
-      <!-- CLICKABLE SECTION TITLE -->
-      <a
-        href="https://github.com/bnam2103"
-        target="_blank"
-        rel="noopener noreferrer"
-        class="other-projects-title pulse"
-        aria-label="Open GitHub profile"
-      >
-        MY OTHER PROJECTS
-      </a>
-
-      <!-- PROJECT LIST -->
-      <div class="projects-list">
-
-        <a
-          href="https://huggingface.co/nambn0321"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="project-item"
-        >
-          <h3>Transformer Models</h3>
-          <p>Experiments with transformer training pipelines, including custom collators and fine-tuning.</p>
-        </a>
-
-        <a
-          href="https://github.com/bnam2103/Kaggle_competitions"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="project-item"
-        >
-          <h3>Kaggle Competitions</h3>
-          <p>Applied ML projects focused on feature engineering and modeling.</p>
-        </a>
-
-        <a
-          href="https://github.com/bnam2103/Exploratory-Data-Analysis"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="project-item"
-        >
-          <h3>Data Analysis and Presentations</h3>
-          <p>
-            Data analyses exploring pricing, experience,
-            and predictive modeling across datasets.
-          </p>
-        </a>
-
-      </div>
-
-    </div>
-  </header>
-
-    <!-- =========================
-      HERO ó CREDITS
-  ========================= -->
-  <header class="hero" id="credits">
-  <div class="hero-split reverse">
-
-    <!-- LEFT: CONTENT -->
-    <div class="hero-left hero-text-left">
-      <div class="credits-content">
-
-        <span class="credits-eyebrow">Credits</span>
-
-        <p class="credits-block">
-          <strong>Music</strong><br>
-          <em>Moog City</em> - C418
-        </p>
-
-        <p class="credits-block">
-          <strong>Trailer</strong><br>
-          Created and edited by me.<br>
-          <a
-            href="https://www.youtube.com/watch?v=apjsbT-B-VY"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="credits-link"
-          >
-            Watch trailer again here
-          </a>
-        </p>
-        <p class="credits-section">
-          <strong>Inspiration</strong><br>
-          Red Barrels - cinematic UI direction and tone.
-        </p>
-      </div>
-    </div>
-
-    </div>
-  </header>
-
-</section>
-
-<!-- =========================
-     VERA APP (classic mode)
-========================= -->
 <section id="vera-app" class="vera-app-shell" hidden>
   <main class="chat-centered">
     <div id="vera-guide" class="vera-guide">
       <div class="guide-item guide-vera">
-        <div class="guide-arrow arrow-left">?</div>
+        <div class="guide-arrow arrow-left">‚Üê</div>
         <div class="guide-text">
           Click here to learn more about the system.
         </div>
       </div>
       <div class="guide-item guide-headset">
-        <div class="guide-arrow arrow-up">?</div>
+        <div class="guide-arrow arrow-up">‚Üë</div>
         <div class="guide-text">
           <strong>Continuous Listening</strong><br>
           Works best in quiet environments for productivity. Only works when wears headset/airpods.
         </div>
       </div>
       <div class="guide-item guide-ptt">
-        <div class="guide-arrow arrow-up">?</div>
+        <div class="guide-arrow arrow-up">‚Üë</div>
         <div class="guide-text">
           <strong>Push-to-Talk</strong><br>
           Press to record. Press again to send.
@@ -686,7 +135,7 @@
             <div class="vera-wm-pane-title">Music</div>
             <div class="vera-wm-pane-head-actions">
               <button type="button" class="vera-wm-pane-btn vera-wm-pane-expand" data-wm-pane="music" data-wm-pane-action="expand" aria-label="Expand music panel" title="Expand">+</button>
-              <button type="button" class="vera-wm-pane-btn vera-wm-pane-collapse" data-wm-pane="music" data-wm-pane-action="collapse" aria-label="Shrink music panel" title="Shrink">-</button>
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-collapse" data-wm-pane="music" data-wm-pane-action="collapse" aria-label="Shrink music panel" title="Shrink">‚àí</button>
             </div>
           </div>
           <div class="vera-wm-music-body" id="vera-wm-music-body"></div>
@@ -696,7 +145,7 @@
             <div class="vera-wm-pane-title">Checklist</div>
             <div class="vera-wm-pane-head-actions">
               <button type="button" class="vera-wm-pane-btn vera-wm-pane-expand" data-wm-pane="checklist" data-wm-pane-action="expand" aria-label="Expand checklist panel" title="Expand">+</button>
-              <button type="button" class="vera-wm-pane-btn vera-wm-pane-collapse" data-wm-pane="checklist" data-wm-pane-action="collapse" aria-label="Shrink checklist panel" title="Shrink">-</button>
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-collapse" data-wm-pane="checklist" data-wm-pane-action="collapse" aria-label="Shrink checklist panel" title="Shrink">‚àí</button>
             </div>
           </div>
           <div class="vera-wm-checklist-pane-body">
@@ -716,7 +165,7 @@
                 type="button"
                 id="vera-wm-checklist-help-plan"
                 class="vera-wm-checklist-help-plan-btn"
-                title="Help me plan ó send ongoing items to Reasoning"
+                title="Help me plan ‚Äî send ongoing items to Reasoning"
                 aria-label="Help me plan"
               >
                 Plan
@@ -768,7 +217,7 @@
               aria-expanded="true"
               aria-controls="vera-wm-checklist-completed-body"
             >
-              <span class="vera-wm-checklist-completed-chevron" aria-hidden="true">?</span>
+              <span class="vera-wm-checklist-completed-chevron" aria-hidden="true">‚ñº</span>
               <span class="vera-wm-checklist-completed-label">Completed</span>
               <span class="vera-wm-checklist-completed-count" id="vera-wm-checklist-completed-count"></span>
             </button>
@@ -815,7 +264,7 @@
           </p>
         </div>
         <div class="vera-reasoning-compose">
-          <button type="button" id="vera-reasoning-attach-btn" class="vera-reasoning-attach-btn" title="Attach PDFs or images ó up to 5 files, max 25MB each, ~45MB total per message">
+          <button type="button" id="vera-reasoning-attach-btn" class="vera-reasoning-attach-btn" title="Attach PDFs or images ‚Äî up to 5 files, max 25MB each, ~45MB total per message">
             +
           </button>
           <input
@@ -829,7 +278,7 @@
             type="text"
             id="vera-reasoning-input"
             class="vera-reasoning-input"
-            placeholder="Message VERA (chat + optional Reasoning)Ö"
+            placeholder="Message VERA (chat + optional Reasoning)‚Ä¶"
             autocomplete="off"
             spellcheck="true"
           />
@@ -869,33 +318,33 @@
         title="Switch input mode"
         type="button"
       >
-        ??
+        ‚å®Ô∏è
       </button>
       <div id="vera-voice-bar" class="input-bar">
         <div class="mic-status">
-          <button id="vera-record" type="button" title="Voice input">??</button>
+          <button id="vera-record" type="button" title="Voice input">üéß</button>
           <span id="vera-status" class="status idle">Idle</span>
         </div>
         <div class="wave-container">
           <canvas id="vera-waveform"></canvas>
         </div>
-        <button id="vera-ptt" class="ptt-btn" type="button">???</button>
+        <button id="vera-ptt" class="ptt-btn" type="button">üéôÔ∏è</button>
         <span
           id="vera-server-status-inline"
           class="server-status offline mobile-only"
         >
-          ?? Offline
+          üî¥ Offline
         </span>
       </div>
       <div id="vera-keyboard-bar" class="input-bar hidden">
         <input
           id="vera-text-input"
           type="text"
-          placeholder="Type a messageÖ"
+          placeholder="Type a message‚Ä¶"
           autocomplete="off"
           spellcheck="false"
         />
-        <button id="vera-send-text" type="button" title="Send message">?</button>
+        <button id="vera-send-text" type="button" title="Send message">‚û§</button>
       </div>
       <div
         id="vera-keyboard-queue-host"
@@ -929,7 +378,7 @@
       type="button"
       id="vera-productivity-mode"
       class="productivity-mode-btn"
-      title="Productivity mode ó music panel"
+      title="Productivity mode ‚Äî music panel"
     >
       Music
     </button>
@@ -951,7 +400,7 @@
     <button type="button" id="vera-explicit-feedback-btn" class="vera-explicit-feedback-btn">
       Give feedback +50 credits
     </button>
-    <button type="button" id="vera-account-open" class="vera-account-fab" title="Account ó sign in or sign up">
+    <button type="button" id="vera-account-open" class="vera-account-fab" title="Account ‚Äî sign in or sign up">
       Account
     </button>
     <button type="button" id="vera-settings-open" class="vera-settings-fab" title="Open settings">
@@ -1009,20 +458,20 @@
   <main class="bmo-shell chat-centered">
     <div id="bmo-guide" class="vera-guide">
       <div class="guide-item guide-vera">
-        <div class="guide-arrow arrow-left">?</div>
+        <div class="guide-arrow arrow-left">‚Üê</div>
         <div class="guide-text">
           Click here to learn more about the system.
         </div>
       </div>
       <div class="guide-item guide-headset">
-        <div class="guide-arrow arrow-up">?</div>
+        <div class="guide-arrow arrow-up">‚Üë</div>
         <div class="guide-text">
           <strong>Continuous Listening</strong><br>
           Works best in quiet environments for productivity. Only works when wears headset/airpods.
         </div>
       </div>
       <div class="guide-item guide-ptt">
-        <div class="guide-arrow arrow-up">?</div>
+        <div class="guide-arrow arrow-up">‚Üë</div>
         <div class="guide-text">
           <strong>Push-to-Talk</strong><br>
           Press to record. Press again to send.
@@ -1099,7 +548,7 @@
                   </div>
                   <div class="bmo-smile-wrap">
                 <!--
-                  Idle = stroke smile below. Filled mouth (TTS only) ó saved coords for later:
+                  Idle = stroke smile below. Filled mouth (TTS only) ‚Äî saved coords for later:
                   cavity: M 20.5 21.5 C 20.5 13.8 37 11.2 64 11.2 C 91 11.2 107.5 13.8 107.5 21.5
                     C 107.5 33.8 95.5 46.2 64 47.2 C 32.5 46.2 20.5 33.8 20.5 21.5 Z (#1a5f46)
                   teeth: upper curve ~y11.35 at center (touches cavity roof); band to 23.4 (#f7fffb)
@@ -1155,10 +604,10 @@
                         />
                       </g>
                     </g>
-                    <!-- Sad TTS track (emotion test slots 4ñ6), toggled via data-bmo-tts-face-track="sad" -->
+                    <!-- Sad TTS track (emotion test slots 4‚Äì6), toggled via data-bmo-tts-face-track="sad" -->
                     <g class="bmo-mouth-track bmo-mouth-track--sad" aria-hidden="true">
                       <g transform="translate(-64 -15)">
-                        <!-- Slot 4: idle frown ó original stroke size (not scaled). -->
+                        <!-- Slot 4: idle frown ‚Äî original stroke size (not scaled). -->
                         <path
                           class="bmo-sad-smile-path"
                           d="M 11 28.5 C 44 15.5 78 16.2 117 28.4"
@@ -1166,7 +615,7 @@
                           stroke-linecap="round"
                           stroke-linejoin="round"
                         />
-                        <!-- Slots 5ñ6: surprised O + worried bean ó scaled up for readability. -->
+                        <!-- Slots 5‚Äì6: surprised O + worried bean ‚Äî scaled up for readability. -->
                         <g class="bmo-sad-mouth-scale" transform="translate(64 28) scale(1.4) translate(-64 -28)">
                         <g class="bmo-sad-mouth-inner" id="bmo-sad-mouth-vis">
                           <g class="bmo-sad-mouth-layer bmo-sad-mouth-layer--worried">
@@ -1231,33 +680,33 @@
           title="Switch input mode"
           type="button"
         >
-          ??
+          ‚å®Ô∏è
         </button>
         <div id="bmo-voice-bar" class="input-bar">
           <div class="mic-status">
-            <button id="bmo-record" type="button" title="Voice input">??</button>
+            <button id="bmo-record" type="button" title="Voice input">üéß</button>
             <span id="bmo-status" class="status idle">Idle</span>
           </div>
           <div class="wave-container">
             <canvas id="bmo-waveform"></canvas>
           </div>
-          <button id="bmo-ptt" class="ptt-btn" type="button">???</button>
+          <button id="bmo-ptt" class="ptt-btn" type="button">üéôÔ∏è</button>
           <span
             id="bmo-server-status-inline"
             class="server-status offline mobile-only"
           >
-            ?? Offline
+            üî¥ Offline
           </span>
         </div>
         <div id="bmo-keyboard-bar" class="input-bar hidden">
           <input
             id="bmo-text-input"
             type="text"
-            placeholder="Type a messageÖ"
+            placeholder="Type a message‚Ä¶"
             autocomplete="off"
             spellcheck="false"
           />
-          <button id="bmo-send-text" type="button" title="Send message">?</button>
+          <button id="bmo-send-text" type="button" title="Send message">‚û§</button>
         </div>
       </div>
     </div>
@@ -1272,7 +721,7 @@
         type="button"
         id="bmo-productivity-mode"
         class="productivity-mode-btn"
-        title="Productivity mode ó music panel"
+        title="Productivity mode ‚Äî music panel"
       >
         Music
       </button>
@@ -1284,10 +733,6 @@
     </div>
   </main>
 </section>
-
-<!-- =========================
-     INTRO + NAV + SCROLL + TYPE LOGIC
-========================= -->
 <script>
   /* =========================
      DOM REFERENCES
@@ -1427,30 +872,8 @@ function revealHomeLaunchButtonAfterTitle() {
   );
 }
 
-function showHomeLanding(options = {}) {
-  const animateHero = true;
-  home.hidden = false;
-  document.body.classList.remove("app-open", "bmo-open", "vera-mode");
-  const title = document.querySelector(".title-text");
-  const launchBtn = document.getElementById("launch-vera-home");
-  if (title && launchBtn) {
-    if (animateHero) {
-      title.style.opacity = "";
-      title.style.transform = "";
-      title.style.letterSpacing = "";
-      triggerTitleFlash();
-      revealHomeLaunchButtonAfterTitle();
-      sessionStorage.setItem(HOME_HERO_ANIM_SEEN_KEY, "true");
-    } else {
-      title.classList.remove("flash");
-      title.style.opacity = "1";
-      title.style.transform = "translateY(0)";
-      title.style.letterSpacing = "0.18em";
-      launchBtn.classList.add("visible");
-    }
-  }
-  void resumeHomeMusic();
-  syncMusicToggleState();
+function showHomeLanding() {
+  window.location.href = "../";
 }
 
 /* =========================
@@ -1458,17 +881,14 @@ function showHomeLanding(options = {}) {
 ========================= */
 
 function hideIntro() {
-  // fade disclaimer too
   disclaimer?.classList.add("hidden");
-
   intro.style.transition = "opacity 0.8s ease";
   intro.style.opacity = "0";
-
   setTimeout(() => {
     intro.remove();
     document.body.classList.remove("intro-lock");
     sessionStorage.setItem(INTRO_SEEN_KEY, "true");
-    showHomeLanding();
+    void startBootSequence();
   }, 800);
 }
 
@@ -1489,11 +909,9 @@ introVideo.onended = hideIntro;
 ========================= */
 
 if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
-  intro.remove();
+  intro?.remove();
   document.body.classList.remove("intro-lock");
-
-  // ?? slight delay ensures layout + CSS are ready
-  setTimeout(showHomeLanding, 60);
+  setTimeout(() => { void startBootSequence(); }, 60);
 }
 
   /* =========================
@@ -1633,13 +1051,10 @@ function stopAskRotator() {
 }
 
 let headlineIndex = 0;
-let typingStarted = false; // ?? THIS WAS MISSING
+let typingStarted = false; // üîë THIS WAS MISSING
 const heroLabel = document.getElementById("enter-vera");
 heroLabel?.addEventListener("click", unlockAudio);
-launchVeraHomeBtn?.addEventListener("click", async () => {
-  await unlockAudio();
-  startBootSequence();
-});
+
 
 function startTyping() {
   if (typingStarted) return;
@@ -1676,7 +1091,7 @@ function startTyping() {
     void title.offsetWidth;
     title.classList.add("flash");
   }
-  observer.observe(aboutVeraSection); // Disabled to auto-start typing on page load
+  if (aboutVeraSection) observer.observe(aboutVeraSection); // Disabled to auto-start typing on page load
   const navAboutMe = document.getElementById("nav-about-me");
   const aboutMeSection = document.getElementById("about-me");
 
@@ -1931,7 +1346,6 @@ function startTyping() {
     veraApp?.classList.remove("vera-flow-voice-docked");
     veraApp?.classList.remove("vera-flow-input-active");
     veraApp.hidden = true;
-    home.hidden = true;
     document.body.classList.remove("vera-mode");
     try {
       window.veraUsageLeaveVeraForBmo?.({
@@ -1983,7 +1397,7 @@ function startTyping() {
           requestAnimationFrame(() => {
             bmoPage.classList.add("bmo-animate-in");
             syncAskRotatorVisibility({ resetSequence: true });
-            /* BMO canvas was hidden while on VERA ó buffer was never sized; CSS stretch = blurry. */
+            /* BMO canvas was hidden while on VERA ‚Äî buffer was never sized; CSS stretch = blurry. */
             requestAnimationFrame(() => {
               window.dispatchEvent(new Event("resize"));
             });
@@ -2001,17 +1415,13 @@ function startTyping() {
       window.resetVoiceUiToIdle();
     }
     bmoPage.classList.add("fade-out");
-
     setTimeout(() => {
       bmoPage.hidden = true;
       bmoPage.classList.remove("fade-in", "fade-out", "bmo-animate-in");
-
       bmoLoadingScreen.hidden = true;
       bmoLoadingScreen.classList.remove("fade-in", "fade-out");
       stopBmoLoadingDots();
-
-      document.body.classList.remove("app-open", "bmo-open");
-      document.body.classList.remove("vera-mode");
+      document.body.classList.remove("app-open", "bmo-open", "vera-mode");
       try {
         window.veraUsageSyncModeFromDom?.({
           trigger: "ui",
@@ -2019,154 +1429,12 @@ function startTyping() {
           to: "home",
         });
       } catch (_) {}
-
-      home.hidden = false;
-      home.classList.add("fade-out");
-      requestAnimationFrame(() => {
-        home.classList.remove("fade-out");
-        home.classList.add("fade-in");
-      });
+      window.location.href = "../";
     }, 450);
   }
 
   document.getElementById("open-bmo-from-vera")?.addEventListener("click", openBmoPage);
-  /* =========================
-    MOBILE NAV LOGIC
-  ========================= */
-const caseButtons = document.querySelectorAll(".use-case-btn");
-const caseContents = document.querySelectorAll(".use-case-content");
-
-caseButtons.forEach(btn => {
-  btn.addEventListener("click", () => {
-    const target = btn.dataset.case;
-
-    caseButtons.forEach(b => b.classList.remove("active"));
-    caseContents.forEach(c => c.classList.remove("active"));
-
-    btn.classList.add("active");
-    document.getElementById(`case-${target}`).classList.add("active");
-  });
-});
-
-const DEFAULT_CASE = "realtime";
-
-const defaultBtn = document.querySelector(
-  `.use-case-btn[data-case="${DEFAULT_CASE}"]`
-);
-const defaultPanel = document.getElementById(`case-${DEFAULT_CASE}`);
-
-if (defaultBtn && defaultPanel) {
-  defaultBtn.classList.add("active");
-  defaultPanel.classList.add("active");
-}
-
-const typeTitles = document.querySelectorAll(".type-title");
-
-function typeText(el, text, speed = 45) {
-  let i = 0;
-  el.textContent = "";
-
-  const interval = setInterval(() => {
-    el.textContent += text[i];
-    i++;
-
-    if (i >= text.length) {
-      clearInterval(interval);
-    }
-  }, speed);
-}
-
-const titleObserver = new IntersectionObserver(
-  (entries) => {
-    entries.forEach(entry => {
-      if (!entry.isIntersecting) return;
-
-      const el = entry.target;
-      const text = el.dataset.text;
-
-      // prevent retrigger
-      if (el.dataset.typed) return;
-      el.dataset.typed = "true";
-
-      typeText(el, text, 40);
-      titleObserver.unobserve(el);
-    });
-  },
-  { threshold: 0.6 }
-);
-
-typeTitles.forEach(el => titleObserver.observe(el));
-
-const patchCollapse = document.querySelector(".patch-collapse");
-const patchVersions = Array.from(document.querySelectorAll(".patch-version"));
-const PATCH_CLOSE_ANIM_MS = 430;
-
-function closePatchVersionWithAnimation(details) {
-  if (!details?.open || details.dataset.closing === "true") return;
-  details.dataset.closing = "true";
-  details.classList.remove("animate");
-
-  setTimeout(() => {
-    details.open = false;
-    details.dataset.closing = "false";
-  }, PATCH_CLOSE_ANIM_MS);
-}
-
-function closePatchCollapseWithAnimation() {
-  if (!patchCollapse?.open || patchCollapse.dataset.closing === "true") return;
-  patchCollapse.dataset.closing = "true";
-  patchCollapse.classList.remove("animate-versions");
-
-  patchVersions.forEach((version) => {
-    version.classList.remove("animate");
-    version.style.transitionDelay = "0ms";
-  });
-
-  setTimeout(() => {
-    patchVersions.forEach((version) => {
-      version.open = false;
-      version.dataset.closing = "false";
-    });
-    patchCollapse.open = false;
-    patchCollapse.dataset.closing = "false";
-  }, PATCH_CLOSE_ANIM_MS + 80);
-}
-
-const patchCollapseSummary = patchCollapse?.querySelector(":scope > summary");
-patchCollapseSummary?.addEventListener("click", (event) => {
-  if (!patchCollapse.open) return;
-  event.preventDefault();
-  closePatchCollapseWithAnimation();
-});
-
-patchCollapse.addEventListener("toggle", () => {
-  if (patchCollapse.open) {
-    const versions = patchCollapse.querySelectorAll(".patch-version");
-
-    versions.forEach((version, index) => {
-      version.style.transitionDelay = `${index * 120}ms`;
-    });
-
-    requestAnimationFrame(() => {
-      patchCollapse.classList.add("animate-versions");
-    });
-  } else {
-    patchCollapse.classList.remove("animate-versions");
-
-    const versions = patchCollapse.querySelectorAll(".patch-version");
-    versions.forEach(version => {
-      version.style.transitionDelay = "0ms";
-    });
-  }
-});
-patchVersions.forEach(details => {
-  const summary = details.querySelector(":scope > summary");
-  summary?.addEventListener("click", (event) => {
-    if (!details.open) return;
-    event.preventDefault();
-    closePatchVersionWithAnimation(details);
-  });
-
+  
   details.addEventListener("toggle", () => {
     if (details.open) {
       // small delay allows browser to complete layout
@@ -2230,14 +1498,14 @@ function scheduleBootStallFallback() {
   bootTimeoutTimer = setTimeout(() => {
     if (appRevealed) return;
     console.error(
-      "[boot] timeout ó stalled at",
+      "[boot] timeout ‚Äî stalled at",
       currentProgress + "%",
       "for",
       BOOT_STALL_TIMEOUT_MS,
       "ms; forcing reveal"
     );
     if (typeof checkServer !== "function") {
-      console.error("[boot] checkServer missing ó app.js may have failed to parse or load");
+      console.error("[boot] checkServer missing ‚Äî app.js may have failed to parse or load");
     }
     scheduleBootReveal();
   }, BOOT_STALL_TIMEOUT_MS);
@@ -2245,7 +1513,7 @@ function scheduleBootStallFallback() {
 
 async function pollBootStatus() {
   if (typeof checkServer !== "function") {
-    console.error("[boot] checkServer unavailable ó app.js may not have loaded");
+    console.error("[boot] checkServer unavailable ‚Äî app.js may not have loaded");
     setProgress(0);
     return;
   }
@@ -2266,7 +1534,7 @@ async function pollBootStatus() {
 
   if (state === "starting") {
     hitStarting = true;
-    /* +15 per tick @ 600ms ò same climb as +5 @ 200ms */
+    /* +15 per tick @ 600ms ‚âà same climb as +5 @ 200ms */
     setProgress(Math.min(Math.max(currentProgress, 0) + 15, 50));
     return;
   }
@@ -2290,7 +1558,6 @@ async function startBootSequence() {
   stopBootPolling();
   document.body.classList.add("vera-mode");
   document.body.classList.remove("bmo-open");
-  home.hidden = true;
   bootLoader.classList.add("active");
   setProgress(0);
   hitStarting = false;
@@ -2351,17 +1618,7 @@ function revealApp() {
 }
 
 function goHomeFromApp() {
-  home.hidden = false;
-  home.classList.add("fade-out");
-  requestAnimationFrame(() => {
-    home.classList.remove("fade-out");
-    home.classList.add("fade-in");
-  });
-  window.scrollTo({ top: 0 });
-  setTimeout(() => {
-    showHomeLanding();
-  }, 150);
-  syncMusicToggleState();
+  window.location.href = "../";
 }
 
 document.getElementById("return-home").onclick = async () => {
@@ -2397,33 +1654,21 @@ document.getElementById("return-home").onclick = async () => {
   }, 600);
 };
 
-document.getElementById("return-home-vera").onclick = async () => {
+document.getElementById("return-home-vera")?.addEventListener("click", async () => {
   exitVeraWorkMode();
   pauseMusicPanelOnNavAway("vera_to_home");
-  await resumeHomeMusic();
-
   if (typeof window.resetVoiceUiToIdle === "function") {
     window.resetVoiceUiToIdle();
   }
-
-  veraApp.classList.add("fade-out");
-
-  setTimeout(() => {
-    veraApp.hidden = true;
-    veraApp.classList.remove("fade-out", "fade-in");
-
-    document.body.classList.remove("app-open");
-    document.body.classList.remove("bmo-open");
-    try {
-      window.veraUsageSyncModeFromDom?.({
-        trigger: "ui",
-        source: "vera_return_home",
-        to: "home",
-      });
-    } catch (_) {}
-    goHomeFromApp();
-  }, 600);
-};
+  try {
+    window.veraUsageSyncModeFromDom?.({
+      trigger: "ui",
+      source: "vera_return_home",
+      to: "home",
+    });
+  } catch (_) {}
+  window.location.href = "../";
+});
 
 let startupTypingOuterTimer = null;
 let startupTypingCharTimer = null;
@@ -2626,7 +1871,7 @@ function wireInputModeToggles() {
       const showKeyboard = !keyboardVisible;
       voiceBar.classList.toggle("hidden", showKeyboard);
       keyboardBar.classList.toggle("hidden", !showKeyboard);
-      toggleBtn.textContent = showKeyboard ? "???" : "??";
+      toggleBtn.textContent = showKeyboard ? "üéôÔ∏è" : "‚å®Ô∏è";
       if (showKeyboard) {
         document.getElementById(`${prefix}-text-input`)?.focus();
       }
@@ -2707,7 +1952,7 @@ document.addEventListener("click", () => {
   sessionStorage.setItem(seenKey, "true");
 });
 </script>
-
+</script>
 <div id="vera-user-sign-in-modal" class="vera-user-sign-in-overlay" hidden>
   <div
     class="vera-user-sign-in-dialog"
@@ -2742,7 +1987,7 @@ document.addEventListener("click", () => {
   <div class="vera-explicit-feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="vera-explicit-feedback-title">
     <div class="vera-explicit-feedback-header">
       <h2 id="vera-explicit-feedback-title">Share feedback</h2>
-      <button type="button" id="vera-explicit-feedback-close" class="vera-explicit-feedback-close" aria-label="Close">?</button>
+      <button type="button" id="vera-explicit-feedback-close" class="vera-explicit-feedback-close" aria-label="Close">‚úï</button>
     </div>
     <p class="vera-settings-hint">Complete this short form to unlock +50 bonus credits for today.</p>
     <p id="vera-explicit-feedback-error" class="vera-account-error" hidden role="alert"></p>
@@ -2784,12 +2029,12 @@ document.addEventListener("click", () => {
   <div class="vera-settings-card" role="dialog" aria-modal="true" aria-labelledby="vera-settings-title">
     <div class="vera-settings-header">
       <h2 id="vera-settings-title">Settings</h2>
-      <button type="button" id="vera-settings-close" class="vera-settings-close" aria-label="Close settings">?</button>
+      <button type="button" id="vera-settings-close" class="vera-settings-close" aria-label="Close settings">‚úï</button>
     </div>
 
     <section id="vera-account-section" class="vera-settings-section">
       <h3>Account</h3>
-      <p id="vera-account-status" class="vera-settings-hint">Loading accountÖ</p>
+      <p id="vera-account-status" class="vera-settings-hint">Loading account‚Ä¶</p>
       <p id="vera-account-error" class="vera-account-error" hidden role="alert"></p>
       <p id="vera-account-success" class="vera-account-success" hidden role="status"></p>
 
@@ -2873,15 +2118,15 @@ document.addEventListener("click", () => {
       <p class="vera-settings-hint">Choose how you want to talk or type with Vera.</p>
       <div class="vera-settings-guide-cards">
         <article class="vera-settings-guide-card">
-          <h4 class="vera-settings-guide-card-title">?? Continuous Listening</h4>
+          <h4 class="vera-settings-guide-card-title">üéß Continuous Listening</h4>
           <p class="vera-settings-guide-card-text">Best with headphones or AirPods so VERA's voice does not echo back into the mic.</p>
         </article>
         <article class="vera-settings-guide-card">
-          <h4 class="vera-settings-guide-card-title">??? Push-to-Talk</h4>
+          <h4 class="vera-settings-guide-card-title">üéôÔ∏è Push-to-Talk</h4>
           <p class="vera-settings-guide-card-text">Works without headphones. Press to speak, then VERA listens and responds one turn at a time.</p>
         </article>
         <article class="vera-settings-guide-card">
-          <h4 class="vera-settings-guide-card-title">?? Keyboard</h4>
+          <h4 class="vera-settings-guide-card-title">‚å®Ô∏è Keyboard</h4>
           <p class="vera-settings-guide-card-text">Type when voice is inconvenient, noisy, or unavailable.</p>
         </article>
       </div>
@@ -2997,7 +2242,6 @@ document.addEventListener("click", () => {
     </div>
   </div>
 </div>
-
 <script src="../config/api.js?v=1"></script>
 <script>
 (function () {
@@ -3018,14 +2262,14 @@ document.addEventListener("click", () => {
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
-<!-- utils/ids.js must load BEFORE app.js ó defines session + request id helpers
+<!-- utils/ids.js must load BEFORE app.js ‚Äî defines session + request id helpers
      that app.js relies on at top level (extracted 2026-05-27). -->
 <script src="../utils/ids.js?v=1"></script>
-<!-- utils/storage.js must also load BEFORE app.js ó defines safe localStorage
+<!-- utils/storage.js must also load BEFORE app.js ‚Äî defines safe localStorage
      / sessionStorage / JSON wrappers used by app.js settings + debug gates
      (extracted 2026-05-27, Stage 2). -->
 <script src="../utils/storage.js?v=1"></script>
-<!-- utils/logging.js must also load BEFORE app.js ó defines pure console /
+<!-- utils/logging.js must also load BEFORE app.js ‚Äî defines pure console /
      debug-log helpers (logInputLimitDebug, logVeraCapabilityFailure,
      logCapabilityFallbackDebug, logBargeInLatencyDebug,
      logInterruptTranscriptDebug, logVoiceFirstAudio, logVoiceMainReplyAudio,
@@ -3045,27 +2289,27 @@ document.addEventListener("click", () => {
          in many places.
      Extracted 2026-06-01, Patch B-4. -->
 <script src="../users/signinUi.js?v=2"></script>
-<!-- users/supabaseAuth.js ó Supabase Auth UI + JWT on backend calls (Phase 2).
+<!-- users/supabaseAuth.js ‚Äî Supabase Auth UI + JWT on backend calls (Phase 2).
      Must load AFTER signinUi.js (authApiUrl, authFetch stub) and BEFORE
      workmode/checklist.js + app.js. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="../users/supabaseAuth.js?v=15"></script>
-<!-- users/accountSettingsSync.js ó account prefs ? Supabase user_settings (Phase 4).
+<!-- users/accountSettingsSync.js ‚Äî account prefs ‚Üî Supabase user_settings (Phase 4).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="../users/accountSettingsSync.js?v=2"></script>
-<!-- users/feedback.js ó thumbs up/down on main chat Vera replies (Feedback MVP).
+<!-- users/feedback.js ‚Äî thumbs up/down on main chat Vera replies (Feedback MVP).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="../users/feedback.js?v=4"></script>
-<!-- users/usageEvents.js ó lightweight behavioral analytics (MVP).
+<!-- users/usageEvents.js ‚Äî lightweight behavioral analytics (MVP).
      Must load AFTER utils/ids.js + supabaseAuth.js, BEFORE app.js. -->
 <script src="../users/usageEvents.js?v=3"></script>
-<!-- users/usageFeatureEvents.js ó Phase 2 feature interaction analytics.
+<!-- users/usageFeatureEvents.js ‚Äî Phase 2 feature interaction analytics.
      Must load AFTER usageEvents.js, BEFORE app.js. -->
 <script src="../users/usageFeatureEvents.js?v=1"></script>
-<!-- users/usageCredits.js ó daily credit usage pill (read-only).
+<!-- users/usageCredits.js ‚Äî daily credit usage pill (read-only).
      Must load AFTER usageFeatureEvents.js (reasoning refresh hook), BEFORE app.js. -->
 <script src="../users/usageCredits.js?v=6"></script>
-<!-- users/explicitFeedback.js ó explicit feedback form + bonus credits.
+<!-- users/explicitFeedback.js ‚Äî explicit feedback form + bonus credits.
      Must load AFTER usageCredits.js, BEFORE app.js. -->
 <script src="../users/explicitFeedback.js?v=2"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
@@ -3076,7 +2320,7 @@ document.addEventListener("click", () => {
      / chooseBestTranscript / normalizeCommandTranscript and the new
      getAsrDebugState accessor. Extracted 2026-05-27, Stage 7. -->
 <script src="../voice/asr.js?v=1"></script>
-<!-- voice/ttsQueue.js must also load BEFORE app.js ó declares the main TTS
+<!-- voice/ttsQueue.js must also load BEFORE app.js ‚Äî declares the main TTS
      runtime state (mainTtsPlaybackToken, mainTtsPlaybackActive,
      activeMainTtsBufferSources, activeNdjsonBodyReader) plus
      registerMainTtsBufferSource / cancelMainTtsPlayback /
@@ -3084,7 +2328,7 @@ document.addEventListener("click", () => {
      playTtsUrlSequenceIncremental / runNdjsonTtsPlayback /
      createTtsUrlQueue + new accessors (isMainTtsPlaying, getTtsDebugState).
      app.js helpers (isAssistantTtsPlaying, playTtsFromApi,
-     interruptAssistantPipelineForTypedMessage, Ö) read and assign to those
+     interruptAssistantPipelineForTypedMessage, ‚Ä¶) read and assign to those
      bindings via the shared classic-script global lexical environment.
      Extracted 2026-05-27, Stage 5. -->
 <script src="../voice/ttsQueue.js?v=2"></script>
@@ -3105,12 +2349,12 @@ document.addEventListener("click", () => {
      like processing/requestInFlight/waveState/voiceUxTurn and the TTS
      enqueue helpers via the shared classic-script global lexical env at
      CALL time) and BEFORE app.js (so the moved function declarations
-     and shared bindings ó MIN_REASONING_PANELS, recentlyClosedReasoningPanels,
+     and shared bindings ‚Äî MIN_REASONING_PANELS, recentlyClosedReasoningPanels,
      _lastReasoningCloseLock, createReasoningLanePanel, renderReasoningTabStrip,
      activateReasoningTab, addReasoningTab, closeReasoningPanelsByVisualIndices,
      closeReasoningTab, getReasoningPanelOrder, buildCloseReasoningPanelsVoiceReply,
      isReasoningCloseVoiceSource, renderReasoningCloseAssistantConfirmation,
-     etc. ó are visible to app.js callers through the shared lexical env).
+     etc. ‚Äî are visible to app.js callers through the shared lexical env).
      New accessor getReasoningPanelDebugState() mirrors getTtsDebugState /
      getInterruptionDebugState / getAsrDebugState. Extracted 2026-05-27,
      Stage 8. -->
@@ -3119,11 +2363,11 @@ document.addEventListener("click", () => {
      plan-sync helpers reach reasoning-panel helpers like
      getReasoningTabTopicLabel and getWorkModeReasoningLaneId through
      the shared classic-script global lexical env at CALL time) and
-     BEFORE app.js (so the moved constants ó WORK_CHECKLIST_STORAGE_KEY,
+     BEFORE app.js (so the moved constants ‚Äî WORK_CHECKLIST_STORAGE_KEY,
      WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY, NON_CANCELABLE_AFTER_COMMIT_ACTIONS,
      CHECKLIST_ORDINAL_WORD_MAP, CHECKLIST_* regexes,
      WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX, WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS,
-     WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS ó and function declarations ó
+     WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS ‚Äî and function declarations ‚Äî
      readChecklistItemsFromStorage, queueWorkChecklistSyncToServer,
      syncWorkChecklistToServerNow, flushWorkChecklistSyncBeforeCommand,
      hydrateWorkChecklistFromServer, parseChecklistOrdinals,
@@ -3149,7 +2393,7 @@ document.addEventListener("click", () => {
      eraseEntireWorkChecklist, runWorkChecklistSyncFromLatestPlan,
      flashWorkChecklistPlanHint, buildWorkChecklistHelpPlanUserMessage,
      isWorkChecklistPlanShortcutIntent, isWorkChecklistSyncCommandIntent,
-     queueWorkChecklistRowEnterAnimation, etc. ó are visible to app.js
+     queueWorkChecklistRowEnterAnimation, etc. ‚Äî are visible to app.js
      callers through the shared lexical env). New accessor
      getChecklistDebugState() mirrors getReasoningPanelDebugState /
      getTtsDebugState / getInterruptionDebugState / getAsrDebugState.
@@ -3170,7 +2414,7 @@ document.addEventListener("click", () => {
      environment). Extracted 2026-06-01, Patch B-5. -->
 <script src="../workmode/multiActionPlanner.js?v=1"></script>
 <!-- news/newsRouter.js + news/newsPanel.js must load BEFORE app.js (so the
-     moved declarations ó NEWS_EVENT_CLUE_RE, NEWS_NAMED_ENTITY_RE,
+     moved declarations ‚Äî NEWS_EVENT_CLUE_RE, NEWS_NAMED_ENTITY_RE,
      PENDING_NEWS_STATUS_TIMEOUT_MS, PENDING_NEWS_STATUS_TEXT,
      pendingNewsStatusBubble / pendingNewsStatusTimerId / pendingNewsStatusToken,
      _clearPendingNewsStatusTimer, looksLikeNewsSearchRequest,
@@ -3178,7 +2422,7 @@ document.addEventListener("click", () => {
      failPendingNewsStatusBubble, _veraNewsPanelRenderInFlight,
      renderNewsResultListMarkup, renderImageResultsMarkup,
      getVideoEmbedUrl, renderVideoResultsMarkup, setActiveSidePaneTab,
-     renderMediaTabsPanel ó are visible to app.js callers through the
+     renderMediaTabsPanel ‚Äî are visible to app.js callers through the
      shared classic-script global lexical env). Order between the two
      news files does NOT matter (neither calls into the other); both
      end up as bare-identifier declarations in the same global lexical
@@ -3194,19 +2438,19 @@ document.addEventListener("click", () => {
 <script src="../news/newsPanel.js?v=4"></script>
 <script src="../news/weatherPanel.js?v=1"></script>
 <script src="app.js?v=124"></script>
-<!-- voice/musicNavigation.js ó shared track navigation dedupe + ended guard -->
+<!-- voice/musicNavigation.js ‚Äî shared track navigation dedupe + ended guard -->
 <script src="../voice/musicNavigation.js?v=1"></script>
-<!-- voice/musicSequence.js ó multi-action music sequential dispatch + provider exclusivity -->
+<!-- voice/musicSequence.js ‚Äî multi-action music sequential dispatch + provider exclusivity -->
 <script src="../voice/musicSequence.js?v=2"></script>
-<!-- debug/voiceDebug.js loads AFTER app.js ó only attaches the manual
+<!-- debug/voiceDebug.js loads AFTER app.js ‚Äî only attaches the manual
      DevTools helpers window.veraConcurrencyDebug, window.dumpVeraVoiceState,
      window.resetVeraVoiceRuntimeState; their function bodies reach the
      real app.js runtime bindings (workModeReasoningAbortControllers,
-     mainTtsPlaybackActive, interruptBargeInLatched, Ö) through the shared
+     mainTtsPlaybackActive, interruptBargeInLatched, ‚Ä¶) through the shared
      classic-script global lexical environment at CALL time. Extracted
      2026-05-27, Stage 4. -->
 <script src="../debug/voiceDebug.js?v=3"></script>
-<!-- debug/reasoningGate.js loads AFTER app.js ó only attaches the manual
+<!-- debug/reasoningGate.js loads AFTER app.js ‚Äî only attaches the manual
      DevTools helper window.debugReasoningGate(text, opts). The function
      body reaches the live-routing helpers that remain in app.js
      (isExplicitReasoningPanelReference, isBriefExplanationModifier,
@@ -3231,3 +2475,5 @@ document.addEventListener("click", () => {
 </body>
 </html>
 
+</body>
+</html>
