@@ -1,0 +1,22 @@
+fastapi
+uvicorn
+numpy
+torch
+transformers
+accelerate
+scipy
+pydub
+num2words
+openai
+huggingface_hub
+requests
+feedparser
+sentencepiece
+python-multipart
+python-dotenv
+PyJWT
+cryptography
+itsdangerous
+runpod
+# BMO Fish TTS (optional — only needed if using client=bmo + env keys)
+fish-audio-sdk[utils]

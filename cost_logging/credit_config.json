@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "Credit values per credit_action. User-facing caps enforce these weights.",
+    "Edit values freely; the loader falls back to DEFAULT_CREDIT_CONFIG for any",
+    "missing keys. A missing file is auto-regenerated from defaults on next load."
+  ],
+  "local_action": 0,
+  "failed_request": 0,
+  "weather": 1,
+  "simple_llm": 3,
+  "voice_assistant": 3,
+  "search_or_news": 6,
+  "work_mode_reasoning": 12,
+  "work_mode_reasoning_deep": 20,
+  "work_mode_voice_summary": 2,
+  "image_pdf_reasoning": 20,
+  "bmo_tts": 0
+}
