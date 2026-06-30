@@ -11,8 +11,8 @@ import os
 import re
 from openai import OpenAI
 
-from CHAT2 import admin_info_path, build_profile_context, load_profile_info
-from CHAT2 import active_user_info_path as chat2_active_user_info_path
+from CHAT3 import build_profile_context, load_profile_info
+from CHAT3 import active_user_info_path as chat3_active_user_info_path
 
 
 def _parse_json_bool(text: str, key: str, default: bool) -> bool:
@@ -107,9 +107,9 @@ class ReasoningAI:
             os.environ.get("VERA_REASONING_MODEL", "gpt-5.4-mini"),
         )
         self.classifier_model = os.environ.get("VERA_REASONING_CLASSIFIER_MODEL", "gpt-5.4-mini")
-        self.admin_info = load_profile_info(admin_info_path)
-        self.active_user_info_path = chat2_active_user_info_path
-        self.active_user_info = load_profile_info(chat2_active_user_info_path)
+        # Anonymous-first: no process-global admin profile (see _profile_block).
+        self.active_user_info_path = chat3_active_user_info_path
+        self.active_user_info = load_profile_info(chat3_active_user_info_path)
 
     # 2026-06-01 sentinel for session-scoped active-user override. Mirrors
     # the equivalent sentinel in CHAT3.VeraAI.build_messages.

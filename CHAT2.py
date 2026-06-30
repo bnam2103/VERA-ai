@@ -1,16 +1,30 @@
 import asyncio
 import json
+import logging
 import re
+from pathlib import Path
 from openai import OpenAI
 
-admin_info_path = r"C:\Users\User\Documents\VERA\Online_demo\users_files\Nam.json"
+_logger = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).resolve().parent
+_LEGACY_ADMIN_PROFILE = BASE_DIR / "users_files" / "Nam.json"
+# Anonymous by default; optional legacy admin profile only when the file exists locally.
+admin_info_path = str(_LEGACY_ADMIN_PROFILE) if _LEGACY_ADMIN_PROFILE.is_file() else None
 active_user_info_path = None
 
 
 def load_profile_info(path: str | None) -> dict | None:
     if not path:
         return None
-    with open(path, "r", encoding="utf-8-sig") as f:
+    profile_path = Path(path)
+    if not profile_path.is_file():
+        _logger.warning(
+            "Legacy user profile not found (%s); continuing without it.",
+            profile_path,
+        )
+        return None
+    with profile_path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 
