@@ -8,25 +8,12 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=1">
+  <link rel="stylesheet" href="product.css?v=2">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
 
 <body>
-<!-- =========================
-     BACKGROUND VIDEO
-========================= -->
-<video
-  id="bg-video"
-  autoplay
-  muted
-  loop
-  playsinline
->
-  <source src="background.mp4" type="video/mp4">
-</video>
-
 <!-- =========================
      INTRO OVERLAY (TRAILER)
 ========================= -->
@@ -60,13 +47,12 @@
 <section id="home">
 
   <!-- TOP NAV -->
-  <!-- TOP NAV -->
   <nav class="top-nav">
     <div class="nav-left">
       <button class="nav-logo" id="nav-home" type="button">VERA</button>
     </div>
 
-    <div class="nav-right">
+    <div class="nav-center">
       <button
         class="nav-link music-toggle"
         id="music-toggle"
@@ -80,14 +66,45 @@
       <button class="nav-link" id="nav-about-vera">About VERA</button>
       <button class="nav-link" id="nav-about-me">About Me</button>
       <button class="nav-link" id="nav-projects">My Other Projects</button>
-
     </div>
+
+    <div class="nav-right nav-spacer" aria-hidden="true"></div>
   </nav>
 
-  <header class="title-hero">
-    <h1 class="title-text">
-      VIRTUAL EXECUTIVE RESPONSE ASSISTANT
+  <header class="title-hero landing-hero">
+    <h1 class="landing-headline">
+      Stop prompting, start talking.
     </h1>
+    <p class="landing-subhead">
+      Accelerate your workflow without compromising learning with a talking workspace.
+    </p>
+
+    <div class="landing-preview">
+      <video
+        id="bg-video"
+        class="landing-preview-video"
+        autoplay
+        muted
+        loop
+        playsinline
+      >
+        <source src="background.mp4" type="video/mp4">
+      </video>
+      <button
+        type="button"
+        class="landing-preview-play"
+        id="landing-video-toggle"
+        aria-label="Pause video"
+      >
+        <span class="landing-play-icon" aria-hidden="true">
+          <svg width="14" height="16" viewBox="0 0 14 16" fill="currentColor"><path d="M0 0v16l14-8L0 0z"/></svg>
+        </span>
+        <span class="landing-pause-icon" aria-hidden="true">
+          <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><rect x="0" y="0" width="4" height="14" rx="1"/><rect x="8" y="0" width="4" height="14" rx="1"/></svg>
+        </span>
+      </button>
+    </div>
+
     <button id="launch-vera-home" class="home-launch-btn" type="button" aria-label="Launch VERA app">
       Launch VERA
     </button>
@@ -642,8 +659,6 @@
   const AUDIO_UNLOCKED_KEY = "vera_audio_unlocked_session";
 
   const MAX_SCROLL = 700;
-  const BASE_BRIGHTNESS = 0.3;
-  const DARK_RANGE = 0.25;
   let audioUnlocked = sessionStorage.getItem(AUDIO_UNLOCKED_KEY) === "true";
   let bmoLoadingDotsInterval = null;
 
@@ -714,24 +729,29 @@
 ========================= */
 
 function triggerTitleFlash() {
-  const title = document.querySelector(".title-text");
-  if (!title) return;
+  const headline = document.querySelector(".landing-headline");
+  const subhead = document.querySelector(".landing-subhead");
+  const preview = document.querySelector(".landing-preview");
+  if (!headline) return;
 
-  // Reset animation so it can replay cleanly
-  title.classList.remove("flash");
-  void title.offsetWidth; // force reflow
-  title.classList.add("flash");
+  headline.classList.remove("reveal");
+  subhead?.classList.remove("reveal");
+  preview?.classList.remove("reveal");
+  void headline.offsetWidth;
+  headline.classList.add("reveal");
+  subhead?.classList.add("reveal");
+  preview?.classList.add("reveal");
 }
 
 function revealHomeLaunchButtonAfterTitle() {
-  const title = document.querySelector(".title-text");
+  const headline = document.querySelector(".landing-headline");
   const launchBtn = document.getElementById("launch-vera-home");
-  if (!title || !launchBtn) return;
+  if (!headline || !launchBtn) return;
 
   launchBtn.classList.remove("visible");
   void launchBtn.offsetWidth;
 
-  title.addEventListener(
+  headline.addEventListener(
     "animationend",
     () => {
       launchBtn.classList.add("visible");
@@ -744,21 +764,21 @@ function showHomeLanding(options = {}) {
   const animateHero = true;
   home.hidden = false;
   document.body.classList.remove("app-open", "bmo-open", "vera-mode");
-  const title = document.querySelector(".title-text");
+  const headline = document.querySelector(".landing-headline");
   const launchBtn = document.getElementById("launch-vera-home");
-  if (title && launchBtn) {
+  if (headline && launchBtn) {
     if (animateHero) {
-      title.style.opacity = "";
-      title.style.transform = "";
-      title.style.letterSpacing = "";
+      headline.style.opacity = "";
+      headline.style.transform = "";
       triggerTitleFlash();
       revealHomeLaunchButtonAfterTitle();
       sessionStorage.setItem(HOME_HERO_ANIM_SEEN_KEY, "true");
     } else {
-      title.classList.remove("flash");
-      title.style.opacity = "1";
-      title.style.transform = "translateY(0)";
-      title.style.letterSpacing = "0.18em";
+      headline.classList.remove("reveal");
+      headline.style.opacity = "1";
+      headline.style.transform = "translateY(0)";
+      document.querySelector(".landing-subhead")?.classList.add("reveal");
+      document.querySelector(".landing-preview")?.classList.add("reveal");
       launchBtn.classList.add("visible");
     }
   }
@@ -829,7 +849,7 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
   };
 
   /* =========================
-     SCROLL-BASED BACKGROUND
+     SCROLL-BASED GRADIENT
   ========================= */
 
   let ticking = false;
@@ -840,19 +860,6 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
     if (!ticking) {
       requestAnimationFrame(() => {
         const progress = Math.min(window.scrollY / MAX_SCROLL, 1);
-
-        /* ----- VIDEO DARKEN ----- */
-        let darkT = progress;
-        darkT = darkT * darkT * (3 - 2 * darkT); // smoothstep
-
-        const brightness =
-          Math.max(BASE_BRIGHTNESS - darkT * DARK_RANGE, 0.15);
-
-        bgVideo.style.setProperty("--v-brightness", brightness);
-
-        /* ----- VIDEO FADE ----- */
-        const videoOpacity = Math.max(1 - progress * 1.2, 0);
-        bgVideo.style.opacity = videoOpacity;
 
         /* ----- GRADIENT MORPH ----- */
         let gradT = 0;
@@ -881,6 +888,25 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
       ticking = true;
     }
   });
+
+  /* =========================
+     LANDING PREVIEW VIDEO
+  ========================= */
+
+  const landingVideoToggle = document.getElementById("landing-video-toggle");
+  if (landingVideoToggle && bgVideo) {
+    landingVideoToggle.addEventListener("click", () => {
+      if (bgVideo.paused) {
+        bgVideo.play();
+        landingVideoToggle.setAttribute("aria-label", "Pause video");
+        landingVideoToggle.classList.remove("is-paused");
+      } else {
+        bgVideo.pause();
+        landingVideoToggle.setAttribute("aria-label", "Play video");
+        landingVideoToggle.classList.add("is-paused");
+      }
+    });
+  }
 
   /* =========================
      TYPING ANIMATION
@@ -982,13 +1008,6 @@ function startTyping() {
     { threshold: 0.4 }
   );
 
-  function triggerTitleFlash() {
-    const title = document.querySelector(".title-text");
-    if (!title) return;
-    title.classList.remove("flash");
-    void title.offsetWidth;
-    title.classList.add("flash");
-  }
   observer.observe(aboutVeraSection); // Disabled to auto-start typing on page load
   const navAboutMe = document.getElementById("nav-about-me");
   const aboutMeSection = document.getElementById("about-me");
