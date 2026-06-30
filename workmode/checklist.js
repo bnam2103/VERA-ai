@@ -723,6 +723,19 @@ function applyChecklistControlVoicePayload(payload = {}) {
   if (isAddOp) {
     try {
       const undoSnap = readChecklistUndoSnapshotFromStorage();
+      console.info("[checklist_add_apply_start]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        item_text: String(
+          (Array.isArray(payload.items) ? payload.items : [])
+            .map((x) => String(x?.text || x || "").trim())
+            .filter(Boolean)[0] || ""
+        ).slice(0, 200),
+        checklist_count_before: beforeCount,
+        checklist_titles_before: _checklistUndoItemTitles(before),
+        payload_item_count: Array.isArray(payload.items) ? payload.items.length : 0,
+        undo_snapshot_exists: Boolean(undoSnap?.items?.length),
+        source: "backend_payload"
+      });
       console.info("[checklist_add_requested]", {
         session_id: String(getSessionId?.() || "").slice(0, 64),
         item_text: String(
@@ -774,6 +787,19 @@ function applyChecklistControlVoicePayload(payload = {}) {
   }
   if (changed && isAddOp) {
     try {
+      console.info("[checklist_add_apply_done]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        item_text: String(
+          (Array.isArray(payload.items) ? payload.items : [])
+            .map((x) => String(x?.text || x || "").trim())
+            .filter(Boolean)[0] || ""
+        ).slice(0, 200),
+        checklist_count_before: beforeCount,
+        checklist_count_after: afterCount,
+        checklist_titles_after: _checklistUndoItemTitles(after),
+        duplicate_detected: afterCount > beforeCount + 1,
+        source: "backend_payload"
+      });
       console.info("[checklist_add_state_after]", {
         session_id: String(getSessionId?.() || "").slice(0, 64),
         current_item_count_after_add: afterCount,
@@ -793,6 +819,68 @@ function queueWorkChecklistSyncToServer() {
     workChecklistSyncTimer = null;
     await syncWorkChecklistToServerNow();
   }, 180);
+}
+
+async function syncWorkChecklistClearToServerNow(beforeItems, completedCollapsed) {
+  if (typeof authFetch !== "function" || typeof authApiUrl !== "function") {
+    return { ok: false, reason: "auth_unavailable" };
+  }
+  const sessionId = typeof getSessionId === "function" ? getSessionId() : "";
+  if (!sessionId) return { ok: false, reason: "missing_session_id" };
+  const undoItems = normalizeChecklistControlItems(beforeItems);
+  const collapsed =
+    typeof completedCollapsed === "boolean"
+      ? completedCollapsed
+      : localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1";
+  try {
+    console.info("[checklist_ui_erase_server_clear_start]", {
+      session_id: String(sessionId).slice(0, 64),
+      server_clear_item_count: 0,
+      undo_item_count: undoItems.length,
+      source: "ui_erase"
+    });
+  } catch (_) {}
+  try {
+    const res = await authFetch(authApiUrl("/api/work-mode/checklist"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        items: [],
+        completed_collapsed: collapsed,
+        source: "ui_erase",
+        arm_clear_undo: true,
+        undo_items: undoItems
+      })
+    });
+    if (!res.ok) {
+      try {
+        console.warn("[checklist_ui_erase_server_clear_failed]", {
+          session_id: String(sessionId).slice(0, 64),
+          status: res.status,
+          source: "ui_erase"
+        });
+      } catch (_) {}
+      return { ok: false, reason: `http_${res.status}` };
+    }
+    try {
+      console.info("[checklist_ui_erase_server_clear_done]", {
+        session_id: String(sessionId).slice(0, 64),
+        undo_item_count: undoItems.length,
+        source: "ui_erase"
+      });
+    } catch (_) {}
+    return { ok: true };
+  } catch (err) {
+    try {
+      console.warn("[checklist_ui_erase_server_clear_failed]", {
+        session_id: String(sessionId).slice(0, 64),
+        reason: String(err?.message || err || "fetch_error").slice(0, 200),
+        source: "ui_erase"
+      });
+    } catch (_) {}
+    return { ok: false, reason: "fetch_error" };
+  }
 }
 
 async function syncWorkChecklistToServerNow() {
@@ -3130,13 +3218,36 @@ function eraseEntireWorkChecklist() {
   if (!ok) return;
   const beforeErase = readChecklistItemsFromStorage();
   const beforeEraseCount = beforeErase.filter((x) => String(x?.text || "").trim()).length;
+  const completedCollapsed =
+    localStorage.getItem(_getActiveChecklistCollapsedStorageKey()) === "1";
+  try {
+    console.info("[checklist_ui_erase_requested]", {
+      session_id: String(getSessionId?.() || "").slice(0, 64),
+      item_count_before_erase: beforeEraseCount,
+      item_titles_before_erase: _checklistUndoItemTitles(beforeErase),
+      source: "ui_erase"
+    });
+  } catch (_) {}
   if (beforeEraseCount > 0) {
     armChecklistUndoSnapshotFromItems(beforeErase, "checklist.clear");
+  }
+  if (workChecklistSyncTimer) {
+    window.clearTimeout(workChecklistSyncTimer);
+    workChecklistSyncTimer = null;
   }
   try {
     _persistChecklistItemsToStorage([]);
     hideWorkChecklistSyncPreview();
     loadWorkChecklistItems();
+    try {
+      console.info("[checklist_ui_erase_local_cleared]", {
+        session_id: String(getSessionId?.() || "").slice(0, 64),
+        item_count_after_local_clear: 0,
+        undo_snapshot_exists: Boolean(readChecklistUndoSnapshotFromStorage()?.items?.length),
+        source: "ui_erase"
+      });
+    } catch (_) {}
+    void syncWorkChecklistClearToServerNow(beforeErase, completedCollapsed);
     flashWorkChecklistPlanHint("Checklist cleared.");
     syncWorkChecklistSyncPlanButton();
   } catch (_) {

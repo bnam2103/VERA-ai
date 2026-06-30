@@ -146,13 +146,7 @@ function resetVeraSessionAndUi() {
   workModeReasoningLaneWaitQueue.length = 0;
   workModeTypedTurnQueue.length = 0;
   workModeTypedQueueDraining = false;
-  workModeTypedKeyboardTurnInFlight = false;
-  workModeTypedKeyboardLastBegin = { text: "", at: 0 };
-  try {
-    document
-      .querySelector("#vera-app.work-mode .vera-wm-typed-queue-host")
-      ?.remove();
-  } catch (_) {}
+  clearWorkModeTypedPendingTurn("work_mode_reset", { silent: true });
   workModeLastSubstantiveUserText = "";
   workModeLastSubstantiveLaneIdx = null;
   laneTopicSeedByIdx[0] = "";
@@ -2666,6 +2660,20 @@ function commitServerUserTranscriptBubble(text, path) {
         if (b instanceof HTMLElement && b.classList.contains("interrupt-preview")) continue;
         const existing = ((b && b.textContent) || "").trim();
         if (existing !== t) break;
+        if (row instanceof HTMLElement && row.dataset.veraWorkModeTypedPendingUser === "1") {
+          row.dataset.workModeTypedPendingState = "confirmed";
+          try {
+            delete row.dataset.veraWorkModeTypedPendingUser;
+          } catch (_) {}
+          persistVeraChatState();
+          ensureChatStartedLayout();
+          try {
+            if (typeof window !== "undefined") {
+              window.__veraLastInferUserTextForLaneGuard = t;
+            }
+          } catch (_) {}
+          return;
+        }
         let sawStage1Below = false;
         let anotherUserBelow = false;
         for (let j = i + 1; j < rows.length; j++) {
@@ -5608,9 +5616,9 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
       if (typeof readChecklistItemsFromStorage === "function") {
         checklistItems = readChecklistItemsFromStorage();
       } else {
-        const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) checklistItems = parsed;
+      const raw = localStorage.getItem(WORK_CHECKLIST_STORAGE_KEY) || "[]";
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) checklistItems = parsed;
       }
     } catch (_) {}
   }
@@ -7645,7 +7653,7 @@ function wireReasoningTabStrip() {
   if (skipLocalTabsForCloud) {
     ensureFixedReasoningLanePanels(new Map(), 0);
   } else {
-    restoreReasoningTabsState();
+  restoreReasoningTabsState();
   }
   if (panelsRoot.querySelectorAll(".vera-reasoning-tab-panel").length === 0) {
     ensureFixedReasoningLanePanels(new Map(), 0);
@@ -8548,9 +8556,13 @@ const WORK_MODE_REASONING_WATCHDOG_MS = 110000;
 const workModeReasoningWatchdogByLaneIdx = new Map();
 const workModeTypedTurnQueue = [];
 const WORK_MODE_TYPED_TURN_QUEUE_MAX = 8;
-/** True while a Work Mode keyboard-originated turn is in flight (through infer, TTS, and reasoning). */
-let workModeTypedKeyboardTurnInFlight = false;
-let workModeTypedKeyboardLastBegin = { text: "", at: 0 };
+/**
+ * Hard cap on typed (keyboard) inputs pending in Work Mode. Matches the
+ * non-work-mode "3 consecutive user turns before VERA replies" block. Counts
+ * voice infer chain depth + queued typed turns; the 4th input is refused
+ * with a status hint instead of being queued indefinitely.
+ */
+const WORK_MODE_TYPED_PENDING_MAX = 3;
 /**
  * Max number of reasoning panels generating answers at the same time, even
  * if more panels exist. The 4th request lands in `workModeReasoningLaneWaitQueue`
@@ -8577,8 +8589,8 @@ let workModeTypedQueueDraining = false;
 function syncWorkModeReasoningCancelButton() {
   const btn = document.getElementById("vera-reasoning-cancel");
   if (btn) {
-    const activeIdx = getActiveReasoningLaneIndex();
-    btn.hidden = activeIdx == null || !workModeReasoningAbortControllers.has(Number(activeIdx));
+  const activeIdx = getActiveReasoningLaneIndex();
+  btn.hidden = activeIdx == null || !workModeReasoningAbortControllers.has(Number(activeIdx));
   }
   /* 2026-06-01 — the cancel-button sync is the single chokepoint that
      gets called after every reasoning-lane busy-state toggle
@@ -8918,113 +8930,6 @@ function workModeTypedQueueItemHasPayload(item) {
   return Boolean(txt || files.length);
 }
 
-function isWorkModeTypedKeyboardBusy() {
-  return Boolean(workModeTypedKeyboardTurnInFlight);
-}
-
-function getWorkModeTypedTurnQueueHostEl() {
-  const wrap = document.querySelector("#vera-app.work-mode .vera-wm-conversation-wrap");
-  if (!wrap) return null;
-  let host = wrap.querySelector(":scope > .vera-wm-typed-queue-host");
-  if (!host) {
-    host = document.createElement("div");
-    host.className = "vera-wm-typed-queue-host vera-reasoning-queue-host";
-    host.setAttribute("aria-live", "polite");
-    const convo = wrap.querySelector("#vera-conversation");
-    if (convo) wrap.insertBefore(host, convo);
-    else wrap.prepend(host);
-  }
-  return host;
-}
-
-function renderWorkModeTypedTurnQueueUi() {
-  const host = getWorkModeTypedTurnQueueHostEl();
-  if (!host) return;
-  const n = workModeTypedTurnQueue.length;
-  if (!n) {
-    try {
-      host.remove();
-    } catch (_) {}
-    return;
-  }
-  host.replaceChildren();
-  const heading = document.createElement("div");
-  heading.className = "vera-reasoning-queue-heading";
-  heading.textContent = `Queued (${n})`;
-  const list = document.createElement("ol");
-  list.className = "vera-reasoning-queue-list";
-  for (let i = 0; i < workModeTypedTurnQueue.length; i += 1) {
-    const item = workModeTypedTurnQueue[i];
-    const li = document.createElement("li");
-    li.className = "vera-reasoning-queue-item";
-    li.dataset.queueIndex = String(i + 1);
-    const textWrap = document.createElement("span");
-    textWrap.className = "vera-reasoning-queue-item-text";
-    const preview = String(item?.text || "").trim();
-    textWrap.textContent = preview || "[Uploaded attachment(s)]";
-    li.appendChild(textWrap);
-    list.appendChild(li);
-  }
-  host.appendChild(heading);
-  host.appendChild(list);
-  try {
-    console.info("[work_typed_queue_rendered]", {
-      queue_len: n,
-      items_preview: workModeTypedTurnQueue
-        .map((x) => String(x?.text || "").trim().slice(0, 80))
-        .filter(Boolean)
-        .slice(0, 8)
-    });
-  } catch (_) {}
-}
-
-function beginWorkModeTypedKeyboardTurn(meta = {}) {
-  const preview = String(meta.text || "").trim().slice(0, 240);
-  const now = Date.now();
-  if (
-    workModeTypedKeyboardTurnInFlight &&
-    workModeTypedKeyboardLastBegin.text === preview &&
-    now - Number(workModeTypedKeyboardLastBegin.at || 0) < 1500
-  ) {
-    try {
-      console.info("[work_typed_duplicate_submit_blocked]", {
-        text_preview: preview.slice(0, 120),
-        path: meta.path || null,
-        from_queue: Boolean(meta.fromQueue)
-      });
-    } catch (_) {}
-    return false;
-  }
-  workModeTypedKeyboardTurnInFlight = true;
-  workModeTypedKeyboardLastBegin = { text: preview, at: now };
-  try {
-    console.info("[work_typed_request_started]", {
-      text_preview: preview.slice(0, 120),
-      path: meta.path || null,
-      from_queue: Boolean(meta.fromQueue),
-      turn_id: meta.turn_id || null
-    });
-  } catch (_) {}
-  return true;
-}
-
-function finishWorkModeTypedKeyboardTurn(reason = "done", meta = {}) {
-  if (!workModeTypedKeyboardTurnInFlight) return;
-  workModeTypedKeyboardTurnInFlight = false;
-  const failed = /fail|error|abort|upload/i.test(String(reason || ""));
-  try {
-    console.info(failed ? "[work_typed_request_failed]" : "[work_typed_request_finished]", {
-      reason: String(reason || ""),
-      path: meta.path || null,
-      from_queue: Boolean(meta.fromQueue),
-      turn_id: meta.turn_id || null,
-      error: meta.error != null ? String(meta.error).slice(0, 240) : null
-    });
-  } catch (_) {}
-  renderWorkModeTypedTurnQueueUi();
-  scheduleWorkModeTypedQueueDrain();
-}
-
 function enqueueWorkModeTypedTurn(text, opts = {}) {
   if (workModeTypedTurnQueue.length >= WORK_MODE_TYPED_TURN_QUEUE_MAX) {
     console.warn("[WorkMode] typed queue full; dropping new request", {
@@ -9047,34 +8952,46 @@ function enqueueWorkModeTypedTurn(text, opts = {}) {
     const qFiles = Array.isArray(opts?.reasoningAttachments)
       ? opts.reasoningAttachments.filter((f) => f instanceof File && f.size)
       : [];
-    console.info("[work_typed_enqueued]", {
+    console.info("[reasoning_queue_enqueue]", {
       turn_id: null,
       lane_id: null,
       has_files: qFiles.length > 0,
       file_count: qFiles.length,
       text_preview: String(text || "").slice(0, 120),
-      queue_len: workModeTypedTurnQueue.length,
-      path: opts.path || null
+      queue_len: workModeTypedTurnQueue.length
     });
   } catch (_) {}
   return true;
 }
 
 function isWorkModeTypedTurnBlocked() {
-  /* Voice `/infer` chain saturation — separate from keyboard busy queue. */
+  /* Typed lines queue only when the voice `/infer` chain is saturated; reasoning runs in parallel per panel. */
   return workModeTypedVoiceInferDepth >= WORK_MODE_TYPED_VOICE_CHAIN_MAX;
+}
+
+/** Total typed Work-Mode turns currently in flight (voice infer chain) + queued. */
+function countPendingWorkModeTypedTurns() {
+  return workModeTypedVoiceInferDepth + workModeTypedTurnQueue.length;
+}
+
+/**
+ * True when there are already `WORK_MODE_TYPED_PENDING_MAX` typed turns in
+ * flight or queued. Used to refuse a brand-new keyboard input at the entry
+ * point — the same UX as the non-work-mode "3 user turns before VERA replies"
+ * block (see `sendTextMessage`).
+ */
+function isWorkModeTypedTurnAtHardCap() {
+  return countPendingWorkModeTypedTurns() >= WORK_MODE_TYPED_PENDING_MAX;
 }
 
 async function drainWorkModeTypedTurnQueue() {
   if (workModeTypedQueueDraining) return;
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
-  if (isWorkModeTypedKeyboardBusy()) return;
   workModeTypedQueueDraining = true;
   try {
     while (workModeTypedTurnQueue.length > 0) {
-      if (isWorkModeTypedKeyboardBusy()) break;
+      if (isWorkModeTypedTurnBlocked()) break;
       const next = workModeTypedTurnQueue.shift();
-      renderWorkModeTypedTurnQueueUi();
       if (!workModeTypedQueueItemHasPayload(next)) {
         try {
           console.info("[reasoning_queue_omitted]", {
@@ -9089,19 +9006,16 @@ async function drainWorkModeTypedTurnQueue() {
         const qFiles = Array.isArray(next.opts?.reasoningAttachments)
           ? next.opts.reasoningAttachments.filter((f) => f instanceof File && f.size)
           : [];
-        console.info("[work_typed_dequeued]", {
+        console.info("[reasoning_typed_queue_drain]", {
           has_files: qFiles.length > 0,
           file_count: qFiles.length,
-          text_preview: String(next.text || "").slice(0, 120),
-          queue_len_after_shift: workModeTypedTurnQueue.length,
-          path: next.opts?.path || null
+          text_preview: String(next.text || "").slice(0, 120)
         });
       } catch (_) {}
       await sendVeraWorkModeTypedInferTurn(next.text, next.opts || {});
     }
   } finally {
     workModeTypedQueueDraining = false;
-    renderWorkModeTypedTurnQueueUi();
   }
 }
 
@@ -10210,7 +10124,7 @@ function isExplicitReasoningPanelReference(text) {
   }
   if (_REASONING_PANEL_IMPERATIVE_RE.test(s)) {
     if (/\b(?:explain|describe|write|help\s+me|solve|put|show|tell\s+me|and\s+explain)\b/i.test(s)) {
-      return { matched: true, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
+    return { matched: true, topic: null, targetPanel: null, wasPronoun: false, pronoun: null };
     }
     return empty;
   }
@@ -16427,7 +16341,7 @@ function enqueueWorkModeTypedVoiceInfer(run) {
     })
     .finally(() => {
       workModeTypedVoiceInferDepth -= 1;
-      if (workModeTypedTurnQueue.length > 0 && !isWorkModeTypedKeyboardBusy()) {
+      if (workModeTypedTurnQueue.length > 0 && !isWorkModeTypedTurnBlocked()) {
         scheduleWorkModeTypedQueueDrain();
       }
     });
@@ -17315,32 +17229,6 @@ function enqueueWorkModeAssistantTtsPlayback(
   });
 }
 
-async function runWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtStage1End }) {
-  if (!prep?.voiceTwoStage?.reasoningRouted) return;
-  logStage2Debug(prep, {
-    transcript: _readInferFormDataTranscript(formData),
-    reasoning_completed: true,
-    reasoning_success: true,
-    stage2_payload_valid: formData instanceof FormData,
-    stage2_tts_requested: getWorkModeStage2TtsDecision("(pending-stage2-text)").should_enqueue_tts,
-    stage2_tts_suppressed_due_to_mute: getWorkModeStage2TtsDecision("(pending-stage2-text)").tts_muted
-  });
-  const also = workModeVoiceInferTurnSeq > seqAtStage1End;
-  const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prep, {
-    signal: workModeDeferredStage2AbortController.signal,
-    skipPreInferPlaybackReset: true,
-    stage2AlsoPrefix: also
-  });
-  if (prepFail === "reasoning-upload-failed") {
-    processing = false;
-    requestInFlight = false;
-    voiceUxTurn = null;
-    setStatus("Ready", "idle");
-    if (listeningMode === "continuous" && listening && !inputMuted) startListening();
-    updateMuteInputButton();
-  }
-}
-
 /**
  * After stage‑1, wait for the reasoning gate + `/infer` without clearing in-flight assistant audio (so another
  * reply can play first). TTS for this infer is still serialized via `enqueueAssistantTtsPlayback`.
@@ -17350,7 +17238,28 @@ function scheduleWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtS
   if (!prep?.voiceTwoStage?.reasoningRouted) return;
   void (async () => {
     try {
-      await runWorkModeDeferredReasoningStageTwoInfer({ formData, prep, seqAtStage1End });
+      logStage2Debug(prep, {
+        transcript: _readInferFormDataTranscript(formData),
+        reasoning_completed: true,
+        reasoning_success: true,
+        stage2_payload_valid: formData instanceof FormData,
+        stage2_tts_requested: getWorkModeStage2TtsDecision("(pending-stage2-text)").should_enqueue_tts,
+        stage2_tts_suppressed_due_to_mute: getWorkModeStage2TtsDecision("(pending-stage2-text)").tts_muted
+      });
+      const also = workModeVoiceInferTurnSeq > seqAtStage1End;
+      const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prep, {
+        signal: workModeDeferredStage2AbortController.signal,
+        skipPreInferPlaybackReset: true,
+        stage2AlsoPrefix: also
+      });
+      if (prepFail === "reasoning-upload-failed") {
+        processing = false;
+        requestInFlight = false;
+        voiceUxTurn = null;
+        setStatus("Ready", "idle");
+        if (listeningMode === "continuous" && listening && !inputMuted) startListening();
+        updateMuteInputButton();
+      }
     } catch (e) {
       if (e?.name === "AbortError") return;
       logStage2Debug(prep, {
@@ -17510,44 +17419,44 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
       });
     } catch (_) {}
     if (!resolvedTopic && _explicitPanelRef.wasPronoun) {
-      logReasoningRouteDebug({
-        raw_text: String(trimmed || "").slice(0, 240),
-        reasoning_gate_called: true,
-        reasoning_gate_result: "voice_ui",
-        reasoning_gate_reason: "explicit_panel_pronoun_without_prior_topic",
-        explicit_panel_reference: true,
-        simple_definition_detected: false,
-        brief_explanation_detected: false,
-        broad_complex_topic_detected: false,
-        complex_task_detected: false,
-        active_work_mode: true,
-        prior_topic_used: false,
-        resolved_topic: null,
-        route_source: "frontend_explicit_panel_pronoun_unresolved",
-        final_action_type: "voice_ui_clarification",
-        final_panel_target: null,
-        final_route: "chat",
-        final_route_reasoning: false,
-        backend_classify_route: null,
-        backend_category: null,
-        backend_confidence: null,
-        heuristic_reasoning: false,
-        personal_statement_veto: false,
-        venting_signals: [],
-        venting_score: 0,
-        explicit_artifact_intent: false,
-        artifact_signals: [],
-        force_active_lane: false,
-        task_follow_up_continuing: false,
-        planning_intent: false,
-        reason: "explicit_panel_pronoun_without_prior_topic",
-        math_router_enabled: MATH_ROUTER_ENABLED,
-        arithmetic_fast_path_match: false
-      });
+        logReasoningRouteDebug({
+          raw_text: String(trimmed || "").slice(0, 240),
+          reasoning_gate_called: true,
+          reasoning_gate_result: "voice_ui",
+          reasoning_gate_reason: "explicit_panel_pronoun_without_prior_topic",
+          explicit_panel_reference: true,
+          simple_definition_detected: false,
+          brief_explanation_detected: false,
+          broad_complex_topic_detected: false,
+          complex_task_detected: false,
+          active_work_mode: true,
+          prior_topic_used: false,
+          resolved_topic: null,
+          route_source: "frontend_explicit_panel_pronoun_unresolved",
+          final_action_type: "voice_ui_clarification",
+          final_panel_target: null,
+          final_route: "chat",
+          final_route_reasoning: false,
+          backend_classify_route: null,
+          backend_category: null,
+          backend_confidence: null,
+          heuristic_reasoning: false,
+          personal_statement_veto: false,
+          venting_signals: [],
+          venting_score: 0,
+          explicit_artifact_intent: false,
+          artifact_signals: [],
+          force_active_lane: false,
+          task_follow_up_continuing: false,
+          planning_intent: false,
+          reason: "explicit_panel_pronoun_without_prior_topic",
+          math_router_enabled: MATH_ROUTER_ENABLED,
+          arithmetic_fast_path_match: false
+        });
       const substantiveFallback =
         extractSubstantiveTopicBeforePanelPhrase(trimmed) || String(trimmed || "").trim();
       rememberWorkModeSubstantiveUserText(substantiveFallback);
-      return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
+        return workModeReasoningPrepOutcome(Promise.resolve(), "", undefined, noRouteMeta);
     }
     logReasoningRouteDebug({
       raw_text: String(trimmed || "").slice(0, 240),
@@ -18355,12 +18264,12 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     explicitTargetLaneIdx != null
       ? await acquireWorkModeReasoningLaneForIndex(explicitTargetLaneIdx)
       : frozenIdx != null
-        ? await acquireWorkModeReasoningLaneForIndex(frozenIdx)
-        : forceActiveLaneReasoningContent
-          ? await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0)
-          : await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
-              continuePriorLane: continueLaneForThisTurn
-            });
+      ? await acquireWorkModeReasoningLaneForIndex(frozenIdx)
+      : forceActiveLaneReasoningContent
+        ? await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0)
+        : await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
+            continuePriorLane: continueLaneForThisTurn
+          });
   /* PART 3+7 (2026-05-28): consume the recently-opened bias flag once
      a reasoning turn lands, and emit [reasoning_destination_resolved]
      so the console shows resolution provenance for every reasoning
@@ -19342,10 +19251,10 @@ async function streamWorkModeReasoningComposer(text, signal, opts = {}) {
           } catch (_) {}
         }
       } else {
-        void veraSurfaceLlmFetchFailure({
-          feature: "reasoning_stream_secondary",
-          response: sr
-        });
+      void veraSurfaceLlmFetchFailure({
+        feature: "reasoning_stream_secondary",
+        response: sr
+      });
       }
       safeComposerLaneRelease("stream_http_error");
       return;
@@ -20315,23 +20224,14 @@ function wireWorkModeChecklistAndComposer() {
         return;
       }
     }
-    if (isWorkModeTypedKeyboardBusy()) {
-      if (workModeTypedTurnQueue.length >= WORK_MODE_TYPED_TURN_QUEUE_MAX) {
-        setStatus(`Work queue full (max ${WORK_MODE_TYPED_TURN_QUEUE_MAX})`, "idle");
-        return;
-      }
-      const queueSnap = getWorkModePendingAttachmentFiles();
-      logComposerAttachmentsBeforeSubmit(queueSnap, null);
-      const queued = enqueueWorkModeTypedTurn(t, {
-        path: files.length ? "reasoning-composer-upload" : "reasoning-composer",
-        reasoningAttachments: queueSnap
-      });
-      if (queued) {
-        clearComposerAttachmentsAfterSubmit(null, "typed_turn_queue_enqueue");
-        renderWorkModeTypedTurnQueueUi();
-        if (ri) ri.value = "";
-        setStatus(`Queued (${workModeTypedTurnQueue.length})`, "idle");
-      }
+    if (isWorkModeTypedTurnAtHardCap()) {
+      setStatus("Wait for VERA response before sending more", "idle");
+      try {
+        console.warn("[WorkMode] composer blocked at hard cap (reasoning-composer)", {
+          pending: countPendingWorkModeTypedTurns(),
+          max: WORK_MODE_TYPED_PENDING_MAX
+        });
+      } catch (_) {}
       return;
     }
     logComposerAttachmentsBeforeSubmit(files, null);
@@ -20511,7 +20411,7 @@ migrateLegacyVeraChatStorageKey();
 if (typeof scheduleDeferredVeraChatRestoreIfAnonymous === "function") {
   scheduleDeferredVeraChatRestoreIfAnonymous();
 } else {
-  restoreVeraChatState();
+restoreVeraChatState();
 }
 wireReasoningTabStrip();
 
@@ -21933,8 +21833,8 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
 
 
 async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
-  const prefix = appModePrefix();
-  const op = payload.op || "open_panel";
+    const prefix = appModePrefix();
+    const op = payload.op || "open_panel";
   console.info("[music_action_payload_received]", {
     action: op,
     playlist_id: payload.playlist_id || "",
@@ -21943,19 +21843,19 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
     request_id: data?.request_id || null,
     source_event_type: data?.type || seqCtx?.source || "",
   });
-  console.info("[music_control_payload]", {
-    music_control_received: true,
-    op,
-    playlist_id: payload.playlist_id || "",
-    sound_id: payload.sound_id || "",
-    source_event_type: data?.type || "",
+    console.info("[music_control_payload]", {
+      music_control_received: true,
+      op,
+      playlist_id: payload.playlist_id || "",
+      sound_id: payload.sound_id || "",
+      source_event_type: data?.type || "",
     request_id: data?.request_id || null,
     sequence_active_provider: seqCtx?.activeProvider || window.__veraMusicSequenceActiveProvider || null,
-  });
-  if (op === "close_panel") {
-    hideSidePanel();
-    return;
-  }
+    });
+    if (op === "close_panel") {
+      hideSidePanel();
+      return;
+    }
   const transportProvider = resolveMusicTransportProvider(prefix, seqCtx);
   if (op === "skip_next" || op === "skip_previous") {
     try {
@@ -22016,10 +21916,10 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
       actionId || null
     );
     return { op, transportProvider };
-  }
-  if (op === "pause") {
+    }
+    if (op === "pause") {
     const activeForPause = resolveMusicTransportProvider(prefix, seqCtx);
-    const free = document.getElementById(`${prefix}-free-music-audio`);
+      const free = document.getElementById(`${prefix}-free-music-audio`);
     musicPlaybackDiag("[music_pause_called]", {
       reason: "voice_command_pause",
       source: "applyMusicControlPayload",
@@ -22036,13 +21936,13 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
       if (typeof pause === "function") await Promise.resolve(pause());
     }
     if (free && activeForPause === "builtin") {
-      freeMusicSyncNowFromAudio(prefix);
-      spotifySyncPlayButtonUi(prefix);
-    }
-    musicSourceMarkPausedByUser();
+        freeMusicSyncNowFromAudio(prefix);
+        spotifySyncPlayButtonUi(prefix);
+      }
+      musicSourceMarkPausedByUser();
     return { op, transportProvider: activeForPause };
-  }
-  if (op === "resume") {
+    }
+    if (op === "resume") {
     try {
       console.info("[music_resume_dispatch]", {
         source: seqCtx?.source || data?.type || "music_control_payload",
@@ -22051,19 +21951,19 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
     } catch (_) {}
     const activeForResume = resolveMusicTransportProvider(prefix, seqCtx);
     if (activeForResume === "builtin") {
-      const free = document.getElementById(`${prefix}-free-music-audio`);
-      if (free?.src) {
+        const free = document.getElementById(`${prefix}-free-music-audio`);
+        if (free?.src) {
         await free.play().then(() => {
-          freeMusicSyncNowFromAudio(prefix);
-          spotifySyncPlayButtonUi(prefix);
-        });
+            freeMusicSyncNowFromAudio(prefix);
+            spotifySyncPlayButtonUi(prefix);
+          });
         try {
           console.info("[music_resume_execute_done]", { transport_provider: "builtin", success: true });
         } catch (_) {}
         return { op, transportProvider: "builtin" };
+        }
       }
-    }
-    const resume = window.VeraSpotify?.resumePlayback;
+      const resume = window.VeraSpotify?.resumePlayback;
     if (typeof resume === "function") await Promise.resolve(resume());
     try {
       console.info("[music_resume_execute_done]", {
@@ -22072,110 +21972,110 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
       });
     } catch (_) {}
     return { op, transportProvider: activeForResume };
-  }
-  if (op === "volume_delta") {
-    if (!shouldApplyMusicTransportAction(payload, op, data)) return;
-    const cur = typeof window.VeraSpotify?.getVolume === "function"
-      ? window.VeraSpotify.getVolume()
-      : spotifyGetVolume();
-    const setVolume = window.VeraSpotify?.setVolume;
-    const next = Math.max(0, Math.min(SPOTIFY_VOLUME_MAX, Number(cur) + (Number(payload.delta) || 0)));
-    if (typeof setVolume === "function") await Promise.resolve(setVolume(next));
-    else {
-      window.__veraSpotifyVolume = next;
-      const free = document.getElementById(`${prefix}-free-music-audio`);
-      if (free) free.volume = next;
-      const preview = document.getElementById(`${prefix}-spotify-preview-audio`);
-      if (preview) preview.volume = next;
     }
+    if (op === "volume_delta") {
+    if (!shouldApplyMusicTransportAction(payload, op, data)) return;
+      const cur = typeof window.VeraSpotify?.getVolume === "function"
+        ? window.VeraSpotify.getVolume()
+        : spotifyGetVolume();
+      const setVolume = window.VeraSpotify?.setVolume;
+      const next = Math.max(0, Math.min(SPOTIFY_VOLUME_MAX, Number(cur) + (Number(payload.delta) || 0)));
+    if (typeof setVolume === "function") await Promise.resolve(setVolume(next));
+      else {
+        window.__veraSpotifyVolume = next;
+        const free = document.getElementById(`${prefix}-free-music-audio`);
+        if (free) free.volume = next;
+        const preview = document.getElementById(`${prefix}-spotify-preview-audio`);
+        if (preview) preview.volume = next;
+      }
     return { op, transportProvider: resolveMusicTransportProvider(prefix, seqCtx) };
   }
   if (!MUSIC_CONTROL_TRANSPORT_ONLY_OPS.has(op)) {
     ensureMusicPanelOpenForVoicePlayback("voice_music_play");
-  }
-  if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
+    }
+    if (op === "play_builtin" && shouldPlayMusicThisInvocation(payload, op)) {
     console.info("[music_voice_action_detected]", {
       query: payload.playlist_id || payload.sound_id || "",
       source: "builtin",
       op,
     });
     await ensureSingleActiveMusicProvider("builtin", { reason: "play_builtin" });
-    const sourceStateBeforeBuiltinPlay = veraMusicSourceState();
-    const preservedBuiltinTime =
-      sourceStateBeforeBuiltinPlay.builtin.state === "suspended_for_spotify"
-        ? Number(sourceStateBeforeBuiltinPlay.builtin.currentTime || 0)
-        : 0;
-    musicSourceMarkPlaying("builtin", {
-      playlistId: payload.playlist_id || "",
-      soundId: payload.sound_id || "",
-      currentTime: preservedBuiltinTime
-    });
-    const pfx = appModePrefix();
-    console.info("[music_control_payload]", {
-      music_play_op: "play_builtin",
-      play_builtin_called: true,
-      playback_backend: "builtin_audio",
-      playlist_id: payload.playlist_id || "",
-      sound_id: payload.sound_id || "",
-      request_id: data?.request_id || null
-    });
-    try {
-      await runBuiltinVoicePlayback(pfx, {
-        playlistId: payload.playlist_id,
-        soundId: payload.sound_id
+      const sourceStateBeforeBuiltinPlay = veraMusicSourceState();
+      const preservedBuiltinTime =
+        sourceStateBeforeBuiltinPlay.builtin.state === "suspended_for_spotify"
+          ? Number(sourceStateBeforeBuiltinPlay.builtin.currentTime || 0)
+          : 0;
+      musicSourceMarkPlaying("builtin", {
+        playlistId: payload.playlist_id || "",
+        soundId: payload.sound_id || "",
+        currentTime: preservedBuiltinTime
       });
-      if (preservedBuiltinTime > 0) {
-        const free = document.getElementById(`${pfx}-free-music-audio`);
-        if (free && Number.isFinite(free.duration) && preservedBuiltinTime < free.duration) {
-          try {
-            free.currentTime = preservedBuiltinTime;
-            freeMusicSyncNowFromAudio(pfx);
-          } catch (_) {
-            /* keep playback going even if seeking fails */
+        const pfx = appModePrefix();
+        console.info("[music_control_payload]", {
+          music_play_op: "play_builtin",
+          play_builtin_called: true,
+          playback_backend: "builtin_audio",
+          playlist_id: payload.playlist_id || "",
+          sound_id: payload.sound_id || "",
+          request_id: data?.request_id || null
+        });
+        try {
+          await runBuiltinVoicePlayback(pfx, {
+            playlistId: payload.playlist_id,
+            soundId: payload.sound_id
+          });
+          if (preservedBuiltinTime > 0) {
+            const free = document.getElementById(`${pfx}-free-music-audio`);
+            if (free && Number.isFinite(free.duration) && preservedBuiltinTime < free.duration) {
+              try {
+                free.currentTime = preservedBuiltinTime;
+                freeMusicSyncNowFromAudio(pfx);
+              } catch (_) {
+                /* keep playback going even if seeking fails */
+              }
+            }
           }
-        }
-      }
       console.info("[music_playback_start]", {
         source: "builtin",
         track_id: payload.playlist_id || payload.sound_id || "",
         name: payload.playlist_id || payload.sound_id || "",
         request_id: data?.request_id || null,
       });
-      console.info("[music_control_payload]", {
-        music_play_op: "play_builtin",
-        playback_started: true,
-        playback_backend: "builtin_audio",
-        request_id: data?.request_id || null
-      });
+          console.info("[music_control_payload]", {
+            music_play_op: "play_builtin",
+            playback_started: true,
+            playback_backend: "builtin_audio",
+            request_id: data?.request_id || null
+          });
       logMusicRenderState(pfx, { reason: "play_builtin" });
-    } catch (err) {
-      console.warn("[music_control_payload]", {
-        music_play_op: "play_builtin",
-        playback_error: String(err && err.message || err || "unknown"),
-        playback_backend: "builtin_audio",
-        request_id: data?.request_id || null
-      });
-    }
+        } catch (err) {
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_builtin",
+            playback_error: String(err && err.message || err || "unknown"),
+            playback_backend: "builtin_audio",
+            request_id: data?.request_id || null
+          });
+        }
     return { op, targetProvider: "builtin" };
   }
   if (op === "play_track" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
     await ensureSingleActiveMusicProvider("spotify", { reason: "play_track" });
-    musicSourceMarkPlaying("spotify", {
-      uri: payload.uri,
-      title: payload.title || "",
-      artist: payload.artist || ""
-    });
-    const play = window.VeraSpotify?.playTrack;
-    console.info("[music_control_payload]", {
-      music_play_op: "play_track",
-      playback_backend: "spotify",
-      spotify_playtrack_available: typeof play === "function",
-      title: payload.title || "",
-      artist: payload.artist || "",
-      requested_spotify_uri: String(payload.uri || ""),
-      request_id: data?.request_id || null
-    });
-    if (typeof play === "function") {
+      musicSourceMarkPlaying("spotify", {
+        uri: payload.uri,
+        title: payload.title || "",
+        artist: payload.artist || ""
+      });
+      const play = window.VeraSpotify?.playTrack;
+      console.info("[music_control_payload]", {
+        music_play_op: "play_track",
+        playback_backend: "spotify",
+        spotify_playtrack_available: typeof play === "function",
+        title: payload.title || "",
+        artist: payload.artist || "",
+        requested_spotify_uri: String(payload.uri || ""),
+        request_id: data?.request_id || null
+      });
+      if (typeof play === "function") {
       try {
         await Promise.resolve(play(String(payload.uri), {
           title: payload.title || "",
@@ -22183,201 +22083,201 @@ async function applyMusicControlPayloadAsync(payload, data, seqCtx = {}) {
           preview_url: payload.preview_url || "",
           open_url: payload.open_url || ""
         }));
-        console.info("[music_control_payload]", {
-          music_play_op: "play_track",
-          playback_started: true,
-          playback_backend: "spotify",
-          request_id: data?.request_id || null
-        });
+          console.info("[music_control_payload]", {
+            music_play_op: "play_track",
+            playback_started: true,
+            playback_backend: "spotify",
+            request_id: data?.request_id || null
+          });
       } catch (err) {
-        console.warn("[music_control_payload]", {
-          music_play_op: "play_track",
-          playback_error: String(err && err.message || err || "unknown"),
-          playback_backend: "spotify",
-          request_id: data?.request_id || null
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_track",
+            playback_error: String(err && err.message || err || "unknown"),
+            playback_backend: "spotify",
+            request_id: data?.request_id || null
         });
       }
     }
     return { op, targetProvider: "spotify", expectedTrack: payload.title || "" };
   }
   if (op === "play_playlist_scoped" && shouldPlayMusicThisInvocation(payload, op)) {
-    const rawQuery = String(payload.query || "").trim();
-    const playlistId = String(payload.playlist_id || window.__veraSpotifyActivePlaylistId || "").trim();
-    const playlistName = String(payload.playlist_name || window.__veraSpotifyActivePlaylistName || "").trim();
-    console.info("[music_control_payload]", {
-      music_play_op: "play_playlist_scoped",
-      playback_backend: "spotify",
-      playlist_scope_query: rawQuery,
-      selected_playlist_id: playlistId,
-      selected_playlist_name: playlistName,
-      request_id: data?.request_id || null
-    });
-    const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-    if (!playlistId) {
-      if (artistEl) artistEl.textContent = "Which playlist should I search?";
-      return;
-    }
-    await ensureSingleActiveMusicProvider("spotify", { reason: "play_playlist_scoped" });
-    const getTracks = window.VeraSpotify?.getPlaylistTracks;
-    if (typeof getTracks !== "function") {
-      if (artistEl) artistEl.textContent = "Playlist search is not available right now.";
-      return;
-    }
-    let tracks = [];
-    try {
-      tracks = await getTracks(playlistId);
-    } catch (err) {
-      if (artistEl) artistEl.textContent = "Couldn't load that playlist's tracks.";
-      console.warn("[music_control_payload]", {
-        music_play_op: "play_playlist_scoped",
-        playback_error: String(err && err.message || err || "unknown"),
-        request_id: data?.request_id || null
-      });
-      return;
-    }
-    const needle = rawQuery.toLowerCase();
-    const tokens = needle.split(/\s+/).filter((t) => t && t.length >= 3);
-    let best = null;
-    let bestScore = 0;
-    for (const t of (tracks || [])) {
-      const title = String(t.name || t.title || "").toLowerCase();
-      const artistLine = (Array.isArray(t.artists)
-        ? t.artists.map((a) => a?.name || "").join(", ")
-        : String(t.artist || "")).toLowerCase();
-      let score = 0;
-      if (title === needle) score = 1.0;
-      else if (title.includes(needle)) score = 0.9;
-      else if (tokens.length && tokens.every((tok) => title.includes(tok))) score = 0.75;
-      else if (artistLine.includes(needle)) score = 0.5;
-      if (score > bestScore) {
-        bestScore = score;
-        best = t;
-      }
-    }
-    const confident = best && bestScore >= 0.75;
-    if (!confident) {
-      if (artistEl) artistEl.textContent = `I couldn't find "${rawQuery}" in ${playlistName || "that playlist"}.`;
-      return;
-    }
-    const uri = String(best.uri || "");
-    if (!uri) {
-      if (artistEl) artistEl.textContent = `Found "${best.name || best.title}" but couldn't play it.`;
-      return;
-    }
-    const title = String(best.name || best.title || "");
-    const artistStr = Array.isArray(best.artists)
-      ? best.artists.map((a) => a?.name || "").filter(Boolean).join(", ")
-      : String(best.artist || "");
-    musicSourceMarkPlaying("spotify", {
-      uri,
-      title,
-      artist: artistStr,
-      playlist_id: playlistId,
-      playlist_name: playlistName
-    });
-    const playFn = window.VeraSpotify?.playTrack;
-    if (typeof playFn !== "function") {
-      if (artistEl) artistEl.textContent = "Spotify playback is not available.";
-      return;
-    }
-    try {
-      await playFn(uri, { title, artist: artistStr });
+      const rawQuery = String(payload.query || "").trim();
+      const playlistId = String(payload.playlist_id || window.__veraSpotifyActivePlaylistId || "").trim();
+      const playlistName = String(payload.playlist_name || window.__veraSpotifyActivePlaylistName || "").trim();
       console.info("[music_control_payload]", {
         music_play_op: "play_playlist_scoped",
-        playback_started: true,
         playback_backend: "spotify",
-        requested_spotify_uri: uri,
-        new_spotify_track: `${title} — ${artistStr}`,
+        playlist_scope_query: rawQuery,
+        selected_playlist_id: playlistId,
+        selected_playlist_name: playlistName,
         request_id: data?.request_id || null
       });
-    } catch (err) {
-      console.warn("[music_control_payload]", {
-        music_play_op: "play_playlist_scoped",
-        playback_error: String(err && err.message || err || "unknown"),
-        request_id: data?.request_id || null
-      });
-    }
+      const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+      if (!playlistId) {
+        if (artistEl) artistEl.textContent = "Which playlist should I search?";
+        return;
+      }
+    await ensureSingleActiveMusicProvider("spotify", { reason: "play_playlist_scoped" });
+        const getTracks = window.VeraSpotify?.getPlaylistTracks;
+        if (typeof getTracks !== "function") {
+          if (artistEl) artistEl.textContent = "Playlist search is not available right now.";
+          return;
+        }
+        let tracks = [];
+        try {
+          tracks = await getTracks(playlistId);
+        } catch (err) {
+          if (artistEl) artistEl.textContent = "Couldn't load that playlist's tracks.";
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_playlist_scoped",
+            playback_error: String(err && err.message || err || "unknown"),
+            request_id: data?.request_id || null
+          });
+          return;
+        }
+        const needle = rawQuery.toLowerCase();
+        const tokens = needle.split(/\s+/).filter((t) => t && t.length >= 3);
+        let best = null;
+        let bestScore = 0;
+        for (const t of (tracks || [])) {
+          const title = String(t.name || t.title || "").toLowerCase();
+          const artistLine = (Array.isArray(t.artists)
+            ? t.artists.map((a) => a?.name || "").join(", ")
+            : String(t.artist || "")).toLowerCase();
+          let score = 0;
+          if (title === needle) score = 1.0;
+          else if (title.includes(needle)) score = 0.9;
+          else if (tokens.length && tokens.every((tok) => title.includes(tok))) score = 0.75;
+          else if (artistLine.includes(needle)) score = 0.5;
+          if (score > bestScore) {
+            bestScore = score;
+            best = t;
+          }
+        }
+        const confident = best && bestScore >= 0.75;
+        if (!confident) {
+          if (artistEl) artistEl.textContent = `I couldn't find "${rawQuery}" in ${playlistName || "that playlist"}.`;
+          return;
+        }
+        const uri = String(best.uri || "");
+        if (!uri) {
+          if (artistEl) artistEl.textContent = `Found "${best.name || best.title}" but couldn't play it.`;
+          return;
+        }
+        const title = String(best.name || best.title || "");
+        const artistStr = Array.isArray(best.artists)
+          ? best.artists.map((a) => a?.name || "").filter(Boolean).join(", ")
+          : String(best.artist || "");
+        musicSourceMarkPlaying("spotify", {
+          uri,
+          title,
+          artist: artistStr,
+          playlist_id: playlistId,
+          playlist_name: playlistName
+        });
+        const playFn = window.VeraSpotify?.playTrack;
+        if (typeof playFn !== "function") {
+          if (artistEl) artistEl.textContent = "Spotify playback is not available.";
+          return;
+        }
+        try {
+          await playFn(uri, { title, artist: artistStr });
+          console.info("[music_control_payload]", {
+            music_play_op: "play_playlist_scoped",
+            playback_started: true,
+            playback_backend: "spotify",
+            requested_spotify_uri: uri,
+            new_spotify_track: `${title} — ${artistStr}`,
+            request_id: data?.request_id || null
+          });
+        } catch (err) {
+          console.warn("[music_control_payload]", {
+            music_play_op: "play_playlist_scoped",
+            playback_error: String(err && err.message || err || "unknown"),
+            request_id: data?.request_id || null
+          });
+        }
     return { op, targetProvider: "spotify", expectedTrack: rawQuery };
   }
   if (op === "play_album" && payload.uri && shouldPlayMusicThisInvocation(payload, op)) {
     await ensureSingleActiveMusicProvider("spotify", { reason: "play_album" });
-    musicSourceMarkPlaying("spotify", {
-      uri: payload.uri,
-      title: payload.title || "",
-      artist: payload.artist || ""
-    });
-    const playCtx = window.VeraSpotify?.playPlaylist;
-    if (typeof playCtx === "function") {
-      const base = localBackendBase();
-      const uri = String(payload.uri || "").trim();
-      const title = payload.title || "";
-      const artist = payload.artist || "";
-      const sub = artist ? `"${title}" by "${artist}"` : `"${title}"`;
-      const openUrl = String(payload.open_url || spotifyUriToOpenUrl(uri) || "").trim();
-      const st = await fetch(`${base}/api/spotify/connection-status`, {
-        credentials: "include",
-        headers: { ...veraSpotifyAuthHeaders() }
-      })
-        .then((r) => (r.ok ? r.json() : { connected: false }))
-        .catch(() => ({ connected: false }));
-      const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-      if (st.connected) {
-        await playCtx(uri, { playlist_name: title, context_subtitle: sub });
-      } else if (openUrl) {
-        window.open(openUrl, "_blank", "noopener,noreferrer");
-        if (artistEl) {
-          artistEl.textContent =
-            `${artist ? `${artist} — ` : ""}Opened Spotify in a new tab (connect for in-page playback).`.trim();
-        }
-      } else if (artistEl) {
-        artistEl.textContent = "Connect Spotify to play this album in VERA.";
+      musicSourceMarkPlaying("spotify", {
+        uri: payload.uri,
+        title: payload.title || "",
+        artist: payload.artist || ""
+      });
+      const playCtx = window.VeraSpotify?.playPlaylist;
+      if (typeof playCtx === "function") {
+          const base = localBackendBase();
+          const uri = String(payload.uri || "").trim();
+          const title = payload.title || "";
+          const artist = payload.artist || "";
+          const sub = artist ? `"${title}" by "${artist}"` : `"${title}"`;
+          const openUrl = String(payload.open_url || spotifyUriToOpenUrl(uri) || "").trim();
+          const st = await fetch(`${base}/api/spotify/connection-status`, {
+            credentials: "include",
+            headers: { ...veraSpotifyAuthHeaders() }
+          })
+            .then((r) => (r.ok ? r.json() : { connected: false }))
+            .catch(() => ({ connected: false }));
+          const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+          if (st.connected) {
+            await playCtx(uri, { playlist_name: title, context_subtitle: sub });
+          } else if (openUrl) {
+            window.open(openUrl, "_blank", "noopener,noreferrer");
+            if (artistEl) {
+              artistEl.textContent =
+                `${artist ? `${artist} — ` : ""}Opened Spotify in a new tab (connect for in-page playback).`.trim();
+            }
+          } else if (artistEl) {
+            artistEl.textContent = "Connect Spotify to play this album in VERA.";
+          }
       }
-    }
     return { op, targetProvider: "spotify", expectedTrack: payload.title || "" };
   }
   if (op === "play_playlist_by_name") {
-    const rawName = String(payload.playlist_name || "").trim();
+      const rawName = String(payload.playlist_name || "").trim();
     if (!rawName || !shouldPlayMusicThisInvocation(payload, op)) return;
-    const built = matchBuiltinPlaylistOrSoundNameForClient(rawName);
-    if (built) {
+          const built = matchBuiltinPlaylistOrSoundNameForClient(rawName);
+          if (built) {
       await ensureSingleActiveMusicProvider("builtin", { reason: "play_playlist_by_name_builtin" });
-      musicSourceMarkPlaying("builtin", {
-        playlistId: built.playlistId || "",
-        soundId: built.soundId || ""
-      });
-      await runBuiltinVoicePlayback(prefix, built);
+            musicSourceMarkPlaying("builtin", {
+              playlistId: built.playlistId || "",
+              soundId: built.soundId || ""
+            });
+            await runBuiltinVoicePlayback(prefix, built);
       return { op, targetProvider: "builtin", expectedTrack: rawName };
-    }
-    const getLists = window.VeraSpotify?.getPlaylists;
-    const playCtx = window.VeraSpotify?.playPlaylist;
-    const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
-    if (typeof getLists !== "function" || typeof playCtx !== "function") {
-      if (artistEl) artistEl.textContent = "Playlist playback is not available.";
-      return;
-    }
-    const lists = await getLists().catch(() => []);
-    const needle = rawName.toLowerCase();
-    let hit =
-      lists.find((p) => String(p.name || "").toLowerCase() === needle) ||
-      lists.find((p) => String(p.name || "").toLowerCase().includes(needle));
-    if (!hit && needle.length >= 3) {
-      hit = lists.find((p) => needle.includes(String(p.name || "").toLowerCase()));
-    }
-    if (!hit?.uri) {
-      if (artistEl) artistEl.textContent = `No playlist in your library matched "${rawName}".`;
-      return;
-    }
-    const disp = hit.name || rawName;
+          }
+          const getLists = window.VeraSpotify?.getPlaylists;
+          const playCtx = window.VeraSpotify?.playPlaylist;
+          const artistEl = document.getElementById(`${prefix}-spotify-track-artist`);
+          if (typeof getLists !== "function" || typeof playCtx !== "function") {
+            if (artistEl) artistEl.textContent = "Playlist playback is not available.";
+            return;
+          }
+          const lists = await getLists().catch(() => []);
+          const needle = rawName.toLowerCase();
+          let hit =
+            lists.find((p) => String(p.name || "").toLowerCase() === needle) ||
+            lists.find((p) => String(p.name || "").toLowerCase().includes(needle));
+          if (!hit && needle.length >= 3) {
+            hit = lists.find((p) => needle.includes(String(p.name || "").toLowerCase()));
+          }
+          if (!hit?.uri) {
+            if (artistEl) artistEl.textContent = `No playlist in your library matched "${rawName}".`;
+            return;
+          }
+          const disp = hit.name || rawName;
     await ensureSingleActiveMusicProvider("spotify", { reason: "play_playlist_by_name_spotify" });
-    musicSourceMarkPlaying("spotify", {
-      uri: hit.uri,
-      playlist_id: String(hit.id || hit.uri || ""),
-      playlist_name: disp
-    });
-    await playCtx(hit.uri, {
-      playlist_name: disp,
-      context_subtitle: `"${disp}" in my playlist`
-    });
+          musicSourceMarkPlaying("spotify", {
+            uri: hit.uri,
+            playlist_id: String(hit.id || hit.uri || ""),
+            playlist_name: disp
+          });
+          await playCtx(hit.uri, {
+            playlist_name: disp,
+            context_subtitle: `"${disp}" in my playlist`
+          });
     return { op, targetProvider: "spotify", expectedTrack: disp };
   }
 }
@@ -22528,7 +22428,7 @@ async function applyActionPayload(data, seqCtx = {}) {
           applyActionPayload({ ...data, action_payload: payload, action_payloads: null }, ctx),
         { requestId: data?.request_id || null, source: seqCtx?.source || "multi_action_payloads" }
       );
-      return;
+    return;
     }
     const seen = new WeakSet();
     for (let idx = 0; idx < planned.length; idx++) {
@@ -23026,6 +22926,7 @@ function applyAssistantReplyAndPanels(data) {
   // before the actual assistant bubble appears so the user only sees the
   // final answer (no double-bubble flash).
   cancelPendingNewsStatusBubble("assistant_reply_applied");
+  clearWorkModeTypedPendingOnResponse();
   const bubble = addBubble(data.reply, "vera");
   veraFeedbackMarkFinalFromBubble(bubble, data, null);
 }
@@ -23062,6 +22963,7 @@ function applyNdjsonStreamingReplySoFar(replySoFar, state) {
     // Streaming reply is about to create the real bubble — drop the
     // "Searching news…" placeholder so they don't sit side-by-side.
     cancelPendingNewsStatusBubble("ndjson_reply_so_far");
+    clearWorkModeTypedPendingOnResponse();
     let opts = { path: "ndjson-reply-so-far" };
     if (state.pendingReplyBack) {
       opts = mergeReplyBackIntoBubbleMeta(opts, state.pendingReplyBack);
@@ -23126,11 +23028,12 @@ function finalizeNdjsonStreamingReply(ndjsonMeta, done, state) {
   }
   /* Must assign state.bubble so applyNdjsonStreamingReplySoFar doesn't add a second bubble if done arrives before first audio (defer path). */
   if (!_usageSkipFinalizeActionApply(pay, merged)) {
-    applyActionPayload(merged);
+  applyActionPayload(merged);
   }
   // Streaming finalized without ever calling onReplyProgress (no partials),
   // so we drop the pending bubble here just before creating the final one.
   cancelPendingNewsStatusBubble("ndjson_finalize");
+  clearWorkModeTypedPendingOnResponse();
   let finOpts = { path: "ndjson-final" };
   if (state.pendingReplyBack) {
     finOpts = mergeReplyBackIntoBubbleMeta(finOpts, state.pendingReplyBack);
@@ -23463,15 +23366,15 @@ function detectInterrupt() {
             smoothGateAllowsTrigger
           ) {
             interruptSpeechAccumMs += dt;
-            interruptSpeechFrames++;
-            interruptLastSpeechLikeTime = now;
-            lastInterruptSpeechLikeSnapshot = {
-              rms,
-              zcr,
-              crest,
-              heuristicChecks,
-              at: now,
-            };
+        interruptSpeechFrames++;
+        interruptLastSpeechLikeTime = now;
+        lastInterruptSpeechLikeSnapshot = {
+          rms,
+          zcr,
+          crest,
+          heuristicChecks,
+          at: now,
+        };
             if (strongFrame) {
               whisperInterruptStrongFrames++;
             } else {
@@ -24009,18 +23912,18 @@ function logInterruptTriggerReason({
   const isWhisperCandidateGate =
     gate === "whisper_sustain" || gate === "whisper_strong_frames";
   logWhisperInterruptQa("INTERRUPT_CANDIDATE", gate, {
-    ...base,
+      ...base,
     note: isWhisperCandidateGate
       ? "VAD candidate only — awaiting Whisper transcript confirmation"
       : "VAD candidate",
-    lastSpeechLike: lastSpeechLike
-      ? {
-          rms: Number(lastSpeechLike.rms.toFixed(5)),
-          zcr: Number(lastSpeechLike.zcr.toFixed(5)),
-          crest: Number(lastSpeechLike.crest.toFixed(4)),
-          heuristicChecks: checks.join("+"),
-        }
-      : null,
+      lastSpeechLike: lastSpeechLike
+        ? {
+            rms: Number(lastSpeechLike.rms.toFixed(5)),
+            zcr: Number(lastSpeechLike.zcr.toFixed(5)),
+            crest: Number(lastSpeechLike.crest.toFixed(4)),
+            heuristicChecks: checks.join("+"),
+          }
+        : null,
   });
   pushMobileInterruptVadLog(
     `[INTERRUPT_CANDIDATE] ${gate} accumMs=${speechAccumMs.toFixed(1)} rms=${triggerFrame.rms.toFixed(5)} zcr=${triggerFrame.zcr.toFixed(5)} crest=${triggerFrame.crest.toFixed(4)} checks=${checks.join("+")}`
@@ -27855,7 +27758,15 @@ async function runInferMainPipeline(formData, opts = {}) {
       processing = false;
       requestInFlight = false;
       if (!failPendingNewsStatusBubble("infer_main_http")) {
-        void veraSurfaceLlmFetchFailure({ feature: "infer_main", response: res });
+        if (workModeTypedPendingTurn) {
+          renderWorkModeTypedPendingError("Something went wrong — try again.", {
+            error: `http_${res.status}`
+          });
+        } else {
+          void veraSurfaceLlmFetchFailure({ feature: "infer_main", response: res });
+        }
+      } else if (workModeTypedPendingTurn) {
+        clearWorkModeTypedPendingOnResponse({ response_received: false, reason: "news_failure_bubble" });
       }
       return;
     }
@@ -28176,7 +28087,15 @@ async function runInferMainPipeline(formData, opts = {}) {
       });
     }
     if (!failPendingNewsStatusBubble("infer_main_error")) {
+      if (workModeTypedPendingTurn) {
+        renderWorkModeTypedPendingError("Server error — try again.", {
+          error: String(e?.message || e || "infer_main_error")
+        });
+      } else {
       void veraSurfaceLlmFetchFailure({ feature: "infer_main", error: e });
+      }
+    } else if (workModeTypedPendingTurn) {
+      clearWorkModeTypedPendingOnResponse({ response_received: false, reason: "news_failure_bubble" });
     }
   }
 }
@@ -28901,6 +28820,185 @@ async function handleUtterance() {
  * logs, and backend planner integration are unchanged. */
 
 /* =========================
+   WORK MODE TYPED PENDING UX (keyboard submit feedback)
+========================= */
+/** @type {{ id: string, userText: string, userRow: HTMLElement|null, processingRow: HTMLElement|null, state: string, route: string|null } | null} */
+let workModeTypedPendingTurn = null;
+let workModeTypedPendingSeq = 0;
+
+function _nextWorkModeTypedPendingId() {
+  workModeTypedPendingSeq += 1;
+  return `wm-typed-pending-${workModeTypedPendingSeq}`;
+}
+
+function logWorkTypedPending(tag, fields = {}) {
+  const p = workModeTypedPendingTurn;
+  try {
+    console.info(tag, {
+      text: String(fields.text ?? p?.userText ?? "").slice(0, 240),
+      route: fields.route ?? p?.route ?? null,
+      entered_work_mode_reasoning:
+        fields.entered_work_mode_reasoning ??
+        (fields.route === "reasoning_panel" || p?.route === "reasoning_panel"
+          ? true
+          : fields.route || p?.route
+            ? false
+            : null),
+      sent_to_infer:
+        fields.sent_to_infer ??
+        (fields.route === "infer" || fields.route === "voice_ui" || p?.route === "infer"
+          ? true
+          : fields.route || p?.route
+            ? false
+            : null),
+      pending_bubble_id: fields.pending_bubble_id ?? p?.id ?? null,
+      queue_chip_id: fields.queue_chip_id ?? null,
+      response_received: fields.response_received ?? null,
+      error: fields.error != null ? String(fields.error).slice(0, 240) : null,
+      ...fields
+    });
+  } catch (_) {}
+}
+
+function _removeWorkModeTypedPendingProcessingRow() {
+  const proc = workModeTypedPendingTurn?.processingRow;
+  if (proc?.isConnected) {
+    try {
+      proc.remove();
+    } catch (_) {}
+  }
+  if (workModeTypedPendingTurn) workModeTypedPendingTurn.processingRow = null;
+}
+
+function clearWorkModeTypedPendingTurn(reason = "cleared", opts = {}) {
+  if (!workModeTypedPendingTurn) return;
+  _removeWorkModeTypedPendingProcessingRow();
+  if (opts.removeUserRow && workModeTypedPendingTurn.userRow?.isConnected) {
+    try {
+      workModeTypedPendingTurn.userRow.remove();
+    } catch (_) {}
+  }
+  if (!opts.silent) {
+    logWorkTypedPending("[work_typed_pending_cleared]", { reason: String(reason || "") });
+  }
+  workModeTypedPendingTurn = null;
+}
+
+function renderWorkModeTypedPendingTurn(text, opts = {}) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed || !isVeraWorkModeOn() || appModePrefix() !== "vera") return null;
+  clearWorkModeTypedPendingTurn("superseded", { silent: true });
+      ensureChatStartedLayout();
+  const id = _nextWorkModeTypedPendingId();
+  const userBubble = addBubble(trimmed, "user", {
+    path: opts.path || "work-typed-pending",
+    bubbleClass: "vera-work-mode-typed-pending-user"
+  });
+  const userRow = userBubble instanceof HTMLElement ? userBubble.closest(".message-row") : null;
+  if (userRow instanceof HTMLElement) {
+    userRow.dataset.veraWorkModeTypedPendingUser = "1";
+    userRow.dataset.workModeTypedPendingId = id;
+    userRow.dataset.workModeTypedPendingState = "pending";
+  }
+  const procBubble = addBubble("Thinking…", "vera", {
+    path: "work-typed-pending-processing",
+    bubbleClass: "vera-pending-status vera-work-mode-typed-pending-processing"
+  });
+  const procRow = procBubble instanceof HTMLElement ? procBubble.closest(".message-row") : null;
+  if (procRow instanceof HTMLElement) {
+    procRow.dataset.workModeTypedPendingId = id;
+    procRow.dataset.workModeTypedPendingState = "processing";
+  }
+  workModeTypedPendingTurn = {
+    id,
+    userText: trimmed,
+    userRow: userRow instanceof HTMLElement ? userRow : null,
+    processingRow: procRow instanceof HTMLElement ? procRow : null,
+    state: "processing",
+    route: null
+  };
+  try {
+    setStatus("Thinking", "thinking");
+  } catch (_) {}
+  logWorkTypedPending("[work_typed_submit]", { text: trimmed, pending_bubble_id: id });
+  logWorkTypedPending("[work_typed_pending_rendered]", { text: trimmed, pending_bubble_id: id });
+  return workModeTypedPendingTurn;
+}
+
+function markWorkModeTypedPendingRoute(route, fields = {}) {
+  if (!workModeTypedPendingTurn) return;
+  workModeTypedPendingTurn.route = String(route || "");
+  logWorkTypedPending("[work_typed_route_selected]", {
+    route: workModeTypedPendingTurn.route,
+    entered_work_mode_reasoning: workModeTypedPendingTurn.route === "reasoning_panel",
+    sent_to_infer:
+      workModeTypedPendingTurn.route === "infer" || workModeTypedPendingTurn.route === "voice_ui",
+    ...fields
+  });
+}
+
+function handoffWorkModeTypedPendingToReasoning(opts = {}) {
+  if (!workModeTypedPendingTurn) return;
+  workModeTypedPendingTurn.state = "handed_off";
+  if (workModeTypedPendingTurn.userRow?.isConnected) {
+    workModeTypedPendingTurn.userRow.dataset.workModeTypedPendingState = "handed_off";
+  }
+  _removeWorkModeTypedPendingProcessingRow();
+  markWorkModeTypedPendingRoute("reasoning_panel", opts);
+  logWorkTypedPending("[work_typed_reasoning_queue_handoff]", {
+    entered_work_mode_reasoning: true,
+    queue_chip_id: opts.queue_chip_id ?? null,
+    ...opts
+  });
+  workModeTypedPendingTurn = null;
+}
+
+function markWorkModeTypedNonReasoningProcessing() {
+  if (!workModeTypedPendingTurn || workModeTypedPendingTurn.state === "handed_off") return;
+  markWorkModeTypedPendingRoute("infer", { sent_to_infer: true });
+  workModeTypedPendingTurn.state = "processing";
+  logWorkTypedPending("[work_typed_nonreasoning_processing]", { sent_to_infer: true });
+}
+
+function clearWorkModeTypedPendingOnResponse(opts = {}) {
+  if (!workModeTypedPendingTurn) return;
+  _removeWorkModeTypedPendingProcessingRow();
+  if (workModeTypedPendingTurn.userRow?.isConnected) {
+    workModeTypedPendingTurn.userRow.dataset.workModeTypedPendingState = "done";
+    try {
+      delete workModeTypedPendingTurn.userRow.dataset.veraWorkModeTypedPendingUser;
+    } catch (_) {}
+  }
+  logWorkTypedPending("[work_typed_nonreasoning_response_rendered]", {
+    response_received: true,
+    ...opts
+  });
+  logWorkTypedPending("[work_typed_pending_cleared]", { reason: "response" });
+  workModeTypedPendingTurn = null;
+}
+
+function renderWorkModeTypedPendingError(message, opts = {}) {
+  if (!workModeTypedPendingTurn) return;
+  const msg = String(message || "Something went wrong — try again.").trim();
+  _removeWorkModeTypedPendingProcessingRow();
+  if (workModeTypedPendingTurn.userRow?.isConnected) {
+    workModeTypedPendingTurn.userRow.dataset.workModeTypedPendingState = "error";
+    try {
+      delete workModeTypedPendingTurn.userRow.dataset.veraWorkModeTypedPendingUser;
+    } catch (_) {}
+  }
+  try {
+    addBubble(msg, "vera", {
+      path: "work-typed-pending-error",
+      bubbleClass: "vera-pending-status vera-work-mode-typed-pending-error"
+    });
+  } catch (_) {}
+  logWorkTypedPending("[work_typed_error_rendered]", { error: msg, ...opts });
+  logWorkTypedPending("[work_typed_pending_cleared]", { reason: "error" });
+  workModeTypedPendingTurn = null;
+}
+
+/* =========================
    TEXT INPUT PIPELINE
 ========================= */
 
@@ -29240,12 +29338,74 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
 
   const typedPendingDisplayText =
     trimmed || (pendingFiles.length ? "[Uploaded attachment(s)] — see attached file(s)." : "");
+  let typedPendingRendered = false;
+  if (!fromQueue && !fromPanelQueue && typedPendingDisplayText) {
+    renderWorkModeTypedPendingTurn(typedPendingDisplayText, { path: path || "work-typed" });
+    typedPendingRendered = true;
+  }
 
+  /* Hard cap: at most WORK_MODE_TYPED_PENDING_MAX typed turns in flight or queued.
+     Matches the non-work-mode "3 user turns before VERA replies" guard. Refuse
+     instead of queueing the 4th so the user gets the same clear feedback. */
+  if (!fromQueue && isWorkModeTypedTurnAtHardCap()) {
+    if (typedPendingRendered) {
+      clearWorkModeTypedPendingTurn("typed_hard_cap_reached", { silent: true });
+    }
+    setStatus("Wait for VERA response before sending more", "idle");
+    preserveComposerAttachments("typed_hard_cap_reached", null);
+    try {
+      console.warn("[WorkMode] typed hard cap reached — refusing input", {
+        pending: countPendingWorkModeTypedTurns(),
+        max: WORK_MODE_TYPED_PENDING_MAX,
+        depth: workModeTypedVoiceInferDepth,
+        queued: workModeTypedTurnQueue.length
+      });
+      console.info("[reasoning_queue_omitted]", {
+        turn_id: null,
+        lane_id: null,
+        reason: "typed_hard_cap_reached"
+      });
+    } catch (_) {}
+    return;
+  }
+
+  if (isWorkModeTypedTurnBlocked()) {
+    if (!fromQueue) {
+      const queueSnap = getWorkModePendingAttachmentFiles();
+      logComposerAttachmentsBeforeSubmit(queueSnap, null);
+      const queued = enqueueWorkModeTypedTurn(trimmed, {
+        ...opts,
+        path,
+        reasoningAttachments: queueSnap
+      });
+      if (queued) {
+        clearComposerAttachmentsAfterSubmit(null, "typed_turn_queue_enqueue");
+      } else {
+        setStatus(`Work queue full (max ${WORK_MODE_TYPED_TURN_QUEUE_MAX})`, "idle");
+        preserveComposerAttachments("typed_turn_queue_full", null);
+        try {
+          console.info("[reasoning_queue_omitted]", {
+            turn_id: null,
+            lane_id: null,
+            reason: "typed_turn_queue_full_while_voice_infer_busy"
+          });
+        } catch (_) {}
+      }
+    }
+    return;
+  }
+
+  /* User bubble: pre-rendered above for typed keyboard UX; /infer NDJSON `asr` still calls
+     commitServerUserTranscriptBubble for dedupe (same as voice). A duplicate addBubble here
+     would duplicate the row in Voice UI. */
   ensureChatStartedLayout();
   // Arm pending news bubble BEFORE POST /infer so the placeholder appears
   // during the thinking/searching window, not right before the final answer.
   // Idempotent — duplicate calls for the same transcript are no-ops.
   armPendingNewsStatusBubble(trimmed);
+  if (pendingNewsStatusBubble?.isConnected && workModeTypedPendingTurn?.processingRow?.isConnected) {
+    _removeWorkModeTypedPendingProcessingRow();
+  }
 
   const transcriptLine =
     trimmed || (pendingFiles.length ? "[Uploaded attachment(s)] — see attached file(s)." : "");
@@ -29356,16 +29516,6 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
     __reasoningStreamSource: opts?.__reasoningStreamSource || null
   });
 
-  try {
-    console.info("[work_typed_submit]", {
-      text_preview: String(trimmed || typedPendingDisplayText || "").slice(0, 120),
-      path: path || "work-typed",
-      from_queue: fromQueue,
-      from_panel_queue: fromPanelQueue,
-      turn_id: turnContext?.turn_id ?? null
-    });
-  } catch (_) {}
-
   const enqueued = enqueueWorkModeTypedVoiceInfer(async () => {
     try {
       listening = false;
@@ -29377,89 +29527,85 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
 
       const inferSig = attachPipelineAbortSignal();
       const runPlayback = async () => {
-        const turnMeta = {
-          text: trimmed || transcriptLine,
-          path,
-          fromQueue,
-          turn_id: turnContext?.turn_id ?? null
-        };
-        if (!beginWorkModeTypedKeyboardTurn(turnMeta)) return;
-        let finishReason = "done";
-        try {
-          bumpWorkModeVoiceInferTurnSeq();
-          const ttsTurn = workModeTtsMetaFromTurnContext(turnContext);
-          const prepWrap = attachWorkModeTtsTurnAfterPrep(await reasoningPrepP, ttsTurn, trimmed);
-          if (prepWrap?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
-          if (prepWrap?.voiceTwoStage?.reasoningRouted) {
-            const stage1P = maybePlayWorkModeReasoningStage1FromPrep(prepWrap, inferSig, trimmed);
-            await Promise.resolve(stage1P).catch(() => {});
-            const seqAtStage1End = workModeVoiceInferTurnSeq;
-            await runWorkModeDeferredReasoningStageTwoInfer({
-              formData,
-              prep: prepWrap,
-              seqAtStage1End
+        bumpWorkModeVoiceInferTurnSeq();
+        const ttsTurn = workModeTtsMetaFromTurnContext(turnContext);
+        const prepWrap = attachWorkModeTtsTurnAfterPrep(await reasoningPrepP, ttsTurn, trimmed);
+        if (prepWrap?.inferThreadAnchor) formData.append("thread_follow_up_anchor", prepWrap.inferThreadAnchor);
+        if (prepWrap?.voiceTwoStage?.reasoningRouted) {
+          if (typedPendingRendered) {
+            handoffWorkModeTypedPendingToReasoning({
+              text: trimmed,
+              pending_bubble_id: null,
+              queue_chip_id: prepWrap?.turnContext?.turn_id ?? null
             });
-            resumeAfterAssistantReplyPlayback();
-            return;
           }
-          /* 2026-06-12 investigation guard — a reasoning.request that arrived via
-             the backend planner's open_and_stream payload (with a resolved/forwarded
-             target panel) must land in the reasoning panel body, NOT the Voice UI
-             chat transcript. If we reach this branch the recursive turn FAILED to
-             re-qualify as reasoning (reasoningRouted === false), so the model answer
-             is about to be appended to Voice UI instead of the panel. Log only —
-             no behavior change — so a live repro surfaces the mismatch in console. */
-          const _wasReasoningRequestOpenAndStream =
-            typeof opts?.path === "string" &&
-            opts.path.indexOf("reasoning.request.open_and_stream") !== -1;
-          if (_wasReasoningRequestOpenAndStream) {
+          const stage1P = maybePlayWorkModeReasoningStage1FromPrep(prepWrap, inferSig, trimmed);
+          await Promise.resolve(stage1P).catch(() => {});
+          const seqAtStage1End = workModeVoiceInferTurnSeq;
+          scheduleWorkModeDeferredReasoningStageTwoInfer({
+            formData,
+            prep: prepWrap,
+            seqAtStage1End
+          });
+          resumeAfterAssistantReplyPlayback();
+          return;
+        }
+        if (typedPendingRendered) {
+          markWorkModeTypedNonReasoningProcessing();
+        }
+        /* 2026-06-12 investigation guard — a reasoning.request that arrived via
+           the backend planner's open_and_stream payload (with a resolved/forwarded
+           target panel) must land in the reasoning panel body, NOT the Voice UI
+           chat transcript. If we reach this branch the recursive turn FAILED to
+           re-qualify as reasoning (reasoningRouted === false), so the model answer
+           is about to be appended to Voice UI instead of the panel. Log only —
+           no behavior change — so a live repro surfaces the mismatch in console. */
+        const _wasReasoningRequestOpenAndStream =
+          typeof opts?.path === "string" &&
+          opts.path.indexOf("reasoning.request.open_and_stream") !== -1;
+        if (_wasReasoningRequestOpenAndStream) {
+          try {
+            console.warn("[reasoning_destination_mismatch]", {
+              reason: "reasoning_request_with_target_panel_routed_to_voice_ui",
+              action_type: "reasoning.request",
+              origin_path: opts.path,
+              target_panel_index_1based: _forwardedTargetPanel,
+              reasoning_routed: false,
+              append_destination: "voice_ui_chat",
+              expected_destination: "reasoning_panel_body",
+              prompt_preview: String(trimmed || "").slice(0, 160),
+            });
+          } catch (_) {}
+          /* Bug-level warning: an explicit panel destination was supplied
+             (force-route requested) yet the answer is still about to land
+             in Voice UI. This means the gate force-route failed and the
+             priority rule was violated. */
+          if (opts.__reasoningGateForceRoute === "reasoning_panel") {
             try {
-              console.warn("[reasoning_destination_mismatch]", {
-                reason: "reasoning_request_with_target_panel_routed_to_voice_ui",
+              console.error("[panel_destination_routed_to_chat_bug]", {
+                explicit_panel_destination: true,
                 action_type: "reasoning.request",
                 origin_path: opts.path,
                 target_panel_index_1based: _forwardedTargetPanel,
-                reasoning_routed: false,
                 append_destination: "voice_ui_chat",
                 expected_destination: "reasoning_panel_body",
                 prompt_preview: String(trimmed || "").slice(0, 160),
               });
             } catch (_) {}
-            /* Bug-level warning: an explicit panel destination was supplied
-               (force-route requested) yet the answer is still about to land
-               in Voice UI. This means the gate force-route failed and the
-               priority rule was violated. */
-            if (opts.__reasoningGateForceRoute === "reasoning_panel") {
-              try {
-                console.error("[panel_destination_routed_to_chat_bug]", {
-                  explicit_panel_destination: true,
-                  action_type: "reasoning.request",
-                  origin_path: opts.path,
-                  target_panel_index_1based: _forwardedTargetPanel,
-                  append_destination: "voice_ui_chat",
-                  expected_destination: "reasoning_panel_body",
-                  prompt_preview: String(trimmed || "").slice(0, 160),
-                });
-              } catch (_) {}
-            }
           }
-          const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prepWrap, { signal: inferSig });
-          if (prepFail === "reasoning-upload-failed") {
-            finishReason = "reasoning-upload-failed";
-            processing = false;
-            requestInFlight = false;
-            voiceUxTurn = null;
-            setStatus("Ready", "idle");
-            return;
+        }
+        const prepFail = await runInferAfterWorkModeReasoningPrep(formData, prepWrap, { signal: inferSig });
+        if (prepFail === "reasoning-upload-failed") {
+          if (typedPendingRendered) {
+            renderWorkModeTypedPendingError("Could not upload — try again.", {
+              error: "reasoning-upload-failed"
+            });
           }
-        } catch (err) {
-          finishReason = err?.name === "AbortError" ? "abort" : "error";
-          throw err;
-        } finally {
-          finishWorkModeTypedKeyboardTurn(finishReason, {
-            ...turnMeta,
-            error: finishReason === "done" ? null : finishReason
-          });
+          processing = false;
+          requestInFlight = false;
+          voiceUxTurn = null;
+          setStatus("Ready", "idle");
+          return;
         }
       };
       if (isVeraWorkModeOn()) {
@@ -29480,10 +29626,16 @@ async function sendVeraWorkModeTypedInferTurn(text, opts = {}) {
       requestInFlight = false;
       voiceUxTurn = null;
       setStatus("Server error", "offline");
+      if (typedPendingRendered) {
+        renderWorkModeTypedPendingError("Server error — try again.", {
+          error: String(err?.message || err || "typed_infer_error")
+        });
+      } else {
       void veraSurfaceLlmFetchFailure({
         feature: "infer_workmode_typed",
         error: err
       });
+      }
     }
   });
 
@@ -29546,49 +29698,6 @@ async function sendTextMessage() {
 
   if (!text) return;
   if (inVeraWorkMode) {
-    try {
-      console.info("[work_typed_submit]", {
-        text_preview: String(text || "").trim().slice(0, 120),
-        path: "typed-text",
-        busy: isWorkModeTypedKeyboardBusy(),
-        from_queue: false
-      });
-    } catch (_) {}
-    if (isWorkModeTypedKeyboardBusy()) {
-      try {
-        console.info("[work_typed_busy_detected]", {
-          text_preview: String(text || "").trim().slice(0, 120),
-          queue_len: workModeTypedTurnQueue.length,
-          queue_max: WORK_MODE_TYPED_TURN_QUEUE_MAX
-        });
-      } catch (_) {}
-      if (workModeTypedTurnQueue.length >= WORK_MODE_TYPED_TURN_QUEUE_MAX) {
-        setStatus(`Work queue full (max ${WORK_MODE_TYPED_TURN_QUEUE_MAX})`, "idle");
-        try {
-          console.info("[reasoning_queue_omitted]", {
-            turn_id: null,
-            lane_id: null,
-            reason: "typed_turn_queue_max"
-          });
-        } catch (_) {}
-        return;
-      }
-      const queueSnap = getWorkModePendingAttachmentFiles();
-      logComposerAttachmentsBeforeSubmit(queueSnap, null);
-      const queued = enqueueWorkModeTypedTurn(text, {
-        path: "typed-text",
-        reasoningAttachments: queueSnap
-      });
-      if (queued) {
-        clearComposerAttachmentsAfterSubmit(null, "typed_turn_queue_enqueue");
-        renderWorkModeTypedTurnQueueUi();
-        if (textInput) textInput.value = "";
-        setStatus(`Queued (${workModeTypedTurnQueue.length})`, "idle");
-      } else {
-        setStatus(`Work queue full (max ${WORK_MODE_TYPED_TURN_QUEUE_MAX})`, "idle");
-      }
-      return;
-    }
     if (
       await maybeHandleWorkChecklistSyncShortcut(text, {
         source: "main-work-text-input",
@@ -29638,6 +29747,16 @@ async function sendTextMessage() {
       });
       veraShowSafetyFailureBubble(lenBlock.message);
       veraSetSafetyStatus("Message too long — shorten or upload as a file");
+      return;
+    }
+    if (isWorkModeTypedTurnAtHardCap()) {
+      setStatus("Wait for VERA response before sending more", "idle");
+      try {
+        console.warn("[WorkMode] keyboard blocked at hard cap (typed-text)", {
+          pending: countPendingWorkModeTypedTurns(),
+          max: WORK_MODE_TYPED_PENDING_MAX
+        });
+      } catch (_) {}
       return;
     }
     if (textInput) textInput.value = "";
@@ -29693,41 +29812,41 @@ async function sendTextMessage() {
   if (textInput) textInput.value = "";
 
   try {
-    beginTextUxTurn();
-    listening = false;
-    processing = true;
-    requestInFlight = true;
-    waveState = "idle";
+  beginTextUxTurn();
+  listening = false;
+  processing = true;
+  requestInFlight = true;
+  waveState = "idle";
 
-    setStatus("Thinking", "thinking");
+  setStatus("Thinking", "thinking");
 
-    addBubble(text, "user", { path: "typed-text" });
-    ensureChatStartedLayout();
-    // PART 14 (2026-05-28): emit the structured frontend route log on every
-    // typed turn so the browser console shows our route classification side
-    // by side with the backend's matching [news_router_route] line. Pure
-    // instrumentation; backend remains the authoritative router.
-    try {
-      if (typeof classifyVeraTurnRoute === "function" && typeof logNewsRouterRouteFrontend === "function") {
-        const _veraTurnRouteClassification = classifyVeraTurnRoute(text);
-        logNewsRouterRouteFrontend(text, _veraTurnRouteClassification);
-      }
-    } catch (_) {}
-    // 2026-05-28 PART 1 — emit the info-tool router classification too. The
-    // backend is the authoritative router; this is purely instrumentation so
-    // the browser console shows our intended dispatch side by side with the
-    // backend's matching [info_tool_route] line.
-    try {
-      if (typeof classifyInfoTool === "function" && typeof logInfoToolRouteFrontend === "function") {
-        const _infoToolClassification = classifyInfoTool(text);
-        logInfoToolRouteFrontend(text, _infoToolClassification);
-      }
-    } catch (_) {}
-    // Show "Searching news…" immediately for likely Serper-backed requests.
-    // Cancelled when a real reply arrives via applyAssistantReplyAndPanels /
-    // applyNdjsonStreamingReplySoFar / finalizeNdjsonStreamingReply, and
-    // replaced with the failure message on network/server errors or timeout.
-    armPendingNewsStatusBubble(text);
+  addBubble(text, "user", { path: "typed-text" });
+  ensureChatStartedLayout();
+  // PART 14 (2026-05-28): emit the structured frontend route log on every
+  // typed turn so the browser console shows our route classification side
+  // by side with the backend's matching [news_router_route] line. Pure
+  // instrumentation; backend remains the authoritative router.
+  try {
+    if (typeof classifyVeraTurnRoute === "function" && typeof logNewsRouterRouteFrontend === "function") {
+      const _veraTurnRouteClassification = classifyVeraTurnRoute(text);
+      logNewsRouterRouteFrontend(text, _veraTurnRouteClassification);
+    }
+  } catch (_) {}
+  // 2026-05-28 PART 1 — emit the info-tool router classification too. The
+  // backend is the authoritative router; this is purely instrumentation so
+  // the browser console shows our intended dispatch side by side with the
+  // backend's matching [info_tool_route] line.
+  try {
+    if (typeof classifyInfoTool === "function" && typeof logInfoToolRouteFrontend === "function") {
+      const _infoToolClassification = classifyInfoTool(text);
+      logInfoToolRouteFrontend(text, _infoToolClassification);
+    }
+  } catch (_) {}
+  // Show "Searching news…" immediately for likely Serper-backed requests.
+  // Cancelled when a real reply arrives via applyAssistantReplyAndPanels /
+  // applyNdjsonStreamingReplySoFar / finalizeNdjsonStreamingReply, and
+  // replaced with the failure message on network/server errors or timeout.
+  armPendingNewsStatusBubble(text);
     await flushWorkChecklistSyncBeforeCommand();
     const textFetchStart = performance.now();
     /* PART 10/11: attach a client-side request_id so the dev console can
