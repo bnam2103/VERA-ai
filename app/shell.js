@@ -268,12 +268,20 @@ let bmoLoadingDotsInterval = null;
 const bootLoader = document.getElementById("boot-loader");
 const bootBar = document.getElementById("boot-bar");
 const bootPercent = document.getElementById("boot-percent");
+const bootLabelEl = document.querySelector("#boot-loader .boot-label");
+const bootNoteEl = document.querySelector("#boot-loader .boot-note");
 
 let currentProgress = 0;
 let bootPollInterval = null;
 let bootRevealTimer = null;
 let bootTimeoutTimer = null;
-const BOOT_STALL_TIMEOUT_MS = 30000;
+const BOOT_POLL_MS = 2000;
+const BOOT_STALL_LOG_MS = 30000;
+
+function setBootStatusMessage(label, note) {
+  if (bootLabelEl && label) bootLabelEl.textContent = label;
+  if (bootNoteEl && note !== undefined) bootNoteEl.textContent = note;
+}
 
 function setProgress(value) {
   const clamped = Math.max(0, Math.min(100, Math.round(value)));
@@ -318,28 +326,24 @@ function scheduleBootStallFallback() {
   clearBootTimeout();
   bootTimeoutTimer = setTimeout(() => {
     if (appRevealed) return;
-    console.error(
-      "[boot] timeout — stalled at",
-      currentProgress + "%",
-      "for",
-      BOOT_STALL_TIMEOUT_MS,
-      "ms; forcing reveal"
+    console.warn("[boot] still waiting for backend after", BOOT_STALL_LOG_MS, "ms");
+    setBootStatusMessage(
+      "Retrying connection…",
+      "Still waiting for Vera backend. Checking again…"
     );
-    if (typeof checkServer !== "function") {
-      console.error("[boot] checkServer missing — app.js may have failed to parse or load");
-    }
-    scheduleBootReveal();
-  }, BOOT_STALL_TIMEOUT_MS);
+    scheduleBootStallFallback();
+  }, BOOT_STALL_LOG_MS);
 }
 
 async function pollBootStatus() {
   if (typeof checkServer !== "function") {
     console.error("[boot] checkServer unavailable — app.js may not have loaded");
     offlineBootPolls += 1;
-    setProgress(Math.min(offlineBootPolls * 20, 72));
-    if (offlineBootPolls >= 2 && !appRevealed) {
-      scheduleBootReveal();
-    }
+    setBootStatusMessage(
+      offlineBootPolls > 1 ? "Retrying connection…" : "Waiting for Vera backend…",
+      "App scripts are still loading. Retrying…"
+    );
+    setProgress(0);
     return;
   }
   let state = "offline";
@@ -347,31 +351,42 @@ async function pollBootStatus() {
     state = await checkServer();
   } catch (err) {
     console.error("[boot] server health check fail", err);
-    setProgress(0);
+    offlineBootPolls += 1;
+    setBootStatusMessage(
+      "Retrying connection…",
+      "Could not reach Vera backend. Checking again…"
+    );
+    setProgress(Math.min(offlineBootPolls * 8, 40));
     return;
   }
 
   if (state === "offline") {
     hitStarting = false;
     offlineBootPolls += 1;
-    setProgress(Math.min(offlineBootPolls * 12, 48));
-    if (offlineBootPolls >= 3 && !appRevealed) {
-      scheduleBootReveal();
-    }
+    setBootStatusMessage(
+      offlineBootPolls > 1 ? "Retrying connection…" : "Waiting for Vera backend…",
+      "The server is offline or waking up. Checking again…"
+    );
+    setProgress(Math.min(offlineBootPolls * 8, 40));
     return;
   }
+
   offlineBootPolls = 0;
 
   if (state === "starting") {
     hitStarting = true;
-    /* +15 per tick @ 600ms ≈ same climb as +5 @ 200ms */
-    setProgress(Math.min(Math.max(currentProgress, 0) + 15, 50));
+    setBootStatusMessage(
+      "Starting Vera backend…",
+      "First launch from idle may take 10–30 seconds while the server wakes up."
+    );
+    setProgress(Math.min(Math.max(currentProgress, 0) + 12, 85));
     return;
   }
 
   if (state === "ready" && !appRevealed) {
     if (bootRevealTimer) return;
-    setProgress(Math.max(currentProgress, 50));
+    setBootStatusMessage("VERA is ready", "");
+    setProgress(Math.max(currentProgress, 90));
     scheduleBootReveal();
   }
 }
@@ -385,6 +400,11 @@ async function startBootSequence() {
   document.body.classList.add("vera-mode");
   document.body.classList.remove("bmo-open");
   bootLoader.classList.add("active");
+  veraApp.hidden = true;
+  setBootStatusMessage(
+    "Initializing VERA…",
+    "Waiting for Vera backend…"
+  );
   setProgress(0);
   hitStarting = false;
   if (bootRevealTimer) {
@@ -399,7 +419,7 @@ async function startBootSequence() {
     console.error("[boot] initial poll fail", err);
   }
   if (!appRevealed) {
-    bootPollInterval = setInterval(pollBootStatus, 600);
+    bootPollInterval = setInterval(pollBootStatus, BOOT_POLL_MS);
   }
 }
 
