@@ -9198,6 +9198,8 @@ window.ensureWorkModeVoiceUiActive = async function ensureWorkModeVoiceUiActive(
   try {
     if (window.matchMedia("(max-width: 768px)").matches) return;
     if (appModePrefix() !== "vera") return;
+    const veraAppEl = document.getElementById("vera-app");
+    if (veraAppEl?.hidden) return;
     listeningMode = "continuous";
     inputMuted = false;
     updateMuteInputButton();
@@ -27532,6 +27534,10 @@ async function finalizeInterruptBrowserTranscript(text) {
 
 function startListening() {
   if (!listening || processing) return;
+  if (appModePrefix() === "vera") {
+    const veraAppEl = document.getElementById("vera-app");
+    if (veraAppEl?.hidden) return;
+  }
   if (listeningMode === "continuous" && inputMuted) {
     showMutedStatusIfIdle();
     updateMuteInputButton();
