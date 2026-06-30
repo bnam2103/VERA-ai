@@ -3,10 +3,12 @@ SERVER INSTRUCTION
 
 Run Fast API: py -m uvicorn server:app --host 0.0.0.0 --port 8000 (make sure to cd Documents\VERA\Online_demo)
 Run public tunneling: cloudflared tunnel --url http://localhost:8000
-then paste the tunnel URL into vera-api/src/index.js (TUNNEL_URL), then:
-Deploy worker: cd Documents\VERA\Online_demo\vera-api && npx wrangler deploy
+then change the url in index.js
+Deploy worker: wrangler deploy (make sure to cd vera-api) cd Documents\VERA\Online_demo\vera-api
 check if it works: curl.exe https://vera-api.vera-api-ned.workers.dev/health
 archiving cost and pricing: Invoke-RestMethod -Method POST -Uri "http://localhost:8000/cost/logs/archive"
+
+powershell -ExecutionPolicy Bypass -File "C:\Users\User\Documents\VERA\Online_demo\deploy-vera.ps1"
 
 #########################################
 VERSION 1.0: an usable conversational AI that uses speeches as input and ouput. It's turn-based, meaning user speaks then ai speaks. The speeches will be transcribed and shown as the text bubbles on the right section of the web as a chat log. 
