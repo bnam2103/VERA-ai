@@ -4866,7 +4866,8 @@ body.chat-started .input-bar {
 
 /* Per-panel follow-up queue: shown above the reasoning stream so the user
    can see, edit, or delete pending requests while the panel is generating. */
-#vera-app.work-mode .vera-reasoning-tab-panel .vera-reasoning-queue-host {
+#vera-app.work-mode .vera-reasoning-tab-panel .vera-reasoning-queue-host,
+#vera-app.work-mode .vera-wm-conversation-wrap > .vera-wm-typed-queue-host {
   flex: 0 0 auto;
   margin: 8px 10px 4px;
   padding: 8px 10px;
