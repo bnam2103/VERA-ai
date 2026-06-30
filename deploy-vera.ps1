@@ -66,15 +66,54 @@ function Write-Warn([string]$Message) { Write-Host $Message -ForegroundColor Yel
 function Write-Err([string]$Message) { Write-Host $Message -ForegroundColor Red }
 function Write-Ok([string]$Message) { Write-Host $Message -ForegroundColor Green }
 
+function ConvertTo-GitText {
+  param([object]$Raw)
+  if ($null -eq $Raw) { return "" }
+  if ($Raw -is [string]) { return $Raw }
+  if ($Raw -is [System.Management.Automation.ErrorRecord]) { return $Raw.ToString() }
+  if ($Raw -is [System.Collections.IEnumerable]) {
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($item in $Raw) {
+      if ($null -eq $item) { continue }
+      if ($item -is [System.Management.Automation.ErrorRecord]) {
+        $parts.Add($item.ToString())
+      }
+      else {
+        $parts.Add([string]$item)
+      }
+    }
+    return ($parts -join "`n")
+  }
+  return [string]$Raw
+}
+
 function Invoke-Git {
-  param([string]$RepoPath, [Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+  param(
+    [string]$RepoPath,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$GitArgs
+  )
+  if (-not $RepoPath) { throw "Invoke-Git: RepoPath is required." }
+  if (-not $GitArgs -or $GitArgs.Count -eq 0) { throw "Invoke-Git: git arguments are required." }
+
   Push-Location $RepoPath
   try {
-    $out = & git @Args 2>&1
-    if ($LASTEXITCODE -ne 0) {
-      throw "git $($Args -join ' ') failed in $RepoPath`n$out"
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      $out = & git @GitArgs 2>&1
+      $exitCode = $LASTEXITCODE
     }
-    return $out
+    finally {
+      $ErrorActionPreference = $prevEap
+    }
+    $text = ConvertTo-GitText $out
+    if ($exitCode -ne 0) {
+      $cmd = "git $($GitArgs -join ' ')"
+      $detail = if ($text) { $text } else { "(no output)" }
+      throw "${cmd} failed in ${RepoPath} (exit ${exitCode})`n${detail}"
+    }
+    return $text
   }
   finally {
     Pop-Location
@@ -83,22 +122,28 @@ function Invoke-Git {
 
 function Get-RepoBranch([string]$RepoPath) {
   $branch = Invoke-Git $RepoPath rev-parse --abbrev-ref HEAD
-  return [string]$branch
+  if ([string]::IsNullOrWhiteSpace($branch)) {
+    throw "git rev-parse --abbrev-ref HEAD returned empty output in ${RepoPath}"
+  }
+  return $branch.Trim()
 }
 
 function Get-RepoStatus([string]$RepoPath) {
-  return [string](Invoke-Git $RepoPath status --short --branch)
+  return Invoke-Git $RepoPath status --short --branch
 }
 
 function Test-RepoDirty([string]$RepoPath) {
   $porcelain = Invoke-Git $RepoPath status --porcelain
-  return [bool]([string]$porcelain).Trim()
+  return -not [string]::IsNullOrWhiteSpace($porcelain)
 }
 
 function Confirm-Continue([string]$Prompt) {
-  if ($Force) { return $true }
+  if ($script:Force) { return $true }
   $answer = Read-Host "$Prompt [y/N]"
-  return $answer -match '^(y|yes)$'
+  if ($null -eq $answer) { return $false }
+  $answer = [string]$answer
+  if ([string]::IsNullOrWhiteSpace($answer)) { return $false }
+  return ($answer -match '^(y|yes)$')
 }
 
 function Show-BothTargetGuidance {
@@ -155,7 +200,11 @@ function Copy-FrontendToClone {
     if (-not (Test-Path $srcDir)) {
       throw "Required source directory missing: $srcDir"
     }
-    Copy-Item $srcDir (Join-Path $Clone $dir) -Recurse -Force
+    $destDir = Join-Path $Clone $dir
+    if (Test-Path $destDir) {
+      Remove-Item $destDir -Recurse -Force
+    }
+    Copy-Item $srcDir $destDir -Recurse -Force
   }
 
   # Never publish a GitHub Pages CNAME from either frontend pipeline.
@@ -163,6 +212,17 @@ function Copy-FrontendToClone {
   if (Test-Path $cname) {
     Remove-Item $cname -Force
     Write-Warn "Removed CNAME from deploy clone (custom domains are configured in host dashboards)."
+  }
+}
+
+function Test-RemoteBranchExists {
+  param([string]$RepoPath, [string]$RemoteBranch)
+  try {
+    Invoke-Git $RepoPath rev-parse --verify "origin/$RemoteBranch" | Out-Null
+    return $true
+  }
+  catch {
+    return $false
   }
 }
 
@@ -193,7 +253,12 @@ function Deploy-FrontendTarget {
   Write-Info "Remote branch:origin/$RemoteBranch"
   Write-Info ""
   Write-Info "Source git status:"
-  Write-Host $sourceStatus
+  if ([string]::IsNullOrWhiteSpace($sourceStatus)) {
+    Write-Host "(clean)"
+  }
+  else {
+    Write-Host $sourceStatus
+  }
   Write-Info ""
 
   if ($sourceBranch -ne $BranchName) {
@@ -227,13 +292,7 @@ function Deploy-FrontendTarget {
   Write-Info "Fetching origin in deploy clone..."
   Invoke-Git $ClonePath fetch origin | Out-Null
 
-  $remoteExists = $true
-  try {
-    Invoke-Git $ClonePath rev-parse --verify "origin/$RemoteBranch" | Out-Null
-  }
-  catch {
-    $remoteExists = $false
-  }
+  $remoteExists = Test-RemoteBranchExists -RepoPath $ClonePath -RemoteBranch $RemoteBranch
 
   if ($remoteExists) {
     Invoke-Git $ClonePath checkout $BranchName | Out-Null
@@ -241,7 +300,10 @@ function Deploy-FrontendTarget {
   }
   else {
     Write-Warn "Remote branch origin/$RemoteBranch not found. Creating local branch '$BranchName'."
-    Invoke-Git $ClonePath checkout -b $BranchName | Out-Null
+    $currentCloneBranch = Get-RepoBranch $ClonePath
+    if ($currentCloneBranch -ne $BranchName) {
+      Invoke-Git $ClonePath checkout -b $BranchName | Out-Null
+    }
   }
 
   Write-Info "Copying frontend files (no backend / Worker code)..."
@@ -250,16 +312,21 @@ function Deploy-FrontendTarget {
   $cloneStatus = Get-RepoStatus $ClonePath
   Write-Info ""
   Write-Info "Deploy clone status after copy:"
-  Write-Host $cloneStatus
+  if ([string]::IsNullOrWhiteSpace($cloneStatus)) {
+    Write-Host "(clean)"
+  }
+  else {
+    Write-Host $cloneStatus
+  }
   Write-Info ""
 
-  $porcelain = [string](Invoke-Git $ClonePath status --porcelain)
-  if (-not $porcelain.Trim()) {
+  $porcelain = Invoke-Git $ClonePath status --porcelain
+  if ([string]::IsNullOrWhiteSpace($porcelain)) {
     Write-Warn "No file changes detected in deploy clone. Nothing to push."
     exit 0
   }
 
-  if (-not (Confirm-Continue "Commit and push to origin/$RemoteBranch?")) {
+  if (-not (Confirm-Continue "Commit and push to origin/${RemoteBranch}?")) {
     Write-Err "Stopped before commit/push. Deploy clone has copied files but was not pushed."
     exit 1
   }
@@ -296,7 +363,7 @@ switch ($Target) {
     $sourceStatus = if (Test-Path $SourcePath) { Get-RepoStatus $SourcePath } else { "" }
     Write-Info "Source repo:  $SourcePath"
     Write-Info "Source branch:$sourceBranch"
-    if ($sourceStatus) {
+    if (-not [string]::IsNullOrWhiteSpace($sourceStatus)) {
       Write-Info "Source status:"
       Write-Host $sourceStatus
     }
