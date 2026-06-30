@@ -1,0 +1,1407 @@
+/* =============================================================================
+ * product.css — workwithvera.com landing page only (https://workwithvera.com/)
+ * Loaded from root index.html after styles.css. NOT linked from app/index.html.
+ * Edit this file on the production branch for product landing redesigns.
+ * App UI (/app/) uses ../styles.css only.
+ * ============================================================================= */
+
+:root {
+  --product-landing-g1: 8, 18, 32;
+  --product-landing-g2: 2, 6, 12;
+}
+
+/* Future landing redesigns: prefer #home, .intro, .landing-*, .product-* selectors. */
+
+body.intro-lock {
+  overflow: hidden;
+}
+body.app-open #bg-video {
+  opacity: 0;
+  pointer-events: none;
+}
+/* =========================
+   BACKGROUND VIDEO
+========================= */
+
+#bg-video {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: -2; /* stays above gradient */
+  filter: brightness(var(--v-brightness, 0.25)) contrast(1.05);
+}
+
+/* =========================
+   INTRO OVERLAY (TRAILER)
+========================= */
+
+.intro {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: black;
+  overflow: hidden;
+}
+
+.intro video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: black;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.intro-disclaimer {
+  position: absolute;
+  bottom: calc(96px + env(safe-area-inset-bottom)); /* above buttons */
+  left: 50%;
+  transform: translateX(-50%);
+
+  max-width: 520px;
+  padding: 0 16px;
+
+  text-align: center;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: rgba(255,255,255,0.65);
+
+  transition: opacity 0.5s ease;
+  pointer-events: none; /* non-interactive */
+}
+
+.intro-disclaimer.hidden {
+  opacity: 0;
+}
+/* =========================
+   INTRO BUTTONS
+========================= */
+
+.intro-btn {
+  position: absolute;
+  bottom: calc(32px + env(safe-area-inset-bottom));
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  background: rgba(0,0,0,0.65);
+  color: #eaeaea;
+  border: 1px solid rgba(255,255,255,0.3);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+.intro-btn:hover {
+  background: rgba(255,255,255,0.12);
+}
+
+.intro-btn.sound { left: 32px; }
+.intro-btn.skip  { right: 32px; }
+.top-nav {
+  position: fixed;
+  top: env(safe-area-inset-top);
+  left: 0;
+  right: 0;
+  height: 64px;
+  padding: 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 100;
+}
+.nav-right {
+  display: flex;
+  gap: 24px;
+}
+
+/* =========================
+   MOBILE NAV
+========================= */
+
+.hamburger {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hamburger span {
+  width: 22px;
+  height: 2px;
+  background: currentColor;
+  opacity: 0.85;
+}
+
+/* slide-down menu */
+.mobile-menu {
+  position: fixed;
+  top: 64px;
+  left: 0;
+  right: 0;
+
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+
+  background: rgba(0,0,0,0.85);
+  backdrop-filter: blur(14px);
+
+  transform: translateY(-120%);
+  transition: transform 0.35s ease;
+  z-index: 99;
+}
+
+.mobile-menu.open {
+  transform: translateY(0);
+}
+
+/* =========================
+   MUSIC INDICATOR (FINAL FIX)
+========================= */
+
+.music-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* container — COMPLETELY OFF by default */
+.music-indicator {
+  display: none;                /* 🔑 HARD STOP */
+  gap: 2px;
+  height: 12px;
+}
+
+/* bars — STATIC baseline */
+.music-indicator i {
+  width: 2px;
+  height: 100%;
+  background: currentColor;
+  opacity: 0.6;
+  transform-origin: bottom;
+  transform: scaleY(0.35);
+  animation: none;              /* 🔑 HARD STOP */
+}
+
+/* ONLY when music is ACTUALLY ON */
+.music-toggle.active .music-indicator {
+  display: inline-flex;         /* 🔑 appear */
+}
+
+.music-toggle.active .music-indicator i {
+  animation: musicWave 1.4s ease-in-out infinite;
+}
+
+/* stagger */
+.music-toggle.active .music-indicator i:nth-child(1) { animation-delay: 0s; }
+.music-toggle.active .music-indicator i:nth-child(2) { animation-delay: 0.18s; }
+.music-toggle.active .music-indicator i:nth-child(3) { animation-delay: 0.36s; }
+
+/* waveform animation */
+@keyframes musicWave {
+  0%   { transform: scaleY(0.35); opacity: 0.4; }
+  50%  { transform: scaleY(1);    opacity: 0.9; }
+  100% { transform: scaleY(0.4);  opacity: 0.5; }
+}
+
+.nav-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #eaeaea;
+  font-size: 16px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  opacity: 0.65;
+}
+
+.nav-link:hover {
+  opacity: 1;
+}
+/* =========================
+   TITLE HERO (ABOVE THE FOLD)
+========================= */
+
+.title-hero {
+  height: 100vh;
+  padding: 96px 64px 64px;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+
+  text-align: center;
+}
+
+.title-text {
+  font-size: clamp(32px, 6vw, 64px);
+  font-weight: 500;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+
+  color: #eaeaea;
+  opacity: 0.9;
+
+  max-width: 1100px;
+  line-height: 1.3;
+}
+
+.home-launch-btn {
+  border: none;
+  background: transparent;
+  color: rgba(236, 244, 255, 0.96);
+  padding: 6px 0;
+  border-radius: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  cursor: pointer;
+  position: relative;
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+  transition:
+    opacity 0.55s ease,
+    transform 0.55s ease,
+    color 0.28s ease,
+    text-shadow 0.28s ease;
+}
+
+.home-launch-btn.visible {
+  opacity: 0.96;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.home-launch-btn::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -4px;
+  width: 100%;
+  height: 1px;
+  background: rgba(190, 225, 255, 0.85);
+  transform: scaleX(0.22);
+  transform-origin: center;
+  transition: transform 0.28s ease, background 0.28s ease, opacity 0.28s ease;
+  opacity: 0.85;
+}
+
+.home-launch-btn:hover {
+  opacity: 1;
+  color: #ffffff;
+  text-shadow: 0 0 8px rgba(170, 215, 255, 0.4);
+}
+
+.home-launch-btn:hover::after {
+  transform: scaleX(1);
+  background: rgba(212, 236, 255, 0.95);
+  opacity: 1;
+}
+
+.home-launch-btn:active {
+  transform: translateY(1px);
+}
+
+.home-launch-btn:focus-visible {
+  outline: none;
+  color: #ffffff;
+}
+
+.home-launch-btn:focus-visible::after {
+  transform: scaleX(1);
+  background: rgba(212, 236, 255, 0.95);
+  opacity: 1;
+}
+
+/* subtle scroll hint */
+.scroll-hint {
+  position: absolute;
+  bottom: 32px;
+
+  font-size: 18px;
+  opacity: 0.4;
+
+  animation: floatDown 2s ease-in-out infinite;
+}
+
+@keyframes floatDown {
+  0%   { transform: translateY(0); opacity: 0.4; }
+  50%  { transform: translateY(8px); opacity: 0.7; }
+  100% { transform: translateY(0); opacity: 0.4; }
+}
+
+
+/* =========================
+   TITLE — HUD FLASH REVEAL
+========================= */
+
+.title-text {
+  position: relative;
+
+  /* starting state */
+  opacity: 0;
+  transform: translateY(24px);
+  letter-spacing: 0.32em;   /* 🔑 starts wide */
+}
+
+/* triggered state */
+.title-text.flash {
+  animation: titleIn 2.2s cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+}
+
+/* TITLE REVEAL + TIGHTEN */
+@keyframes titleIn {
+  0% {
+    opacity: 0;
+    transform: translateY(24px);
+    letter-spacing: 0.32em;
+  }
+
+  55% {
+    opacity: 1;
+    transform: translateY(0);
+    letter-spacing: 0.22em;
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    letter-spacing: 0.18em; /* 🔑 final tight */
+  }
+}
+
+/* =========================
+   HUD LINES
+========================= */
+
+.title-text::before,
+.title-text::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+
+  height: 1px;
+  background: rgba(255,255,255,0.9);
+
+  opacity: 0;
+  transform: scaleX(0);
+}
+
+/* TOP LINE — left → right */
+.title-text::before {
+  top: -14px;
+  transform-origin: left center;
+}
+
+/* BOTTOM LINE — right → left */
+.title-text::after {
+  bottom: -14px;
+  transform-origin: right center;
+}
+
+/* trigger line animations */
+.title-text.flash::before,
+.title-text.flash::after {
+  animation: hudLineScale 2.2s ease-in-out forwards;
+}
+
+/* =========================
+   HUD LINE ANIMATION (FADE OUT)
+========================= */
+
+@keyframes hudLineScale {
+  0% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+
+  50% {
+    transform: scaleX(1);
+    opacity: 0.95;
+  }
+
+  75% {
+    transform: scaleX(1);
+    opacity: 0.95;
+  }
+
+  100% {
+    transform: scaleX(1);  /* stays full width */
+    opacity: 0;            /* 🔑 fades out */
+  }
+}
+
+
+/* =========================
+   HERO — ABOUT VERA
+========================= */
+.vera-use-cases {
+  padding: 160px 0 120px;
+}
+.vera-use-cases::after {
+  content: "";
+  display: block;
+
+  width: 100%;
+  max-width: 900px;
+  height: 1px;
+
+  margin: 120px auto 0;
+
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(255,255,255,0.12),
+    transparent
+  );
+}
+
+.vera-use-cases::after {
+  opacity: 0;          /* invisible */
+  pointer-events: none;
+}
+
+/* 🔑 centers content like hero / patch notes */
+.vera-use-cases-inner {
+  max-width: 1000px;   /* 🔑 editorial, premium width */
+
+  margin: 0 auto;
+  padding: 0 2rem;
+
+  text-align: left;
+}
+.vera-use-cases-inner > .vera-section-title {
+  text-align: center;
+}
+.vera-section-title.soft {
+  font-size: clamp(1.6rem, 3vw, 2.2rem);  /* 🔑 smaller */
+  font-weight: 500;
+
+  letter-spacing: 0.02em;
+  text-transform: none;
+
+  opacity: 0.95;
+  margin-bottom: 32px;
+  color: rgba(255,255,255,0.95);
+}
+
+.use-cases-panel {
+  max-width: 100%;
+  margin: 0;
+}
+
+.use-cases-window {
+  width: 100%;
+  max-width: 1000px;      /* 🔥 very wide */
+  min-height: 360px;     /* 🔥 tall enough to feel like a stage */
+
+  margin: 0 auto;
+
+  padding: 72px 88px;
+
+  background: rgba(255,255,255,0.035);
+  backdrop-filter: blur(14px);
+
+  border-radius: 32px;
+  border: 1px solid rgba(255,255,255,0.08);
+
+  box-shadow:
+    0 60px 160px rgba(0,0,0,0.5);
+}
+
+.vera-section-title.soft {
+  margin-bottom: 40px; /* was too tight */
+}
+/* layout */
+.use-cases-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 48px;
+}
+
+/* left nav */
+.use-cases-nav {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+
+  align-items: flex-start;
+  justify-content: flex-start;
+
+  margin-top: 12px; /* aligns with window content */
+}
+.use-cases-nav {
+  gap: 22px;          /* was ~18 */
+  margin-bottom: 36px;
+}
+/* buttons */
+.use-case-btn {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.28); /* slightly stronger */
+
+  padding: 10px 18px;        /* 🔑 bigger hit area */
+  min-height: 40px;          /* 🔑 consistent height */
+
+  font-size: 13px;           /* 🔑 larger text */
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+
+  border-radius: 999px;
+  transition:
+    color 0.25s ease,
+    border-color 0.25s ease,
+    background 0.25s ease;
+}
+
+.use-case-btn {
+  width: 100%;
+  text-align: left;
+
+  padding: 8px 12px;
+
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+
+  background: transparent;
+  border: none;
+
+  color: rgba(255,255,255,0.6);
+  cursor: pointer;
+
+  transition: color 0.25s ease, transform 0.25s ease;
+}
+
+.use-case-btn:hover {
+  color: rgba(255,255,255,0.95);
+  border-color: rgba(255,255,255,0.55);
+}
+
+.use-case-btn.active {
+  background: rgba(255,255,255,0.9);
+  border-color: rgba(255,255,255,0.9);
+  color: #000;
+}
+.use-case-btn {
+  filter: grayscale(100%);
+  opacity: 0.8;
+
+  /* 🔑 FORCE SINGLE LINE */
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+}
+
+
+/* 🔑 THIS IS WHY ALL CONTENT SHOWED BEFORE */
+.use-case-content {
+  position: absolute;
+  inset: 0;
+
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+
+  max-width: 720px;
+  margin: 0 auto;
+
+  padding: 0 16px;
+
+  /* 👇 subtle intentional bias */
+  transform: translate(-44px, -28px);
+
+  opacity: 0;
+  pointer-events: none;
+
+  transition:
+    opacity 0.45s ease,
+    transform 0.45s ease;
+}
+
+.use-case-content.active {
+  opacity: 1;
+  transform: translate(-40px, -28px);
+}
+
+.use-case-content.active {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.use-cases-panel {
+  position: relative;
+  display: flex;
+  align-items: center;   /* 🔑 THIS is the missing anchor */
+}
+
+.use-case-content h3 {
+  margin-top: 0;
+  margin-bottom: 14px;
+
+  font-size: 1.05rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+
+  opacity: 0.85;
+}
+
+.use-case-content p {
+  line-height: 1.7;
+  opacity: 0.9;
+}
+
+/* =========================
+   USE CASES — MOBILE
+========================= */
+
+@media (max-width: 768px) {
+  .use-cases-nav {
+    display: flex;
+    flex-wrap: wrap;          /* 🔑 allow wrapping */
+    gap: 12px;                /* spacing like reference */
+    align-items: center;
+  }
+}
+
+
+.hero {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 96px 64px 64px;
+}
+
+.hero-split {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 56px;
+  align-items: center;
+  max-width: 900px;
+  width: 100%;
+}
+
+.hero-left {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.hero-label {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 14px;
+  letter-spacing: 0.22em;
+  color: #eaeaea;
+  opacity: 0.65;
+  cursor: pointer;
+}
+
+.hero-label:hover {
+  opacity: 1;
+}
+
+.hero-text {
+  font-size: 16.5px;
+  line-height: 1.75;
+  color: #eaeaea;
+
+  max-width: 600px;
+
+  /* 🔑 Indentation */
+  margin-left: 32px;      /* shifts the paragraph block */
+  text-indent: 48px;      /* subtle first-line indent */
+}
+
+#about-vera {      /* anchor content upward */
+  position: relative;
+}
+
+#about-vera .hero-split {
+  position: relative;        /* 🔑 anchor for the line */
+}
+
+/* =========================
+   HOW TO USE VERA — ACCESS
+========================= */
+
+.vera-use-access {
+  padding: 220px 0 200px;   /* 🔑 more vertical air */
+  position: relative;
+}
+
+/* subtle divider ABOVE the section */
+.vera-use-access::before {
+  content: "";
+  display: block;
+
+  width: 100%;
+  max-width: 900px;
+  height: 1px;
+
+  margin: 0 auto 120px;
+
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(255,255,255,0.12),
+    transparent
+  );
+}
+
+.vera-use-access::before {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* centered editorial container */
+.vera-use-access-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0 2rem;
+
+  text-align: center;
+}
+
+/* title spacing tweak */
+.vera-use-access .vera-section-title {
+  margin-bottom: 32px;
+}
+
+/* body copy */
+.vera-use-access-text {
+  font-size: 16px;
+  line-height: 1.75;
+  opacity: 0.9;
+
+  max-width: 720px;
+  margin: 0 auto 48px;
+}
+
+/* placeholder area (future input UI) */
+.vera-use-access-placeholder {
+  height: 120px;
+  border-radius: 18px;
+
+  background: rgba(255,255,255,0.035);
+  border: 1px dashed rgba(255,255,255,0.18);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vera-access-form {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.vera-access-form input {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #eaeaea;
+  font-size: 14px;
+}
+
+.vera-access-form button {
+  background: rgba(255,255,255,0.9);
+  color: #000;
+  border: none;
+  border-radius: 999px;
+  padding: 12px 22px;
+  cursor: pointer;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+}
+.vera-access-note {
+  margin-top: 16px;
+  font-size: 13px;
+  opacity: 0.55;
+  text-align: center;
+}
+
+.vera-inline-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  opacity: 0.85;
+}
+
+.vera-inline-link:hover {
+  opacity: 1;
+}
+
+.type-title {
+  opacity: 0;
+  transform: translateY(10px);
+  transition:
+    opacity 0.4s ease,
+    transform 0.4s ease;
+}
+
+.type-title[data-typed="true"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+.typing-cursor::after {
+  content: "";
+  margin-left: 4px;
+  animation: blink 1s infinite;
+  opacity: 0.7;
+}
+
+@keyframes blink {
+  0%, 50%, 100% { opacity: 0.7; }
+  25%, 75% { opacity: 0; }
+}
+/* subtle vertical guide */
+/* #about-vera .hero-split::before {
+  content: "";
+  position: absolute;
+
+  left: 18%;
+  transform: translateX(-18%); 
+
+  top: -20px;
+  width: 1px;
+  height: 160px;
+
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(255,255,255,0.15),
+    transparent
+  );
+}
+
+/* optional: reduce total void slightly */
+#about-vera.hero {
+  max-height: 90vh;
+} */
+
+.vera-tag {
+  font-size: 0.8em;
+  opacity: 0.7;
+  margin-left: 0.4em;
+}
+
+.vera-note {
+  opacity: 0.85;
+  font-style: italic;
+}
+
+.patch-notes {
+  font-size: clamp(2.2rem, 5vw, 3.2rem);
+  letter-spacing: 0.14em;   /* 🔑 reduced */
+  text-transform: uppercase;
+  font-weight: 500;
+  opacity: 0.9;
+
+  margin: 0 0 28px 0;
+}
+
+.vera-log h2 {
+  margin: 0 0 14px 0; /* VERSION close to PATCH NOTES */
+  font-size: 1.6rem;
+  letter-spacing: 0.12em;
+}
+
+.vera-log p {
+  margin-top: 0;     /* prevent push-down */
+}
+
+.vera-log {
+  position: relative;          /* REQUIRED */
+  padding: 140px 8vw;
+  background: transparent;     /* inherits body gradient */
+}
+
+.vera-log::after {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 1px;
+  margin-top: 90px;
+
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(255,255,255,0.14),
+    transparent
+  );
+}
+.vera-log-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #e6e6e6;
+}
+
+/* main container */
+.patch-collapse {
+  margin-top: 12px;
+}
+
+/* remove default marker */
+.patch-collapse summary,
+.patch-version summary {
+  list-style: none;
+}
+
+.patch-collapse summary::-webkit-details-marker,
+.patch-version summary::-webkit-details-marker {
+  display: none;
+}
+
+/* MAIN TITLE (PATCH NOTES / DEV LOGS) */
+.patch-main-title {
+  font-size: clamp(2.2rem, 5vw, 3.2rem);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 500;
+  opacity: 0.9;
+
+  cursor: pointer;
+  position: relative;
+  padding-right: 28px;
+}
+
+/* VERSION HEADINGS */
+.patch-version summary {
+  font-size: 1.6rem;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+
+  margin-top: 28px;
+  padding-right: 24px;
+  position: relative;
+}
+
+/* arrow indicator */
+.patch-collapse summary::after,
+.patch-version summary::after {
+  content: "▸";
+  position: absolute;
+  right: 0;
+  top: 0;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+  opacity: 0.6;
+}
+
+.patch-collapse[open] > summary::after,
+.patch-version[open] > summary::after {
+  transform: rotate(90deg);
+  opacity: 1;
+}
+.patch-collapse[open] > .patch-version:first-of-type {
+  margin-top: 32px;
+}
+
+/* also add slight bottom padding to main title */
+.patch-main-title {
+  padding-bottom: 12px;
+}
+/* subtle spacing */
+.patch-version[open] {
+  padding-bottom: 12px;
+}
+.patch-version[open] > *:not(summary):first-of-type {
+  margin-top: 18px;
+}
+
+/* slightly more breathing room under summary */
+.patch-version summary {
+  padding-bottom: 8px;
+}
+.patch-version summary {
+  font-weight: 600;
+}
+/* soften hr when inside collapsible */
+.patch-collapse hr {
+  margin: 36px 0;
+}
+.patch-collapse .patch-version {
+  opacity: 0;
+  transform: translateY(-20px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+/* stagger class added via JS */
+.patch-collapse.animate-versions .patch-version {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.patch-collapse[data-closing="true"],
+.patch-version[data-closing="true"] {
+  pointer-events: none;
+}
+.patch-version .patch-content {
+  opacity: 0;
+  transform: translateY(-25px);
+  max-height: 0;
+  overflow: hidden;
+  transition:
+    opacity 0.6s ease,
+    transform 0.6s ease,
+    max-height 0.6s ease;
+}
+
+.patch-version.animate .patch-content {
+  opacity: 1;
+  transform: translateY(0);
+  max-height: 10000px;
+}
+.vera-log h2 {
+  font-size: 1.8rem;
+  margin-bottom: 12px;
+  letter-spacing: 0.08em;
+}
+
+.vera-log h3 {
+  margin-top: 32px;
+  margin-bottom: 12px;
+  font-size: 1.1rem;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.vera-log p {
+  line-height: 1.7;
+  opacity: 0.9;
+}
+
+.vera-log ul {
+  padding-left: 20px;
+  line-height: 1.7;
+}
+
+.vera-log ul ul {
+  margin-top: 6px;
+}
+
+.vera-log li {
+  margin-bottom: 6px;
+}
+
+.vera-log hr {
+  margin: 48px 0;
+  border: none;
+  height: 1px;
+  background: rgba(255,255,255,0.15);
+}
+
+.scroll-reveal {
+  opacity: 0;
+  transform: translateY(60px);
+  filter: blur(6px);
+  transition:
+    opacity 0.9s ease,
+    transform 0.9s ease,
+    filter 0.9s ease;
+}
+
+/* When revealed */
+.scroll-reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+  filter: blur(0);
+}
+
+.hero-split.reverse {
+  grid-template-columns: 1fr auto;
+}
+
+.hero-text-left {
+  justify-self: start;
+}
+
+.hero-label-right {
+  display: flex;
+  justify-content: flex-start;
+}
+
+/* Static label (no pulse here) */
+.hero-label.static {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.hero-label.visible {
+  animation: veraOpacityPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes veraOpacityPulse {
+  0% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0.35;
+  }
+}
+
+.hero-headline {
+  margin-left: 32px;
+  margin-bottom: 16px;
+
+  font-size: clamp(1.35rem, 2.2vw, 1.65rem); /* 🔑 reduced */
+  font-weight: 500;
+
+  letter-spacing: 0.06em;   /* subtle, not shouty */
+  text-transform: none;
+
+  color: rgba(255,255,255,0.85);
+
+  line-height: 1.25;
+  min-height: 1.3em;
+}
+/* =========================
+   ABOUT ME — LINK LABEL
+========================= */
+
+.about-me-layout {
+  align-items: flex-start;
+}
+
+#about-me .hero-split {
+  justify-content: flex-start;
+}
+
+.about-me-text {
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+
+  margin-top: 60px; /* 🔑 shifts label + paragraph down */
+}
+
+#about-me .hero-text {
+  text-align: left;
+  margin-left: -8px; /* 🔑 shifts only the paragraph */
+}
+
+#about-me .hero-text {
+  text-align: left;
+}
+
+/* clickable label */
+.about-me-label {
+  display: inline-block;
+  font-size: 1.3rem;        /* 🔑 bigger */
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  opacity: 0.8;
+  margin-bottom: 24px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.about-me-label:hover {
+  opacity: 1;
+}
+
+/* =========================
+   ABOUT ME — PHOTO
+========================= */
+
+.about-me-photo {
+  width: 100%;
+  max-width: 360px;       /* controls image size */
+  height: auto;
+  border-radius: 14px;
+  object-fit: cover;
+
+  /* subtle cinematic feel */
+  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+}
+
+.about-me-label {
+  animation: veraOpacityPulse 2.2s ease-in-out infinite;
+}
+
+/* =========================
+   OTHER PROJECTS — FINAL
+========================= */
+
+#other-projects {
+  align-items: flex-start;
+  padding-top: 160px;
+}
+
+/* wrapper */
+.other-projects-wrap {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 64px;
+}
+
+/* clickable title */
+.other-projects-title {
+  font-size: 1.8rem;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  opacity: 0.75;
+
+  text-decoration: none;
+  color: inherit;
+}
+
+.other-projects-title:hover {
+  opacity: 1;
+}
+
+/* =========================
+   PROJECT CARDS (SCALED UP)
+========================= */
+
+.projects-list {
+  width: 100%;
+  max-width: 900px;
+
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.project-item {
+  display: block;
+  padding: 32px 36px;
+  border-radius: 18px;
+
+  background: rgba(255,255,255,0.04);
+  backdrop-filter: blur(6px);
+
+  text-decoration: none;
+  color: inherit;
+
+  transition:
+    transform 0.35s ease,
+    background 0.35s ease;
+}
+
+.project-item:hover {
+  background: rgba(255,255,255,0.07);
+  transform: translateY(-4px);
+}
+
+.project-item h3 {
+  margin: 0 0 10px;
+  font-size: 1.3rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.project-item p {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.7;
+  opacity: 0.85;
+}
+
+.other-projects-title {
+  animation: veraOpacityPulse 2.6s ease-in-out infinite;
+}
+
+/* =========================
+   CREDITS — RED BARRELS INSPIRED
+========================= */
+
+#credits {
+  align-items: flex-start;
+  padding-top: 180px;
+  padding-bottom: 220px;
+}
+
+.credits-eyebrow {
+  display: block;
+
+  font-size: 1.5rem;          /* slightly larger */
+  font-weight: 600;            /* 🔑 makes it read as a title */
+  letter-spacing: 0.26em;      /* tighter = stronger */
+  text-transform: uppercase;
+
+  color: rgba(255,255,255,0.85);  /* 🔑 higher contrast */
+  opacity: 1;                  /* no fade */
+
+  margin-bottom: 40px;
+}
+
+
+/* content container */
+.credits-content {
+  max-width: 420px;
+}
+
+/* individual blocks */
+.credits-block {
+  font-size: 15px;
+  line-height: 1.7;
+  margin-bottom: 28px;
+  color: rgba(255,255,255,0.85);
+}
+
+.credits-block strong {
+  font-weight: 500;
+  letter-spacing: 0.06em;
+}
+
+/* link styling — Red Barrels style */
+.credits-link {
+  display: inline-block;
+  margin-top: 8px;
+
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+
+  color: rgba(255,255,255,0.7);
+  text-decoration: none;
+}
+
+.credits-link:hover {
+  color: rgba(255,255,255,0.95);
+}
+
+/* large right-side label */
+.credits-label {
+  font-size: clamp(2.2rem, 4vw, 3.2rem);
+  letter-spacing: 0.38em;
+  opacity: 0.25;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+body:not(.vera-app-route) #home {
+  transition: opacity 1.4s cubic-bezier(0.22, 0.8, 0.2, 1);
+}

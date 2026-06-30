@@ -189,6 +189,9 @@ function Copy-FrontendToClone {
 
   Copy-Item "$Source\index.html" $Clone -Force
   Copy-Item "$Source\styles.css" $Clone -Force
+  if (Test-Path "$Source\product.css") {
+    Copy-Item "$Source\product.css" $Clone -Force
+  }
 
   New-Item -ItemType Directory -Path (Join-Path $Clone "app") -Force | Out-Null
   Copy-Item "$Source\app\index.html" (Join-Path $Clone "app\") -Force
@@ -331,7 +334,11 @@ function Deploy-FrontendTarget {
     exit 1
   }
 
-  Invoke-Git $ClonePath add index.html styles.css app config utils voice workmode news debug users | Out-Null
+  $gitAdd = @("index.html", "styles.css", "app", "config", "utils", "voice", "workmode", "news", "debug", "users")
+  if (Test-Path (Join-Path $Clone "product.css")) {
+    $gitAdd = @("index.html", "styles.css", "product.css") + $gitAdd[2..($gitAdd.Length - 1)]
+  }
+  Invoke-Git $ClonePath add @gitAdd | Out-Null
   Invoke-Git $ClonePath commit -m $CommitMessage | Out-Null
 
   if ($remoteExists) {
