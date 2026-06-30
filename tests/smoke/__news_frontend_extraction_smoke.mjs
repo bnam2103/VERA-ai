@@ -64,8 +64,8 @@ const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
 const newsRouterPath = path.join(repoRoot, "news", "newsRouter.js");
 const newsPanelPath = path.join(repoRoot, "news", "newsPanel.js");
-const appJsPath = path.join(repoRoot, "app.js");
-const indexHtmlPath = path.join(repoRoot, "index.html");
+const appJsPath = path.join(repoRoot, "app/app.js");
+const indexHtmlPath = path.join(repoRoot, "app/index.html");
 
 let pass = 0, fail = 0;
 function ok(cond, label) {

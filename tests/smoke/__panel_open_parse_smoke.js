@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app.js"), "utf8").replace(/\r\n/g, "\n");
+const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app/app.js"), "utf8").replace(/\r\n/g, "\n");
 
 const GO_TO_START = "function goToReasoningPanelQueryHeuristicUi(userText) {";
 const HELPER_START =

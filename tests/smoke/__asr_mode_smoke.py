@@ -254,7 +254,7 @@ section("F. ASR-mode JS backcompat patterns")
 
 # We can't run JS here, but we CAN verify the JS source has the right
 # backcompat mapping by reading app.js and grep'ing for the strings.
-app_js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.js")
+app_js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app", "app.js")
 with open(app_js_path, "r", encoding="utf-8") as fh:
     app_js = fh.read()
 
@@ -297,7 +297,7 @@ _assert(
 # ---------------------------------------------------------------------------
 section("G. Settings UI HTML has 3 ASR modes")
 
-index_html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+index_html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app", "index.html")
 with open(index_html_path, "r", encoding="utf-8") as fh:
     html = fh.read()
 

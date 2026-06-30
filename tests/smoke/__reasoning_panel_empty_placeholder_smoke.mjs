@@ -51,7 +51,7 @@ const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
 const utilsStoragePath = path.join(repoRoot, "utils", "storage.js");
 const panelsPath = path.join(repoRoot, "workmode", "panels.js");
-const appJsPath = path.join(repoRoot, "app.js");
+const appJsPath = path.join(repoRoot, "app/app.js");
 
 let pass = 0, fail = 0;
 function ok(cond, label) {

@@ -26,7 +26,7 @@ const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
 const utilsStoragePath = path.join(repoRoot, "utils", "storage.js");
 const checklistPath = path.join(repoRoot, "workmode", "checklist.js");
-const appJsPath = path.join(repoRoot, "app.js");
+const appJsPath = path.join(repoRoot, "app/app.js");
 
 let pass = 0;
 let fail = 0;

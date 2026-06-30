@@ -23,7 +23,7 @@ import url from "node:url";
 const __filename = url.fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..", "..");
-const APP_JS = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
+const APP_JS = fs.readFileSync(path.join(ROOT, "app/app.js"), "utf8");
 
 let pass = 0;
 let fail = 0;

@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const GITHUB_PAGES_RESET_URL = "https://bnam2103.github.io/VERA-ai/?mode=reset-password";
+const GITHUB_PAGES_RESET_URL =
+  "https://bnam2103.github.io/VERA-ai/app/?mode=reset-password";
+const WORKWITHVERA_RESET_URL =
+  "https://workwithvera.com/app/?mode=reset-password";
 let passed = 0;
 let failed = 0;
 
@@ -22,11 +25,11 @@ function ok(cond, msg) {
   }
 }
 
-const indexHtml = readFileSync(path.join(root, "index.html"), "utf8");
+const indexHtml = readFileSync(path.join(root, "app/index.html"), "utf8");
 ok(indexHtml.includes('id="vera-account-forgot-password-link"'), "Forgot password link in index.html");
 ok(indexHtml.includes('id="vera-account-reset-password-view"'), "Reset password form in index.html");
 ok(indexHtml.includes('id="vera-account-reset-expired-view"'), "Reset expired view in index.html");
-ok(indexHtml.includes("supabaseAuth.js?v=13"), "deployed cache bust loads supabaseAuth v13");
+ok(indexHtml.includes("supabaseAuth.js?v=15"), "deployed cache bust loads supabaseAuth v15");
 ok(indexHtml.includes("Forgot password?"), "Forgot password label text present");
 
 const dom = {
@@ -133,21 +136,37 @@ const mockClient = {
 };
 
 const redirect = H.getPasswordResetRedirectUrl();
-ok(redirect === GITHUB_PAGES_RESET_URL, "redirect URL is forced GitHub Pages URL");
+ok(
+  redirect === "http://localhost:3000/app/?mode=reset-password",
+  "localhost uses same-origin /app/ reset URL"
+);
 ok(redirect.includes("mode=reset-password"), "redirect URL includes reset-password mode");
-ok(!redirect.includes("localhost"), "redirect URL never contains localhost");
+ok(redirect.includes("/app/?mode=reset-password"), "redirect URL points at app entry");
 
-// Production hostname also uses forced GitHub Pages URL
+// GitHub Pages subpath
 sandbox.location = {
   origin: "https://bnam2103.github.io",
-  pathname: "/VERA-ai/",
-  href: "https://bnam2103.github.io/VERA-ai/",
+  pathname: "/VERA-ai/app/",
+  href: "https://bnam2103.github.io/VERA-ai/app/",
   hostname: "bnam2103.github.io",
   hash: "",
 };
 ok(
   H.getPasswordResetRedirectUrl() === GITHUB_PAGES_RESET_URL,
-  "production host also uses forced GitHub Pages redirect"
+  "GitHub Pages app path uses repo subpath in redirect"
+);
+
+// Production custom domain
+sandbox.location = {
+  origin: "https://workwithvera.com",
+  pathname: "/app/",
+  href: "https://workwithvera.com/app/",
+  hostname: "workwithvera.com",
+  hash: "",
+};
+ok(
+  H.getPasswordResetRedirectUrl() === WORKWITHVERA_RESET_URL,
+  "workwithvera.com uses /app/ reset URL"
 );
 
 sandbox.location = {
@@ -157,6 +176,7 @@ sandbox.location = {
   hostname: "localhost",
   hash: "",
 };
+const redirectForLog = H.getPasswordResetRedirectUrl();
 
 const redirectLogs = [];
 const origInfo = console.info;
@@ -164,12 +184,12 @@ console.info = (...args) => {
   if (args[0] === "[auth_password_reset_redirect]") redirectLogs.push(args[1]);
   origInfo(...args);
 };
-H.logPasswordResetRedirect(redirect);
+H.logPasswordResetRedirect(redirectForLog);
 console.info = origInfo;
 ok(
   redirectLogs.some(
     (l) =>
-      l?.redirectTo === GITHUB_PAGES_RESET_URL &&
+      l?.redirectTo === "http://localhost:3000/app/?mode=reset-password" &&
       l?.hostname === "localhost" &&
       l?.origin === "http://localhost:3000"
   ),
@@ -206,11 +226,16 @@ ok(
   "expired reset message is user-friendly"
 );
 
-await mockClient.auth.resetPasswordForEmail("user@example.com", { redirectTo: redirect });
+await mockClient.auth.resetPasswordForEmail("user@example.com", {
+  redirectTo: redirectForLog,
+});
 ok(resetCalls.length === 1, "valid email triggers resetPasswordForEmail");
 ok(resetCalls[0].email === "user@example.com", "resetPasswordForEmail receives email");
-ok(resetCalls[0].redirectTo === GITHUB_PAGES_RESET_URL, "reset email uses GitHub Pages redirectTo");
-ok(!String(resetCalls[0].redirectTo).includes("localhost:3000"), "reset email link target has no localhost");
+ok(
+  resetCalls[0].redirectTo === "http://localhost:3000/app/?mode=reset-password",
+  "reset email uses same-origin /app/ redirectTo"
+);
+ok(!String(resetCalls[0].redirectTo).includes("//app/app"), "reset email link has no duplicated /app segment");
 
 const redirectNotAllowed = {
   message: "redirect URL not allowed",

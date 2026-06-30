@@ -5,7 +5,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app.js"), "utf8");
+const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app/app.js"), "utf8");
 
 const FINALIZE_START = "function _usageSkipFinalizeActionApply(payload, merged)";
 const FINALIZE_END = "async function applyActionPayload(data, seqCtx = {})";

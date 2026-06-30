@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app.js"), "utf8");
+const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app/app.js"), "utf8");
 const start = APP_JS.indexOf("const _WMC_PANEL_FAMILY_RE =");
 const end = APP_JS.indexOf("try { window.shouldBlockExplicitPanelRouteForCompoundExecutable");
 if (start < 0 || end < 0) {

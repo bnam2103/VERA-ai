@@ -12,6 +12,7 @@ function corsAllowedOrigin(origin) {
     const h = u.hostname.toLowerCase()
     if (h === "localhost" || h === "127.0.0.1") return origin
     if (h.endsWith(".github.io") || h === "github.io") return origin
+    if (h === "workwithvera.com" || h.endsWith(".workwithvera.com")) return origin
     return null
   } catch {
     return null

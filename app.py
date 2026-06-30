@@ -23769,7 +23769,13 @@ def _validate_spotify_opener_origin(raw: str) -> str | None:
     if not host:
         return None
     netloc = (p.netloc or "").lower()
-    allowed = host in ("localhost", "127.0.0.1") or host.endswith(".github.io") or host == "github.io"
+    allowed = (
+        host in ("localhost", "127.0.0.1")
+        or host.endswith(".github.io")
+        or host == "github.io"
+        or host == "workwithvera.com"
+        or host.endswith(".workwithvera.com")
+    )
     if not allowed:
         return None
     return f"{p.scheme}://{netloc}"

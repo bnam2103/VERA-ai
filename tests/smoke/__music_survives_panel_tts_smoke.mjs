@@ -11,7 +11,7 @@ import vm from "node:vm";
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..", "..");
-const APP_JS = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
+const APP_JS = fs.readFileSync(path.join(ROOT, "app/app.js"), "utf8");
 const NEWS_PANEL_JS = fs.readFileSync(path.join(ROOT, "news", "newsPanel.js"), "utf8");
 
 let pass = 0;

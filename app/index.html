@@ -1,0 +1,1225 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- Optional deploy overrides (set content for GitHub Pages / static hosting): -->
+  <meta name="vera-local-backend-origin" content="">
+  <meta name="vera-api-base-url" content="">
+  <title>VERA AI</title>
+  <link rel="stylesheet" href="../styles.css?v=15">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+  <script>
+  (function veraAppPathNormalize() {
+    var p = location.pathname;
+    if (/\/app$/i.test(p)) {
+      location.replace(p + "/" + location.search + location.hash);
+    }
+  })();
+  </script>
+</head>
+
+<body class="vera-app-route vera-mode">
+<div id="boot-loader" class="boot-loader active">
+  <div class="boot-inner">
+    <div class="boot-label">Initializing VERA...</div>
+    <div class="boot-progress">
+      <div class="boot-bar" id="boot-bar"></div>
+    </div>
+    <div class="boot-percent" id="boot-percent">0%</div>
+    <div class="boot-note">
+      First launch from idle may take 10–30 seconds while the server wakes up.
+    </div>
+  </div>
+</div>
+
+<section id="vera-app" class="vera-app-shell" hidden>
+  <main class="chat-centered">
+    <div id="vera-guide" class="vera-guide">
+      <div class="guide-item guide-vera">
+        <div class="guide-arrow arrow-left">↝</div>
+        <div class="guide-text">
+          Click here to learn more about the system.
+        </div>
+      </div>
+      <div class="guide-item guide-headset">
+        <div class="guide-arrow arrow-up">↑</div>
+        <div class="guide-text">
+          <strong>Continuous Listening</strong><br>
+          Works best in quiet environments for productivity. Only works when wears headset/airpods.
+        </div>
+      </div>
+      <div class="guide-item guide-ptt">
+        <div class="guide-arrow arrow-up">↑</div>
+        <div class="guide-text">
+          <strong>Push-to-Talk</strong><br>
+          Press to record. Press again to send.
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-header vera-app-header">
+      <div class="vera-header-left">
+        <button id="return-home-vera" class="nav-logo" type="button" aria-label="VERA">
+          <span class="vera-logo-text-stack" aria-hidden="true">
+            <span class="vera-logo-dim">VERA</span>
+            <span class="vera-logo-sweep">
+              <span class="vera-logo-solid">VERA</span>
+            </span>
+          </span>
+        </button>
+      </div>
+      <div class="vera-header-datetime" id="vera-header-datetime">
+        <svg class="vera-datetime-clock" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75" />
+          <path d="M12 12V7M12 12h4.2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
+        </svg>
+        <span class="vera-datetime-time" id="vera-datetime-time"></span>
+        <span class="vera-work-mode-timer-wrap" id="vera-work-mode-timer-wrap" hidden>
+          <span class="vera-datetime-sep vera-datetime-sep--timer" aria-hidden="true"></span>
+          <span class="vera-work-mode-timer" id="vera-work-mode-timer" aria-live="polite"></span>
+        </span>
+        <span class="vera-datetime-sep" id="vera-datetime-sep-date" aria-hidden="true" hidden></span>
+        <span class="vera-datetime-date" id="vera-datetime-date"></span>
+      </div>
+      <div class="vera-header-right">
+        <button type="button" id="vera-user-sign-in" class="nav-logo vera-sign-in-nav" hidden>
+          SIGN IN
+        </button>
+        <button type="button" id="open-bmo-from-vera" class="nav-logo nav-logo-bmo">
+          BMO
+        </button>
+      </div>
+    </div>
+
+    <div class="vera-body-grid" id="vera-body-grid">
+      <aside class="vera-wm-left" id="vera-wm-left" aria-label="Music and checklist" data-wm-left-layout="split">
+        <div class="vera-wm-music-pane" id="vera-wm-music-pane">
+          <div class="vera-wm-pane-head">
+            <div class="vera-wm-pane-title">Music</div>
+            <div class="vera-wm-pane-head-actions">
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-expand" data-wm-pane="music" data-wm-pane-action="expand" aria-label="Expand music panel" title="Expand">+</button>
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-collapse" data-wm-pane="music" data-wm-pane-action="collapse" aria-label="Shrink music panel" title="Shrink">−</button>
+            </div>
+          </div>
+          <div class="vera-wm-music-body" id="vera-wm-music-body"></div>
+        </div>
+        <div class="vera-wm-checklist-pane" id="vera-wm-checklist-pane">
+          <div class="vera-wm-pane-head">
+            <div class="vera-wm-pane-title">Checklist</div>
+            <div class="vera-wm-pane-head-actions">
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-expand" data-wm-pane="checklist" data-wm-pane-action="expand" aria-label="Expand checklist panel" title="Expand">+</button>
+              <button type="button" class="vera-wm-pane-btn vera-wm-pane-collapse" data-wm-pane="checklist" data-wm-pane-action="collapse" aria-label="Shrink checklist panel" title="Shrink">−</button>
+            </div>
+          </div>
+          <div class="vera-wm-checklist-pane-body">
+          <div class="vera-wm-checklist-group vera-wm-checklist-group--ongoing">
+            <div class="vera-wm-checklist-ongoing-head" role="group" aria-label="Ongoing tasks">
+              <div class="vera-wm-checklist-subtitle vera-wm-checklist-subtitle--ongoing">Ongoing</div>
+              <button
+                type="button"
+                id="vera-wm-checklist-erase-all"
+                class="vera-wm-checklist-help-plan-btn vera-wm-checklist-erase-btn"
+                title="Remove all ongoing and completed checklist items"
+                aria-label="Erase entire checklist"
+              >
+                Erase
+              </button>
+              <button
+                type="button"
+                id="vera-wm-checklist-help-plan"
+                class="vera-wm-checklist-help-plan-btn"
+                title="Help me plan — send ongoing items to Reasoning"
+                aria-label="Help me plan"
+              >
+                Plan
+              </button>
+              <button
+                type="button"
+                id="vera-wm-checklist-sync-plan"
+                class="vera-wm-checklist-help-plan-btn"
+                title="Sync checklist from latest plan in Reasoning"
+                aria-label="Sync checklist from plan"
+              >
+                Sync
+              </button>
+            </div>
+            <span class="vera-wm-checklist-plan-hint" id="vera-wm-checklist-plan-hint" aria-live="polite"></span>
+            <div
+              id="vera-wm-checklist-sync-preview"
+              class="vera-wm-checklist-sync-preview"
+              hidden
+              aria-live="polite"
+            >
+              <div class="vera-wm-checklist-sync-preview-head">
+                <span class="vera-wm-checklist-sync-preview-title">Proposed checklist</span>
+                <span class="vera-wm-checklist-sync-preview-note">Based on latest plan</span>
+              </div>
+              <textarea
+                id="vera-wm-checklist-sync-preview-text"
+                class="vera-wm-checklist-sync-preview-text"
+                spellcheck="true"
+                readonly
+              ></textarea>
+              <div class="vera-wm-checklist-sync-actions">
+                <button type="button" id="vera-wm-checklist-sync-cancel" class="vera-wm-checklist-sync-btn">Cancel</button>
+                <button type="button" id="vera-wm-checklist-sync-edit" class="vera-wm-checklist-sync-btn">Edit</button>
+                <button type="button" id="vera-wm-checklist-sync-accept" class="vera-wm-checklist-sync-btn vera-wm-checklist-sync-btn--primary">Accept</button>
+              </div>
+            </div>
+            <div class="vera-wm-checklist-ongoing-wrap">
+              <div class="vera-wm-checklist-ongoing-scroll">
+                <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-ongoing" aria-label="Ongoing checklist items"></ul>
+              </div>
+            </div>
+          </div>
+          <div class="vera-wm-checklist-group vera-wm-checklist-group--completed" id="vera-wm-checklist-completed-section" hidden>
+            <button
+              type="button"
+              class="vera-wm-checklist-completed-head"
+              id="vera-wm-checklist-completed-toggle"
+              aria-expanded="true"
+              aria-controls="vera-wm-checklist-completed-body"
+            >
+              <span class="vera-wm-checklist-completed-chevron" aria-hidden="true">▼</span>
+              <span class="vera-wm-checklist-completed-label">Completed</span>
+              <span class="vera-wm-checklist-completed-count" id="vera-wm-checklist-completed-count"></span>
+            </button>
+            <div class="vera-wm-checklist-completed-body" id="vera-wm-checklist-completed-body">
+              <ul class="vera-wm-checklist-ul" id="vera-wm-checklist-completed" aria-label="Completed checklist items"></ul>
+            </div>
+          </div>
+          </div>
+        </div>
+      </aside>
+      <section class="vera-wm-center" id="vera-wm-center" aria-label="Reasoning space">
+        <div class="vera-wm-reasoning-top">
+          <div class="vera-wm-pane-title">Reasoning</div>
+          <div class="vera-reasoning-tabs-strip">
+            <div class="vera-reasoning-tabs" id="vera-reasoning-tabs" role="tablist" aria-label="Reasoning spaces"></div>
+            <button
+              type="button"
+              id="vera-reasoning-tab-add"
+              class="vera-reasoning-tab-add"
+              aria-label="Add reasoning space (up to 8)"
+              title="Add space (up to 8)"
+            >
+              +
+            </button>
+          </div>
+        </div>
+        <div class="vera-wm-reasoning-body-wrap">
+          <div class="vera-reasoning-tab-panels" id="vera-reasoning-tab-panels">
+            <div
+              class="vera-reasoning-tab-panel is-active"
+              id="vera-reasoning-tab-panel-0"
+              data-tab-index="0"
+              role="tabpanel"
+              aria-label="Panel 1"
+            >
+              <div class="vera-reasoning-scroll vera-reasoning-md-panel" id="vera-reasoning-md" aria-live="polite"></div>
+            </div>
+          </div>
+          <p class="vera-wm-empty-hint vera-wm-empty-hint--reasoning" aria-hidden="true">
+            No reasoning in this panel yet. Ask VERA to work through something, or type below.
+          </p>
+          <p class="vera-wm-empty-hint vera-wm-empty-hint--fresh" aria-hidden="true" hidden>
+            Fresh workspace ready.
+          </p>
+        </div>
+        <div class="vera-reasoning-compose">
+          <button type="button" id="vera-reasoning-attach-btn" class="vera-reasoning-attach-btn" title="Attach PDFs or images — up to 5 files, max 25MB each, ~45MB total per message">
+            +
+          </button>
+          <input
+            type="file"
+            id="vera-reasoning-file"
+            class="vera-reasoning-file-input"
+            accept=".pdf,image/png,image/jpeg,image/jpg,image/webp"
+            multiple
+          />
+          <input
+            type="text"
+            id="vera-reasoning-input"
+            class="vera-reasoning-input"
+            placeholder="Message VERA (chat + optional Reasoning)…"
+            autocomplete="off"
+            spellcheck="true"
+          />
+          <div class="vera-reasoning-compose-actions">
+            <button type="button" id="vera-reasoning-cancel" class="vera-reasoning-cancel" hidden>
+              Cancel
+            </button>
+            <button type="button" id="vera-reasoning-send" class="vera-reasoning-send">
+              Send
+            </button>
+          </div>
+        </div>
+        <div class="vera-reasoning-attach-wrap" id="vera-reasoning-attach-wrap">
+        <div class="vera-reasoning-attach-meta" id="vera-reasoning-attach-meta" aria-live="polite"></div>
+        </div>
+        <p class="vera-reasoning-typed-note">
+          VERA will speak aloud unless you mute (same behavior as Voice UI). In-app mute for typed replies is coming soon; for now use system volume or your device mute when you need silence.
+        </p>
+      </section>
+      <div class="vera-wm-right" id="vera-wm-right">
+    <div class="vera-wm-pane-title">Voice UI</div>
+    <div class="chat-main">
+      <div class="vera-wm-conversation-wrap">
+        <div class="conversation" id="vera-conversation"></div>
+        <p class="vera-wm-empty-hint vera-wm-empty-hint--voice" aria-hidden="true">
+          Conversation with VERA appears in this panel.
+        </p>
+      </div>
+      <aside id="vera-side-pane" class="side-pane" hidden></aside>
+    </div>
+
+    <div class="input-container">
+      <div class="ask-rotator" id="vera-ask-rotator" aria-live="polite"></div>
+      <button
+        id="vera-input-toggle"
+        class="input-toggle-btn"
+        title="Switch input mode"
+        type="button"
+      >
+        ⌨︝
+      </button>
+      <div id="vera-voice-bar" class="input-bar">
+        <div class="mic-status">
+          <button id="vera-record" type="button" title="Voice input">🎧</button>
+          <span id="vera-status" class="status idle">Idle</span>
+        </div>
+        <div class="wave-container">
+          <canvas id="vera-waveform"></canvas>
+        </div>
+        <button id="vera-ptt" class="ptt-btn" type="button">🎙︝</button>
+        <span
+          id="vera-server-status-inline"
+          class="server-status offline mobile-only"
+        >
+          🔴 Offline
+        </span>
+      </div>
+      <div id="vera-keyboard-bar" class="input-bar hidden">
+        <input
+          id="vera-text-input"
+          type="text"
+          placeholder="Type a message…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button id="vera-send-text" type="button" title="Send message">➤</button>
+      </div>
+      <div
+        id="vera-keyboard-queue-host"
+        class="vera-keyboard-queue-host"
+        hidden
+        aria-live="polite"
+      ></div>
+    </div>
+      </div>
+    </div>
+
+    <audio id="vera-audio" preload="auto" crossorigin="anonymous"></audio>
+    <div id="vera-persistent-music-audio-host" class="vera-persistent-music-audio-host" hidden aria-hidden="true">
+      <audio id="vera-free-music-audio" preload="metadata" crossorigin="anonymous" hidden></audio>
+      <audio id="vera-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
+    </div>
+  </main>
+  <div class="vera-bottom-right-tools" aria-label="Quick tools">
+    <div class="vera-work-mode-tools-row" role="group" aria-label="Work mode controls">
+      <button
+        type="button"
+        id="vera-work-mode"
+        class="vera-work-mode-btn"
+        title="Toggle work mode"
+        aria-pressed="false"
+      >
+        Work
+      </button>
+    </div>
+    <button
+      type="button"
+      id="vera-productivity-mode"
+      class="productivity-mode-btn"
+      title="Productivity mode — music panel"
+    >
+      Music
+    </button>
+    <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
+  </div>
+  <div class="vera-bottom-left-tools" aria-label="Settings tools">
+    <div id="vera-usage-credits" class="vera-usage-credits" hidden aria-live="polite">
+      <span id="vera-usage-credits-text" class="vera-usage-credits-text"></span>
+    </div>
+    <button
+      type="button"
+      id="vera-no-cap-toggle"
+      class="vera-no-cap-toggle"
+      hidden
+      title="Testing only: disables credit cap enforcement but still logs usage."
+    >
+      No cap: OFF
+    </button>
+    <button type="button" id="vera-explicit-feedback-btn" class="vera-explicit-feedback-btn">
+      Give feedback +50 credits
+    </button>
+    <button type="button" id="vera-account-open" class="vera-account-fab" title="Account — sign in or sign up">
+      Account
+    </button>
+    <button type="button" id="vera-settings-open" class="vera-settings-fab" title="Open settings">
+      Settings
+    </button>
+  </div>
+</section>
+
+<div
+  id="vera-work-timer-up-modal"
+  class="vera-work-timer-up-modal"
+  hidden
+  aria-hidden="true"
+  role="alertdialog"
+  aria-modal="true"
+  aria-labelledby="vera-work-timer-up-title"
+  aria-describedby="vera-work-timer-up-desc"
+>
+  <div class="vera-work-timer-up-backdrop" aria-hidden="true"></div>
+  <div class="vera-work-timer-up-dialog">
+    <h2 id="vera-work-timer-up-title" class="vera-work-timer-up-title">Timer is up</h2>
+    <p id="vera-work-timer-up-desc" class="vera-work-timer-up-desc">
+      Your work mode timer has ended.
+    </p>
+    <div class="vera-work-timer-up-overtime">
+      <span class="vera-work-timer-up-overtime-label">Overtime</span>
+      <span
+        class="vera-work-timer-up-overtime-value"
+        id="vera-work-timer-up-overtime"
+        aria-live="polite"
+      >-0.0s</span>
+    </div>
+    <button
+      type="button"
+      class="vera-work-timer-up-ack"
+      id="vera-work-timer-up-ack"
+    >Acknowledge</button>
+  </div>
+</div>
+
+<section id="bmo-loading-screen" hidden>
+  <div class="bmo-loading-shell">
+    <div class="bmo-loading-card">
+      <div class="bmo-loading-title">
+        LOADING<span class="bmo-loading-dots" aria-hidden="true"></span>
+      </div>
+      <div class="bmo-loading-track">
+        <div class="bmo-loading-bar"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="bmo-page" class="bmo-page" hidden>
+  <main class="bmo-shell chat-centered">
+    <div id="bmo-guide" class="vera-guide">
+      <div class="guide-item guide-vera">
+        <div class="guide-arrow arrow-left">↝</div>
+        <div class="guide-text">
+          Click here to learn more about the system.
+        </div>
+      </div>
+      <div class="guide-item guide-headset">
+        <div class="guide-arrow arrow-up">↑</div>
+        <div class="guide-text">
+          <strong>Continuous Listening</strong><br>
+          Works best in quiet environments for productivity. Only works when wears headset/airpods.
+        </div>
+      </div>
+      <div class="guide-item guide-ptt">
+        <div class="guide-arrow arrow-up">↑</div>
+        <div class="guide-text">
+          <strong>Push-to-Talk</strong><br>
+          Press to record. Press again to send.
+        </div>
+      </div>
+    </div>
+
+    <div class="bmo-body-row">
+      <aside class="bmo-chat-log" aria-label="Chat log">
+        <div class="bmo-chat-log-inner">
+          <div class="bmo-chat-log-head">
+            <span class="bmo-chat-log-head-label">Session</span>
+            <span class="bmo-chat-log-head-title">Chat log</span>
+          </div>
+          <div
+            class="conversation bmo-chat-log-conversation"
+            id="bmo-conversation"
+          ></div>
+        </div>
+      </aside>
+      <div class="bmo-center-column">
+        <div class="chat-header bmo-chat-header">
+          <button id="return-home" class="nav-logo bmo-home-btn" type="button">
+            VERA
+          </button>
+        </div>
+
+        <div class="bmo-stage">
+          <div class="bmo-character-frame">
+            <div class="bmo-screen-shell">
+              <div class="bmo-screen">
+                <div class="bmo-face" aria-hidden="true">
+                  <div class="bmo-eyes">
+                    <svg
+                      class="bmo-eye"
+                      viewBox="-11 -16 22 32"
+                      width="34"
+                      height="48"
+                      xmlns="http://www.w3.org/2000/svg"
+                      aria-hidden="true"
+                    >
+                      <ellipse cx="0" cy="0" rx="11" ry="16" fill="#1d2035">
+                        <animate
+                          attributeName="ry"
+                          values="16;16;0.9;16;16"
+                          dur="4s"
+                          repeatCount="indefinite"
+                          keyTimes="0;0.1;0.16;0.22;1"
+                          keySplines="0 0 1 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0 0 1 1"
+                          calcMode="spline"
+                        />
+                      </ellipse>
+                    </svg>
+                    <svg
+                      class="bmo-eye"
+                      viewBox="-11 -16 22 32"
+                      width="34"
+                      height="48"
+                      xmlns="http://www.w3.org/2000/svg"
+                      aria-hidden="true"
+                    >
+                      <ellipse cx="0" cy="0" rx="11" ry="16" fill="#1d2035">
+                        <animate
+                          attributeName="ry"
+                          values="16;16;0.9;16;16"
+                          dur="4s"
+                          repeatCount="indefinite"
+                          keyTimes="0;0.1;0.16;0.22;1"
+                          keySplines="0 0 1 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0 0 1 1"
+                          calcMode="spline"
+                        />
+                      </ellipse>
+                    </svg>
+                  </div>
+                  <div class="bmo-smile-wrap">
+                <!--
+                  Idle = stroke smile below. Filled mouth (TTS only) — saved coords for later:
+                  cavity: M 20.5 21.5 C 20.5 13.8 37 11.2 64 11.2 C 91 11.2 107.5 13.8 107.5 21.5
+                    C 107.5 33.8 95.5 46.2 64 47.2 C 32.5 46.2 20.5 33.8 20.5 21.5 Z (#1a5f46)
+                  teeth: upper curve ~y11.35 at center (touches cavity roof); band to 23.4 (#f7fffb)
+                  tongue: ellipse cx=64 cy=38.8 rx=12.5 ry=6.8 (#5fbf7e)
+                -->
+                <svg
+                  class="bmo-smile"
+                  id="bmo-smile-svg"
+                  viewBox="0 0 128 56"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
+                >
+                  <g transform="translate(64 15)">
+                    <g class="bmo-mouth-track bmo-mouth-track--happy">
+                      <!-- One translate(-64 -15) undoes outer translate(64 15) for paths drawn in viewBox coords (stroke smile + filled mouth). -->
+                      <g transform="translate(-64 -15)">
+                        <g class="bmo-mouth-inner" id="bmo-mouth-vis">
+                          <g class="bmo-mouth-layer bmo-mouth-layer--happy">
+                            <path
+                              fill="#1a5f46"
+                              d="M 20.5 21.5 C 20.5 13.8 37 11.2 64 11.2 C 91 11.2 107.5 13.8 107.5 21.5 C 107.5 33.8 95.5 46.2 64 47.2 C 32.5 46.2 20.5 33.8 20.5 21.5 Z"
+                            />
+                            <path
+                              fill="#f7fffb"
+                              d="M 25.5 16.2 C 25.5 12.5 40 11.35 64 11.35 C 88 11.35 102.5 12.5 102.5 16.2 L 102.5 23.4 L 25.5 23.4 Z"
+                            />
+                            <ellipse
+                              class="bmo-mouth-tongue"
+                              cx="64"
+                              cy="38.8"
+                              rx="12.5"
+                              ry="6.8"
+                              fill="#5fbf7e"
+                            />
+                          </g>
+                          <g class="bmo-mouth-layer bmo-mouth-layer--surprised">
+                            <ellipse
+                              cx="64"
+                              cy="29"
+                              rx="14"
+                              ry="17"
+                              fill="#1a5f46"
+                            />
+                          </g>
+                        </g>
+                        <path
+                          class="bmo-smile-path"
+                          d="M 11 13.5 C 44 26.5 78 25.8 117 13.6"
+                          stroke="#232750"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </g>
+                    </g>
+                    <!-- Sad TTS track (emotion test slots 4–6), toggled via data-bmo-tts-face-track="sad" -->
+                    <g class="bmo-mouth-track bmo-mouth-track--sad" aria-hidden="true">
+                      <g transform="translate(-64 -15)">
+                        <!-- Slot 4: idle frown — original stroke size (not scaled). -->
+                        <path
+                          class="bmo-sad-smile-path"
+                          d="M 11 28.5 C 44 15.5 78 16.2 117 28.4"
+                          stroke="#232750"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                        <!-- Slots 5–6: surprised O + worried bean — scaled up for readability. -->
+                        <g class="bmo-sad-mouth-scale" transform="translate(64 28) scale(1.4) translate(-64 -28)">
+                        <g class="bmo-sad-mouth-inner" id="bmo-sad-mouth-vis">
+                          <g class="bmo-sad-mouth-layer bmo-sad-mouth-layer--worried">
+                            <g transform="translate(64 31) scale(0.33)">
+                              <defs>
+                                <clipPath id="bmo-sad-worried-clip">
+                                  <path
+                                    d="M -48 6 C -48 -14 -26 -32 0 -30 C 26 -32 48 -14 48 6 C 48 22 28 36 14 32 Q 0 20 -14 32 C -28 36 -48 22 -48 6 Z"
+                                  />
+                                </clipPath>
+                              </defs>
+                              <path
+                                fill="#1a5f46"
+                                stroke="#0a0a0a"
+                                stroke-width="4"
+                                stroke-linejoin="round"
+                                paint-order="stroke fill"
+                                d="M -48 6 C -48 -14 -26 -32 0 -30 C 26 -32 48 -14 48 6 C 48 22 28 36 14 32 Q 0 20 -14 32 C -28 36 -48 22 -48 6 Z"
+                              />
+                              <g clip-path="url(#bmo-sad-worried-clip)">
+                                <path
+                                  fill="#f7fffb"
+                                  stroke="#0a0a0a"
+                                  stroke-width="2"
+                                  stroke-linejoin="round"
+                                  d="M -54 -14 C -54 -32 -26 -42 0 -40 C 26 -42 54 -32 54 -14 L -54 -14 Z"
+                                />
+                                <ellipse cx="-24" cy="25" rx="26" ry="11" fill="#5fbf7e" />
+                              </g>
+                            </g>
+                          </g>
+                          <g class="bmo-sad-mouth-layer bmo-sad-mouth-layer--surprised">
+                            <g transform="translate(64 29) scale(0.86) translate(-64 -29)">
+                              <ellipse cx="64" cy="29" rx="14" ry="17" fill="#1a5f46" />
+                            </g>
+                          </g>
+                        </g>
+                        </g>
+                      </g>
+                    </g>
+                  </g>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+        <p class="bmo-intro-caption" id="bmo-intro-caption" aria-live="polite"></p>
+
+        <aside id="bmo-side-pane" class="side-pane" hidden></aside>
+      </div>
+    </div>
+
+    <div class="input-container">
+      <div class="ask-rotator" id="bmo-ask-rotator" aria-live="polite"></div>
+      <div class="bmo-input-dock-row">
+        <button
+          id="bmo-input-toggle"
+          class="input-toggle-btn"
+          title="Switch input mode"
+          type="button"
+        >
+        ⌨️
+        </button>
+        <div id="bmo-voice-bar" class="input-bar">
+          <div class="mic-status">
+            <button id="bmo-record" type="button" title="Voice input">🎧</button>
+            <span id="bmo-status" class="status idle">Idle</span>
+          </div>
+          <div class="wave-container">
+            <canvas id="bmo-waveform"></canvas>
+          </div>
+          <button id="bmo-ptt" class="ptt-btn" type="button">🎤</button>
+          <span
+            id="bmo-server-status-inline"
+            class="server-status offline mobile-only"
+          >
+            🔴 Offline
+          </span>
+        </div>
+        <div id="bmo-keyboard-bar" class="input-bar hidden">
+          <input
+            id="bmo-text-input"
+            type="text"
+            placeholder="Type a message…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button id="bmo-send-text" type="button" title="Send message">➤</button>
+        </div>
+      </div>
+    </div>
+
+    <audio id="bmo-audio" preload="auto" crossorigin="anonymous"></audio>
+    <div id="bmo-persistent-music-audio-host" class="vera-persistent-music-audio-host" hidden aria-hidden="true">
+      <audio id="bmo-free-music-audio" preload="metadata" crossorigin="anonymous" hidden></audio>
+      <audio id="bmo-spotify-preview-audio" preload="none" crossorigin="anonymous" hidden></audio>
+    </div>
+    <div class="bmo-bottom-right-tools" aria-label="Quick tools">
+      <button
+        type="button"
+        id="bmo-productivity-mode"
+        class="productivity-mode-btn"
+        title="Productivity mode — music panel"
+      >
+        Music
+      </button>
+    </div>
+    <div class="bmo-bottom-left-tools" aria-label="Settings tools">
+      <button type="button" id="bmo-settings-open" class="vera-settings-fab" title="Open settings">
+        Settings
+      </button>
+    </div>
+  </main>
+</section>
+<div id="vera-user-sign-in-modal" class="vera-user-sign-in-overlay" hidden>
+  <div
+    class="vera-user-sign-in-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="vera-sign-in-title"
+  >
+    <h2 id="vera-sign-in-title">Sign in</h2>
+    <label class="vera-sign-in-label">
+      Username
+      <input type="text" id="vera-sign-in-username" name="username" autocomplete="username" />
+    </label>
+    <label class="vera-sign-in-label">
+      Password
+      <input
+        type="password"
+        id="vera-sign-in-password"
+        name="password"
+        autocomplete="current-password"
+      />
+    </label>
+    <p id="vera-sign-in-error" class="vera-sign-in-error" hidden></p>
+    <div class="vera-sign-in-actions">
+      <button type="button" id="vera-sign-in-submit">Sign in</button>
+      <button type="button" id="vera-sign-in-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="vera-explicit-feedback-modal" class="vera-explicit-feedback-modal" hidden aria-hidden="true">
+  <button type="button" class="vera-explicit-feedback-backdrop" tabindex="-1" aria-label="Close feedback"></button>
+  <div class="vera-explicit-feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="vera-explicit-feedback-title">
+    <div class="vera-explicit-feedback-header">
+      <h2 id="vera-explicit-feedback-title">Share feedback</h2>
+      <button type="button" id="vera-explicit-feedback-close" class="vera-explicit-feedback-close" aria-label="Close">✕</button>
+    </div>
+    <p class="vera-settings-hint">Complete this short form to unlock +50 bonus credits for today.</p>
+    <p id="vera-explicit-feedback-error" class="vera-account-error" hidden role="alert"></p>
+    <p id="vera-explicit-feedback-success" class="vera-account-success" hidden role="status"></p>
+    <div id="vera-explicit-feedback-form">
+      <div class="vera-settings-row">
+        <span class="vera-settings-label">Rating</span>
+        <div id="vera-explicit-feedback-rating" class="vera-feedback-rating" role="group" aria-label="Rating from 1 to 5">
+          <button type="button" class="vera-feedback-rating-btn" data-rating="1" aria-pressed="false">1</button>
+          <button type="button" class="vera-feedback-rating-btn" data-rating="2" aria-pressed="false">2</button>
+          <button type="button" class="vera-feedback-rating-btn" data-rating="3" aria-pressed="false">3</button>
+          <button type="button" class="vera-feedback-rating-btn" data-rating="4" aria-pressed="false">4</button>
+          <button type="button" class="vera-feedback-rating-btn" data-rating="5" aria-pressed="false">5</button>
+        </div>
+      </div>
+      <div class="vera-settings-row">
+        <label for="vera-explicit-feedback-reason" class="vera-settings-label">Why this rating?</label>
+        <textarea id="vera-explicit-feedback-reason" class="vera-explicit-feedback-reason" rows="4" placeholder="What worked well or what felt broken?"></textarea>
+      </div>
+      <div class="vera-settings-row">
+        <span class="vera-settings-label">Categories (optional)</span>
+        <div id="vera-explicit-feedback-categories" class="vera-feedback-categories"></div>
+      </div>
+      <div class="vera-settings-row" id="vera-explicit-feedback-contact-wrap" hidden>
+        <label class="vera-settings-label">
+          <input type="checkbox" id="vera-explicit-feedback-contact" />
+          You may contact me about this feedback
+        </label>
+      </div>
+      <div class="vera-settings-row vera-account-actions">
+        <button type="button" id="vera-explicit-feedback-submit" class="vera-settings-save-btn">Submit feedback and unlock +50 credits</button>
+        <button type="button" id="vera-explicit-feedback-cancel" class="vera-account-secondary-btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="vera-settings-modal" class="vera-settings-modal" hidden>
+  <div class="vera-settings-card" role="dialog" aria-modal="true" aria-labelledby="vera-settings-title">
+    <div class="vera-settings-header">
+      <h2 id="vera-settings-title">Settings</h2>
+      <button type="button" id="vera-settings-close" class="vera-settings-close" aria-label="Close settings">✕</button>
+    </div>
+
+    <section id="vera-account-section" class="vera-settings-section">
+      <h3>Account</h3>
+      <p id="vera-account-status" class="vera-settings-hint">Loading account…</p>
+      <p id="vera-account-error" class="vera-account-error" hidden role="alert"></p>
+      <p id="vera-account-success" class="vera-account-success" hidden role="status"></p>
+
+      <div id="vera-account-signed-out">
+        <div id="vera-account-login-view">
+          <div class="vera-settings-row">
+            <label for="vera-account-email" class="vera-settings-label">Email</label>
+            <input id="vera-account-email" class="vera-account-input" type="email" autocomplete="email" placeholder="you@example.com" />
+          </div>
+          <div class="vera-settings-row">
+            <label for="vera-account-password" class="vera-settings-label">Password</label>
+            <input id="vera-account-password" class="vera-account-input" type="password" autocomplete="current-password" placeholder="Password" />
+          </div>
+          <div class="vera-settings-row vera-account-actions">
+            <button type="button" id="vera-account-sign-in" class="vera-settings-save-btn">Log in</button>
+            <button type="button" id="vera-account-sign-up" class="vera-account-secondary-btn">Sign up</button>
+            <button type="button" id="vera-account-forgot-password-link" class="vera-account-link-btn">Forgot password?</button>
+          </div>
+        </div>
+
+        <div id="vera-account-forgot-view" hidden>
+          <p class="vera-settings-hint">Enter your email and we&rsquo;ll send a password reset link.</p>
+          <div class="vera-settings-row" id="vera-account-forgot-email-row">
+            <label for="vera-account-forgot-email" class="vera-settings-label">Email</label>
+            <input id="vera-account-forgot-email" class="vera-account-input" type="email" autocomplete="email" placeholder="you@example.com" />
+          </div>
+          <div class="vera-settings-row vera-account-actions" id="vera-account-forgot-actions">
+            <button type="button" id="vera-account-send-reset" class="vera-settings-save-btn">Send reset link</button>
+            <button type="button" id="vera-account-forgot-back" class="vera-account-secondary-btn">Back to login</button>
+          </div>
+          <p id="vera-account-forgot-success" class="vera-account-success" hidden role="status"></p>
+        </div>
+
+        <div id="vera-account-reset-expired-view" hidden>
+          <p id="vera-account-reset-expired-message" class="vera-account-error" role="alert">
+            This reset link expired or is invalid. Please request a new password reset link.
+          </p>
+          <div class="vera-settings-row vera-account-actions">
+            <button type="button" id="vera-account-reset-expired-request" class="vera-settings-save-btn">Request new reset link</button>
+            <button type="button" id="vera-account-reset-expired-back" class="vera-account-secondary-btn">Back to login</button>
+          </div>
+        </div>
+
+        <div id="vera-account-reset-password-view" hidden>
+          <p class="vera-settings-hint">Choose a new password for your account.</p>
+          <div class="vera-settings-row">
+            <label for="vera-account-new-password" class="vera-settings-label">New password</label>
+            <input id="vera-account-new-password" class="vera-account-input" type="password" autocomplete="new-password" placeholder="New password" />
+          </div>
+          <div class="vera-settings-row">
+            <label for="vera-account-confirm-password" class="vera-settings-label">Confirm password</label>
+            <input id="vera-account-confirm-password" class="vera-account-input" type="password" autocomplete="new-password" placeholder="Confirm password" />
+          </div>
+          <div class="vera-settings-row vera-account-actions">
+            <button type="button" id="vera-account-update-password" class="vera-settings-save-btn">Update password</button>
+          </div>
+          <p id="vera-account-reset-success" class="vera-account-success" hidden role="status"></p>
+        </div>
+      </div>
+
+      <div id="vera-account-signed-in" hidden>
+        <div class="vera-settings-row">
+          <label for="vera-account-display-name" class="vera-settings-label">Display name</label>
+          <input id="vera-account-display-name" class="vera-account-input" type="text" maxlength="120" placeholder="Your name" />
+        </div>
+        <div class="vera-settings-row vera-account-actions">
+          <button type="button" id="vera-account-save-profile" class="vera-settings-save-btn">Save profile</button>
+          <button type="button" id="vera-account-sign-out" class="vera-account-secondary-btn">Log out</button>
+        </div>
+        <p id="vera-checklist-sync-status" class="vera-settings-hint vera-checklist-sync-status" hidden></p>
+        <div id="vera-account-memories-wrap" class="vera-account-memories-wrap" hidden>
+          <h4 class="vera-account-memories-heading">Saved memories</h4>
+          <p class="vera-settings-hint">Things you've explicitly asked Vera to remember.</p>
+          <ul id="vera-account-memories-list" class="vera-account-memories-list" aria-live="polite"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="vera-settings-guide-section" class="vera-settings-section vera-settings-guide-section" aria-labelledby="vera-settings-guide-title">
+      <h3 id="vera-settings-guide-title">How to use Vera</h3>
+      <p class="vera-settings-hint">Choose how you want to talk or type with Vera.</p>
+      <div class="vera-settings-guide-cards">
+        <article class="vera-settings-guide-card">
+          <h4 class="vera-settings-guide-card-title">🎧 Continuous Listening</h4>
+          <p class="vera-settings-guide-card-text">Best with headphones or AirPods so VERA's voice does not echo back into the mic.</p>
+        </article>
+        <article class="vera-settings-guide-card">
+          <h4 class="vera-settings-guide-card-title">🎙︝ Push-to-Talk</h4>
+          <p class="vera-settings-guide-card-text">Works without headphones. Press to speak, then VERA listens and responds one turn at a time.</p>
+        </article>
+        <article class="vera-settings-guide-card">
+          <h4 class="vera-settings-guide-card-title">⌨︝ Keyboard</h4>
+          <p class="vera-settings-guide-card-text">Type when voice is inconvenient, noisy, or unavailable.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="vera-settings-section">
+      <h3>Universal</h3>
+
+      <div class="vera-settings-row">
+        <label for="vera-setting-silence" class="vera-settings-label">Silence time after ASR</label>
+        <div class="vera-settings-slider-wrap settings-slider-wrap">
+          <input id="vera-setting-silence" type="range" min="0" max="2" step="1" value="1" />
+          <div class="vera-settings-slider-ticks" aria-hidden="true">
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0">1.0s</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0.5">1.3s</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 1">1.6s</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="vera-settings-row">
+        <div class="vera-settings-label">ASR mode</div>
+        <div class="vera-settings-radio-row" role="radiogroup" aria-label="ASR mode">
+          <button type="button" id="vera-setting-asr-streaming" class="vera-settings-radio" data-asr-mode="streaming" aria-pressed="true" title="Fast live captions with lower accuracy.">
+            <span class="dot" aria-hidden="true"></span> Fast / Streaming
+          </button>
+          <button type="button" id="vera-setting-asr-whisper" class="vera-settings-radio" data-asr-mode="whisper" aria-pressed="false" title="More accurate transcription, but slower.">
+            <span class="dot" aria-hidden="true"></span> Accurate / Whisper
+          </button>
+          <button type="button" id="vera-setting-asr-hybrid" class="vera-settings-radio" data-asr-mode="hybrid" aria-pressed="false" title="Live captions with Whisper correction for selected requests.">
+            <span class="dot" aria-hidden="true"></span> Hybrid
+          </button>
+        </div>
+      </div>
+
+      <div class="vera-settings-row">
+        <button type="button" id="vera-setting-reset-session" class="vera-settings-danger-btn">Reset session</button>
+      </div>
+    </section>
+
+    <section id="vera-cost-log-dev-section" class="vera-settings-section" hidden>
+      <h3>Cost logging (dev)</h3>
+      <p class="vera-settings-hint">
+        Archive moves current cost/credit JSONL files into <code>logs/archive/</code> and starts fresh empty logs.
+        Does not disable logging.
+      </p>
+      <div class="vera-settings-row">
+        <label for="vera-cost-scenario-select" class="vera-settings-label">Test scenario label</label>
+        <select id="vera-cost-scenario-select" class="vera-settings-select">
+          <option value="">(none)</option>
+          <option value="light_session">light_session</option>
+          <option value="normal_work_mode_session">normal_work_mode_session</option>
+          <option value="heavy_reasoning_session">heavy_reasoning_session</option>
+          <option value="search_heavy_session">search_heavy_session</option>
+          <option value="voice_heavy_session">voice_heavy_session</option>
+          <option value="file_upload_session">file_upload_session</option>
+          <option value="image_upload_session">image_upload_session</option>
+        </select>
+      </div>
+      <div class="vera-settings-row">
+        <button type="button" id="vera-cost-archive-clean-btn" class="vera-settings-danger-btn">
+          Archive logs and start clean test
+        </button>
+      </div>
+      <pre id="vera-cost-log-status" class="vera-cost-log-status" hidden></pre>
+    </section>
+
+    <section class="vera-settings-section">
+      <h3>Main Streaming ASR (Experimental)</h3>
+
+      <div class="vera-settings-row">
+        <label for="vera-setting-main-partial-min" class="vera-settings-label">Min chars before showing partial</label>
+        <div class="vera-settings-slider-wrap settings-slider-wrap">
+          <input id="vera-setting-main-partial-min" type="range" min="0" max="4" step="1" value="0" />
+          <div
+            class="vera-settings-slider-ticks vera-settings-slider-ticks--partial-min"
+            aria-hidden="true"
+            title="Infinity: hide live captions until you finish the utterance (transcript appears when sending to VERA)."
+          >
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0">10</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0.25">15</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0.5">20</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0.75">25</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 1">Infinity</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="vera-settings-section">
+      <h3>Work Mode</h3>
+      <div class="vera-settings-row vera-settings-toggle-row">
+        <span class="vera-settings-label">Text guide rotator</span>
+        <button type="button" id="vera-setting-text-guide-rotator" class="vera-settings-toggle" aria-pressed="true" title="Show rotating text guide above input">
+          <span class="knob"></span>
+        </button>
+      </div>
+      <div class="vera-settings-row vera-settings-toggle-row">
+        <span class="vera-settings-label">Mute VERA in work mode</span>
+        <button type="button" id="vera-setting-workmode-mute" class="vera-settings-toggle" aria-pressed="false" title="Mute VERA in work mode only">
+          <span class="knob"></span>
+        </button>
+      </div>
+      <div class="vera-settings-row vera-settings-toggle-row">
+        <span class="vera-settings-label">Timer for explicit due-in plans</span>
+        <button type="button" id="vera-setting-planning-deadline-timer" class="vera-settings-toggle is-on" aria-pressed="true" title="When on, due-in phrases start a countdown that ends 10 minutes before the time you gave">
+          <span class="knob"></span>
+        </button>
+      </div>
+    </section>
+    <div class="vera-settings-actions">
+      <button type="button" id="vera-settings-save" class="vera-settings-save-btn">Save settings</button>
+    </div>
+  </div>
+</div>
+<script src="../config/api.js?v=1"></script>
+<script>
+(function () {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.VERA_LOCAL_BACKEND_ORIGIN) return;
+    var m = document.querySelector('meta[name="vera-local-backend-origin"]');
+    if (m && String(m.content || "").trim()) return;
+    var o = location.origin;
+    var local =
+      /^(https?:\/\/)(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(o);
+    if (local || o === "null" || (o && o.startsWith("file:"))) return;
+    if (o && !o.startsWith("file:")) {
+      window.VERA_LOCAL_BACKEND_ORIGIN = (window.VERA_API_PRODUCTION_BASE || "https://api.workwithvera.com");
+    }
+  } catch (e) {}
+})();
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<!-- utils/ids.js must load BEFORE app.js — defines session + request id helpers
+     that app.js relies on at top level (extracted 2026-05-27). -->
+<script src="../utils/ids.js?v=1"></script>
+<!-- utils/storage.js must also load BEFORE app.js — defines safe localStorage
+     / sessionStorage / JSON wrappers used by app.js settings + debug gates
+     (extracted 2026-05-27, Stage 2). -->
+<script src="../utils/storage.js?v=1"></script>
+<!-- utils/logging.js must also load BEFORE app.js — defines pure console /
+     debug-log helpers (logInputLimitDebug, logVeraCapabilityFailure,
+     logCapabilityFallbackDebug, logBargeInLatencyDebug,
+     logInterruptTranscriptDebug, logVoiceFirstAudio, logVoiceMainReplyAudio,
+     logVoicePipe, logVoiceTranscript, logFinalTranscriptSentToLlm,
+     logTurnTextIntegrity + helpers). Extracted 2026-05-27, Stage 3. -->
+<script src="../utils/logging.js?v=1"></script>
+<!-- users/signinUi.js must load AFTER utils/logging.js (its bodies
+     do not depend on logging primitives at parse time, but it sits
+     in the utils tier conceptually) and BEFORE voice/asr.js,
+     workmode/panels.js, workmode/checklist.js, news/*, and app.js,
+     because:
+       - workmode/checklist.js calls authApiUrl(...) as a bare
+         identifier (work-mode checklist sync endpoints);
+       - workmode/panels.js calls localBackendBase() in the multi-
+         tier base-URL fallback;
+       - app.js + Spotify code call localBackendBase + authApiUrl
+         in many places.
+     Extracted 2026-06-01, Patch B-4. -->
+<script src="../users/signinUi.js?v=2"></script>
+<!-- users/supabaseAuth.js — Supabase Auth UI + JWT on backend calls (Phase 2).
+     Must load AFTER signinUi.js (authApiUrl, authFetch stub) and BEFORE
+     workmode/checklist.js + app.js. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="../users/supabaseAuth.js?v=15"></script>
+<!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
+     Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
+<script src="../users/accountSettingsSync.js?v=2"></script>
+<!-- users/feedback.js — thumbs up/down on main chat Vera replies (Feedback MVP).
+     Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
+<script src="../users/feedback.js?v=4"></script>
+<!-- users/usageEvents.js — lightweight behavioral analytics (MVP).
+     Must load AFTER utils/ids.js + supabaseAuth.js, BEFORE app.js. -->
+<script src="../users/usageEvents.js?v=3"></script>
+<!-- users/usageFeatureEvents.js — Phase 2 feature interaction analytics.
+     Must load AFTER usageEvents.js, BEFORE app.js. -->
+<script src="../users/usageFeatureEvents.js?v=1"></script>
+<!-- users/usageCredits.js — daily credit usage pill (read-only).
+     Must load AFTER usageFeatureEvents.js (reasoning refresh hook), BEFORE app.js. -->
+<script src="../users/usageCredits.js?v=6"></script>
+<!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
+     Must load AFTER usageCredits.js, BEFORE app.js. -->
+<script src="../users/explicitFeedback.js?v=2"></script>
+<!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
+     and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
+     voice/interruption.js calls browserAsrPreferred() from function bodies
+     (resolved at call time via the shared classic-script global lexical
+     env). Defines getVeraAsrMode / setVeraAsrMode / decideAsrFinalizationMode
+     / chooseBestTranscript / normalizeCommandTranscript and the new
+     getAsrDebugState accessor. Extracted 2026-05-27, Stage 7. -->
+<script src="../voice/asr.js?v=1"></script>
+<!-- voice/ttsQueue.js must also load BEFORE app.js — declares the main TTS
+     runtime state (mainTtsPlaybackToken, mainTtsPlaybackActive,
+     activeMainTtsBufferSources, activeNdjsonBodyReader) plus
+     registerMainTtsBufferSource / cancelMainTtsPlayback /
+     stopAllMainTtsWebAudio / playTtsUrlSequenceGapless /
+     playTtsUrlSequenceIncremental / runNdjsonTtsPlayback /
+     createTtsUrlQueue + new accessors (isMainTtsPlaying, getTtsDebugState).
+     app.js helpers (isAssistantTtsPlaying, playTtsFromApi,
+     interruptAssistantPipelineForTypedMessage, …) read and assign to those
+     bindings via the shared classic-script global lexical environment.
+     Extracted 2026-05-27, Stage 5. -->
+<script src="../voice/ttsQueue.js?v=2"></script>
+<!-- voice/interruption.js must load AFTER voice/ttsQueue.js (uses
+     cancelMainTtsPlayback at call time) and BEFORE app.js so the moved
+     `let` bindings (interruptBargeInLatched, vadFastStopArmed,
+     _veraTtsCancelSource, _veraInterruptDelayTrace, _veraInterruptAttemptSeq)
+     are initialized before any app.js function body call-site reads or
+     assigns them through the shared classic-script global lexical env.
+     Defines isVeraInterruptDebugEnabled / logVeraInterruptDebug /
+     _recordInterruptTimingPoint / _logVoiceStateTransition /
+     _logTtsCancelSourceTrace / resetVadFastStopState / fastStopTtsOnVadOnly
+     / interruptSpeech / interruptTranscriptNewTtsId / new accessor
+     getInterruptionDebugState. Extracted 2026-05-27, Stage 6. -->
+<script src="../voice/interruption.js?v=2"></script>
+<!-- workmode/panels.js must load AFTER voice/interruption.js (its
+     renderReasoningCloseAssistantConfirmation reaches voice-state lets
+     like processing/requestInFlight/waveState/voiceUxTurn and the TTS
+     enqueue helpers via the shared classic-script global lexical env at
+     CALL time) and BEFORE app.js (so the moved function declarations
+     and shared bindings — MIN_REASONING_PANELS, recentlyClosedReasoningPanels,
+     _lastReasoningCloseLock, createReasoningLanePanel, renderReasoningTabStrip,
+     activateReasoningTab, addReasoningTab, closeReasoningPanelsByVisualIndices,
+     closeReasoningTab, getReasoningPanelOrder, buildCloseReasoningPanelsVoiceReply,
+     isReasoningCloseVoiceSource, renderReasoningCloseAssistantConfirmation,
+     etc. — are visible to app.js callers through the shared lexical env).
+     New accessor getReasoningPanelDebugState() mirrors getTtsDebugState /
+     getInterruptionDebugState / getAsrDebugState. Extracted 2026-05-27,
+     Stage 8. -->
+<script src="../workmode/panels.js?v=9"></script>
+<!-- workmode/checklist.js must load AFTER workmode/panels.js (its
+     plan-sync helpers reach reasoning-panel helpers like
+     getReasoningTabTopicLabel and getWorkModeReasoningLaneId through
+     the shared classic-script global lexical env at CALL time) and
+     BEFORE app.js (so the moved constants — WORK_CHECKLIST_STORAGE_KEY,
+     WORK_CHECKLIST_COMPLETED_COLLAPSED_KEY, NON_CANCELABLE_AFTER_COMMIT_ACTIONS,
+     CHECKLIST_ORDINAL_WORD_MAP, CHECKLIST_* regexes,
+     WORK_CHECKLIST_SUBITEM_INDENT_THRESHOLD_PX, WORK_CHECKLIST_HELP_PLAN_MAX_ITEMS,
+     WORK_CHECKLIST_SYNC_PREVIEW_MAX_CHARS — and function declarations —
+     readChecklistItemsFromStorage, queueWorkChecklistSyncToServer,
+     syncWorkChecklistToServerNow, flushWorkChecklistSyncBeforeCommand,
+     hydrateWorkChecklistFromServer, parseChecklistOrdinals,
+     detectChecklistActionIntent, isLikelyWorkChecklistEditIntent,
+     _looksLikeChecklistCommand, createWorkChecklistDragHandle,
+     readChecklistItemsFromStorageSafe, writeChecklistItemsToStorageSafe,
+     ensureWorkChecklistListDnD, wireWorkChecklistCompletedCollapse,
+     loadWorkChecklistItems, persistWorkChecklistToggle,
+     persistWorkChecklistToggleWithSubtree,
+     persistWorkChecklistUpdateText, persistWorkChecklistRemove,
+     ensureWorkChecklistTrailingEmptyOngoing,
+     insertWorkChecklistEmptyOngoingAfter,
+     pruneInteriorEmptyOngoingItems,
+     normalizeWorkChecklistLeadingPlaceholderInStorage,
+     commitNonCancelableAction, wasNonCancelableActionRecentlyCommitted,
+     logPlanSyncDebug, logSyncVoiceTurnDebug, veraDebugSyncStateSnapshot,
+     describePlanSyncActiveContext, getActivePlanSyncBlockingState,
+     scheduleSyncPlanButtonRefresh, syncWorkChecklistSyncPlanButton,
+     getLatestWorkModeReasoningMarkdown, getWorkChecklistSyncSourceCandidate,
+     buildChecklistProposalFromMarkdown, formatChecklistProposalText,
+     parseChecklistProposalText, showWorkChecklistSyncPreview,
+     hideWorkChecklistSyncPreview, applyWorkChecklistSyncPreview,
+     eraseEntireWorkChecklist, runWorkChecklistSyncFromLatestPlan,
+     flashWorkChecklistPlanHint, buildWorkChecklistHelpPlanUserMessage,
+     isWorkChecklistPlanShortcutIntent, isWorkChecklistSyncCommandIntent,
+     queueWorkChecklistRowEnterAnimation, etc. — are visible to app.js
+     callers through the shared lexical env). New accessor
+     getChecklistDebugState() mirrors getReasoningPanelDebugState /
+     getTtsDebugState / getInterruptionDebugState / getAsrDebugState.
+     Extracted 2026-05-27, Stage 9. -->
+<script src="../workmode/checklist.js?v=11"></script>
+<!-- Account Work Mode workspace sync (reasoning tabs/spaces only). -->
+<script src="../workmode/workspaceSync.js?v=6"></script>
+<!-- Account checklist Supabase sync is bundled in workmode/checklist.js (Phase 4b). -->
+<!-- workmode/multiActionPlanner.js must load AFTER workmode/panels.js +
+     workmode/checklist.js (the executor calls activateReasoningTab /
+     addReasoningTab from panels.js, and the planner segments include
+     checklist verbs that are resolved through the same shared global
+     lex env), and BEFORE news/* + app.js + debug/* (so the inline
+     GATE block inside sendVeraWorkModeTypedInferTurn can resolve
+     shouldUseWorkModeMultiActionPlanner / planWorkModeMultiAction /
+     logWorkModeMultiActionPlannerDecision / executeWorkModeActionPlan
+     at parse time as bare identifiers via the shared global lexical
+     environment). Extracted 2026-06-01, Patch B-5. -->
+<script src="../workmode/multiActionPlanner.js?v=1"></script>
+<!-- news/newsRouter.js + news/newsPanel.js must load BEFORE app.js (so the
+     moved declarations — NEWS_EVENT_CLUE_RE, NEWS_NAMED_ENTITY_RE,
+     PENDING_NEWS_STATUS_TIMEOUT_MS, PENDING_NEWS_STATUS_TEXT,
+     pendingNewsStatusBubble / pendingNewsStatusTimerId / pendingNewsStatusToken,
+     _clearPendingNewsStatusTimer, looksLikeNewsSearchRequest,
+     armPendingNewsStatusBubble, cancelPendingNewsStatusBubble,
+     failPendingNewsStatusBubble, _veraNewsPanelRenderInFlight,
+     renderNewsResultListMarkup, renderImageResultsMarkup,
+     getVideoEmbedUrl, renderVideoResultsMarkup, setActiveSidePaneTab,
+     renderMediaTabsPanel — are visible to app.js callers through the
+     shared classic-script global lexical env). Order between the two
+     news files does NOT matter (neither calls into the other); both
+     end up as bare-identifier declarations in the same global lexical
+     env. The pending-bubble + classifier (router) read app.js helpers
+     `addBubble`, `persistVeraChatState`, `VERA_SAFETY_LIMITS`, and
+     `isLikelyRequestShape` at CALL time. The panel renderer reads
+     `uiEl`, `escapeHtml`, `runFlowModeSidePaneContentCrossfade`,
+     `isVeraInterruptDebugEnabled`, and `logVeraInterruptDebug` at CALL
+     time. New accessors `getNewsRouterDebugState()` /
+     `getNewsPanelDebugState()` mirror the other stage debug accessors.
+     Extracted 2026-05-27, Stage 10. -->
+<script src="../news/newsRouter.js?v=3"></script>
+<script src="../news/newsPanel.js?v=4"></script>
+<script src="../news/weatherPanel.js?v=1"></script>
+<script src="app.js?v=124"></script>
+<script src="shell.js?v=2"></script>
+<!-- voice/musicNavigation.js — shared track navigation dedupe + ended guard -->
+<script src="../voice/musicNavigation.js?v=1"></script>
+<!-- voice/musicSequence.js — multi-action music sequential dispatch + provider exclusivity -->
+<script src="../voice/musicSequence.js?v=2"></script>
+<!-- debug/voiceDebug.js loads AFTER app.js — only attaches the manual
+     DevTools helpers window.veraConcurrencyDebug, window.dumpVeraVoiceState,
+     window.resetVeraVoiceRuntimeState; their function bodies reach the
+     real app.js runtime bindings (workModeReasoningAbortControllers,
+     mainTtsPlaybackActive, interruptBargeInLatched, …) through the shared
+     classic-script global lexical environment at CALL time. Extracted
+     2026-05-27, Stage 4. -->
+<script src="../debug/voiceDebug.js?v=3"></script>
+<!-- debug/reasoningGate.js loads AFTER app.js — only attaches the manual
+     DevTools helper window.debugReasoningGate(text, opts). The function
+     body reaches the live-routing helpers that remain in app.js
+     (isExplicitReasoningPanelReference, isBriefExplanationModifier,
+     isSimpleDefinitionQuestion, detectBroadComplexTopicFrontend,
+     detectCompoundActionFamilies) plus globals (API_URL,
+     workModeLastSubstantiveUserText) through the shared classic-script
+     global lexical environment at CALL time. Extracted 2026-06-01,
+     Patch B-2 option b. -->
+<script src="../debug/reasoningGate.js?v=1"></script>
+<script>
+(function veraBootScriptsLoadedProbe() {
+  const missing = ["checkServer", "getSessionId", "authApiUrl"].filter(
+    (name) => typeof window[name] !== "function"
+  );
+  if (missing.length) {
+    console.error("[boot] scripts loaded with missing globals:", missing.join(", "));
+    if (typeof window.startBootSequence === "function") {
+      void window.startBootSequence();
+    }
+  } else {
+    console.info("[boot] scripts loaded");
+  }
+})();
+</script>
+</body>
+</html>

@@ -33,8 +33,8 @@ const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
 const utilsStoragePath = path.join(repoRoot, "utils", "storage.js");
 const utilsLoggingPath = path.join(repoRoot, "utils", "logging.js");
-const indexHtmlPath = path.join(repoRoot, "index.html");
-const appJsPath = path.join(repoRoot, "app.js");
+const indexHtmlPath = path.join(repoRoot, "app/index.html");
+const appJsPath = path.join(repoRoot, "app/app.js");
 
 let pass = 0;
 let fail = 0;

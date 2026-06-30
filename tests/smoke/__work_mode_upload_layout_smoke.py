@@ -63,7 +63,7 @@ ok(
 )
 
 section("styles.css narrow + center column")
-with open(os.path.join(_ROOT, "styles.css"), encoding="utf-8") as f:
+with open(os.path.join(_ROOT, "app/styles.css"), encoding="utf-8") as f:
     css = f.read()
 ok(
     "grid-template-rows: auto minmax(0, 1.15fr) minmax(0, 1fr)" in css,

@@ -12,7 +12,7 @@ const CHECKLIST_JS = fs
   .readFileSync(path.resolve(__dirname, "../../workmode/checklist.js"), "utf8")
   .replace(/\r\n/g, "\n");
 const INDEX_HTML = fs
-  .readFileSync(path.resolve(__dirname, "../../index.html"), "utf8")
+  .readFileSync(path.resolve(__dirname, "../../app/index.html"), "utf8")
   .replace(/\r\n/g, "\n");
 
 const GREEN = "\x1b[32m";

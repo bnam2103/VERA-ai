@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app.js"), "utf8").replace(/\r\n/g, "\n");
+const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app/app.js"), "utf8").replace(/\r\n/g, "\n");
 
 const START = "function getKeyboardQueueBusyReason(fromQueue) {";
 const END = "function countPendingWorkModeTypedTurns() {";
@@ -117,7 +117,7 @@ section("7 — fromQueue bypasses queue gate");
 }
 
 section("Source contracts — voice lifecycle untouched by queue enqueue");
-const INDEX_HTML = fs.readFileSync(path.resolve(__dirname, "../../index.html"), "utf8");
+const INDEX_HTML = fs.readFileSync(path.resolve(__dirname, "../../app/index.html"), "utf8");
 {
   ok(
     APP_JS.includes("[keyboard_queue_does_not_block_voice]"),

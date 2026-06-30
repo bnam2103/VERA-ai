@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const appJs = readFileSync(path.join(root, "app.js"), "utf8");
+const appJs = readFileSync(path.join(ROOT, "app/app.js"), "utf8");
 const appJsNorm = appJs.replace(/\r\n/g, "\n");
 const start = appJsNorm.indexOf("/* ============================================================================\n * 2026-05-29 reasoning-gate helpers (Voice UI vs reasoning panel).");
 const end = appJsNorm.indexOf("function isExplicitWorkModePanelNavigationIntent(text) {");

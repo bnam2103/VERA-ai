@@ -25,8 +25,8 @@ import vm from "node:vm";
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
 const utilsIdsPath = path.join(repoRoot, "utils", "ids.js");
-const indexHtmlPath = path.join(repoRoot, "index.html");
-const appJsPath = path.join(repoRoot, "app.js");
+const indexHtmlPath = path.join(repoRoot, "app/index.html");
+const appJsPath = path.join(repoRoot, "app/app.js");
 
 let pass = 0;
 let fail = 0;

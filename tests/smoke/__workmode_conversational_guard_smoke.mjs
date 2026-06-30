@@ -24,7 +24,7 @@ import vm from "node:vm";
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
-const appJsPath = path.join(repoRoot, "app.js");
+const appJsPath = path.join(repoRoot, "app/app.js");
 const appSrc = fs.readFileSync(appJsPath, "utf8");
 
 let pass = 0;

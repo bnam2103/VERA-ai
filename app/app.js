@@ -1539,7 +1539,12 @@ const WHISPER_INTERRUPT_COOLDOWN_MS = 450;
 const WHISPER_INTERRUPT_GAP_RESET_MS = 180;
 /** peak/RMS; impulsive handling noise is often very spiky vs sustained vowels. */
 const INTERRUPT_MAX_CREST = 38;
-const API_URL = "https://vera-api.vera-api-ned.workers.dev";
+const API_URL =
+  typeof resolveVeraDefaultApiBase === "function"
+    ? resolveVeraDefaultApiBase()
+    : (typeof VERA_API_PRODUCTION_BASE !== "undefined"
+        ? VERA_API_PRODUCTION_BASE
+        : "https://api.workwithvera.com");
 
 /** Request NDJSON streaming TTS from /infer and /text so the first /audio URL arrives as soon as it is synthesized. */
 const DEFAULT_STREAM_TTS = true;
@@ -3322,7 +3327,13 @@ async function loadFreeMusicCatalog(prefix) {
     if (typeof localBackendBase === "function") push(localBackendBase());
   } catch (_) {}
   push(typeof API_URL !== "undefined" ? API_URL : "");
-  const ordered = bases.length ? bases : ["https://vera-api.vera-api-ned.workers.dev"];
+  const ordered = bases.length
+    ? bases
+    : [
+        typeof VERA_API_PRODUCTION_BASE !== "undefined"
+          ? VERA_API_PRODUCTION_BASE
+          : "https://api.workwithvera.com",
+      ];
   let lastErr = null;
   for (const base of ordered) {
     try {

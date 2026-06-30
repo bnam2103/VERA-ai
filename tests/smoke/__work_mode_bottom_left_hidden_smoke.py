@@ -36,7 +36,7 @@ def section(title: str) -> None:
 
 
 section("index.html structure")
-with open(os.path.join(_ROOT, "index.html"), encoding="utf-8") as f:
+with open(os.path.join(_ROOT, "app/index.html"), encoding="utf-8") as f:
     html = f.read()
 ok("vera-bottom-left-tools" in html, "bottom-left tools container exists")
 ok('id="vera-usage-credits"' in html, "credits pill in DOM")
@@ -48,7 +48,7 @@ ok('id="vera-work-mode-guide"' not in html, "work mode GUIDE button removed")
 ok('id="vera-work-guide-modal"' not in html, "old work mode guide modal removed")
 
 section("work mode CSS hides bottom-left tools")
-with open(os.path.join(_ROOT, "styles.css"), encoding="utf-8") as f:
+with open(os.path.join(_ROOT, "app/styles.css"), encoding="utf-8") as f:
     css = f.read()
 ok(
     "#vera-app.work-mode .vera-bottom-left-tools" in css

@@ -64,8 +64,8 @@ const utilsIdsPath = path.join(repoRoot, "utils", "ids.js");
 const utilsStoragePath = path.join(repoRoot, "utils", "storage.js");
 const utilsLoggingPath = path.join(repoRoot, "utils", "logging.js");
 const voiceTtsPath = path.join(repoRoot, "voice", "ttsQueue.js");
-const indexHtmlPath = path.join(repoRoot, "index.html");
-const appJsPath = path.join(repoRoot, "app.js");
+const indexHtmlPath = path.join(repoRoot, "app/index.html");
+const appJsPath = path.join(repoRoot, "app/app.js");
 
 let pass = 0;
 let fail = 0;

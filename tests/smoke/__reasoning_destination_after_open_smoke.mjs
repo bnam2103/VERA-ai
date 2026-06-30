@@ -452,7 +452,7 @@ ok(sandbox.window.getValidRecentlyOpenedReasoningPanel() === null,
    "flag is null after the panel is removed from the DOM");
 
 section("Suite H — load order: panels.js is loaded before app.js in index.html");
-const indexHtml = fs.readFileSync(path.join(repoRoot, "index.html"), "utf8");
+const indexHtml = fs.readFileSync(path.join(repoRoot, "app/index.html"), "utf8");
 const panelsIdx = indexHtml.indexOf("workmode/panels.js");
 const appIdx = indexHtml.indexOf("app.js?v=");
 ok(panelsIdx > 0 && appIdx > 0, "both script tags present in index.html");

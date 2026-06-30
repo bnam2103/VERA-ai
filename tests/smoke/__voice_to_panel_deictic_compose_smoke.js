@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const APP_JS_PATH = path.resolve(__dirname, "../../app.js");
+const APP_JS_PATH = path.resolve(__dirname, "../../app/app.js");
 const APP_JS = fs.readFileSync(APP_JS_PATH, "utf8");
 
 const HELPER_START = "function detectVoiceToPanelDeictic(text) {";

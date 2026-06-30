@@ -7,7 +7,7 @@ const path = require("path");
 const vm = require("vm");
 
 const CHECKLIST_JS = fs.readFileSync(path.resolve(__dirname, "../../workmode/checklist.js"), "utf8");
-const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app.js"), "utf8");
+const APP_JS = fs.readFileSync(path.resolve(__dirname, "../../app/app.js"), "utf8");
 
 const blockStart = CHECKLIST_JS.indexOf("const CHECKLIST_IMPLICIT_BLOCK_RES");
 const blockEnd = CHECKLIST_JS.indexOf("try { window.detectImplicitChecklistMutation");

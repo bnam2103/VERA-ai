@@ -37,7 +37,7 @@ def section(title: str) -> None:
 
 
 section("settings modal section order")
-with open(os.path.join(_ROOT, "index.html"), encoding="utf-8") as f:
+with open(os.path.join(_ROOT, "app/index.html"), encoding="utf-8") as f:
     html = f.read()
 modal = html.split('id="vera-settings-modal"', 1)[1].split("</div>\n</div>", 1)[0]
 account_pos = modal.find('id="vera-account-section"')

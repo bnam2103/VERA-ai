@@ -116,7 +116,12 @@ function localBackendBase() {
     return "http://127.0.0.1:8000";
   }
   const remote = String(API_URL).replace(/\/$/, "");
-  return remote || "https://vera-api.vera-api-ned.workers.dev";
+  return (
+    remote ||
+    (typeof VERA_API_PRODUCTION_BASE !== "undefined"
+      ? VERA_API_PRODUCTION_BASE
+      : "https://api.workwithvera.com")
+  );
 }
 
 function authApiBase() {
@@ -128,7 +133,11 @@ function authApiUrl(path) {
   const p = path.startsWith("/") ? path : `/${path}`;
   let base = localBackendBase();
   if (!base || !String(base).trim()) {
-    base = String(API_URL).replace(/\/$/, "") || "https://vera-api.vera-api-ned.workers.dev";
+    base =
+      String(API_URL).replace(/\/$/, "") ||
+      (typeof VERA_API_PRODUCTION_BASE !== "undefined"
+        ? VERA_API_PRODUCTION_BASE
+        : "https://api.workwithvera.com");
   }
   const root = String(base).replace(/\/$/, "");
   return new URL(p, `${root}/`).href;
