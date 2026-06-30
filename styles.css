@@ -4864,8 +4864,6 @@ body.chat-started .input-bar {
   min-height: 0;
 }
 
-/* Per-panel follow-up queue: shown above the reasoning stream so the user
-   can see, edit, or delete pending requests while the panel is generating. */
 #vera-app.work-mode .vera-reasoning-tab-panel .vera-reasoning-queue-host {
   flex: 0 0 auto;
   margin: 8px 10px 4px;
@@ -4879,6 +4877,25 @@ body.chat-started .input-bar {
   color: rgba(220, 230, 245, 0.92);
   max-height: 30vh;
   overflow: auto;
+}
+
+/* Keyboard-only submit queue — visual pending typed messages; does not block voice. */
+#vera-app.work-mode .vera-keyboard-queue-host {
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  background: rgba(80, 120, 200, 0.10);
+  border: 1px solid rgba(120, 160, 220, 0.28);
+  border-left: 3px solid rgba(120, 180, 255, 0.65);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgba(220, 230, 245, 0.92);
+  max-height: 24vh;
+  overflow: auto;
+}
+
+#vera-app.work-mode .vera-keyboard-queue-host[hidden] {
+  display: none !important;
 }
 
 #vera-app.work-mode .vera-reasoning-queue-heading {
