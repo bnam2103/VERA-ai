@@ -8,7 +8,7 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=2">
+  <link rel="stylesheet" href="product.css?v=3">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -72,12 +72,27 @@
   </nav>
 
   <header class="title-hero landing-hero">
-    <h1 class="landing-headline">
-      Stop prompting, start talking.
+    <h1 class="landing-headline" aria-label="Stop prompting, start talking.">
+      <span class="landing-headline-line landing-headline-line1">
+        <span id="landing-headline-line1"></span><span class="landing-typing-cursor" id="landing-cursor-line1" aria-hidden="true"></span>
+      </span>
+      <span class="landing-headline-line landing-headline-line2 landing-headline-accent">
+        <span id="landing-headline-line2"></span><span class="landing-typing-cursor" id="landing-cursor-line2" aria-hidden="true"></span>
+      </span>
     </h1>
     <p class="landing-subhead">
       Accelerate your workflow without compromising learning with a talking workspace.
     </p>
+
+    <div class="landing-cta-row">
+      <button id="launch-vera-home" class="landing-cta landing-cta-primary" type="button" aria-label="Launch VERA app">
+        Launch VERA
+      </button>
+      <a id="join-waitlist-home" class="landing-cta landing-cta-secondary" href="#about-vera">
+        Join waitlist
+        <span class="landing-cta-arrow" aria-hidden="true">→</span>
+      </a>
+    </div>
 
     <div class="landing-preview">
       <video
@@ -104,10 +119,6 @@
         </span>
       </button>
     </div>
-
-    <button id="launch-vera-home" class="home-launch-btn" type="button" aria-label="Launch VERA app">
-      Launch VERA
-    </button>
 
     <div class="scroll-hint">↓</div>
   </header>
@@ -655,10 +666,7 @@
   ========================= */
 
   const INTRO_SEEN_KEY = "vera_intro_seen_session";
-  const HOME_HERO_ANIM_SEEN_KEY = "vera_home_hero_anim_seen_session";
   const AUDIO_UNLOCKED_KEY = "vera_audio_unlocked_session";
-
-  const MAX_SCROLL = 700;
   let audioUnlocked = sessionStorage.getItem(AUDIO_UNLOCKED_KEY) === "true";
   let bmoLoadingDotsInterval = null;
 
@@ -725,63 +733,57 @@
   ========================= */
 
 /* =========================
-   TITLE FLASH TRIGGER
+   LANDING HEADLINE TYPING
 ========================= */
 
-function triggerTitleFlash() {
-  const headline = document.querySelector(".landing-headline");
-  const subhead = document.querySelector(".landing-subhead");
-  const preview = document.querySelector(".landing-preview");
-  if (!headline) return;
+const LANDING_LINE1 = "Stop prompting,";
+const LANDING_LINE2 = "start talking.";
+const LANDING_TYPE_MS = 38;
+const LANDING_LINE_PAUSE_MS = 240;
 
-  headline.classList.remove("reveal");
-  subhead?.classList.remove("reveal");
-  preview?.classList.remove("reveal");
-  void headline.offsetWidth;
-  headline.classList.add("reveal");
-  subhead?.classList.add("reveal");
-  preview?.classList.add("reveal");
+function startLandingHeadlineTyping() {
+  const line1El = document.getElementById("landing-headline-line1");
+  const line2El = document.getElementById("landing-headline-line2");
+  const cursor1 = document.getElementById("landing-cursor-line1");
+  const cursor2 = document.getElementById("landing-cursor-line2");
+  if (!line1El || !line2El) return;
+
+  line1El.textContent = "";
+  line2El.textContent = "";
+  cursor1?.classList.add("active");
+  cursor2?.classList.remove("active");
+
+  let i = 0;
+  function typeLine1() {
+    if (i < LANDING_LINE1.length) {
+      line1El.textContent += LANDING_LINE1[i++];
+      setTimeout(typeLine1, LANDING_TYPE_MS);
+      return;
+    }
+
+    cursor1?.classList.remove("active");
+    setTimeout(() => {
+      cursor2?.classList.add("active");
+      let j = 0;
+      function typeLine2() {
+        if (j < LANDING_LINE2.length) {
+          line2El.textContent += LANDING_LINE2[j++];
+          setTimeout(typeLine2, LANDING_TYPE_MS);
+          return;
+        }
+        cursor2?.classList.remove("active");
+      }
+      typeLine2();
+    }, LANDING_LINE_PAUSE_MS);
+  }
+
+  typeLine1();
 }
 
-function revealHomeLaunchButtonAfterTitle() {
-  const headline = document.querySelector(".landing-headline");
-  const launchBtn = document.getElementById("launch-vera-home");
-  if (!headline || !launchBtn) return;
-
-  launchBtn.classList.remove("visible");
-  void launchBtn.offsetWidth;
-
-  headline.addEventListener(
-    "animationend",
-    () => {
-      launchBtn.classList.add("visible");
-    },
-    { once: true }
-  );
-}
-
-function showHomeLanding(options = {}) {
-  const animateHero = true;
+function showHomeLanding() {
   home.hidden = false;
   document.body.classList.remove("app-open", "bmo-open", "vera-mode");
-  const headline = document.querySelector(".landing-headline");
-  const launchBtn = document.getElementById("launch-vera-home");
-  if (headline && launchBtn) {
-    if (animateHero) {
-      headline.style.opacity = "";
-      headline.style.transform = "";
-      triggerTitleFlash();
-      revealHomeLaunchButtonAfterTitle();
-      sessionStorage.setItem(HOME_HERO_ANIM_SEEN_KEY, "true");
-    } else {
-      headline.classList.remove("reveal");
-      headline.style.opacity = "1";
-      headline.style.transform = "translateY(0)";
-      document.querySelector(".landing-subhead")?.classList.add("reveal");
-      document.querySelector(".landing-preview")?.classList.add("reveal");
-      launchBtn.classList.add("visible");
-    }
-  }
+  startLandingHeadlineTyping();
   void resumeHomeMusic();
   syncMusicToggleState();
 }
@@ -848,45 +850,10 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
     window.location.reload();
   };
 
-  /* =========================
-     SCROLL-BASED GRADIENT
-  ========================= */
-
-  let ticking = false;
-
-  window.addEventListener("scroll", () => {
-    if (document.body.classList.contains("app-open")) return;
-
-    if (!ticking) {
-      requestAnimationFrame(() => {
-        const progress = Math.min(window.scrollY / MAX_SCROLL, 1);
-
-        /* ----- GRADIENT MORPH ----- */
-        let gradT = 0;
-        if (progress > 0.6) {
-          gradT = (progress - 0.6) / 0.4;
-          gradT = gradT * gradT;
-        }
-
-        const start = { r: 3, g: 6, b: 10 };
-        const endTop = { r: 4, g: 8, b: 14 };
-        const endBottom = { r: 8, g: 18, b: 32 };
-
-        const lerp = (a, b) => Math.round(a + (b - a) * gradT);
-
-        document.body.style.setProperty("--g1-r", lerp(start.r, endTop.r));
-        document.body.style.setProperty("--g1-g", lerp(start.g, endTop.g));
-        document.body.style.setProperty("--g1-b", lerp(start.b, endTop.b));
-
-        document.body.style.setProperty("--g2-r", lerp(start.r, endBottom.r));
-        document.body.style.setProperty("--g2-g", lerp(start.g, endBottom.g));
-        document.body.style.setProperty("--g2-b", lerp(start.b, endBottom.b));
-
-        ticking = false;
-      });
-
-      ticking = true;
-    }
+  const joinWaitlistHome = document.getElementById("join-waitlist-home");
+  joinWaitlistHome?.addEventListener("click", (e) => {
+    e.preventDefault();
+    aboutVeraSection.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
   /* =========================
