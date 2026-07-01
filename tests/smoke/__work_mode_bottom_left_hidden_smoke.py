@@ -39,9 +39,13 @@ section("index.html structure")
 with open(os.path.join(_ROOT, "app/index.html"), encoding="utf-8") as f:
     html = f.read()
 ok('class="vera-sidebar"' in html, "left sidebar exists")
-ok('class="vera-sidebar-nav"' in html, "sidebar nav exists")
+ok('class="sidebar-brand"' in html, "sidebar brand block exists")
+ok('sidebar-brand-collapsed' in html, "collapsed V mark exists")
+ok('sidebar-brand-expanded' in html, "expanded VERA wordmark exists")
+ok("sidebar-actions" in html, "sidebar actions at bottom")
+ok('open-bmo-from-vera' not in html, "BMO header button removed")
 ok('id="vera-usage-credits"' in html, "credits pill in DOM")
-ok('class="vera-input-meta"' in html, "input meta row under voice bar")
+ok("credit-status" in html, "subtle credit status line")
 ok('id="vera-explicit-feedback-btn"' in html, "feedback button in DOM")
 ok('id="vera-account-open"' in html, "account button in DOM")
 ok('id="vera-settings-open"' in html, "settings button in DOM")
@@ -56,7 +60,8 @@ with open(os.path.join(_ROOT, "styles.css"), encoding="utf-8") as f:
 ok(".vera-sidebar" in css, "sidebar styles present")
 ok("--vera-sidebar-width" in css, "sidebar width variable present")
 ok("#vera-app.vera-app-shell" in css and "padding-left" in css.split("#vera-app.vera-app-shell")[1].split("}")[0], "app shell shifts with sidebar")
-ok(".vera-input-meta" in css, "credits row under input styled")
+ok(".sidebar-brand" in css, "sidebar brand styles present")
+ok(".credit-status" in css, "subtle credit status styled")
 ok(
     "#vera-app.work-mode .vera-bottom-left-tools" not in css,
     "work mode no longer hides removed bottom-left cluster",

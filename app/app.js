@@ -24031,8 +24031,8 @@ function injectMobileVadLogUiIfNeeded() {
   document.body.classList.add("vad-log-mode");
 
   const veraHeader = document.querySelector("#vera-app .vera-app-header");
-  const veraOpenBmo = document.getElementById("open-bmo-from-vera");
-  if (veraHeader && veraOpenBmo && !document.getElementById("vera-interrupt-debug-header")) {
+  const headerRight = document.querySelector("#vera-app .vera-header-right");
+  if (veraHeader && headerRight && !document.getElementById("vera-interrupt-debug-header")) {
     const wrap = document.createElement("div");
     wrap.className = "vera-header-actions";
     const vadBtn = document.createElement("button");
@@ -24041,9 +24041,8 @@ function injectMobileVadLogUiIfNeeded() {
     vadBtn.className = "interrupt-debug-header-btn";
     vadBtn.setAttribute("aria-controls", "vera-interrupt-debug-panel");
     vadBtn.textContent = "VAD log";
-    veraOpenBmo.parentNode.insertBefore(wrap, veraOpenBmo);
+    headerRight.insertBefore(wrap, headerRight.firstChild);
     wrap.appendChild(vadBtn);
-    wrap.appendChild(veraOpenBmo);
   }
 
   const bmoHeader = document.querySelector("#bmo-page .bmo-chat-header");

@@ -42,21 +42,23 @@
 
   function syncNoCapToggleButton(payload) {
     const btn = document.getElementById("vera-no-cap-toggle");
+    const sep = document.getElementById("vera-credit-status-sep");
     if (!(btn instanceof HTMLButtonElement)) return;
     const enabled = readNoCapToggleEnabled(payload);
     logNoCapState(payload, enabled ? "toggle_visible" : "toggle_hidden");
     _noCapToggleEnabled = enabled;
+    if (sep instanceof HTMLElement) sep.hidden = !enabled;
     if (!enabled) {
       btn.hidden = true;
       btn.classList.remove("is-on");
-      btn.textContent = "No cap: OFF";
+      btn.textContent = "No cap: Off";
       _noCapActive = false;
       return;
     }
     _noCapActive = readNoCapActive(payload);
     btn.hidden = false;
     btn.classList.toggle("is-on", _noCapActive);
-    btn.textContent = _noCapActive ? "No cap: ON" : "No cap: OFF";
+    btn.textContent = _noCapActive ? "No cap: On" : "No cap: Off";
     btn.setAttribute(
       "aria-pressed",
       _noCapActive ? "true" : "false"
@@ -94,8 +96,8 @@
     if (noCapActive) {
       textEl.textContent =
         authMode === "authenticated"
-          ? `Credits: ${used} used · No cap`
-          : `Free credits: ${used} used · No cap`;
+          ? `Credits: ${used} used`
+          : `Free credits: ${used} used`;
     } else {
       textEl.textContent =
         authMode === "authenticated"

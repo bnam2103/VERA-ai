@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=16">
+  <link rel="stylesheet" href="../styles.css?v=17">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -37,8 +37,18 @@
 <section id="vera-app" class="vera-app-shell" hidden>
   <aside class="vera-sidebar" id="vera-sidebar" aria-label="App menu">
     <div class="vera-sidebar-inner">
-      <div class="vera-sidebar-brand" aria-hidden="true">V</div>
-      <nav class="vera-sidebar-nav" aria-label="Account and settings">
+      <div class="sidebar-brand" aria-hidden="true">
+        <span class="sidebar-brand-collapsed">V</span>
+        <span class="sidebar-brand-expanded">
+          <span class="vera-logo-text-stack">
+            <span class="vera-logo-dim">VERA</span>
+            <span class="vera-logo-sweep">
+              <span class="vera-logo-solid">VERA</span>
+            </span>
+          </span>
+        </span>
+      </div>
+      <nav class="vera-sidebar-nav sidebar-actions" aria-label="Account and settings">
         <button
           type="button"
           id="vera-explicit-feedback-btn"
@@ -136,9 +146,6 @@
       <div class="vera-header-right">
         <button type="button" id="vera-user-sign-in" class="nav-logo vera-sign-in-nav" hidden>
           SIGN IN
-        </button>
-        <button type="button" id="open-bmo-from-vera" class="nav-logo nav-logo-bmo">
-          BMO
         </button>
       </div>
     </div>
@@ -367,19 +374,20 @@
         hidden
         aria-live="polite"
       ></div>
-      <div class="vera-input-meta" aria-label="Usage status">
-        <div id="vera-usage-credits" class="vera-usage-credits" hidden aria-live="polite">
-          <span id="vera-usage-credits-text" class="vera-usage-credits-text"></span>
+      <div class="credit-status vera-input-meta" aria-label="Usage status">
+        <div id="vera-usage-credits" class="credit-status-line" hidden aria-live="polite">
+          <span id="vera-usage-credits-text" class="credit-status-text"></span>
+          <span id="vera-credit-status-sep" class="credit-status-sep" hidden aria-hidden="true"> · </span>
+          <button
+            type="button"
+            id="vera-no-cap-toggle"
+            class="credit-status-no-cap"
+            hidden
+            title="Testing only: disables credit cap enforcement but still logs usage."
+          >
+            No cap: Off
+          </button>
         </div>
-        <button
-          type="button"
-          id="vera-no-cap-toggle"
-          class="vera-no-cap-toggle"
-          hidden
-          title="Testing only: disables credit cap enforcement but still logs usage."
-        >
-          No cap: OFF
-        </button>
       </div>
     </div>
       </div>
@@ -1094,7 +1102,7 @@
 <script src="../users/usageFeatureEvents.js?v=1"></script>
 <!-- users/usageCredits.js — daily credit usage pill (read-only).
      Must load AFTER usageFeatureEvents.js (reasoning refresh hook), BEFORE app.js. -->
-<script src="../users/usageCredits.js?v=6"></script>
+<script src="../users/usageCredits.js?v=7"></script>
 <!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
      Must load AFTER usageCredits.js, BEFORE app.js. -->
 <script src="../users/explicitFeedback.js?v=3"></script>

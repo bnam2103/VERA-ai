@@ -1334,27 +1334,90 @@ body.chat-started .input-container {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 12px;
-  padding: 14px 8px;
   min-height: 100%;
+  padding: 16px 8px 24px;
   box-sizing: border-box;
 }
 
-.vera-sidebar-brand {
+.sidebar-brand {
   flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  margin: 0 auto 4px;
+  padding: 4px 6px 0;
+  min-height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  color: rgba(32, 183, 168, 0.92);
-  background: rgba(32, 183, 168, 0.08);
-  border: 1px solid rgba(32, 183, 168, 0.16);
+}
+
+.sidebar-brand-collapsed {
+  display: block;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  color: rgba(242, 245, 247, 0.55);
+  transition: opacity 160ms ease;
+}
+
+.sidebar-brand-expanded {
+  display: none;
+  width: 100%;
+  padding-left: 6px;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.sidebar-brand-expanded .vera-logo-text-stack {
+  position: relative;
+  display: inline-block;
+}
+
+.sidebar-brand-expanded .vera-logo-dim {
+  opacity: 0.38;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.sidebar-brand-expanded .vera-logo-sweep {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+  width: 0%;
+  pointer-events: none;
+}
+
+.sidebar-brand-expanded .vera-logo-solid {
+  display: block;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 1;
+  white-space: nowrap;
+}
+
+#vera-app:has(.vera-sidebar:hover) .sidebar-brand-collapsed,
+#vera-app:has(.vera-sidebar:focus-within) .sidebar-brand-collapsed {
+  display: none;
+}
+
+#vera-app:has(.vera-sidebar:hover) .sidebar-brand-expanded,
+#vera-app:has(.vera-sidebar:focus-within) .sidebar-brand-expanded {
+  display: block;
+  opacity: 1;
+}
+
+#vera-app:has(.vera-sidebar:hover) .sidebar-brand,
+#vera-app:has(.vera-sidebar:focus-within) .sidebar-brand {
+  justify-content: flex-start;
+}
+
+.vera-sidebar-nav.sidebar-actions {
+  margin-top: auto;
+  padding-top: 24px;
+  padding-bottom: 4px;
 }
 
 .vera-sidebar-nav {
@@ -1368,6 +1431,7 @@ body.chat-started .input-container {
   pointer-events: auto;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 12px;
   width: 100%;
   min-height: 42px;
@@ -1404,17 +1468,22 @@ body.chat-started .input-container {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  width: 0;
   opacity: 0;
-  transform: translateX(-6px);
   transition:
     opacity 160ms ease,
-    transform 160ms ease;
+    width 160ms ease;
 }
 
 #vera-app:has(.vera-sidebar:hover) .vera-sidebar-btn-label,
 #vera-app:has(.vera-sidebar:focus-within) .vera-sidebar-btn-label {
+  width: auto;
   opacity: 1;
-  transform: translateX(0);
+}
+
+#vera-app:has(.vera-sidebar:hover) .vera-sidebar-btn,
+#vera-app:has(.vera-sidebar:focus-within) .vera-sidebar-btn {
+  justify-content: flex-start;
 }
 
 .vera-sidebar-btn:hover {
@@ -1444,25 +1513,75 @@ body.chat-started .input-container {
   cursor: default;
 }
 
-.vera-input-meta {
+.credit-status.vera-input-meta {
   pointer-events: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-wrap: wrap;
-  gap: 8px 12px;
   width: min(760px, calc(100vw - var(--vera-sidebar-width, 52px) - 32px));
+  margin-top: 0;
 }
 
-.vera-input-meta > * {
+.credit-status-line {
   pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(242, 245, 247, 0.48);
+  text-align: center;
 }
 
-#vera-app:not(.work-mode) .input-container .vera-input-meta {
+.credit-status-text {
+  color: rgba(242, 245, 247, 0.48);
+}
+
+.credit-status-sep {
+  color: rgba(242, 245, 247, 0.32);
+}
+
+.credit-status-no-cap {
+  pointer-events: auto;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: rgba(242, 245, 247, 0.48);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.credit-status-no-cap:hover {
+  color: rgba(242, 245, 247, 0.68);
+}
+
+.credit-status-no-cap.is-on {
+  color: rgba(253, 230, 138, 0.72);
+}
+
+.credit-status-no-cap:focus-visible {
+  outline: 1px solid rgba(32, 183, 168, 0.45);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+#vera-app:not(.work-mode) .input-container .credit-status.vera-input-meta {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
   bottom: max(4px, calc(var(--dock-inset) - 44px));
+}
+
+.vera-input-meta > * {
+  pointer-events: auto;
 }
 
 .bmo-bottom-left-tools {
@@ -4776,10 +4895,10 @@ body.chat-started .input-bar {
   background: rgba(0, 0, 0, 0.35);
 }
 
-#vera-app.work-mode .vera-wm-right .vera-input-meta {
+#vera-app.work-mode .vera-wm-right .credit-status.vera-input-meta {
   width: 100%;
   justify-content: center;
-  padding-top: 2px;
+  padding-top: 6px;
   position: static;
   transform: none;
 }
