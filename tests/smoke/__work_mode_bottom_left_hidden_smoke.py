@@ -42,6 +42,8 @@ ok('class="vera-sidebar"' in html, "left sidebar exists")
 ok('class="sidebar-brand"' in html, "sidebar brand block exists")
 ok('sidebar-brand-collapsed' in html, "collapsed V mark exists")
 ok('sidebar-brand-expanded' in html, "expanded VERA wordmark exists")
+ok('id="vera-sidebar-brand-home"' in html, "sidebar brand home link exists")
+ok('return-home-vera' not in html, "legacy header VERA wordmark removed")
 ok("sidebar-actions" in html, "sidebar actions at bottom")
 ok('open-bmo-from-vera' not in html, "BMO header button removed")
 ok('id="vera-usage-credits"' in html, "credits pill in DOM")
@@ -61,6 +63,12 @@ ok(".vera-sidebar" in css, "sidebar styles present")
 ok("--vera-sidebar-width" in css, "sidebar width variable present")
 ok("#vera-app.vera-app-shell" in css and "padding-left" in css.split("#vera-app.vera-app-shell")[1].split("}")[0], "app shell shifts with sidebar")
 ok(".sidebar-brand" in css, "sidebar brand styles present")
+ok("getVeraMarketingHomeUrl" in open(os.path.join(_ROOT, "app/shell.js"), encoding="utf-8").read(), "sidebar home navigation helper exists")
+sidebar_z = css.split(".vera-sidebar {", 1)[1].split("}", 1)[0]
+ok("z-index: 80" in sidebar_z, "sidebar sits above bottom fade layer")
+fade_block = css.split("body.chat-started .chat-centered::after {", 1)[1].split("}", 1)[0]
+ok("z-index: 2" in fade_block, "bottom fade stays below sidebar and input")
+ok("pointer-events: none" in fade_block, "bottom fade does not block clicks")
 ok(".credit-status" in css, "subtle credit status styled")
 ok(
     "#vera-app.work-mode .vera-bottom-left-tools" not in css,

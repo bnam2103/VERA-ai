@@ -242,8 +242,8 @@ function wireVeraUserSignInHoldAndModal() {
   }
 
   const holdMs = 2000;
-  /* Long-press sign-in only in VERA app (#return-home-vera), not on landing nav-home */
-  const logos = [document.getElementById("return-home-vera")].filter(Boolean);
+  /* Long-press sign-in on sidebar brand (replaces removed header wordmark). */
+  const logos = [document.getElementById("vera-sidebar-brand-home")].filter(Boolean);
 
   const revealSignInButtons = () => {
     if (!isLegacySignInEnabled()) return;

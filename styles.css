@@ -1320,7 +1320,7 @@ body.chat-started .input-container {
   top: 0;
   bottom: 0;
   width: var(--vera-sidebar-width);
-  z-index: 140;
+  z-index: 80;
   display: flex;
   flex-direction: column;
   border-right: 1px solid rgba(255, 255, 255, 0.07);
@@ -1346,6 +1346,21 @@ body.chat-started .input-container {
   display: flex;
   align-items: center;
   justify-content: center;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 160ms ease;
+}
+
+.sidebar-brand:hover,
+.sidebar-brand:focus-visible {
+  background: rgba(255, 255, 255, 0.04);
+  outline: none;
+}
+
+.sidebar-brand:focus-visible {
+  box-shadow: 0 0 0 1px rgba(32, 183, 168, 0.45);
 }
 
 .sidebar-brand-collapsed {
@@ -2963,10 +2978,10 @@ body.chat-started .input-bar {
   gap: 12px;
 }
 
-/* VERA header (flow): VERA left, BMO right — no center clock */
+/* VERA header (flow): sign-in right; work mode: clock center */
 #vera-app:not(.work-mode) .vera-app-header.chat-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 1fr;
   align-items: center;
   column-gap: clamp(8px, 2vw, 20px);
 }
@@ -2976,11 +2991,11 @@ body.chat-started .input-bar {
 }
 
 #vera-app:not(.work-mode) .vera-header-right {
-  grid-column: 2;
+  grid-column: 1;
   justify-self: end;
 }
 
-/* Work mode: VERA | clock pill | BMO */
+/* Work mode: clock pill centered, actions right */
 #vera-app.work-mode .vera-app-header.chat-header {
   flex: 0 0 auto;
   display: grid;
@@ -2990,11 +3005,18 @@ body.chat-started .input-bar {
   justify-content: stretch;
 }
 
+#vera-app.work-mode .vera-header-datetime {
+  grid-column: 2;
+  justify-self: center;
+}
+
+#vera-app.work-mode .vera-header-right {
+  grid-column: 3;
+  justify-self: end;
+}
+
 .vera-header-left {
-  display: flex;
-  align-items: center;
-  justify-self: start;
-  min-width: 0;
+  display: none;
 }
 
 .vera-header-datetime {
@@ -3284,7 +3306,7 @@ body.chat-started .input-bar {
   padding-bottom: max(40px, calc(32px + env(safe-area-inset-bottom, 0px)));
 }
 
-/* Bottom fade ~900 — any time voice or keyboard bar is visible in flow mode, not only listening */
+/* Bottom fade — any time voice or keyboard bar is visible in flow mode, not only listening */
 #vera-app:not(.work-mode).vera-flow-input-active .vera-bottom-right-tools {
   z-index: 1010;
   isolation: isolate;
@@ -5022,22 +5044,22 @@ body.chat-started .input-bar {
   opacity: 1;
 }
 
-/* Long-press (VERA app only): letter opacity fills left → right */
-#return-home-vera {
+/* Long-press (VERA app sidebar brand): letter opacity fills left → right */
+#vera-sidebar-brand-home {
   position: relative;
   --vera-hold-pct: 0%;
 }
 
-#return-home-vera .vera-logo-text-stack {
+#vera-sidebar-brand-home .vera-logo-text-stack {
   position: relative;
   display: inline-block;
 }
 
-#return-home-vera .vera-logo-dim {
+#vera-sidebar-brand-home .vera-logo-dim {
   opacity: 0.38;
 }
 
-#return-home-vera .vera-logo-sweep {
+#vera-sidebar-brand-home .vera-logo-sweep {
   position: absolute;
   left: 0;
   top: 0;
@@ -5047,7 +5069,7 @@ body.chat-started .input-bar {
   pointer-events: none;
 }
 
-#return-home-vera .vera-logo-solid {
+#vera-sidebar-brand-home .vera-logo-solid {
   display: block;
   opacity: 1;
   white-space: nowrap;
@@ -6127,7 +6149,7 @@ body.bmo-open #bmo-side-pane.side-pane {
 body.chat-started .chat-centered::after {
   content: "";
   position: fixed;
-  left: 0;
+  left: var(--vera-sidebar-width, 52px);
   right: 0;
   bottom: 0;
 
@@ -6141,7 +6163,7 @@ body.chat-started .chat-centered::after {
   );
 
   pointer-events: none;
-  z-index: 900; /* below input (1000), above messages */
+  z-index: 2; /* above messages, below sidebar (80) and input (1000) */
 }
 
 body.bmo-open.chat-started .chat-centered::after,

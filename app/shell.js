@@ -496,7 +496,21 @@ document.getElementById("return-home")?.addEventListener("click", async () => {
   }, 600);
 });
 
-document.getElementById("return-home-vera")?.addEventListener("click", async () => {
+function getVeraMarketingHomeUrl() {
+  try {
+    const host = String(window.location?.hostname || "");
+    if (host === "workwithvera.com" || host.endsWith(".workwithvera.com")) {
+      return "/";
+    }
+    const path = String(window.location?.pathname || "");
+    if (/\/app\/?$/i.test(path)) {
+      return "../";
+    }
+  } catch (_) {}
+  return "/";
+}
+
+async function navigateVeraAppToHome(source) {
   exitVeraWorkMode();
   pauseMusicPanelOnNavAway("vera_to_home");
   if (typeof window.resetVoiceUiToIdle === "function") {
@@ -505,11 +519,16 @@ document.getElementById("return-home-vera")?.addEventListener("click", async () 
   try {
     window.veraUsageSyncModeFromDom?.({
       trigger: "ui",
-      source: "vera_return_home",
+      source: source || "vera_return_home",
       to: "home",
     });
   } catch (_) {}
-  window.location.href = "../";
+  window.location.href = getVeraMarketingHomeUrl();
+}
+
+document.getElementById("vera-sidebar-brand-home")?.addEventListener("click", async (e) => {
+  e.preventDefault();
+  await navigateVeraAppToHome("vera_sidebar_home");
 });
 
 let startupTypingOuterTimer = null;
