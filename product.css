@@ -8,37 +8,27 @@
 :root {
   --product-landing-g1: 8, 18, 32;
   --product-landing-g2: 2, 6, 12;
-  --landing-bg: #0b2233;
-  --landing-bg-alt: #0d2a3c;
-  --landing-bg-deep: #07131f;
-  --landing-bg-base: #06111c;
-  --landing-teal: #25b9aa;
-  --landing-teal-soft: rgba(37, 185, 170, 0.72);
-  --landing-teal-glow: rgba(37, 185, 170, 0.26);
-  --landing-teal-border: rgba(37, 185, 170, 0.32);
-  --landing-blue: #3f78a3;
-  --landing-blue-soft: rgba(63, 120, 163, 0.55);
-  --landing-blue-glow: rgba(63, 120, 163, 0.2);
-  --landing-purple: #5b4a7d;
-  --landing-purple-soft: rgba(91, 74, 125, 0.38);
-  --landing-text: rgba(232, 238, 245, 0.94);
-  --landing-text-muted: rgba(176, 192, 208, 0.62);
+  --landing-bg: #050a0f;
+  --landing-surface: #08131d;
+  --landing-text: #f2f5f7;
+  --landing-text-muted: #8b98a5;
+  --landing-teal: #20b7a8;
+  --landing-teal-hover: #24c9b9;
+  --landing-teal-soft: rgba(32, 183, 168, 0.72);
+  --landing-border: rgba(255, 255, 255, 0.08);
+  --landing-accent-border: rgba(32, 183, 168, 0.28);
+  /* aliases used elsewhere in landing styles */
+  --landing-bg-deep: #050a0f;
+  --landing-bg-base: #050a0f;
+  --landing-teal-border: var(--landing-accent-border);
 }
 
 /* Future landing redesigns: prefer #home, .intro, .landing-*, .product-* selectors. */
 
 body:not(.app-open):not(.vera-mode):not(.bmo-open)::before {
   background:
-    radial-gradient(ellipse 90% 55% at 12% -8%, rgba(37, 185, 170, 0.11) 0%, transparent 52%),
-    radial-gradient(ellipse 72% 48% at 88% 2%, rgba(91, 74, 125, 0.13) 0%, transparent 50%),
-    radial-gradient(ellipse 100% 70% at 50% 110%, rgba(63, 120, 163, 0.09) 0%, transparent 48%),
-    linear-gradient(
-      180deg,
-      var(--landing-bg-alt) 0%,
-      var(--landing-bg) 36%,
-      var(--landing-bg-deep) 70%,
-      var(--landing-bg-base) 100%
-    ) !important;
+    radial-gradient(ellipse 70% 45% at 50% -15%, rgba(32, 183, 168, 0.035) 0%, transparent 58%),
+    linear-gradient(180deg, #060b10 0%, var(--landing-bg) 100%) !important;
 }
 
 body.intro-lock {
@@ -65,11 +55,9 @@ body.app-open #bg-video {
   width: min(920px, 94vw);
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(63, 120, 163, 0.22);
-  background: rgba(8, 18, 30, 0.92);
-  box-shadow:
-    0 4px 24px rgba(0, 0, 0, 0.32),
-    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  border: 1px solid var(--landing-border);
+  background: var(--landing-surface);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.36);
   margin-bottom: 0;
 }
 
@@ -78,15 +66,15 @@ body.app-open #bg-video {
   align-items: center;
   gap: 6px;
   padding: 9px 14px;
-  border-bottom: 1px solid rgba(63, 120, 163, 0.14);
-  background: rgba(6, 14, 24, 0.98);
+  border-bottom: 1px solid var(--landing-border);
+  background: var(--landing-surface);
 }
 
 .landing-demo-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: rgba(63, 120, 163, 0.32);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .landing-demo-viewport {
@@ -118,8 +106,8 @@ body.app-open #bg-video {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  border: 1px solid var(--landing-teal-border);
-  background: rgba(6, 17, 28, 0.78);
+  border: 1px solid var(--landing-accent-border);
+  background: rgba(5, 10, 15, 0.82);
   backdrop-filter: blur(8px);
   color: var(--landing-teal);
   cursor: pointer;
@@ -130,14 +118,12 @@ body.app-open #bg-video {
   transition:
     background 0.2s ease,
     border-color 0.2s ease,
-    box-shadow 0.2s ease,
     transform 0.15s ease;
 }
 
 .landing-preview-play:hover {
-  background: rgba(11, 34, 51, 0.92);
-  border-color: rgba(37, 185, 170, 0.45);
-  box-shadow: none;
+  background: var(--landing-surface);
+  border-color: rgba(32, 183, 168, 0.4);
 }
 
 .landing-preview-play:active {
@@ -319,21 +305,19 @@ body.app-open #bg-video {
   background: none;
   border: none;
   padding: 0;
-  color: var(--landing-text);
+  color: var(--landing-text-muted);
   font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   cursor: pointer;
-  opacity: 0.48;
-  transition: color 0.2s ease, opacity 0.2s ease, text-shadow 0.2s ease;
+  opacity: 1;
+  transition: color 0.2s ease, opacity 0.2s ease;
   white-space: nowrap;
 }
 
 .nav-link:hover {
-  opacity: 1;
   color: var(--landing-teal);
-  text-shadow: none;
 }
 
 #home .nav-logo:hover {
@@ -470,35 +454,27 @@ body.app-open #bg-video {
 }
 
 .landing-cta-primary {
-  border: 1px solid var(--landing-teal-border);
-  background: linear-gradient(
-    135deg,
-    rgba(37, 185, 170, 0.9) 0%,
-    rgba(63, 120, 163, 0.82) 100%
-  );
-  color: var(--landing-bg-base);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--landing-accent-border);
+  background: var(--landing-teal);
+  color: var(--landing-bg);
+  box-shadow: none;
 }
 
 .landing-cta-primary:hover {
-  background: linear-gradient(
-    135deg,
-    rgba(45, 200, 185, 0.95) 0%,
-    rgba(72, 130, 168, 0.88) 100%
-  );
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.28);
+  background: var(--landing-teal-hover);
+  box-shadow: none;
 }
 
 .landing-cta-secondary {
-  border: 1px solid rgba(63, 120, 163, 0.28);
-  background: rgba(6, 17, 28, 0.72);
-  color: rgba(220, 232, 242, 0.86);
-  backdrop-filter: blur(6px);
+  border: 1px solid var(--landing-border);
+  background: transparent;
+  color: var(--landing-text);
+  backdrop-filter: none;
 }
 
 .landing-cta-secondary:hover {
-  border-color: rgba(63, 120, 163, 0.4);
-  color: var(--landing-teal-soft);
+  border-color: var(--landing-accent-border);
+  color: var(--landing-teal);
   box-shadow: none;
 }
 
