@@ -8,7 +8,7 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=24">
+  <link rel="stylesheet" href="product.css?v=25">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -30,7 +30,54 @@
   </nav>
 
   <header class="product-section hero-section title-hero landing-hero">
-    <div class="product-section-inner hero-section-inner">
+    <div class="hero-decor" aria-hidden="true">
+      <svg class="hero-orbit hero-orbit--left" viewBox="0 0 320 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M280 40 C120 80, 40 200, 60 360" stroke="rgba(32,183,168,0.35)" stroke-width="1.5" stroke-dasharray="2 8" stroke-linecap="round"/>
+      </svg>
+      <svg class="hero-orbit hero-orbit--right" viewBox="0 0 320 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M40 60 C200 100, 280 220, 260 380" stroke="rgba(32,183,168,0.35)" stroke-width="1.5" stroke-dasharray="2 8" stroke-linecap="round"/>
+      </svg>
+
+      <div class="hero-orb hero-orb--wave">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="3" y="10" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.9"/>
+          <rect x="8" y="6" width="2.5" height="16" rx="1" fill="currentColor"/>
+          <rect x="13" y="8" width="2.5" height="12" rx="1" fill="currentColor" opacity="0.85"/>
+          <rect x="18" y="4" width="2.5" height="20" rx="1" fill="currentColor" opacity="0.75"/>
+        </svg>
+      </div>
+      <div class="hero-orb hero-orb--mic">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M6 11a6 6 0 0 0 12 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M12 17v4M8 21h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="hero-orb hero-orb--headphones">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M4 14a8 8 0 0 1 16 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <rect x="2" y="14" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.5"/>
+          <rect x="18" y="14" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.5"/>
+        </svg>
+      </div>
+      <div class="hero-orb hero-orb--chat">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 3V7a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+          <circle cx="9" cy="11" r="1" fill="currentColor"/>
+          <circle cx="12" cy="11" r="1" fill="currentColor"/>
+          <circle cx="15" cy="11" r="1" fill="currentColor"/>
+        </svg>
+      </div>
+
+      <span class="hero-dot hero-dot--1"></span>
+      <span class="hero-dot hero-dot--2"></span>
+      <span class="hero-dot hero-dot--3"></span>
+      <span class="hero-spark hero-spark--1">✦</span>
+      <span class="hero-spark hero-spark--2">✦</span>
+      <span class="hero-spark hero-spark--3">·</span>
+    </div>
+
+    <div class="product-section-inner hero-section-inner hero-content">
     <h1 class="landing-headline hero-title landing-fade-up landing-fade-up-1" aria-label="Your workspace, now voice-native.">
       <span class="line">Your workspace,</span>
       <span class="line">now <span class="landing-headline-accent">voice-native.</span></span>
@@ -49,6 +96,7 @@
       </a>
     </div>
 
+    <div class="hero-preview-wrap">
     <div class="landing-preview landing-demo-card landing-fade-up landing-fade-up-4" id="demo">
       <div class="landing-demo-toolbar" aria-hidden="true">
         <span class="landing-demo-dot"></span>
@@ -80,6 +128,7 @@
           </span>
         </button>
       </div>
+    </div>
     </div>
     </div>
   </header>
