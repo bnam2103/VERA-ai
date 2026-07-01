@@ -8,7 +8,7 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=12">
+  <link rel="stylesheet" href="product.css?v=13">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -83,7 +83,7 @@
   </header>
 
   <!-- WHY VERA -->
-  <section class="why-vera" id="about-vera">
+  <section class="why-vera landing-section" id="about-vera">
     <div class="why-vera-inner">
       <p class="why-vera-eyebrow landing-fade-up-scroll landing-fade-up-1">WHY VERA?</p>
 
@@ -108,32 +108,72 @@
   </section>
 
   <!-- USE CASES -->
-  <section class="use-cases" id="use-cases">
-    <div class="use-cases-inner">
+  <section class="use-cases landing-section" id="use-cases">
+    <div class="use-cases-inner landing-section-inner">
       <h2 class="use-cases-title landing-fade-up-scroll landing-fade-up-1">How does VERA work?</h2>
-      <div class="use-cases-grid">
-        <article class="use-case-card landing-fade-up-scroll landing-fade-up-2">
-          <h3 class="use-case-card-title">Real-time conversation</h3>
-          <p>Talk naturally and get spoken responses back in real time. Switch between continuous listening, push-to-talk, and keyboard mode depending on your environment.</p>
-        </article>
-        <article class="use-case-card landing-fade-up-scroll landing-fade-up-3">
-          <h3 class="use-case-card-title">Interruptibility</h3>
-          <p>Interrupt VERA mid-response to correct, redirect, or add context — closer to speaking with another person than a turn-based chat.</p>
-        </article>
-        <article class="use-case-card landing-fade-up-scroll landing-fade-up-4">
-          <h3 class="use-case-card-title">Personalization</h3>
-          <p>VERA uses context like habits and preferences to give more helpful responses. Personal data is planned to stay local on your device.</p>
-        </article>
-        <article class="use-case-card landing-fade-up-scroll landing-fade-up-5">
-          <h3 class="use-case-card-title">System actions</h3>
-          <p>Answer utility questions like time, date, weather, news, and stock prices through voice — with dedicated panels for richer interactions like news and music.</p>
-        </article>
+
+      <div class="use-cases-layout">
+        <div class="use-cases-features landing-fade-up-scroll landing-fade-up-2" role="tablist" aria-label="VERA features">
+          <div class="use-case-feature active" data-case="realtime">
+            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="true">Real-time conversation</button>
+            <div class="use-case-feature-body" role="tabpanel">
+              <p>Talk naturally and get spoken responses back in real time. Switch between continuous listening, push-to-talk, and keyboard mode depending on your environment.</p>
+            </div>
+          </div>
+          <div class="use-case-feature" data-case="interrupt">
+            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="false">Interruptibility</button>
+            <div class="use-case-feature-body" role="tabpanel" hidden>
+              <p>Interrupt VERA mid-response to correct, redirect, or add context — closer to speaking with another person than a turn-based chat.</p>
+            </div>
+          </div>
+          <div class="use-case-feature" data-case="personalization">
+            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="false">Personalization</button>
+            <div class="use-case-feature-body" role="tabpanel" hidden>
+              <p>VERA uses context like habits and preferences to give more helpful responses. Personal data is planned to stay local on your device.</p>
+            </div>
+          </div>
+          <div class="use-case-feature" data-case="actions">
+            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="false">System actions</button>
+            <div class="use-case-feature-body" role="tabpanel" hidden>
+              <p>Answer utility questions like time, date, weather, news, and stock prices through voice — with dedicated panels for richer interactions like news and music.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="use-cases-preview landing-fade-up-scroll landing-fade-up-3">
+          <p class="use-cases-preview-caption" id="use-cases-caption">Real-time conversation</p>
+          <div class="landing-demo-viewport use-cases-viewport">
+            <video
+              id="how-video"
+              class="landing-preview-video"
+              autoplay
+              muted
+              loop
+              playsinline
+            >
+              <source src="background.mp4" type="video/mp4">
+            </video>
+            <button
+              type="button"
+              class="landing-preview-play"
+              id="how-video-toggle"
+              aria-label="Pause video"
+            >
+              <span class="landing-play-icon" aria-hidden="true">
+                <svg width="14" height="16" viewBox="0 0 14 16" fill="currentColor"><path d="M0 0v16l14-8L0 0z"/></svg>
+              </span>
+              <span class="landing-pause-icon" aria-hidden="true">
+                <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><rect x="0" y="0" width="4" height="14" rx="1"/><rect x="8" y="0" width="4" height="14" rx="1"/></svg>
+              </span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
   <!-- WORD FROM CREATOR -->
-  <section class="creator-note" id="future-goal">
+  <section class="creator-note landing-section" id="future-goal">
     <div class="creator-note-inner">
       <article class="creator-note-card">
         <div class="creator-note-card-head landing-fade-up-scroll landing-fade-up-1">
@@ -150,7 +190,7 @@
   </section>
 
   <!-- FINAL CTA -->
-  <section class="final-cta" id="final-cta">
+  <section class="final-cta landing-section" id="final-cta">
     <div class="final-cta-inner">
       <h2 class="final-cta-heading landing-fade-up-scroll landing-fade-up-1">Join VERA today and rethink what AI chatbots and assistants can feel like.</h2>
       <a class="landing-cta landing-cta-primary final-cta-btn landing-fade-up-scroll landing-fade-up-2" href="#final-cta">Join waitlist</a>
@@ -209,6 +249,7 @@
   const futureGoalSection = document.getElementById("future-goal");
 
   const bgVideo = document.getElementById("bg-video");
+  const howVideo = document.getElementById("how-video");
   const finalCtaSection = document.getElementById("final-cta");
 
   function bindPreviewVideoToggle(toggle, video) {
@@ -234,6 +275,39 @@
     document.getElementById("landing-video-toggle"),
     bgVideo
   );
+  bindPreviewVideoToggle(
+    document.getElementById("how-video-toggle"),
+    howVideo
+  );
+
+  /* =========================
+     USE CASES — FEATURE SELECTOR
+  ========================= */
+
+  const useCaseFeatures = document.querySelectorAll(".use-case-feature");
+  const useCasesCaption = document.getElementById("use-cases-caption");
+
+  useCaseFeatures.forEach((feature) => {
+    const btn = feature.querySelector(".use-case-feature-btn");
+    const body = feature.querySelector(".use-case-feature-body");
+    if (!btn || !body) return;
+
+    btn.addEventListener("click", () => {
+      useCaseFeatures.forEach((item) => {
+        const itemBtn = item.querySelector(".use-case-feature-btn");
+        const itemBody = item.querySelector(".use-case-feature-body");
+        const isActive = item === feature;
+        item.classList.toggle("active", isActive);
+        itemBtn?.setAttribute("aria-selected", isActive ? "true" : "false");
+        if (itemBody) {
+          itemBody.hidden = !isActive;
+        }
+      });
+      if (useCasesCaption) {
+        useCasesCaption.textContent = btn.textContent.trim();
+      }
+    });
+  });
 
   /* =========================
      SCROLL FADE-UP REVEAL
