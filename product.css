@@ -769,42 +769,37 @@ body.app-open #how-video {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
 }
 
-.creator-note-card-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-.creator-beta-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--landing-accent-border);
-  background: rgba(32, 183, 168, 0.08);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--landing-teal);
-}
-
-.creator-note-eyebrow {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--landing-text-muted);
-}
-
 .creator-note-title {
-  margin: 0 0 20px;
+  margin: 0 0 24px;
   font-size: clamp(1.5rem, 2.6vw, 1.85rem);
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--landing-text);
+}
+
+.creator-note-quote {
+  margin: 0 0 8px;
+  padding: 0 0 0 16px;
+  border: none;
+  border-left: 2px solid rgba(32, 183, 168, 0.32);
+}
+
+.creator-note-quote p {
+  margin: 0;
+  font-size: clamp(1.1rem, 2vw, 1.28rem);
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  color: rgba(242, 245, 247, 0.92);
+}
+
+.creator-note-attribution {
+  margin: 0 0 28px;
+  font-size: 0.85rem;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  color: var(--landing-text-muted);
 }
 
 .creator-note-body p {
@@ -844,14 +839,7 @@ body.app-open #how-video {
 
 .final-cta-btn {
   display: inline-flex;
-  margin-bottom: 16px;
   text-decoration: none;
-}
-
-.final-cta-note {
-  margin: 0;
-  font-size: 0.9rem;
-  color: var(--landing-text-muted);
 }
 
 
@@ -878,19 +866,18 @@ body.app-open #how-video {
 }
 
 .landing-footer-logo {
-  margin: 0 0 12px;
+  margin: 0 0 16px;
   font-size: 1rem;
   font-weight: 600;
   letter-spacing: 0.12em;
   color: var(--landing-text);
 }
 
-.landing-footer-tagline {
+.landing-footer-copy {
   margin: 0;
-  max-width: 28ch;
-  font-size: 0.9rem;
-  line-height: 1.65;
-  color: var(--landing-text-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: rgba(139, 152, 165, 0.75);
 }
 
 .landing-footer-col-title {
@@ -913,15 +900,6 @@ body.app-open #how-video {
 
 .landing-footer-link:hover {
   color: var(--landing-teal);
-}
-
-.landing-footer-copy {
-  margin: 0;
-  padding-top: 24px;
-  border-top: 1px solid var(--landing-border);
-  font-size: 0.8rem;
-  color: rgba(139, 152, 165, 0.75);
-  text-align: center;
 }
 
 @media (max-width: 900px) {
