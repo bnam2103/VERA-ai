@@ -828,14 +828,27 @@ body.app-open #how-video {
   margin: 0 auto;
 }
 
+.section-divider {
+  width: min(1120px, calc(100% - 48px));
+  height: 1px;
+  margin: clamp(64px, 8vh, 110px) auto clamp(56px, 7vh, 90px);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.08),
+    transparent
+  );
+}
+
 .creator-section {
-  padding: clamp(96px, 12vh, 150px) 24px clamp(80px, 10vh, 120px);
+  padding: 0 24px clamp(72px, 8vh, 110px);
   scroll-margin-top: 72px;
 }
 
 .creator-inner {
-  max-width: 720px;
+  max-width: 680px;
   margin: 0 auto;
+  text-align: center;
 }
 
 .closing-section {
@@ -856,8 +869,13 @@ body.app-open #how-video {
 }
 
 @media (max-width: 768px) {
+  .section-divider {
+    width: calc(100% - 40px);
+    margin: clamp(48px, 7vh, 80px) auto clamp(40px, 6vh, 72px);
+  }
+
   .creator-section {
-    padding: clamp(72px, 10vh, 112px) 20px clamp(64px, 8vh, 96px);
+    padding: 0 20px clamp(56px, 7vh, 88px);
   }
 
   .closing-section {
@@ -1045,36 +1063,32 @@ body.app-open #how-video {
    WORD FROM CREATOR
 ========================= */
 
-.creator-note-content {
-  text-align: left;
-}
-
-.creator-note-title {
+.creator-title {
   margin: 0 0 28px;
-  font-size: clamp(1.35rem, 2.4vw, 1.65rem);
+  font-size: clamp(22px, 2vw, 30px);
   font-weight: 600;
+  line-height: 1.15;
   letter-spacing: -0.02em;
   color: var(--landing-text);
 }
 
-.creator-note-body p {
+.creator-copy p {
   margin: 0;
-  font-size: clamp(0.94rem, 1.5vw, 1.05rem);
-  line-height: 1.75;
-  color: rgba(242, 245, 247, 0.78);
+  font-size: clamp(15px, 1vw, 17px);
+  line-height: 1.65;
+  color: rgba(242, 245, 247, 0.72);
 }
 
-.creator-note-body p + p {
-  margin-top: 20px;
+.creator-copy p + p {
+  margin-top: 18px;
 }
 
-.creator-note-attribution {
+.creator-signature {
   margin: 28px 0 0;
-  padding-left: 2px;
-  font-size: 0.78rem;
+  font-size: 13px;
   font-style: normal;
   letter-spacing: 0.04em;
-  color: rgba(139, 152, 165, 0.72);
+  color: rgba(242, 245, 247, 0.45);
 }
 
 
