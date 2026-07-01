@@ -1,4 +1,4 @@
-"""Smoke: Work Mode hides bottom-left global controls.
+"""Smoke: VERA app sidebar replaces bottom-left utility cluster.
 
 Run:  py -3 -X utf8 tests\\smoke\\__work_mode_bottom_left_hidden_smoke.py
 """
@@ -38,37 +38,43 @@ def section(title: str) -> None:
 section("index.html structure")
 with open(os.path.join(_ROOT, "app/index.html"), encoding="utf-8") as f:
     html = f.read()
-ok("vera-bottom-left-tools" in html, "bottom-left tools container exists")
+ok('class="vera-sidebar"' in html, "left sidebar exists")
+ok('class="vera-sidebar-nav"' in html, "sidebar nav exists")
 ok('id="vera-usage-credits"' in html, "credits pill in DOM")
+ok('class="vera-input-meta"' in html, "input meta row under voice bar")
 ok('id="vera-explicit-feedback-btn"' in html, "feedback button in DOM")
 ok('id="vera-account-open"' in html, "account button in DOM")
 ok('id="vera-settings-open"' in html, "settings button in DOM")
+ok("vera-bottom-left-tools" not in html, "legacy bottom-left cluster removed")
 ok('id="vera-input-guide-open"' not in html, "triple-dash guide button removed")
 ok('id="vera-work-mode-guide"' not in html, "work mode GUIDE button removed")
 ok('id="vera-work-guide-modal"' not in html, "old work mode guide modal removed")
 
-section("work mode CSS hides bottom-left tools")
-with open(os.path.join(_ROOT, "app/styles.css"), encoding="utf-8") as f:
+section("sidebar CSS")
+with open(os.path.join(_ROOT, "styles.css"), encoding="utf-8") as f:
     css = f.read()
+ok(".vera-sidebar" in css, "sidebar styles present")
+ok("--vera-sidebar-width" in css, "sidebar width variable present")
+ok("#vera-app.vera-app-shell" in css and "padding-left" in css.split("#vera-app.vera-app-shell")[1].split("}")[0], "app shell shifts with sidebar")
+ok(".vera-input-meta" in css, "credits row under input styled")
 ok(
-    "#vera-app.work-mode .vera-bottom-left-tools" in css
-    and "display: none" in css.split("#vera-app.work-mode .vera-bottom-left-tools")[1].split("}")[0],
-    "work mode hides vera-bottom-left-tools",
+    "#vera-app.work-mode .vera-bottom-left-tools" not in css,
+    "work mode no longer hides removed bottom-left cluster",
 )
 ok(
     "#vera-app.work-mode .vera-bottom-right-tools" in css,
     "work mode bottom-right tools rule still present",
 )
 ok(
-    "enterVeraWorkMode" in html and "classList.add(\"work-mode\")" in html,
-    "work mode toggled via #vera-app.work-mode class",
+    "work-mode" in open(os.path.join(_ROOT, "app/app.js"), encoding="utf-8").read(),
+    "work mode class used in app.js",
 )
 
 section("manual checklist")
-print("  -- Normal Voice UI: bottom-left credits/feedback/account/settings visible (no guide button)")
-print("  -- Enter Work Mode: bottom-left cluster hidden; WORK/MUSIC still visible")
-print("  -- Exit Work Mode: bottom-left cluster returns")
-print("  -- After exit: credit pill still refreshes on reply")
+print("  -- Sidebar collapsed by default; expands on hover/focus-within")
+print("  -- Feedback / Account / Settings open existing flows")
+print("  -- Credits + no-cap appear under voice input bar")
+print("  -- Work Mode: sidebar stays available; WORK/MUSIC bottom-right unchanged")
 
 print(f"\n== summary: {passed} passed, {failed} failed ==")
 sys.exit(1 if failed else 0)

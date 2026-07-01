@@ -45,26 +45,37 @@
     return document.getElementById(id);
   }
 
+  function setSidebarButtonLabel(btn, label) {
+    if (!(btn instanceof HTMLButtonElement)) return;
+    const labelEl = btn.querySelector(".vera-sidebar-btn-label");
+    if (labelEl instanceof HTMLElement) {
+      labelEl.textContent = label;
+      return;
+    }
+    btn.textContent = label;
+  }
+
   function ensureFeedbackButtonDom() {
     let btn = $("vera-explicit-feedback-btn");
     if (btn instanceof HTMLButtonElement) return btn;
-    const tools = document.querySelector(".vera-bottom-left-tools");
-    if (!(tools instanceof HTMLElement)) {
-      logWarn("bottom-left tools container missing; feedback button not mounted");
+    const nav = document.querySelector(".vera-sidebar-nav");
+    if (!(nav instanceof HTMLElement)) {
+      logWarn("sidebar nav missing; feedback button not mounted");
       return null;
     }
     btn = document.createElement("button");
     btn.type = "button";
     btn.id = "vera-explicit-feedback-btn";
-    btn.className = "vera-explicit-feedback-btn";
-    btn.textContent = "Give feedback +50 credits";
-    const credits = $("vera-usage-credits");
-    if (credits instanceof HTMLElement && credits.parentElement === tools) {
-      credits.insertAdjacentElement("afterend", btn);
-    } else {
-      tools.prepend(btn);
-    }
-    logInfo("created feedback button in DOM");
+    btn.className = "vera-sidebar-btn vera-sidebar-btn--feedback vera-explicit-feedback-btn";
+    btn.setAttribute("aria-label", "Feedback — share feedback and unlock bonus credits");
+    btn.innerHTML =
+      '<span class="vera-sidebar-btn-icon" aria-hidden="true">' +
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>' +
+      "</svg></span>" +
+      '<span class="vera-sidebar-btn-label">Feedback</span>';
+    nav.prepend(btn);
+    logInfo("created feedback button in sidebar");
     return btn;
   }
 
@@ -90,14 +101,13 @@
   function updateFeedbackButton() {
     const btn = ensureFeedbackButtonDom();
     if (!(btn instanceof HTMLButtonElement)) return;
-    btn.textContent = "Give feedback +50 credits";
+    setSidebarButtonLabel(btn, "Feedback");
     btn.hidden = false;
     btn.style.display = "";
     btn.removeAttribute("aria-hidden");
     if (_alreadyClaimed) {
       btn.disabled = true;
       btn.title = "Feedback bonus already claimed today.";
-      btn.textContent = "Feedback bonus claimed today";
     } else {
       btn.disabled = false;
       btn.title = _statusLoaded

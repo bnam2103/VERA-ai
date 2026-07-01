@@ -385,17 +385,29 @@ function _accountDisplayName(me) {
   return email || "Account";
 }
 
+function _setSidebarButtonLabel(btn, label) {
+  if (!(btn instanceof HTMLButtonElement)) return;
+  const labelEl = btn.querySelector(".vera-sidebar-btn-label");
+  if (labelEl instanceof HTMLElement) {
+    labelEl.textContent = label;
+    return;
+  }
+  btn.textContent = label;
+}
+
 function _setAccountFabLabel(me) {
   const fab = document.getElementById("vera-account-open");
   if (!(fab instanceof HTMLButtonElement)) return;
   if (me?.authenticated) {
-    fab.textContent = _accountDisplayName(me);
+    _setSidebarButtonLabel(fab, _accountDisplayName(me));
     fab.classList.add("is-signed-in");
     fab.title = `Signed in as ${me.email || _accountDisplayName(me)}`;
+    fab.setAttribute("aria-label", `Account — signed in as ${_accountDisplayName(me)}`);
   } else {
-    fab.textContent = "Account";
+    _setSidebarButtonLabel(fab, "Account");
     fab.classList.remove("is-signed-in");
     fab.title = "Account — sign in or sign up";
+    fab.setAttribute("aria-label", "Account");
   }
 }
 

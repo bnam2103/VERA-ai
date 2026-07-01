@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=15">
+  <link rel="stylesheet" href="../styles.css?v=16">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -35,6 +35,56 @@
 </div>
 
 <section id="vera-app" class="vera-app-shell" hidden>
+  <aside class="vera-sidebar" id="vera-sidebar" aria-label="App menu">
+    <div class="vera-sidebar-inner">
+      <div class="vera-sidebar-brand" aria-hidden="true">V</div>
+      <nav class="vera-sidebar-nav" aria-label="Account and settings">
+        <button
+          type="button"
+          id="vera-explicit-feedback-btn"
+          class="vera-sidebar-btn vera-sidebar-btn--feedback vera-explicit-feedback-btn"
+          aria-label="Feedback — share feedback and unlock bonus credits"
+        >
+          <span class="vera-sidebar-btn-icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+            </svg>
+          </span>
+          <span class="vera-sidebar-btn-label">Feedback</span>
+        </button>
+        <button
+          type="button"
+          id="vera-account-open"
+          class="vera-sidebar-btn vera-sidebar-btn--account vera-account-fab"
+          title="Account — sign in or sign up"
+          aria-label="Account"
+        >
+          <span class="vera-sidebar-btn-icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="8" r="4"/>
+              <path d="M4 20c0-3.5 3.6-6.5 8-6.5s8 3 8 6.5"/>
+            </svg>
+          </span>
+          <span class="vera-sidebar-btn-label">Account</span>
+        </button>
+        <button
+          type="button"
+          id="vera-settings-open"
+          class="vera-sidebar-btn vera-sidebar-btn--settings vera-settings-fab"
+          title="Open settings"
+          aria-label="Settings"
+        >
+          <span class="vera-sidebar-btn-icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+            </svg>
+          </span>
+          <span class="vera-sidebar-btn-label">Settings</span>
+        </button>
+      </nav>
+    </div>
+  </aside>
   <main class="chat-centered">
     <div id="vera-guide" class="vera-guide">
       <div class="guide-item guide-vera">
@@ -317,6 +367,20 @@
         hidden
         aria-live="polite"
       ></div>
+      <div class="vera-input-meta" aria-label="Usage status">
+        <div id="vera-usage-credits" class="vera-usage-credits" hidden aria-live="polite">
+          <span id="vera-usage-credits-text" class="vera-usage-credits-text"></span>
+        </div>
+        <button
+          type="button"
+          id="vera-no-cap-toggle"
+          class="vera-no-cap-toggle"
+          hidden
+          title="Testing only: disables credit cap enforcement but still logs usage."
+        >
+          No cap: OFF
+        </button>
+      </div>
     </div>
       </div>
     </div>
@@ -348,29 +412,6 @@
       Music
     </button>
     <div id="vera-active-user-label" class="vera-active-user-label" hidden aria-live="polite"></div>
-  </div>
-  <div class="vera-bottom-left-tools" aria-label="Settings tools">
-    <div id="vera-usage-credits" class="vera-usage-credits" hidden aria-live="polite">
-      <span id="vera-usage-credits-text" class="vera-usage-credits-text"></span>
-    </div>
-    <button
-      type="button"
-      id="vera-no-cap-toggle"
-      class="vera-no-cap-toggle"
-      hidden
-      title="Testing only: disables credit cap enforcement but still logs usage."
-    >
-      No cap: OFF
-    </button>
-    <button type="button" id="vera-explicit-feedback-btn" class="vera-explicit-feedback-btn">
-      Give feedback +50 credits
-    </button>
-    <button type="button" id="vera-account-open" class="vera-account-fab" title="Account — sign in or sign up">
-      Account
-    </button>
-    <button type="button" id="vera-settings-open" class="vera-settings-fab" title="Open settings">
-      Settings
-    </button>
   </div>
 </section>
 
@@ -1038,7 +1079,7 @@
      Must load AFTER signinUi.js (authApiUrl, authFetch stub) and BEFORE
      workmode/checklist.js + app.js. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="../users/supabaseAuth.js?v=15"></script>
+<script src="../users/supabaseAuth.js?v=16"></script>
 <!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="../users/accountSettingsSync.js?v=2"></script>
@@ -1056,7 +1097,7 @@
 <script src="../users/usageCredits.js?v=6"></script>
 <!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
      Must load AFTER usageCredits.js, BEFORE app.js. -->
-<script src="../users/explicitFeedback.js?v=2"></script>
+<script src="../users/explicitFeedback.js?v=3"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies
