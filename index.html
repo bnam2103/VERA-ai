@@ -8,7 +8,7 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=5">
+  <link rel="stylesheet" href="product.css?v=6">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -75,30 +75,37 @@
       </a>
     </div>
 
-    <div class="landing-preview landing-fade-up landing-fade-up-4">
-      <video
-        id="bg-video"
-        class="landing-preview-video"
-        autoplay
-        muted
-        loop
-        playsinline
-      >
-        <source src="background.mp4" type="video/mp4">
-      </video>
-      <button
-        type="button"
-        class="landing-preview-play"
-        id="landing-video-toggle"
-        aria-label="Pause video"
-      >
-        <span class="landing-play-icon" aria-hidden="true">
-          <svg width="14" height="16" viewBox="0 0 14 16" fill="currentColor"><path d="M0 0v16l14-8L0 0z"/></svg>
-        </span>
-        <span class="landing-pause-icon" aria-hidden="true">
-          <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><rect x="0" y="0" width="4" height="14" rx="1"/><rect x="8" y="0" width="4" height="14" rx="1"/></svg>
-        </span>
-      </button>
+    <div class="landing-preview landing-demo-card landing-fade-up landing-fade-up-4">
+      <div class="landing-demo-toolbar" aria-hidden="true">
+        <span class="landing-demo-dot"></span>
+        <span class="landing-demo-dot"></span>
+        <span class="landing-demo-dot"></span>
+      </div>
+      <div class="landing-demo-viewport">
+        <video
+          id="bg-video"
+          class="landing-preview-video"
+          autoplay
+          muted
+          loop
+          playsinline
+        >
+          <source src="background.mp4" type="video/mp4">
+        </video>
+        <button
+          type="button"
+          class="landing-preview-play"
+          id="landing-video-toggle"
+          aria-label="Pause video"
+        >
+          <span class="landing-play-icon" aria-hidden="true">
+            <svg width="14" height="16" viewBox="0 0 14 16" fill="currentColor"><path d="M0 0v16l14-8L0 0z"/></svg>
+          </span>
+          <span class="landing-pause-icon" aria-hidden="true">
+            <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><rect x="0" y="0" width="4" height="14" rx="1"/><rect x="8" y="0" width="4" height="14" rx="1"/></svg>
+          </span>
+        </button>
+      </div>
     </div>
   </header>
 
