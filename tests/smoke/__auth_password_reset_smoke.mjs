@@ -29,7 +29,7 @@ const indexHtml = readFileSync(path.join(root, "app/index.html"), "utf8");
 ok(indexHtml.includes('id="vera-account-forgot-password-link"'), "Forgot password link in index.html");
 ok(indexHtml.includes('id="vera-account-reset-password-view"'), "Reset password form in index.html");
 ok(indexHtml.includes('id="vera-account-reset-expired-view"'), "Reset expired view in index.html");
-ok(indexHtml.includes("supabaseAuth.js?v=15"), "deployed cache bust loads supabaseAuth v15");
+ok(indexHtml.includes("supabaseAuth.js?v=18"), "deployed cache bust loads supabaseAuth v18");
 ok(indexHtml.includes("Forgot password?"), "Forgot password label text present");
 
 const dom = {
@@ -43,6 +43,7 @@ const dom = {
   "vera-account-reset-success": { hidden: true, textContent: "" },
   "vera-account-error": { hidden: true, textContent: "" },
   "vera-account-success": { hidden: true, textContent: "" },
+  "vera-account-modal": { hidden: true },
   "vera-settings-modal": { hidden: true },
   "vera-account-section": { scrollIntoView() {} },
   "vera-account-forgot-email": { value: "" },

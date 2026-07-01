@@ -30243,9 +30243,11 @@ async function archiveVeraCostLogsAndStartClean({ scenarioName = "" } = {}) {
 
 function wireVeraSettingsPanel() {
   const modal = document.getElementById("vera-settings-modal");
+  const accountModal = document.getElementById("vera-account-modal");
   const openVeraBtn = document.getElementById("vera-settings-open");
   const openBmoBtn = document.getElementById("bmo-settings-open");
   const closeBtn = document.getElementById("vera-settings-close");
+  const accountCloseBtn = document.getElementById("vera-account-close");
   const silenceSlider = document.getElementById("vera-setting-silence");
   const asrStreamingBtn = document.getElementById("vera-setting-asr-streaming");
   const asrWhisperBtn = document.getElementById("vera-setting-asr-whisper");
@@ -30365,31 +30367,19 @@ function wireVeraSettingsPanel() {
     }
   };
 
-  const scrollSettingsCardTo = (target = "top") => {
-    const card = modal.querySelector(".vera-settings-card");
+  const scrollSettingsCardToTop = (targetModal) => {
+    const card = targetModal?.querySelector?.(".vera-settings-card");
     if (!(card instanceof HTMLElement)) return;
     requestAnimationFrame(() => {
-      if (target === "account") {
-        const section = document.getElementById("vera-account-section");
-        if (section instanceof HTMLElement) {
-          card.scrollTo({ top: Math.max(0, section.offsetTop - 12), behavior: "smooth" });
-          const email = document.getElementById("vera-account-email");
-          if (email instanceof HTMLInputElement && !email.disabled) {
-            try {
-              email.focus({ preventScroll: true });
-            } catch (_) {}
-          }
-          return;
-        }
-      }
       card.scrollTo({ top: 0, behavior: "auto" });
     });
   };
 
-  const open = (options = {}) => {
+  const openSettings = (options = {}) => {
     hydrate();
     void refreshCostLogDevUi();
     logVeraSettings("open_modal", {
+      panel: "settings",
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
       text_guide_rotator: draftTextGuideRotator ? 1 : 0,
@@ -30397,25 +30387,51 @@ function wireVeraSettingsPanel() {
       planning_deadline_timer: draftPlanningDeadlineTimer ? 1 : 0,
       main_asr_partial_min_chars: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
     });
-    modal.removeAttribute("hidden");
-    scrollSettingsCardTo(options.scrollTo === "account" ? "account" : "top");
+    if (modal instanceof HTMLElement) modal.removeAttribute("hidden");
+    scrollSettingsCardToTop(modal);
   };
-  const close = () => {
-    modal.setAttribute("hidden", "");
+
+  const openAccount = () => {
+    logVeraSettings("open_modal", { panel: "account" });
+    if (accountModal instanceof HTMLElement) accountModal.removeAttribute("hidden");
+    scrollSettingsCardToTop(accountModal);
+    if (typeof refreshSupabaseAccountLabel === "function") {
+      refreshSupabaseAccountLabel().catch(() => {});
+    }
+    requestAnimationFrame(() => {
+      const email = document.getElementById("vera-account-email");
+      if (email instanceof HTMLInputElement && !email.disabled) {
+        try {
+          email.focus({ preventScroll: true });
+        } catch (_) {}
+      }
+    });
+  };
+
+  const closeSettings = () => {
+    modal?.setAttribute("hidden", "");
+  };
+  const closeAccount = () => {
+    accountModal?.setAttribute("hidden", "");
   };
 
   try {
     if (typeof window !== "undefined") {
-      window.veraOpenSettingsModal = () => open();
-      window.veraOpenSettingsToAccountSection = () => open({ scrollTo: "account" });
+      window.veraOpenSettingsModal = () => openSettings();
+      window.veraOpenAccountModal = () => openAccount();
+      window.veraOpenSettingsToAccountSection = () => openAccount();
     }
   } catch (_) {}
 
-  openVeraBtn?.addEventListener("click", open);
-  openBmoBtn?.addEventListener("click", open);
-  closeBtn?.addEventListener("click", close);
-  modal.addEventListener("click", (e) => {
-    if (e.target === modal) close();
+  openVeraBtn?.addEventListener("click", () => openSettings());
+  openBmoBtn?.addEventListener("click", () => openSettings());
+  closeBtn?.addEventListener("click", closeSettings);
+  accountCloseBtn?.addEventListener("click", closeAccount);
+  modal?.addEventListener("click", (e) => {
+    if (e.target === modal) closeSettings();
+  });
+  accountModal?.addEventListener("click", (e) => {
+    if (e.target === accountModal) closeAccount();
   });
 
   const syncDraftSilenceFromSlider = () => {

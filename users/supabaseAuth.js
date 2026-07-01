@@ -276,10 +276,12 @@ function _showAccountAuthView() {
 }
 
 function _openAccountSectionInSettings() {
-  const settingsModal = document.getElementById("vera-settings-modal");
-  const accountSection = document.getElementById("vera-account-section");
-  if (settingsModal) settingsModal.removeAttribute("hidden");
-  accountSection?.scrollIntoView({ block: "start", behavior: "smooth" });
+  if (typeof window.veraOpenAccountModal === "function") {
+    window.veraOpenAccountModal();
+    return;
+  }
+  const accountModal = document.getElementById("vera-account-modal");
+  if (accountModal) accountModal.removeAttribute("hidden");
 }
 
 function _enterPasswordRecoveryView() {
@@ -1119,25 +1121,23 @@ async function initSupabaseAuth() {
 
 function wireSupabaseAccountUi() {
   const accountFab = document.getElementById("vera-account-open");
-  const settingsModal = document.getElementById("vera-settings-modal");
-  const accountSection = document.getElementById("vera-account-section");
 
-  const openAccountInSettings = () => {
+  const openAccountPanel = () => {
+    if (typeof window.veraOpenAccountModal === "function") {
+      window.veraOpenAccountModal();
+      return;
+    }
     if (typeof window.veraOpenSettingsToAccountSection === "function") {
       window.veraOpenSettingsToAccountSection();
       return;
     }
-    if (!(settingsModal instanceof HTMLElement)) return;
-    settingsModal.removeAttribute("hidden");
-    const card = settingsModal.querySelector(".vera-settings-card");
-    if (card instanceof HTMLElement) {
-      card.scrollTo({ top: 0, behavior: "auto" });
-    }
-    accountSection?.scrollIntoView({ block: "start", behavior: "smooth" });
+    const accountModal = document.getElementById("vera-account-modal");
+    if (!accountModal) return;
+    accountModal.removeAttribute("hidden");
     refreshSupabaseAccountLabel().catch(() => {});
   };
 
-  accountFab?.addEventListener("click", openAccountInSettings);
+  accountFab?.addEventListener("click", openAccountPanel);
 
   document.getElementById("vera-account-forgot-password-link")?.addEventListener("click", () => {
     if (_authUiBusy) return;

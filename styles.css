@@ -5279,8 +5279,23 @@ body.chat-started .input-bar {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.vera-settings-guide-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.vera-settings-guide-card-icon {
+  flex: 0 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(236, 242, 255, 0.72);
+}
+
 .vera-settings-guide-card-title {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
