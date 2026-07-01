@@ -8,7 +8,7 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=4">
+  <link rel="stylesheet" href="product.css?v=5">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -49,29 +49,23 @@
       <button class="nav-logo" id="nav-home" type="button">VERA</button>
     </div>
 
-    <div class="nav-center">
+    <div class="nav-right">
       <button class="nav-link" id="nav-about-vera">About VERA</button>
       <button class="nav-link" id="nav-about-me">About Me</button>
       <button class="nav-link" id="nav-projects">My Other Projects</button>
     </div>
-
-    <div class="nav-right nav-spacer" aria-hidden="true"></div>
   </nav>
 
   <header class="title-hero landing-hero">
-    <h1 class="landing-headline" aria-label="Stop prompting, start talking.">
-      <span class="landing-headline-line landing-headline-line1">
-        <span id="landing-headline-line1"></span><span class="landing-typing-cursor" id="landing-cursor-line1" aria-hidden="true"></span>
-      </span>
-      <span class="landing-headline-line landing-headline-line2 landing-headline-accent">
-        <span id="landing-headline-line2"></span><span class="landing-typing-cursor" id="landing-cursor-line2" aria-hidden="true"></span>
-      </span>
+    <h1 class="landing-headline landing-fade-up landing-fade-up-1" aria-label="Stop prompting, start talking.">
+      <span class="landing-headline-line landing-headline-line1">Stop prompting,</span>
+      <span class="landing-headline-line landing-headline-line2 landing-headline-accent">start talking.</span>
     </h1>
-    <p class="landing-subhead">
+    <p class="landing-subhead landing-fade-up landing-fade-up-2">
       Accelerate your workflow without compromising learning with a talking workspace.
     </p>
 
-    <div class="landing-cta-row">
+    <div class="landing-cta-row landing-fade-up landing-fade-up-3">
       <button id="launch-vera-home" class="landing-cta landing-cta-primary" type="button" aria-label="Launch VERA app">
         Launch VERA
       </button>
@@ -81,7 +75,7 @@
       </a>
     </div>
 
-    <div class="landing-preview">
+    <div class="landing-preview landing-fade-up landing-fade-up-4">
       <video
         id="bg-video"
         class="landing-preview-video"
@@ -696,57 +690,21 @@
   ========================= */
 
 /* =========================
-   LANDING HEADLINE TYPING
+   LANDING HERO FADE-UP
 ========================= */
 
-const LANDING_LINE1 = "Stop prompting,";
-const LANDING_LINE2 = "start talking.";
-const LANDING_TYPE_MS = 38;
-const LANDING_LINE_PAUSE_MS = 240;
-
-function startLandingHeadlineTyping() {
-  const line1El = document.getElementById("landing-headline-line1");
-  const line2El = document.getElementById("landing-headline-line2");
-  const cursor1 = document.getElementById("landing-cursor-line1");
-  const cursor2 = document.getElementById("landing-cursor-line2");
-  if (!line1El || !line2El) return;
-
-  line1El.textContent = "";
-  line2El.textContent = "";
-  cursor1?.classList.add("active");
-  cursor2?.classList.remove("active");
-
-  let i = 0;
-  function typeLine1() {
-    if (i < LANDING_LINE1.length) {
-      line1El.textContent += LANDING_LINE1[i++];
-      setTimeout(typeLine1, LANDING_TYPE_MS);
-      return;
-    }
-
-    cursor1?.classList.remove("active");
-    setTimeout(() => {
-      cursor2?.classList.add("active");
-      let j = 0;
-      function typeLine2() {
-        if (j < LANDING_LINE2.length) {
-          line2El.textContent += LANDING_LINE2[j++];
-          setTimeout(typeLine2, LANDING_TYPE_MS);
-          return;
-        }
-        cursor2?.classList.remove("active");
-      }
-      typeLine2();
-    }, LANDING_LINE_PAUSE_MS);
-  }
-
-  typeLine1();
+function triggerLandingFadeUp() {
+  document.querySelectorAll(".landing-fade-up").forEach((el) => {
+    el.classList.remove("is-visible");
+    void el.offsetWidth;
+    el.classList.add("is-visible");
+  });
 }
 
 function showHomeLanding() {
   home.hidden = false;
   document.body.classList.remove("app-open", "bmo-open", "vera-mode");
-  startLandingHeadlineTyping();
+  triggerLandingFadeUp();
 }
 
 /* =========================
