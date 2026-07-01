@@ -830,12 +830,12 @@ body.app-open #how-video {
 
 .creator-section {
   padding: clamp(80px, 9vh, 110px) clamp(20px, 4vw, 48px) 0;
-  margin-bottom: clamp(96px, 12vh, 130px);
+  margin-bottom: clamp(72px, 9vh, 100px);
   scroll-margin-top: 72px;
 }
 
 .final-cta-section {
-  padding: clamp(56px, 7vh, 80px) clamp(20px, 4vw, 48px) clamp(64px, 8vh, 96px);
+  padding: clamp(40px, 5vh, 56px) clamp(20px, 4vw, 48px) clamp(64px, 8vh, 96px);
   scroll-margin-top: 72px;
   text-align: center;
 }
@@ -848,11 +848,11 @@ body.app-open #how-video {
 @media (max-width: 768px) {
   .creator-section {
     padding: clamp(64px, 8vh, 88px) 20px 0;
-    margin-bottom: clamp(72px, 10vh, 96px);
+    margin-bottom: clamp(56px, 8vh, 80px);
   }
 
   .final-cta-section {
-    padding: clamp(48px, 7vh, 64px) 20px clamp(48px, 6vh, 72px);
+    padding: clamp(32px, 5vh, 48px) 20px clamp(48px, 6vh, 72px);
   }
 
   .product-footer.landing-footer {
@@ -1052,45 +1052,24 @@ body.app-open #how-video {
   color: var(--landing-text);
 }
 
-.creator-note-quote {
-  margin: 0 0 10px;
-  padding: 0;
-  border: none;
-}
-
-.creator-note-quote p {
-  margin: 0;
-  font-size: clamp(1.15rem, 2.1vw, 1.32rem);
-  font-style: italic;
-  font-weight: 400;
-  line-height: 1.5;
-  letter-spacing: -0.01em;
-  color: rgba(242, 245, 247, 0.9);
-}
-
-.creator-note-attribution {
-  margin: 0 0 32px;
-  padding-left: 2px;
-  font-size: 0.82rem;
-  font-style: normal;
-  letter-spacing: 0.06em;
-  color: rgba(139, 152, 165, 0.85);
-}
-
-.creator-note-body {
-  padding-top: 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-
 .creator-note-body p {
   margin: 0;
-  font-size: clamp(0.94rem, 1.5vw, 1.02rem);
+  font-size: clamp(0.94rem, 1.5vw, 1.05rem);
   line-height: 1.75;
-  color: var(--landing-text-muted);
+  color: rgba(242, 245, 247, 0.78);
 }
 
 .creator-note-body p + p {
-  margin-top: 18px;
+  margin-top: 20px;
+}
+
+.creator-note-attribution {
+  margin: 28px 0 0;
+  padding-left: 2px;
+  font-size: 0.78rem;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  color: rgba(139, 152, 165, 0.72);
 }
 
 
@@ -1109,24 +1088,24 @@ body.app-open #how-video {
 
 .final-cta-title {
   margin: 0;
-  font-size: clamp(2.625rem, 4.8vw, 4.5rem);
+  font-size: clamp(36px, 4vw, 56px);
   font-weight: 700;
-  line-height: 1;
-  letter-spacing: -0.05em;
+  line-height: 1.05;
+  letter-spacing: -0.045em;
   text-align: center;
   color: var(--landing-text);
 }
 
 .final-cta-subtitle {
-  margin: 16px 0 0;
-  font-size: clamp(1.0625rem, 1.3vw, 1.375rem);
+  margin: 14px 0 0;
+  font-size: clamp(16px, 1.2vw, 20px);
   line-height: 1.5;
-  color: rgba(242, 245, 247, 0.68);
+  color: rgba(242, 245, 247, 0.66);
   text-align: center;
 }
 
 .final-cta .cta-actions {
-  margin-top: 30px;
+  margin-top: 26px;
 }
 
 .final-cta-btn {
@@ -1136,16 +1115,16 @@ body.app-open #how-video {
 
 @media (max-width: 768px) {
   .final-cta-title {
-    font-size: clamp(2rem, 9vw, 2.75rem);
+    font-size: clamp(32px, 8vw, 44px);
   }
 
   .final-cta-subtitle {
-    font-size: 1rem;
-    margin-top: 14px;
+    font-size: 16px;
+    margin-top: 12px;
   }
 
   .final-cta .cta-actions {
-    margin-top: 24px;
+    margin-top: 22px;
   }
 }
 
