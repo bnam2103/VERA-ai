@@ -830,33 +830,24 @@ body.app-open #how-video {
 
 .creator-section {
   padding: clamp(80px, 9vh, 110px) clamp(20px, 4vw, 48px) 0;
-  margin-bottom: clamp(72px, 9vh, 100px);
+  margin-bottom: clamp(48px, 6vh, 72px);
   scroll-margin-top: 72px;
 }
 
 .final-cta-section {
-  padding: clamp(40px, 5vh, 56px) clamp(20px, 4vw, 48px) clamp(64px, 8vh, 96px);
+  padding: clamp(28px, 3.5vh, 40px) clamp(20px, 4vw, 48px) clamp(32px, 4vh, 48px);
   scroll-margin-top: 72px;
   text-align: center;
-}
-
-.product-footer.landing-footer {
-  padding: clamp(40px, 5vh, 56px) clamp(20px, 4vw, 48px) clamp(56px, 7vh, 80px);
-  margin-top: 0;
 }
 
 @media (max-width: 768px) {
   .creator-section {
     padding: clamp(64px, 8vh, 88px) 20px 0;
-    margin-bottom: clamp(56px, 8vh, 80px);
+    margin-bottom: clamp(40px, 6vh, 56px);
   }
 
   .final-cta-section {
-    padding: clamp(32px, 5vh, 48px) 20px clamp(48px, 6vh, 72px);
-  }
-
-  .product-footer.landing-footer {
-    padding: clamp(36px, 5vh, 48px) 20px clamp(48px, 6vh, 64px);
+    padding: clamp(24px, 4vh, 32px) 20px clamp(28px, 4vh, 40px);
   }
 }
 
@@ -1088,24 +1079,24 @@ body.app-open #how-video {
 
 .final-cta-title {
   margin: 0;
-  font-size: clamp(36px, 4vw, 56px);
-  font-weight: 700;
-  line-height: 1.05;
-  letter-spacing: -0.045em;
+  font-size: clamp(30px, 3vw, 44px);
+  font-weight: 760;
+  line-height: 1.1;
+  letter-spacing: -0.035em;
   text-align: center;
   color: var(--landing-text);
 }
 
 .final-cta-subtitle {
-  margin: 14px 0 0;
-  font-size: clamp(16px, 1.2vw, 20px);
+  margin: 10px 0 0;
+  font-size: clamp(15px, 1vw, 18px);
   line-height: 1.5;
-  color: rgba(242, 245, 247, 0.66);
+  color: rgba(242, 245, 247, 0.62);
   text-align: center;
 }
 
 .final-cta .cta-actions {
-  margin-top: 26px;
+  margin-top: 24px;
 }
 
 .final-cta-btn {
@@ -1115,16 +1106,16 @@ body.app-open #how-video {
 
 @media (max-width: 768px) {
   .final-cta-title {
-    font-size: clamp(32px, 8vw, 44px);
+    font-size: clamp(28px, 7vw, 36px);
   }
 
   .final-cta-subtitle {
-    font-size: 16px;
-    margin-top: 12px;
+    font-size: 15px;
+    margin-top: 8px;
   }
 
   .final-cta .cta-actions {
-    margin-top: 22px;
+    margin-top: 20px;
   }
 }
 
@@ -1133,58 +1124,63 @@ body.app-open #how-video {
    LANDING FOOTER
 ========================= */
 
-.landing-footer {
-  border-top: 1px solid var(--landing-border);
+.product-footer {
+  padding: 36px 24px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(5, 10, 15, 0.6);
 }
 
-.landing-footer-inner {
-  max-width: 1040px;
+.product-footer-inner {
+  max-width: 1120px;
   margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
 }
 
-.landing-footer-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr));
-  gap: clamp(28px, 4vw, 48px);
-  margin-bottom: 0;
+.footer-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.landing-footer-logo {
-  margin: 0 0 16px;
-  font-size: 1rem;
+.footer-brand strong {
+  font-size: 0.95rem;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   color: var(--landing-text);
 }
 
-.landing-footer-copy {
-  margin: 0;
+.footer-brand span {
   font-size: 0.8rem;
   line-height: 1.5;
   color: rgba(139, 152, 165, 0.75);
 }
 
-.landing-footer-col-title {
-  margin: 0 0 14px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--landing-text);
+.footer-links {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
 }
 
-.landing-footer-link {
-  display: block;
-  margin-bottom: 10px;
-  font-size: 0.9rem;
-  color: var(--landing-text-muted);
+.footer-links a {
+  font-size: 0.88rem;
+  color: rgba(242, 245, 247, 0.62);
   text-decoration: none;
   transition: color 0.2s ease;
 }
 
-.landing-footer-link:hover {
+.footer-links a:hover {
   color: var(--landing-teal);
+}
+
+@media (max-width: 760px) {
+  .product-footer-inner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 
@@ -1371,23 +1367,6 @@ body.app-open #how-video {
 
   .legal-document {
     padding: 24px 20px;
-  }
-}
-
-@media (max-width: 900px) {
-  .landing-footer-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .landing-footer-brand {
-    grid-column: 1 / -1;
-  }
-}
-
-@media (max-width: 560px) {
-  .landing-footer-grid {
-    grid-template-columns: 1fr;
-    gap: 28px;
   }
 }
 
