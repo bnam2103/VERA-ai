@@ -90,7 +90,7 @@
       <button id="launch-vera-home" class="landing-cta landing-cta-primary" type="button" aria-label="Launch VERA app">
         Launch VERA
       </button>
-      <a id="join-waitlist-home" class="landing-cta landing-cta-secondary" href="#final-cta">
+      <a id="join-waitlist-home" class="landing-cta landing-cta-secondary" href="/waitlist/">
         Join waitlist
         <span class="landing-cta-arrow" aria-hidden="true">→</span>
       </a>
@@ -159,39 +159,39 @@
   <!-- USE CASES -->
   <section class="product-section use-cases-section use-cases" id="use-cases">
     <div class="product-section-inner use-cases-inner">
-      <h2 class="use-cases-title landing-fade-up-scroll landing-fade-up-1">How does VERA work?</h2>
+      <h2 class="use-cases-title landing-fade-up-scroll landing-fade-up-1">Inside Work Mode</h2>
 
       <div class="use-cases-panel landing-fade-up-scroll landing-fade-up-2">
         <div class="use-cases-layout">
           <div class="use-cases-features" role="tablist" aria-label="VERA features">
-          <div class="use-case-feature active" data-case="realtime">
-            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="true">Real-time conversation</button>
+          <div class="use-case-feature active" data-case="voice">
+            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="true">Voice-native interaction</button>
             <div class="use-case-feature-body" role="tabpanel">
-              <p>Talk naturally and get spoken responses back in real time. Switch between continuous listening, push-to-talk, and keyboard mode depending on your environment.</p>
+              <p>Talk naturally, get spoken responses in real time, and interrupt VERA mid-response to correct, redirect, or add context.</p>
             </div>
           </div>
-          <div class="use-case-feature" data-case="interrupt">
-            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="false">Interruptibility</button>
+          <div class="use-case-feature" data-case="tools">
+            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="false">Focused tools</button>
             <div class="use-case-feature-body" role="tabpanel" hidden>
-              <p>Interrupt VERA mid-response to correct, redirect, or add context — closer to speaking with another person than a turn-based chat.</p>
+              <p>Use voice to control lightweight tools like music, checklists, and timers so you can stay focused while working.</p>
             </div>
           </div>
-          <div class="use-case-feature" data-case="personalization">
-            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="false">Personalization</button>
+          <div class="use-case-feature" data-case="queries">
+            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="false">Quick queries</button>
             <div class="use-case-feature-body" role="tabpanel" hidden>
-              <p>VERA uses context like habits and preferences to give more helpful responses. Personal data is planned to stay local on your device.</p>
+              <p>Ask for practical information like time, date, weather, news, or stock prices without leaving the workspace.</p>
             </div>
           </div>
-          <div class="use-case-feature" data-case="actions">
-            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="false">System actions</button>
+          <div class="use-case-feature" data-case="memory">
+            <button type="button" class="use-case-feature-btn" role="tab" aria-selected="false">Controlled memory</button>
             <div class="use-case-feature-body" role="tabpanel" hidden>
-              <p>Answer utility questions like time, date, weather, news, and stock prices through voice — with dedicated panels for richer interactions like news and music.</p>
+              <p>VERA only saves memory when you explicitly ask it to remember something, and saved items can be reviewed or removed from your profile.</p>
             </div>
           </div>
         </div>
 
           <div class="use-cases-preview landing-fade-up-scroll landing-fade-up-3">
-            <p class="use-cases-preview-caption" id="use-cases-caption">Real-time conversation</p>
+            <p class="use-cases-preview-caption" id="use-cases-caption">Voice-native interaction</p>
             <div class="landing-demo-viewport use-cases-viewport">
               <video
                 id="how-video"
@@ -237,7 +237,7 @@
         <h2>Join VERA today.</h2>
         <p>Rethink how assistants should feel.</p>
         <div class="cta-actions">
-          <a class="landing-cta landing-cta-primary" href="#final-cta">Join waitlist</a>
+          <a class="landing-cta landing-cta-primary" href="/waitlist/">Join waitlist</a>
         </div>
       </div>
     </div>
@@ -462,12 +462,6 @@
     e.preventDefault();
     window.location.reload();
   };
-
-  const joinWaitlistHome = document.getElementById("join-waitlist-home");
-  joinWaitlistHome?.addEventListener("click", (e) => {
-    e.preventDefault();
-    finalCtaSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-  });
 
   /* =========================
      ASK ROTATOR (app sections)

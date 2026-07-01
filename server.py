@@ -578,6 +578,7 @@ try:
     from auth.explicit_feedback_routes import router as _supabase_explicit_feedback_router
     from auth.no_cap_routes import router as _supabase_no_cap_router
     from auth.workspace_routes import router as _supabase_workspace_router
+    from auth.waitlist_routes import router as _waitlist_router
     from auth.checklist_merge import is_checklist_placeholder_item
 
     app.include_router(_supabase_auth_router)
@@ -590,6 +591,7 @@ try:
     app.include_router(_supabase_explicit_feedback_router)
     app.include_router(_supabase_no_cap_router)
     app.include_router(_supabase_workspace_router)
+    app.include_router(_waitlist_router)
     try:
         from cost_logging.no_cap_testing import no_cap_toggle_enabled as _no_cap_toggle_enabled
 

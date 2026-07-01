@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Join the VERA waitlist</title>
+  <link rel="stylesheet" href="../product.css?v=34" />
+</head>
+<body class="legal-page waitlist-page">
+  <main class="waitlist-shell">
+    <nav class="waitlist-nav" aria-label="Waitlist page navigation">
+      <a class="legal-logo" href="/">VERA</a>
+      <a class="legal-nav-link" href="/">&larr; Back to VERA</a>
+    </nav>
+
+    <div class="waitlist-card" id="waitlist-form-panel">
+      <h1 class="waitlist-title">Join the VERA waitlist</h1>
+      <p class="waitlist-subtitle">Be the first to try VERA as the beta opens.</p>
+
+      <form class="waitlist-form" id="waitlist-form" novalidate>
+        <label class="waitlist-label" for="waitlist-email">Email</label>
+        <input
+          class="waitlist-input"
+          type="email"
+          id="waitlist-email"
+          name="email"
+          autocomplete="email"
+          inputmode="email"
+          placeholder="you@example.com"
+          required
+        />
+        <p class="waitlist-field-error" id="waitlist-field-error" hidden></p>
+        <button class="landing-cta landing-cta-primary waitlist-submit" type="submit" id="waitlist-submit">
+          Join waitlist
+        </button>
+      </form>
+
+      <p class="waitlist-privacy">
+        We&rsquo;ll only use your email for VERA beta access and product updates. You can request removal anytime.
+      </p>
+    </div>
+
+    <div class="waitlist-card waitlist-success" id="waitlist-success-panel" hidden>
+      <h2 class="waitlist-success-title" id="waitlist-success-title">You&rsquo;re on the waitlist.</h2>
+      <p class="waitlist-success-copy" id="waitlist-success-copy">
+        We&rsquo;ll reach out when beta access opens.
+      </p>
+      <a class="legal-nav-link waitlist-back-link" href="/">&larr; Back to VERA</a>
+    </div>
+
+    <p class="waitlist-global-error" id="waitlist-global-error" role="alert" hidden></p>
+  </main>
+
+  <script>
+    (function () {
+      const form = document.getElementById("waitlist-form");
+      const emailInput = document.getElementById("waitlist-email");
+      const submitBtn = document.getElementById("waitlist-submit");
+      const fieldError = document.getElementById("waitlist-field-error");
+      const globalError = document.getElementById("waitlist-global-error");
+      const formPanel = document.getElementById("waitlist-form-panel");
+      const successPanel = document.getElementById("waitlist-success-panel");
+      const successTitle = document.getElementById("waitlist-success-title");
+      const successCopy = document.getElementById("waitlist-success-copy");
+
+      const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const GENERIC_ERROR =
+        "Something went wrong. Please try again later or contact support@workwithvera.com.";
+
+      function normalizeEmail(value) {
+        return String(value || "").trim().toLowerCase();
+      }
+
+      function showFieldError(message) {
+        fieldError.textContent = message;
+        fieldError.hidden = !message;
+        emailInput.setAttribute("aria-invalid", message ? "true" : "false");
+      }
+
+      function showGlobalError(message) {
+        globalError.textContent = message;
+        globalError.hidden = !message;
+      }
+
+      function showSuccess(message) {
+        successTitle.textContent = message || "You're on the waitlist.";
+        successCopy.textContent =
+          message && message.toLowerCase().includes("already")
+            ? "You're already signed up — we'll be in touch when beta access opens."
+            : "We'll reach out when beta access opens.";
+        formPanel.hidden = true;
+        successPanel.hidden = false;
+        globalError.hidden = true;
+        showFieldError("");
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        showGlobalError("");
+        const email = normalizeEmail(emailInput.value);
+
+        if (!email || !EMAIL_RE.test(email)) {
+          showFieldError("Please enter a valid email address.");
+          emailInput.focus();
+          return;
+        }
+
+        showFieldError("");
+        submitBtn.disabled = true;
+        submitBtn.setAttribute("aria-busy", "true");
+
+        try {
+          const response = await fetch("/api/waitlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email,
+              source: "waitlist_page",
+              referrer: document.referrer || undefined,
+            }),
+          });
+
+          let data = {};
+          try {
+            data = await response.json();
+          } catch (_) {
+            data = {};
+          }
+
+          if (response.ok && data.ok) {
+            showSuccess(data.message || "You're on the waitlist.");
+            return;
+          }
+
+          if (response.status === 400) {
+            showFieldError(data.detail || "Please enter a valid email address.");
+            return;
+          }
+
+          showGlobalError(GENERIC_ERROR);
+        } catch (_) {
+          showGlobalError(GENERIC_ERROR);
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.removeAttribute("aria-busy");
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
