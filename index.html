@@ -8,39 +8,12 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=7">
+  <link rel="stylesheet" href="product.css?v=8">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
 
 <body>
-<!-- =========================
-     INTRO OVERLAY (TRAILER)
-========================= -->
-<div id="intro" class="intro">
-  <video
-    id="intro-video"
-    muted
-    playsinline
-    preload="metadata"
-    poster="vera_poster.jpg"
-  >
-    <source src="VERA_commercial_2.mp4" type="video/mp4">
-  </video>
-
-  <button id="enable-sound" class="intro-btn sound">
-    Watch the trailer
-  </button>
-
-  <button id="skip-intro" class="intro-btn skip">
-    Skip the trailer
-  </button>
-  <div class="intro-disclaimer">
-    <p>VERA is an ongoing personal research project.</p>
-    <p>The trailer highlights system concepts and interaction goals rather than a finished product.</p>
-  </div>
-</div>
-
 <section id="home">
 
   <!-- TOP NAV -->
@@ -109,32 +82,34 @@
     </div>
   </header>
 
-  <!-- HERO -->
+  <!-- WHY VERA -->
   <header class="hero" id="about-vera">
     <div class="hero-split">
 
       <div class="hero-left">
         <button
           id="enter-vera"
-          class="hero-label scroll-reveal"
-          aria-label="Enter VERA app"
+          class="hero-label scroll-reveal static"
+          aria-label="Why VERA"
+          type="button"
         >
-          ABOUT VERA
+          WHY VERA?
         </button>
       </div>
 
       <div class="hero-right">
-        <h3 class="hero-headline">
-          <span id="typed-headline"></span>
+        <h3 class="hero-headline scroll-reveal">
+          AI should not start with a perfect prompt.
         </h3>
 
         <p class="hero-text scroll-reveal">
-          VERA is a conversational AI that demonstrates real-time
-          speech recognition, reasoning, and voice synthesis. It listens,
-          understands, and responds through speech or actions (though mostly speech).
-          While inspired by fictional assistants like JARVIS from the Ironman series, 
-          VERA is designed as a human-in-the-loop system, with
-          user control and bounded capabilities.
+          Most AI tools still make you work around the chat box.
+        </p>
+        <p class="hero-text scroll-reveal">
+          You have to turn what you mean into a careful prompt, wait for a text-heavy response, then skim through it to find what matters. That works for deep reading, but it creates friction for quick questions, planning, and everyday requests.
+        </p>
+        <p class="hero-text scroll-reveal">
+          VERA is designed around a faster loop: speak naturally, get real-time responses, and keep moving. When you need to understand something more deeply, the reasoning panel can show context, structure the thinking, and help reinforce learning without forcing every interaction into a long chat thread.
         </p>
       </div>
 
@@ -620,15 +595,6 @@
      DOM REFERENCES
   ========================= */
 
-  const intro = document.getElementById("intro");
-  if (intro) {
-    document.body.classList.add("intro-lock");
-  }
-  const introVideo = document.getElementById("intro-video");
-  const skipBtn = document.getElementById("skip-intro");
-  const soundBtn = document.getElementById("enable-sound");
-  const disclaimer = document.querySelector(".intro-disclaimer");
-
   const home = document.getElementById("home");
   const bmoLoadingScreen = document.getElementById("bmo-loading-screen");
   const bmoPage = document.getElementById("bmo-page");
@@ -648,7 +614,6 @@
      GLOBAL CONFIG
   ========================= */
 
-  const INTRO_SEEN_KEY = "vera_intro_seen_session";
   let bmoLoadingDotsInterval = null;
 
   function stopBmoIntro() {
@@ -693,69 +658,22 @@
   }
 
   /* =========================
-     INTRO LOGIC
+     LANDING HERO (immediate)
   ========================= */
 
-/* =========================
-   LANDING HERO FADE-UP
-========================= */
+  function triggerLandingFadeUp() {
+    document.querySelectorAll(".landing-fade-up").forEach((el) => {
+      el.classList.remove("is-visible");
+      void el.offsetWidth;
+      el.classList.add("is-visible");
+    });
+  }
 
-function triggerLandingFadeUp() {
-  document.querySelectorAll(".landing-fade-up").forEach((el) => {
-    el.classList.remove("is-visible");
-    void el.offsetWidth;
-    el.classList.add("is-visible");
-  });
-}
-
-function showHomeLanding() {
-  home.hidden = false;
-  document.body.classList.remove("app-open", "bmo-open", "vera-mode");
+  document.body.classList.remove("app-open", "bmo-open", "vera-mode", "intro-lock");
+  if (home) {
+    home.hidden = false;
+  }
   triggerLandingFadeUp();
-}
-
-/* =========================
-   INTRO LOGIC (FINAL)
-========================= */
-
-function hideIntro() {
-  // fade disclaimer too
-  disclaimer?.classList.add("hidden");
-
-  intro.style.transition = "opacity 0.8s ease";
-  intro.style.opacity = "0";
-
-  setTimeout(() => {
-    intro.remove();
-    document.body.classList.remove("intro-lock");
-    sessionStorage.setItem(INTRO_SEEN_KEY, "true");
-    showHomeLanding();
-  }, 800);
-}
-
-soundBtn.onclick = () => {
-  introVideo.muted = false;
-  introVideo.play();
-  soundBtn.remove();
-
-  // fade disclaimer when trailer starts
-  disclaimer?.classList.add("hidden");
-};
-
-skipBtn.onclick = hideIntro;
-introVideo.onended = hideIntro;
-
-/* =========================
-   RETURN VISITS / REFRESH
-========================= */
-
-if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
-  intro.remove();
-  document.body.classList.remove("intro-lock");
-
-  // 🔑 slight delay ensures layout + CSS are ready
-  setTimeout(showHomeLanding, 60);
-}
 
   /* =========================
      NAVIGATION
@@ -802,11 +720,8 @@ if (sessionStorage.getItem(INTRO_SEEN_KEY)) {
   }
 
   /* =========================
-     TYPING ANIMATION
+     ASK ROTATOR (app sections)
   ========================= */
-const HEADLINE_TEXT = "VERA, a personal AI agent";
-const headlineEl = document.getElementById("typed-headline");
-const heroParagraph = document.querySelector("#about-vera .hero-text");
 const launchVeraHomeBtn = document.getElementById("launch-vera-home");
 const veraAskRotatorEl = document.getElementById("vera-ask-rotator");
 const bmoAskRotatorEl = document.getElementById("bmo-ask-rotator");
@@ -864,42 +779,10 @@ function stopAskRotator() {
   askRotatorTimer = null;
 }
 
-let headlineIndex = 0;
-let typingStarted = false; // 🔑 THIS WAS MISSING
-const heroLabel = document.getElementById("enter-vera");
 launchVeraHomeBtn?.addEventListener("click", () => {
   window.location.href = "app/";
 });
 
-function startTyping() {
-  if (typingStarted) return;
-  typingStarted = true;
-
-  const interval = setInterval(() => {
-    headlineEl.textContent += HEADLINE_TEXT[headlineIndex];
-    headlineIndex++;
-
-    if (headlineIndex >= HEADLINE_TEXT.length) {
-      clearInterval(interval);
-
-      // reveal paragraph using existing patch-notes animation
-      heroLabel.classList.add("visible");
-      heroParagraph.classList.add("visible");
-    }
-  }, 45);
-}
-
-  /* Trigger typing when About section enters view */
-  const observer = new IntersectionObserver(
-    ([entry]) => {
-      if (entry.isIntersecting) {
-        startTyping();
-      }
-    },
-    { threshold: 0.4 }
-  );
-
-  observer.observe(aboutVeraSection); // Disabled to auto-start typing on page load
   const navAboutMe = document.getElementById("nav-about-me");
   const aboutMeSection = document.getElementById("about-me");
 
