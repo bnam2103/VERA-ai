@@ -584,6 +584,51 @@ body.app-open #how-video {
 
 
 /* =========================
+   LOWER PAGE FLOW
+========================= */
+
+.lower-page-flow {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.lower-section-inner {
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.creator-section {
+  padding: clamp(80px, 9vh, 110px) clamp(20px, 4vw, 48px) clamp(20px, 3vh, 32px);
+  scroll-margin-top: 72px;
+}
+
+.final-cta-section {
+  padding: clamp(36px, 5vh, 56px) clamp(20px, 4vw, 48px) clamp(28px, 4vh, 40px);
+  scroll-margin-top: 72px;
+  text-align: center;
+}
+
+.product-footer.landing-footer {
+  padding: clamp(32px, 4vh, 48px) clamp(20px, 4vw, 48px) clamp(56px, 7vh, 80px);
+  margin-top: 0;
+}
+
+@media (max-width: 768px) {
+  .creator-section {
+    padding: clamp(64px, 8vh, 88px) 20px clamp(24px, 4vh, 36px);
+  }
+
+  .final-cta-section {
+    padding: clamp(40px, 6vh, 56px) 20px clamp(32px, 5vh, 48px);
+  }
+
+  .product-footer.landing-footer {
+    padding: clamp(40px, 5vh, 52px) 20px clamp(48px, 6vh, 64px);
+  }
+}
+
+
+/* =========================
    USE CASES
 ========================= */
 
@@ -848,7 +893,6 @@ body.app-open #how-video {
 ========================= */
 
 .landing-footer {
-  padding: clamp(48px, 6vh, 72px) clamp(20px, 4vw, 48px) clamp(32px, 4vh, 48px);
   border-top: 1px solid var(--landing-border);
   background: rgba(5, 10, 15, 0.6);
 }
@@ -862,7 +906,7 @@ body.app-open #how-video {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr));
   gap: clamp(28px, 4vw, 48px);
-  margin-bottom: clamp(36px, 5vh, 48px);
+  margin-bottom: 0;
 }
 
 .landing-footer-logo {
