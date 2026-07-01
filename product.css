@@ -1049,22 +1049,35 @@ body.app-open #how-video {
 }
 
 .legal-footer-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px 24px;
   margin-top: clamp(36px, 5vh, 48px);
   padding-top: 24px;
   border-top: 1px solid var(--landing-border);
 }
 
-.legal-footer-links a {
+.legal-footer-links-title {
+  margin: 0 0 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--landing-text);
+}
+
+.legal-footer-links-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+}
+
+.legal-footer-link {
+  display: inline-block;
   color: var(--landing-text-muted);
   font-size: 0.9rem;
   text-decoration: none;
   transition: color 0.2s ease;
 }
 
-.legal-footer-links a:hover {
+.legal-footer-link:hover {
   color: var(--landing-teal);
 }
 
