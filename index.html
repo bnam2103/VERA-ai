@@ -8,7 +8,7 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=11">
+  <link rel="stylesheet" href="product.css?v=12">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -24,9 +24,8 @@
 
     <div class="nav-right">
       <button class="nav-link" id="nav-about-vera">WHY VERA</button>
-      <button class="nav-link" id="nav-about-me">About Me</button>
-      <button class="nav-link" id="nav-projects">My Other Projects</button>
-      <button class="nav-link" id="nav-waitlist">JOIN WAITLIST</button>
+      <button class="nav-link" id="nav-use-cases">USE CASES</button>
+      <button class="nav-link" id="nav-future-goal">FUTURE GOAL</button>
     </div>
   </nav>
 
@@ -108,8 +107,33 @@
     </div>
   </section>
 
+  <!-- USE CASES -->
+  <section class="use-cases" id="use-cases">
+    <div class="use-cases-inner">
+      <h2 class="use-cases-title landing-fade-up-scroll landing-fade-up-1">How does VERA work?</h2>
+      <div class="use-cases-grid">
+        <article class="use-case-card landing-fade-up-scroll landing-fade-up-2">
+          <h3 class="use-case-card-title">Real-time conversation</h3>
+          <p>Talk naturally and get spoken responses back in real time. Switch between continuous listening, push-to-talk, and keyboard mode depending on your environment.</p>
+        </article>
+        <article class="use-case-card landing-fade-up-scroll landing-fade-up-3">
+          <h3 class="use-case-card-title">Interruptibility</h3>
+          <p>Interrupt VERA mid-response to correct, redirect, or add context — closer to speaking with another person than a turn-based chat.</p>
+        </article>
+        <article class="use-case-card landing-fade-up-scroll landing-fade-up-4">
+          <h3 class="use-case-card-title">Personalization</h3>
+          <p>VERA uses context like habits and preferences to give more helpful responses. Personal data is planned to stay local on your device.</p>
+        </article>
+        <article class="use-case-card landing-fade-up-scroll landing-fade-up-5">
+          <h3 class="use-case-card-title">System actions</h3>
+          <p>Answer utility questions like time, date, weather, news, and stock prices through voice — with dedicated panels for richer interactions like news and music.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
   <!-- WORD FROM CREATOR -->
-  <section class="creator-note" id="creator-note">
+  <section class="creator-note" id="future-goal">
     <div class="creator-note-inner">
       <article class="creator-note-card">
         <div class="creator-note-card-head landing-fade-up-scroll landing-fade-up-1">
@@ -181,7 +205,8 @@
   const navAboutVera = document.getElementById("nav-about-vera");
 
   const aboutVeraSection = document.getElementById("about-vera");
-  const typedEl = document.getElementById("typed-text");
+  const useCasesSection = document.getElementById("use-cases");
+  const futureGoalSection = document.getElementById("future-goal");
 
   const bgVideo = document.getElementById("bg-video");
   const finalCtaSection = document.getElementById("final-cta");
@@ -300,6 +325,16 @@
     });
   };
 
+  const navUseCases = document.getElementById("nav-use-cases");
+  navUseCases?.addEventListener("click", () => {
+    useCasesSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  const navFutureGoal = document.getElementById("nav-future-goal");
+  navFutureGoal?.addEventListener("click", () => {
+    futureGoalSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
 
   // Logo reload (file-safe)
   navHome.onclick = (e) => {
@@ -310,11 +345,6 @@
   const joinWaitlistHome = document.getElementById("join-waitlist-home");
   joinWaitlistHome?.addEventListener("click", (e) => {
     e.preventDefault();
-    finalCtaSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-  });
-
-  const navWaitlist = document.getElementById("nav-waitlist");
-  navWaitlist?.addEventListener("click", () => {
     finalCtaSection?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
@@ -381,16 +411,6 @@ function stopAskRotator() {
 launchVeraHomeBtn?.addEventListener("click", () => {
   window.location.href = "app/";
 });
-
-  const navAboutMe = document.getElementById("nav-about-me");
-  navAboutMe?.addEventListener("click", () => {
-    window.open("https://www.linkedin.com/in/nam-nguyen-0aa9102a9/", "_blank", "noopener,noreferrer");
-  });
-
-  const navProjects = document.getElementById("nav-projects");
-  navProjects?.addEventListener("click", () => {
-    window.open("https://github.com/bnam2103", "_blank", "noopener,noreferrer");
-  });
 
   /**
    * Pause any audio currently playing in the Vera Work Mode music panel.
