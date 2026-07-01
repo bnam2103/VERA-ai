@@ -8,7 +8,7 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=8">
+  <link rel="stylesheet" href="product.css?v=9">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -23,7 +23,7 @@
     </div>
 
     <div class="nav-right">
-      <button class="nav-link" id="nav-about-vera">About VERA</button>
+      <button class="nav-link" id="nav-about-vera">WHY VERA</button>
       <button class="nav-link" id="nav-about-me">About Me</button>
       <button class="nav-link" id="nav-projects">My Other Projects</button>
     </div>
@@ -83,38 +83,25 @@
   </header>
 
   <!-- WHY VERA -->
-  <header class="hero" id="about-vera">
-    <div class="hero-split">
+  <section class="why-vera" id="about-vera">
+    <div class="why-vera-inner">
+      <p class="why-vera-eyebrow scroll-reveal">WHY VERA?</p>
 
-      <div class="hero-left">
-        <button
-          id="enter-vera"
-          class="hero-label scroll-reveal static"
-          aria-label="Why VERA"
-          type="button"
-        >
-          WHY VERA?
-        </button>
+      <div class="why-vera-columns">
+        <div class="why-vera-col why-vera-problem scroll-reveal">
+          <h2 class="why-vera-col-title">The problem</h2>
+          <p>Most AI tools still make you work around the chat box.</p>
+          <p>You have to turn what you mean into a careful prompt, wait for a text-heavy response, then skim through it to find what matters. That works for deep reading, but it creates friction for quick questions, planning, and everyday requests.</p>
+        </div>
+
+        <div class="why-vera-col why-vera-solution scroll-reveal">
+          <h2 class="why-vera-col-title">The solution</h2>
+          <p>VERA is designed around a faster loop: speak naturally, get real-time responses, and keep moving.</p>
+          <p>When you need to understand something more deeply, the reasoning panel can show context, structure the thinking, and help reinforce learning without forcing every interaction into a long chat thread.</p>
+        </div>
       </div>
-
-      <div class="hero-right">
-        <h3 class="hero-headline scroll-reveal">
-          AI should not start with a perfect prompt.
-        </h3>
-
-        <p class="hero-text scroll-reveal">
-          Most AI tools still make you work around the chat box.
-        </p>
-        <p class="hero-text scroll-reveal">
-          You have to turn what you mean into a careful prompt, wait for a text-heavy response, then skim through it to find what matters. That works for deep reading, but it creates friction for quick questions, planning, and everyday requests.
-        </p>
-        <p class="hero-text scroll-reveal">
-          VERA is designed around a faster loop: speak naturally, get real-time responses, and keep moving. When you need to understand something more deeply, the reasoning panel can show context, structure the thinking, and help reinforce learning without forcing every interaction into a long chat thread.
-        </p>
-      </div>
-
     </div>
-  </header>
+  </section>
   <section id="vera-use-cases" class="vera-use-cases">
   <div class="vera-use-cases-inner">
     
@@ -679,7 +666,7 @@
      NAVIGATION
   ========================= */
 
-  // Scroll to About VERA
+  // Scroll to Why VERA
   navAboutVera.onclick = () => {
     aboutVeraSection.scrollIntoView({
       behavior: "smooth",

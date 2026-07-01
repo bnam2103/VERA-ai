@@ -802,34 +802,90 @@ body.app-open #bg-video {
   text-indent: 48px;      /* subtle first-line indent */
 }
 
-#about-vera .hero-text {
-  margin-left: 32px;
-  text-indent: 0;
-  margin-top: 0;
-  margin-bottom: 0;
-  color: var(--landing-text-muted);
+/* =========================
+   WHY VERA — PROBLEM / SOLUTION
+========================= */
+
+.why-vera {
+  padding: clamp(72px, 9vh, 96px) clamp(20px, 4vw, 48px);
+  scroll-margin-top: 80px;
 }
 
-#about-vera .hero-text + .hero-text {
-  margin-top: 1.15em;
+.why-vera-inner {
+  max-width: 960px;
+  margin: 0 auto;
 }
 
-#about-vera .hero-headline {
-  margin-left: 32px;
+.why-vera-eyebrow {
+  margin: 0 0 clamp(28px, 4vh, 36px);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--landing-teal);
+}
+
+.why-vera-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(32px, 4vw, 56px);
+  align-items: start;
+}
+
+.why-vera-problem {
+  padding-right: clamp(20px, 3vw, 36px);
+  border-right: 1px solid var(--landing-border);
+}
+
+.why-vera-col-title {
+  margin: 0 0 14px;
+  font-size: clamp(1.25rem, 2vw, 1.5rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
   color: var(--landing-text);
 }
 
-#about-vera .hero-label {
+.why-vera-solution .why-vera-col-title {
+  color: var(--landing-teal);
+}
+
+.why-vera-col p {
+  margin: 0;
+  max-width: 42ch;
+  font-size: clamp(0.94rem, 1.4vw, 1.02rem);
+  line-height: 1.65;
   color: var(--landing-text-muted);
-  opacity: 0.7;
 }
 
-#about-vera {      /* anchor content upward */
+.why-vera-col p + p {
+  margin-top: 1em;
+}
+
+@media (max-width: 768px) {
+  .why-vera {
+    padding: 56px 20px 64px;
+  }
+
+  .why-vera-columns {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+
+  .why-vera-problem {
+    padding-right: 0;
+    padding-bottom: 36px;
+    border-right: none;
+    border-bottom: 1px solid var(--landing-border);
+  }
+
+  .why-vera-col p {
+    max-width: none;
+  }
+}
+
+#about-vera {
   position: relative;
-}
-
-#about-vera .hero-split {
-  position: relative;        /* 🔑 anchor for the line */
 }
 
 /* =========================
