@@ -8,7 +8,7 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=3">
+  <link rel="stylesheet" href="product.css?v=4">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -41,9 +41,6 @@
   </div>
 </div>
 
-<audio id="bg-music" loop preload="auto">
-  <source src="background-music.mp3" type="audio/mpeg">
-</audio>
 <section id="home">
 
   <!-- TOP NAV -->
@@ -53,16 +50,6 @@
     </div>
 
     <div class="nav-center">
-      <button
-        class="nav-link music-toggle"
-        id="music-toggle"
-        aria-label="Toggle background music"
-      >
-        MUSIC
-        <span class="music-indicator" aria-hidden="true">
-          <i></i><i></i><i></i>
-        </span>
-      </button>
       <button class="nav-link" id="nav-about-vera">About VERA</button>
       <button class="nav-link" id="nav-about-me">About Me</button>
       <button class="nav-link" id="nav-projects">My Other Projects</button>
@@ -119,8 +106,6 @@
         </span>
       </button>
     </div>
-
-    <div class="scroll-hint">↓</div>
   </header>
 
   <!-- HERO -->
@@ -641,8 +626,6 @@
   const introVideo = document.getElementById("intro-video");
   const skipBtn = document.getElementById("skip-intro");
   const soundBtn = document.getElementById("enable-sound");
-  soundBtn?.addEventListener("click", unlockAudio);
-  skipBtn?.addEventListener("click", unlockAudio);
   const disclaimer = document.querySelector(".intro-disclaimer");
 
   const home = document.getElementById("home");
@@ -660,14 +643,11 @@
 
   const bgVideo = document.getElementById("bg-video");
 
-  const bgMusic = document.getElementById("bg-music");
   /* =========================
      GLOBAL CONFIG
   ========================= */
 
   const INTRO_SEEN_KEY = "vera_intro_seen_session";
-  const AUDIO_UNLOCKED_KEY = "vera_audio_unlocked_session";
-  let audioUnlocked = sessionStorage.getItem(AUDIO_UNLOCKED_KEY) === "true";
   let bmoLoadingDotsInterval = null;
 
   function stopBmoIntro() {
@@ -703,23 +683,6 @@
     }
     if (bmoLoadingDotsEl) {
       bmoLoadingDotsEl.textContent = "";
-    }
-  }
-
-  async function unlockAudio() {
-    if (audioUnlocked) return true;
-
-    try {
-      bgMusic.volume = 0;
-      await bgMusic.play();
-      bgMusic.pause();
-      bgMusic.currentTime = 0;
-      bgMusic.volume = BASE_MUSIC_VOLUME;
-      audioUnlocked = true;
-      sessionStorage.setItem(AUDIO_UNLOCKED_KEY, "true");
-      return true;
-    } catch {
-      return false;
     }
   }
 
@@ -784,8 +747,6 @@ function showHomeLanding() {
   home.hidden = false;
   document.body.classList.remove("app-open", "bmo-open", "vera-mode");
   startLandingHeadlineTyping();
-  void resumeHomeMusic();
-  syncMusicToggleState();
 }
 
 /* =========================
@@ -941,9 +902,7 @@ function stopAskRotator() {
 let headlineIndex = 0;
 let typingStarted = false; // 🔑 THIS WAS MISSING
 const heroLabel = document.getElementById("enter-vera");
-heroLabel?.addEventListener("click", unlockAudio);
-launchVeraHomeBtn?.addEventListener("click", async () => {
-  await unlockAudio();
+launchVeraHomeBtn?.addEventListener("click", () => {
   window.location.href = "app/";
 });
 
@@ -1013,82 +972,6 @@ function startTyping() {
   );
 
   revealEls.forEach(el => revealObserver.observe(el));
-  /* =========================
-    BACKGROUND MUSIC
-  ========================= */
-
-  const musicToggle = document.getElementById("music-toggle");
-
-  const BASE_MUSIC_VOLUME = 0.25;
-  const MUSIC_KEY = "vera_music_enabled";
-
-  function shouldPlayHomeMusic() {
-    return true;
-  }
-
-  function syncMusicToggleState() {
-    const isAudible =
-      !bgMusic.paused &&
-      !bgMusic.ended &&
-      bgMusic.volume > 0.001;
-    musicToggle.classList.toggle("active", isAudible);
-  }
-
-  async function resumeHomeMusic() {
-    if (!shouldPlayHomeMusic()) {
-      syncMusicToggleState();
-      return false;
-    }
-
-    const unlocked = await unlockAudio();
-    if (!unlocked) {
-      syncMusicToggleState();
-      return false;
-    }
-
-    try {
-      bgMusic.volume = BASE_MUSIC_VOLUME;
-      if (bgMusic.paused) {
-        await bgMusic.play();
-      }
-      syncMusicToggleState();
-      return true;
-    } catch (err) {
-      console.warn("Home music resume blocked:", err);
-      syncMusicToggleState();
-      return false;
-    }
-  }
-
-  bgMusic.volume = BASE_MUSIC_VOLUME;
-  bgMusic.loop = true;
-  bgMusic.addEventListener("play", syncMusicToggleState);
-  bgMusic.addEventListener("pause", syncMusicToggleState);
-  bgMusic.addEventListener("volumechange", syncMusicToggleState);
-
-  /* restore preference (but DO NOT autoplay sound) */
-  syncMusicToggleState();
-
-  const unlockOnFirstGesture = async () => {
-    const unlocked = await unlockAudio();
-    if (!unlocked) return;
-    syncMusicToggleState();
-  };
-
-  window.addEventListener("pointerdown", unlockOnFirstGesture, { once: true, passive: true });
-  window.addEventListener("keydown", unlockOnFirstGesture, { once: true });
-
-  /* user gesture REQUIRED */
-  musicToggle.onclick = async () => {
-    if (bgMusic.paused) {
-      localStorage.setItem(MUSIC_KEY, "true");
-      await resumeHomeMusic();
-    } else {
-      bgMusic.pause();
-      localStorage.setItem(MUSIC_KEY, "false");
-      syncMusicToggleState();
-    }
-  };
 
   /**
    * Pause any audio currently playing in the Vera Work Mode music panel.

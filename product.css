@@ -50,7 +50,7 @@ body.app-open #bg-video {
 
 .landing-preview {
   position: relative;
-  width: min(560px, 86vw);
+  width: min(680px, 90vw);
   aspect-ratio: 16 / 10;
   border-radius: 14px;
   overflow: hidden;
@@ -286,53 +286,8 @@ body.app-open #bg-video {
 }
 
 /* =========================
-   MUSIC INDICATOR (FINAL FIX)
+   NAV LINKS
 ========================= */
-
-.music-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* container — COMPLETELY OFF by default */
-.music-indicator {
-  display: none;                /* 🔑 HARD STOP */
-  gap: 2px;
-  height: 12px;
-}
-
-/* bars — STATIC baseline */
-.music-indicator i {
-  width: 2px;
-  height: 100%;
-  background: currentColor;
-  opacity: 0.6;
-  transform-origin: bottom;
-  transform: scaleY(0.35);
-  animation: none;              /* 🔑 HARD STOP */
-}
-
-/* ONLY when music is ACTUALLY ON */
-.music-toggle.active .music-indicator {
-  display: inline-flex;         /* 🔑 appear */
-}
-
-.music-toggle.active .music-indicator i {
-  animation: musicWave 1.4s ease-in-out infinite;
-}
-
-/* stagger */
-.music-toggle.active .music-indicator i:nth-child(1) { animation-delay: 0s; }
-.music-toggle.active .music-indicator i:nth-child(2) { animation-delay: 0.18s; }
-.music-toggle.active .music-indicator i:nth-child(3) { animation-delay: 0.36s; }
-
-/* waveform animation */
-@keyframes musicWave {
-  0%   { transform: scaleY(0.35); opacity: 0.4; }
-  50%  { transform: scaleY(1);    opacity: 0.9; }
-  100% { transform: scaleY(0.4);  opacity: 0.5; }
-}
 
 .nav-link {
   background: none;
@@ -350,17 +305,6 @@ body.app-open #bg-video {
 }
 
 .nav-link:hover {
-  opacity: 1;
-  color: var(--vera-cyan-bright);
-  text-shadow: 0 0 14px var(--vera-cyan-glow);
-}
-
-.nav-center .music-toggle {
-  opacity: 0.5;
-}
-
-.nav-center .music-toggle:hover,
-.nav-center .music-toggle.active {
   opacity: 1;
   color: var(--vera-cyan-bright);
   text-shadow: 0 0 14px var(--vera-cyan-glow);
@@ -443,7 +387,7 @@ body.app-open #bg-video {
 
 .landing-subhead {
   margin: 0 0 clamp(24px, 3.5vh, 36px);
-  max-width: min(520px, 88vw);
+  max-width: min(960px, 94vw);
 
   font-size: clamp(0.95rem, 1.75vw, 1.12rem);
   font-weight: 400;
@@ -451,6 +395,13 @@ body.app-open #bg-video {
   letter-spacing: 0.015em;
 
   color: rgba(180, 200, 220, 0.62);
+  background: none;
+}
+
+@media (min-width: 769px) {
+  .landing-subhead {
+    white-space: nowrap;
+  }
 }
 
 .landing-cta-row {
@@ -542,25 +493,6 @@ body.app-open #bg-video {
   outline-offset: 3px;
 }
 
-/* subtle scroll hint */
-.scroll-hint {
-  position: absolute;
-  bottom: clamp(24px, 4vh, 36px);
-  left: 50%;
-  transform: translateX(-50%);
-
-  font-size: 18px;
-  opacity: 0.35;
-
-  animation: floatDown 2s ease-in-out infinite;
-}
-
-@keyframes floatDown {
-  0%   { transform: translateX(-50%) translateY(0); opacity: 0.35; }
-  50%  { transform: translateX(-50%) translateY(8px); opacity: 0.6; }
-  100% { transform: translateX(-50%) translateY(0); opacity: 0.35; }
-}
-
 
 /* =========================
    LANDING — RESPONSIVE
@@ -609,6 +541,7 @@ body.app-open #bg-video {
   .landing-subhead {
     font-size: 0.92rem;
     margin-bottom: 22px;
+    white-space: normal;
   }
 
   .landing-cta-row {
@@ -622,7 +555,7 @@ body.app-open #bg-video {
   }
 
   .landing-preview {
-    width: min(100%, 88vw);
+    width: min(100%, 90vw);
     border-radius: 12px;
   }
 
