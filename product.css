@@ -819,7 +819,7 @@ body.app-open #how-video {
 ========================= */
 
 .lower-page-flow {
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  /* wrapper for creator transition + closing screen */
 }
 
 .lower-section-inner {
@@ -829,24 +829,44 @@ body.app-open #how-video {
 }
 
 .creator-section {
-  padding: clamp(96px, 12vh, 150px) clamp(20px, 4vw, 48px) clamp(70px, 8vh, 110px);
-  margin-bottom: 0;
+  padding: clamp(96px, 12vh, 150px) 24px clamp(80px, 10vh, 120px);
+  scroll-margin-top: 72px;
+}
+
+.creator-inner {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.closing-section {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   scroll-margin-top: 72px;
 }
 
 .final-cta-section {
-  padding: clamp(40px, 6vh, 80px) clamp(20px, 4vw, 48px) clamp(80px, 9vh, 120px);
-  scroll-margin-top: 72px;
-  text-align: center;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 80px 24px;
 }
 
 @media (max-width: 768px) {
   .creator-section {
-    padding: clamp(72px, 10vh, 112px) 20px clamp(56px, 7vh, 80px);
+    padding: clamp(72px, 10vh, 112px) 20px clamp(64px, 8vh, 96px);
+  }
+
+  .closing-section {
+    min-height: auto;
   }
 
   .final-cta-section {
-    padding: clamp(32px, 5vh, 56px) 20px clamp(64px, 8vh, 96px);
+    flex: none;
+    padding: clamp(56px, 10vh, 80px) 20px clamp(40px, 6vh, 56px);
   }
 }
 
@@ -1025,11 +1045,6 @@ body.app-open #how-video {
    WORD FROM CREATOR
 ========================= */
 
-.creator-note-inner {
-  max-width: min(720px, 92vw);
-  margin: 0 auto;
-}
-
 .creator-note-content {
   text-align: left;
 }
@@ -1078,24 +1093,24 @@ body.app-open #how-video {
 
 .final-cta-title {
   margin: 0;
-  font-size: clamp(30px, 3vw, 44px);
-  font-weight: 760;
-  line-height: 1.1;
-  letter-spacing: -0.035em;
+  font-size: clamp(36px, 4vw, 58px);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.045em;
   text-align: center;
   color: var(--landing-text);
 }
 
 .final-cta-subtitle {
-  margin: 10px 0 0;
-  font-size: clamp(15px, 1vw, 18px);
+  margin: 12px 0 0;
+  font-size: clamp(16px, 1.15vw, 20px);
   line-height: 1.5;
-  color: rgba(242, 245, 247, 0.62);
+  color: rgba(242, 245, 247, 0.64);
   text-align: center;
 }
 
 .final-cta .cta-actions {
-  margin-top: 24px;
+  margin-top: 28px;
 }
 
 .final-cta-btn {
@@ -1105,16 +1120,16 @@ body.app-open #how-video {
 
 @media (max-width: 768px) {
   .final-cta-title {
-    font-size: clamp(28px, 7vw, 36px);
+    font-size: clamp(32px, 8vw, 44px);
   }
 
   .final-cta-subtitle {
-    font-size: 15px;
-    margin-top: 8px;
+    font-size: 16px;
+    margin-top: 10px;
   }
 
   .final-cta .cta-actions {
-    margin-top: 20px;
+    margin-top: 24px;
   }
 }
 
@@ -1124,7 +1139,8 @@ body.app-open #how-video {
 ========================= */
 
 .product-footer {
-  padding: 44px 24px;
+  flex-shrink: 0;
+  padding: 36px 24px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(5, 10, 15, 0.6);
 }
