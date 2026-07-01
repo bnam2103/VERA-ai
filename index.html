@@ -8,7 +8,7 @@
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
   <link rel="stylesheet" href="styles.css?v=15">
-  <link rel="stylesheet" href="product.css?v=9">
+  <link rel="stylesheet" href="product.css?v=10">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 </head>
@@ -85,89 +85,91 @@
   <!-- WHY VERA -->
   <section class="why-vera" id="about-vera">
     <div class="why-vera-inner">
-      <p class="why-vera-eyebrow scroll-reveal">WHY VERA?</p>
+      <p class="why-vera-eyebrow landing-fade-up-scroll landing-fade-up-1">WHY VERA?</p>
 
       <div class="why-vera-columns">
-        <div class="why-vera-col why-vera-problem scroll-reveal">
-          <h2 class="why-vera-col-title">The problem</h2>
-          <p>Most AI tools still make you work around the chat box.</p>
-          <p>You have to turn what you mean into a careful prompt, wait for a text-heavy response, then skim through it to find what matters. That works for deep reading, but it creates friction for quick questions, planning, and everyday requests.</p>
+        <div class="why-vera-col why-vera-problem">
+          <h2 class="why-vera-col-title landing-fade-up-scroll landing-fade-up-2">The problem</h2>
+          <div class="why-vera-col-body landing-fade-up-scroll landing-fade-up-3">
+            <p>Most AI tools still make you work around the chat box.</p>
+            <p>You have to turn what you mean into a careful prompt, wait for a text-heavy response, then skim through it to find what matters. That works for deep reading, but it creates friction for quick questions, planning, and everyday requests.</p>
+          </div>
         </div>
 
-        <div class="why-vera-col why-vera-solution scroll-reveal">
-          <h2 class="why-vera-col-title">The solution</h2>
-          <p>VERA is designed around a faster loop: speak naturally, get real-time responses, and keep moving.</p>
-          <p>When you need to understand something more deeply, the reasoning panel can show context, structure the thinking, and help reinforce learning without forcing every interaction into a long chat thread.</p>
+        <div class="why-vera-col why-vera-solution">
+          <h2 class="why-vera-col-title landing-fade-up-scroll landing-fade-up-4">The solution</h2>
+          <div class="why-vera-col-body landing-fade-up-scroll landing-fade-up-5">
+            <p>VERA is designed around a faster loop: speak naturally, get real-time responses, and keep moving.</p>
+            <p>When you need to understand something more deeply, the reasoning panel can show context, structure the thinking, and help reinforce learning without forcing every interaction into a long chat thread.</p>
+          </div>
         </div>
       </div>
     </div>
   </section>
-  <section id="vera-use-cases" class="vera-use-cases">
-  <div class="vera-use-cases-inner">
-    
-    <h2 class="vera-section-title soft type-title" data-text="How does VERA work?"></h2>
 
+  <section id="vera-use-cases" class="vera-how">
+    <div class="vera-how-inner">
+      <h2 class="vera-how-title landing-fade-up-scroll landing-fade-up-1">How does VERA work?</h2>
 
-    <div class="vera-use-cases-content">
-      
-      <div class="use-cases-layout">
-      <div class="use-cases-nav scroll-reveal delay-1">
-
-        <button class="use-case-btn" data-case="realtime">
-          🎙️ Real-time Conversation
-        </button>
-        <button class="use-case-btn" data-case="interrupt">
-          ⏸️ Interruptibility
-        </button>
-        <button class="use-case-btn" data-case="personalization">
-          🎨 Personalization
-        </button>
-        <button class="use-case-btn" data-case="actions">
-          ⚙️ System Actions
-        </button>
-      </div>
-
-      <div class="use-cases-panel use-cases-window scroll-reveal delay-2">
-
-        <div class="use-case-content" id="case-realtime">
-          <h3>Real-time Voice Processing</h3>
-          <p>
-            VERA lets you talk naturally and get spoken responses back in real time,
-            similar to a human conversation. Users can switch between continuous 
-            listening, push-to-talk, and keyboard mode depending on the environment.
-          </p>
+      <div class="vera-how-layout">
+        <div class="vera-how-features" role="tablist" aria-label="VERA features">
+          <div class="vera-feature active" data-case="realtime">
+            <button type="button" class="vera-feature-btn" role="tab" aria-selected="true">Real-time conversation</button>
+            <div class="vera-feature-body" role="tabpanel">
+              <p>VERA lets you talk naturally and get spoken responses back in real time, similar to a human conversation. Users can switch between continuous listening, push-to-talk, and keyboard mode depending on the environment.</p>
+            </div>
+          </div>
+          <div class="vera-feature" data-case="interrupt">
+            <button type="button" class="vera-feature-btn" role="tab" aria-selected="false">Interruptibility</button>
+            <div class="vera-feature-body" role="tabpanel" hidden>
+              <p>Users can interrupt VERA mid-response to correct, redirect, or add context. This creates a more fluid and natural conversational flow, similar to speaking with another person rather than a turn-based conversation.</p>
+            </div>
+          </div>
+          <div class="vera-feature" data-case="personalization">
+            <button type="button" class="vera-feature-btn" role="tab" aria-selected="false">Personalization</button>
+            <div class="vera-feature-body" role="tabpanel" hidden>
+              <p>VERA uses context like habits and preferences to give more helpful responses. Personal data is planned to stay local on the user’s device.</p>
+            </div>
+          </div>
+          <div class="vera-feature" data-case="actions">
+            <button type="button" class="vera-feature-btn" role="tab" aria-selected="false">System actions</button>
+            <div class="vera-feature-body" role="tabpanel" hidden>
+              <p>VERA can answer utility questions like time, date, weather, countdowns, news, and stock prices through voice. For richer interactions, the prototype currently includes dedicated panels for news and music.</p>
+            </div>
+          </div>
         </div>
 
-        <div class="use-case-content" id="case-interrupt">
-          <h3>Interruptibility</h3>
-          <p>
-            Users can interrupt VERA mid-response to correct, redirect, 
-            or add context. This creates a more fluid and natural conversational 
-            flow, similar to speaking with another person rather than a turn-based conversation.
-          </p>
-        </div>
-
-        <div class="use-case-content" id="case-personalization">
-          <h3>Personalization</h3>
-          <p>
-            VERA uses context like habits and preferences to give more helpful responses.
-            Personal data is planned to stay local on the user’s device.
-          </p>
-        </div>
-
-        <div class="use-case-content" id="case-actions">
-          <h3>Actions and Queries</h3>
-          <p>
-            VERA can answer utility questions like time, date, weather, countdowns, 
-            news, and stock prices through voice. For richer interactions, 
-            the prototype currently includes dedicated panels for news and music.
-          </p>
+        <div class="vera-how-preview landing-fade-up-scroll landing-fade-up-3">
+          <p class="vera-how-preview-caption" id="vera-how-caption">Real-time conversation</p>
+          <div class="landing-demo-viewport vera-how-viewport">
+            <video
+              id="how-video"
+              class="landing-preview-video"
+              autoplay
+              muted
+              loop
+              playsinline
+            >
+              <source src="background.mp4" type="video/mp4">
+            </video>
+            <button
+              type="button"
+              class="landing-preview-play"
+              id="how-video-toggle"
+              aria-label="Pause video"
+            >
+              <span class="landing-play-icon" aria-hidden="true">
+                <svg width="14" height="16" viewBox="0 0 14 16" fill="currentColor"><path d="M0 0v16l14-8L0 0z"/></svg>
+              </span>
+              <span class="landing-pause-icon" aria-hidden="true">
+                <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><rect x="0" y="0" width="4" height="14" rx="1"/><rect x="8" y="0" width="4" height="14" rx="1"/></svg>
+              </span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
-    </div>
-  </div>
-</section>
+  </section>
   <section class="vera-log">
   <div class="vera-log-inner">
 
@@ -596,10 +598,81 @@
   const typedEl = document.getElementById("typed-text");
 
   const bgVideo = document.getElementById("bg-video");
+  const howVideo = document.getElementById("how-video");
+
+  function bindPreviewVideoToggle(toggle, video) {
+    if (!toggle || !video) return;
+    toggle.addEventListener("click", () => {
+      if (video.paused) {
+        video.play();
+        toggle.setAttribute("aria-label", "Pause video");
+        toggle.classList.remove("is-paused");
+      } else {
+        video.pause();
+        toggle.setAttribute("aria-label", "Play video");
+        toggle.classList.add("is-paused");
+      }
+    });
+  }
 
   /* =========================
-     GLOBAL CONFIG
+     LANDING PREVIEW VIDEO
   ========================= */
+
+  bindPreviewVideoToggle(
+    document.getElementById("landing-video-toggle"),
+    bgVideo
+  );
+  bindPreviewVideoToggle(
+    document.getElementById("how-video-toggle"),
+    howVideo
+  );
+
+  /* =========================
+     SCROLL FADE-UP REVEAL
+  ========================= */
+
+  const scrollFadeEls = document.querySelectorAll(".landing-fade-up-scroll");
+  const scrollFadeObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add("is-visible");
+        scrollFadeObserver.unobserve(entry.target);
+      });
+    },
+    { threshold: 0.18, rootMargin: "0px 0px -8% 0px" }
+  );
+  scrollFadeEls.forEach((el) => scrollFadeObserver.observe(el));
+
+  /* =========================
+     HOW VERA WORKS — FEATURES
+  ========================= */
+
+  const veraFeatures = document.querySelectorAll(".vera-feature");
+  const veraHowCaption = document.getElementById("vera-how-caption");
+
+  veraFeatures.forEach((feature) => {
+    const btn = feature.querySelector(".vera-feature-btn");
+    const body = feature.querySelector(".vera-feature-body");
+    if (!btn || !body) return;
+
+    btn.addEventListener("click", () => {
+      veraFeatures.forEach((item) => {
+        const itemBtn = item.querySelector(".vera-feature-btn");
+        const itemBody = item.querySelector(".vera-feature-body");
+        const isActive = item === feature;
+        item.classList.toggle("active", isActive);
+        itemBtn?.setAttribute("aria-selected", isActive ? "true" : "false");
+        if (itemBody) {
+          itemBody.hidden = !isActive;
+        }
+      });
+      if (veraHowCaption) {
+        veraHowCaption.textContent = btn.textContent.trim();
+      }
+    });
+  });
 
   let bmoLoadingDotsInterval = null;
 
@@ -686,25 +759,6 @@
     e.preventDefault();
     aboutVeraSection.scrollIntoView({ behavior: "smooth", block: "start" });
   });
-
-  /* =========================
-     LANDING PREVIEW VIDEO
-  ========================= */
-
-  const landingVideoToggle = document.getElementById("landing-video-toggle");
-  if (landingVideoToggle && bgVideo) {
-    landingVideoToggle.addEventListener("click", () => {
-      if (bgVideo.paused) {
-        bgVideo.play();
-        landingVideoToggle.setAttribute("aria-label", "Pause video");
-        landingVideoToggle.classList.remove("is-paused");
-      } else {
-        bgVideo.pause();
-        landingVideoToggle.setAttribute("aria-label", "Play video");
-        landingVideoToggle.classList.add("is-paused");
-      }
-    });
-  }
 
   /* =========================
      ASK ROTATOR (app sections)
@@ -856,69 +910,6 @@ launchVeraHomeBtn?.addEventListener("click", () => {
     } catch (_) {}
   }
   window.pauseMusicPanelOnNavAway = pauseMusicPanelOnNavAway;
-const caseButtons = document.querySelectorAll(".use-case-btn");
-const caseContents = document.querySelectorAll(".use-case-content");
-
-caseButtons.forEach(btn => {
-  btn.addEventListener("click", () => {
-    const target = btn.dataset.case;
-
-    caseButtons.forEach(b => b.classList.remove("active"));
-    caseContents.forEach(c => c.classList.remove("active"));
-
-    btn.classList.add("active");
-    document.getElementById(`case-${target}`).classList.add("active");
-  });
-});
-
-const DEFAULT_CASE = "realtime";
-
-const defaultBtn = document.querySelector(
-  `.use-case-btn[data-case="${DEFAULT_CASE}"]`
-);
-const defaultPanel = document.getElementById(`case-${DEFAULT_CASE}`);
-
-if (defaultBtn && defaultPanel) {
-  defaultBtn.classList.add("active");
-  defaultPanel.classList.add("active");
-}
-
-const typeTitles = document.querySelectorAll(".type-title");
-
-function typeText(el, text, speed = 45) {
-  let i = 0;
-  el.textContent = "";
-
-  const interval = setInterval(() => {
-    el.textContent += text[i];
-    i++;
-
-    if (i >= text.length) {
-      clearInterval(interval);
-    }
-  }, speed);
-}
-
-const titleObserver = new IntersectionObserver(
-  (entries) => {
-    entries.forEach(entry => {
-      if (!entry.isIntersecting) return;
-
-      const el = entry.target;
-      const text = el.dataset.text;
-
-      // prevent retrigger
-      if (el.dataset.typed) return;
-      el.dataset.typed = "true";
-
-      typeText(el, text, 40);
-      titleObserver.unobserve(el);
-    });
-  },
-  { threshold: 0.6 }
-);
-
-typeTitles.forEach(el => titleObserver.observe(el));
 
 const patchCollapse = document.querySelector(".patch-collapse");
 const patchVersions = Array.from(document.querySelectorAll(".patch-version"));
