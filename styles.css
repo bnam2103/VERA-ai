@@ -1314,7 +1314,8 @@ body.chat-started .input-container {
   top: 0;
   bottom: 0;
   width: var(--vera-sidebar-width);
-  z-index: 100;
+  z-index: 1100;
+  pointer-events: auto;
   display: flex;
   flex-direction: column;
   border-right: 1px solid rgba(255, 255, 255, 0.07);
@@ -1339,7 +1340,10 @@ body.chat-started .input-container {
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  width: 100%;
   min-height: 100%;
+  flex: 1 1 auto;
+  pointer-events: auto;
   padding: 16px 8px 24px;
   box-sizing: border-box;
 }
@@ -5487,6 +5491,22 @@ body.chat-started .input-bar {
   background: rgba(82, 190, 130, 0.34);
 }
 
+.vera-settings-save-btn.is-saved {
+  border-color: rgba(118, 205, 158, 0.85);
+  background: rgba(82, 190, 130, 0.42);
+}
+
+.vera-settings-save-btn.is-error {
+  border-color: rgba(255, 120, 120, 0.75);
+  background: rgba(120, 40, 40, 0.35);
+  color: rgba(255, 220, 220, 0.96);
+}
+
+.vera-settings-save-btn:disabled {
+  opacity: 0.72;
+  cursor: default;
+}
+
 .vera-user-sign-in-dialog {
   width: 100%;
   max-width: 400px;
@@ -6236,7 +6256,7 @@ body.chat-started .chat-centered::after {
   );
 
   pointer-events: none;
-  z-index: 2; /* above messages, below sidebar (80) and input (1000) */
+  z-index: 2; /* above messages, below sidebar (1100) and input (1000) */
 }
 
 body.bmo-open.chat-started .chat-centered::after,

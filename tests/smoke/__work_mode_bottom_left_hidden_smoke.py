@@ -77,7 +77,10 @@ ok("text-shadow" in brand_hover and "background: transparent" in brand_hover, "s
 ok("setFeedbackSidebarLabel" in open(os.path.join(_ROOT, "users/explicitFeedback.js"), encoding="utf-8").read(), "feedback label preserves +50 credits badge")
 ok("getVeraMarketingHomeUrl" in open(os.path.join(_ROOT, "app/shell.js"), encoding="utf-8").read(), "sidebar home navigation helper exists")
 sidebar_z = css.split(".vera-sidebar {", 1)[1].split("}", 1)[0]
-ok("z-index: 100" in sidebar_z, "sidebar sits above bottom fade layer")
+ok("z-index: 1100" in sidebar_z, "sidebar sits above input layer and bottom fade")
+ok("pointer-events: auto" in sidebar_z, "sidebar receives hover across full expanded width")
+inner_block = css.split(".vera-sidebar-inner {", 1)[1].split("}", 1)[0]
+ok("width: 100%" in inner_block and "pointer-events: auto" in inner_block, "sidebar inner fills hover hit area")
 ok(".vera-sidebar:hover" in css and "width: var(--vera-sidebar-expanded-width)" in css, "sidebar expands as overlay on hover/focus")
 fade_block = css.split("body.chat-started .chat-centered::after {", 1)[1].split("}", 1)[0]
 ok("z-index: 2" in fade_block, "bottom fade stays below sidebar and input")

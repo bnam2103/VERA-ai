@@ -4824,20 +4824,32 @@ function clearVeraSpotifyBearer() {
 }
 
 async function claimSpotifyHandoff(handoff) {
-  if (!handoff || typeof handoff !== "string") return;
+  if (!handoff || typeof handoff !== "string") return false;
   const base = localBackendBase();
-  const res = await fetch(`${base}/api/spotify/claim-handoff`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
-    body: JSON.stringify({ handoff })
-  });
-  if (!res.ok) return;
+  console.info("[spotify_handoff_claim_start]");
+  let res;
+  try {
+    res = await fetch(`${base}/api/spotify/claim-handoff`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...veraSpotifyAuthHeaders() },
+      body: JSON.stringify({ handoff })
+    });
+  } catch (e) {
+    console.warn("[spotify_handoff_claim_failed]", "network");
+    return false;
+  }
+  if (!res.ok) {
+    console.warn("[spotify_handoff_claim_failed]", res.status);
+    return false;
+  }
   const j = await res.json().catch(() => ({}));
   if (j.bearer) {
     veraSpotifySetStoredBearer(j.bearer);
     window.__veraSpotifyBearer = j.bearer;
   }
+  console.info("[spotify_handoff_claim_ok]", j.bearer ? "bearer_stored" : "session_only");
+  return true;
 }
 
 async function refreshSpotifyConnectionUI(prefix) {
@@ -6286,10 +6298,20 @@ function spotifyApplyViewMode(prefix) {
   }
 }
 
+function veraSpotifyOpenerOrigin() {
+  try {
+    const u = new URL(window.location.href);
+    let path = u.pathname.replace(/\/app\/?.*$/i, "").replace(/\/$/, "");
+    return `${u.origin}${path}`;
+  } catch (_) {
+    return window.location.origin;
+  }
+}
+
 function openSpotifyConnectOAuth() {
   const u = new URL("/auth/spotify/login", `${localBackendBase()}/`);
   try {
-    u.searchParams.set("opener_origin", window.location.origin);
+    u.searchParams.set("opener_origin", veraSpotifyOpenerOrigin());
   } catch (_) {
     /* ignore */
   }
@@ -6347,14 +6369,17 @@ function wireSpotifyConnectLink(link) {
 
 async function refreshSpotifyPanelAfterOAuthInOtherTab() {
   const prefix = appModePrefix();
-  if (!document.getElementById(`${prefix}-spotify-connect-link`)) return;
-  await refreshSpotifyConnectionUI(prefix);
+  console.info("[spotify_panel_refresh_after_connect]", prefix);
   const st = await fetch(`${localBackendBase()}/api/spotify/connection-status`, {
     credentials: "include",
     headers: { ...veraSpotifyAuthHeaders() }
   })
-    .then((r) => r.json())
+    .then((r) => (r.ok ? r.json() : { connected: false }))
     .catch(() => ({ connected: false }));
+  window.__veraSpotifyConnected = !!st.connected;
+  /* Panel may not be mounted yet; connection flag above lets a later render show connected state. */
+  if (!document.getElementById(`${prefix}-spotify-connect-link`)) return;
+  await refreshSpotifyConnectionUI(prefix);
   if (st.connected) await ensureSpotifyWebPlayer(prefix);
 }
 
@@ -30498,6 +30523,9 @@ function wireVeraSettingsPanel() {
     logVeraSettings("draft_planning_deadline_timer", { value: draftPlanningDeadlineTimer ? 1 : 0 });
   });
   saveBtn?.addEventListener("click", () => {
+    if (!(saveBtn instanceof HTMLButtonElement)) return;
+    const originalLabel = saveBtn.textContent || "Save settings";
+    saveBtn.disabled = true;
     draftSilenceMs = readSliderSilenceMs();
     draftMainAsrPartialMinChars = readSliderPartialMinChars();
     logVeraSettings("save_click", {
@@ -30508,16 +30536,34 @@ function wireVeraSettingsPanel() {
       planning_deadline_timer: draftPlanningDeadlineTimer ? 1 : 0,
       main_asr_partial_min_chars: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
     });
-    setVeraAsrSilenceMs(draftSilenceMs);
-    setVeraAsrMode(draftAsrMode);
-    setMainAsrPartialMinChars(draftMainAsrPartialMinChars);
-    setTextGuideRotatorEnabled(draftTextGuideRotator);
-    setWorkModeMuteEnabled(draftWorkModeMute);
-    setPlanningDeadlineTimerEnabled(draftPlanningDeadlineTimer);
-    if (typeof syncLocalVeraPrefsToSupabase === "function") {
-      void syncLocalVeraPrefsToSupabase("settings_panel_save");
+    try {
+      setVeraAsrSilenceMs(draftSilenceMs);
+      setVeraAsrMode(draftAsrMode);
+      setMainAsrPartialMinChars(draftMainAsrPartialMinChars);
+      setTextGuideRotatorEnabled(draftTextGuideRotator);
+      setWorkModeMuteEnabled(draftWorkModeMute);
+      setPlanningDeadlineTimerEnabled(draftPlanningDeadlineTimer);
+      if (typeof syncLocalVeraPrefsToSupabase === "function") {
+        void syncLocalVeraPrefsToSupabase("settings_panel_save");
+      }
+      saveBtn.textContent = "Saved";
+      saveBtn.classList.add("is-saved");
+      window.setTimeout(() => {
+        saveBtn.disabled = false;
+        saveBtn.classList.remove("is-saved");
+        saveBtn.textContent = originalLabel;
+        closeSettings();
+      }, 550);
+    } catch (e) {
+      console.warn("[vera-settings] save failed", e);
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Save failed — try again";
+      saveBtn.classList.add("is-error");
+      window.setTimeout(() => {
+        saveBtn.classList.remove("is-error");
+        saveBtn.textContent = originalLabel;
+      }, 2200);
     }
-    close();
   });
 
   resetSessionBtn?.addEventListener("click", () => {
@@ -30526,7 +30572,7 @@ function wireVeraSettingsPanel() {
     if (!ok) return;
     if (appModePrefix() === "bmo") resetBmoSessionAndUi();
     else resetVeraSessionAndUi();
-    close();
+    closeSettings();
   });
 
   costArchiveBtn?.addEventListener("click", async () => {
@@ -30604,17 +30650,31 @@ if (typeof initSupabaseAuth === "function") {
 }
 
 (function stripSpotifyOAuthQueryParams() {
+  const SPOTIFY_OAUTH_ERROR_MESSAGES = {
+    expired: "Spotify connection expired. Please try again.",
+    invalid_state: "Spotify connection expired. Please try again.",
+    cancelled: "Spotify connection was cancelled.",
+    failed: "Could not connect Spotify. Please try again.",
+    token_exchange_failed: "Could not connect Spotify. Please try again.",
+    missing_code: "Could not connect Spotify. Please try again.",
+    no_refresh_token: "Could not connect Spotify. Please try again.",
+  };
+  function spotifyOAuthUserMessage(code) {
+    const key = String(code || "").trim().toLowerCase();
+    return SPOTIFY_OAUTH_ERROR_MESSAGES[key] || (key ? "Could not connect Spotify. Please try again." : "");
+  }
   try {
     const u = new URL(window.location.href);
     if (!u.searchParams.has("spotify_connected") && !u.searchParams.has("spotify_error")) return;
     const err = u.searchParams.get("spotify_error");
     u.searchParams.delete("spotify_connected");
     u.searchParams.delete("spotify_error");
-    if (err) console.warn("[Spotify OAuth]", err);
+    const msg = spotifyOAuthUserMessage(err);
+    if (msg) console.warn("[Spotify OAuth]", msg);
     history.replaceState({}, "", u.pathname + u.search + u.hash);
     try {
       const bc = new BroadcastChannel("vera-spotify");
-      bc.postMessage({ type: "spotify-oauth-done", error: err });
+      bc.postMessage({ type: "spotify-oauth-done", error: err, message: msg || null });
       bc.close();
     } catch (_) {
       /* ignore */
@@ -30622,6 +30682,7 @@ if (typeof initSupabaseAuth === "function") {
   } catch (_) {
     /* ignore */
   }
+  window.veraSpotifyOAuthUserMessage = spotifyOAuthUserMessage;
 })();
 
 (function wireSpotifyOAuthPostMessageFromPopup() {
@@ -30636,13 +30697,25 @@ if (typeof initSupabaseAuth === "function") {
       return;
     }
     if (ev.origin !== apiOrigin) return;
+    console.info("[spotify_popup_message_received]", ev.data.ok ? "ok" : "error");
     if (!ev.data.ok) {
-      console.warn("[Spotify OAuth]", ev.data.error);
+      const msg =
+        (typeof window.veraSpotifyOAuthUserMessage === "function"
+          ? window.veraSpotifyOAuthUserMessage(ev.data.error)
+          : "") || "Could not connect Spotify. Please try again.";
+      console.warn("[Spotify OAuth]", msg);
       return;
     }
     void (async () => {
-      if (ev.data.handoff) await claimSpotifyHandoff(ev.data.handoff);
-      void refreshSpotifyPanelAfterOAuthInOtherTab();
+      let claimed = true;
+      if (ev.data.handoff) claimed = await claimSpotifyHandoff(ev.data.handoff);
+      await refreshSpotifyPanelAfterOAuthInOtherTab();
+      if (!claimed && !window.__veraSpotifyConnected) {
+        console.warn(
+          "[Spotify OAuth]",
+          "Spotify connection completed but session expired. Please connect again."
+        );
+      }
     })();
   });
 })();

@@ -60,6 +60,12 @@ ok("window.veraOpenSettingsModal = () => openSettings()" in app_js, "settings op
 ok("window.veraOpenAccountModal = () => openAccount()" in app_js, "account opens via veraOpenAccountModal")
 ok("window.veraOpenSettingsToAccountSection = () => openAccount()" in app_js, "legacy account hook maps to account modal")
 ok("scrollToGuide" not in app_js, "no auto-scroll to old guide section")
+ok("closeSettings();" in app_js and "saveBtn.textContent = \"Saved\"" in app_js, "save settings shows confirmation and closes modal")
+
+section("settings save button styles")
+with open(os.path.join(_ROOT, "styles.css"), encoding="utf-8") as f:
+    css = f.read()
+ok(".vera-settings-save-btn.is-saved" in css, "saved state styled on save button")
 
 section("manual checklist")
 print("  -- Account button opens account-only modal")
