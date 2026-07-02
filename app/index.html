@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=26">
+  <link rel="stylesheet" href="../styles.css?v=28">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -971,7 +971,7 @@
       </div>
     </section>
 
-    <section class="vera-settings-section">
+    <section class="vera-settings-section vera-settings-voice-timing-section">
       <h3>Voice timing</h3>
 
       <div class="vera-settings-row">
@@ -995,25 +995,33 @@
           </div>
         </div>
       </div>
+    </section>
 
-      <div class="vera-settings-row">
-        <div class="vera-settings-label">Speech recognition mode</div>
-        <p class="vera-settings-hint">Choose between faster real-time transcription and slower, more accurate recognition.</p>
-        <div class="vera-settings-radio-row" role="radiogroup" aria-label="Speech recognition mode">
-          <button type="button" id="vera-setting-asr-streaming" class="vera-settings-radio" data-asr-mode="streaming" aria-pressed="true" title="Shows speech in real time and responds faster, but may be less accurate.">
-            <span class="dot" aria-hidden="true"></span> Fast / Streaming
-          </button>
-          <button type="button" id="vera-setting-asr-whisper" class="vera-settings-radio" data-asr-mode="whisper" aria-pressed="false" title="More accurate transcription, but responses may take longer.">
-            <span class="dot" aria-hidden="true"></span> Accurate / Whisper
-          </button>
-          <button type="button" id="vera-setting-asr-hybrid" class="vera-settings-radio" data-asr-mode="hybrid" aria-pressed="false" title="Uses streaming for responsiveness and Whisper for accuracy when available.">
-            <span class="dot" aria-hidden="true"></span> Hybrid
-          </button>
-        </div>
-      </div>
-
-      <div class="vera-settings-row">
-        <button type="button" id="vera-setting-reset-session" class="vera-settings-danger-btn">Reset session</button>
+    <section class="vera-settings-section vera-settings-asr-section">
+      <h3>Speech recognition</h3>
+      <p class="vera-settings-hint vera-settings-section-lead">Choose between faster real-time transcription and slower, more accurate recognition.</p>
+      <div class="vera-settings-asr-options" role="radiogroup" aria-label="Speech recognition mode">
+        <button type="button" id="vera-setting-asr-streaming" class="vera-settings-radio vera-settings-asr-option" data-asr-mode="streaming" aria-pressed="true" title="Shows speech in real time and responds faster, but may be less accurate.">
+          <span class="vera-settings-asr-option-head">
+            <span class="dot" aria-hidden="true"></span>
+            <span class="vera-settings-asr-option-label">Fast / Streaming</span>
+          </span>
+          <span class="vera-settings-asr-option-desc">Faster and shows speech in real time.</span>
+        </button>
+        <button type="button" id="vera-setting-asr-whisper" class="vera-settings-radio vera-settings-asr-option" data-asr-mode="whisper" aria-pressed="false" title="More accurate transcription, but responses may take longer.">
+          <span class="vera-settings-asr-option-head">
+            <span class="dot" aria-hidden="true"></span>
+            <span class="vera-settings-asr-option-label">Accurate / Whisper</span>
+          </span>
+          <span class="vera-settings-asr-option-desc">More accurate, but may take longer.</span>
+        </button>
+        <button type="button" id="vera-setting-asr-hybrid" class="vera-settings-radio vera-settings-asr-option" data-asr-mode="hybrid" aria-pressed="false" title="Uses streaming for responsiveness and Whisper for accuracy when available.">
+          <span class="vera-settings-asr-option-head">
+            <span class="dot" aria-hidden="true"></span>
+            <span class="vera-settings-asr-option-label">Hybrid</span>
+          </span>
+          <span class="vera-settings-asr-option-desc">Balances speed and accuracy when available.</span>
+        </button>
       </div>
     </section>
 
@@ -1044,7 +1052,7 @@
       <pre id="vera-cost-log-status" class="vera-cost-log-status" hidden></pre>
     </section>
 
-    <section class="vera-settings-section">
+    <section class="vera-settings-section vera-settings-work-mode-section">
       <h3>Work Mode</h3>
       <div class="vera-settings-row vera-settings-toggle-row">
         <div class="vera-settings-toggle-copy">
@@ -1054,6 +1062,14 @@
         <button type="button" id="vera-setting-workmode-mute" class="vera-settings-toggle" aria-pressed="false" title="Mute spoken responses in Work Mode" aria-label="Mute spoken responses in Work Mode">
           <span class="knob"></span>
         </button>
+      </div>
+    </section>
+
+    <section class="vera-settings-section vera-settings-session-section">
+      <h3>Session</h3>
+      <p class="vera-settings-hint vera-settings-section-lead">Start over with a clean VERA session. This clears the current conversation state for this browser session.</p>
+      <div class="vera-settings-row vera-settings-session-action">
+        <button type="button" id="vera-setting-reset-session" class="vera-settings-danger-btn">Reset session</button>
       </div>
     </section>
     <div class="vera-settings-actions">
@@ -1256,7 +1272,7 @@
 <script src="../news/newsRouter.js?v=3"></script>
 <script src="../news/newsPanel.js?v=4"></script>
 <script src="../news/weatherPanel.js?v=1"></script>
-<script src="app.js?v=130"></script>
+<script src="app.js?v=131"></script>
 <script src="shell.js?v=2"></script>
 <!-- voice/musicNavigation.js — shared track navigation dedupe + ended guard -->
 <script src="../voice/musicNavigation.js?v=1"></script>

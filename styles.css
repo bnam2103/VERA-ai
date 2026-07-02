@@ -2548,42 +2548,82 @@ body.chat-started .input-container {
   font-weight: 600;
 }
 
-.music-source-toggle {
+.music-panel-header {
+  margin-bottom: 8px;
+  padding-bottom: 0;
+}
+
+.music-panel-header-top {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
   align-items: center;
-  margin-bottom: 16px;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
-.side-pane-header:has(.music-source-toggle) {
-  margin-bottom: 12px;
-  padding-bottom: 2px;
+.music-panel-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(242, 245, 247, 0.9);
 }
 
-.music-source-tab {
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.88);
-  border-radius: 999px;
-  padding: 6px 14px;
-  font-size: 13px;
+#vera-app.work-mode .music-panel-title {
+  display: none;
+}
+
+#vera-app.work-mode .music-panel-header-top {
+  display: none;
+}
+
+.music-segmented-control {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  padding: 2px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.music-source-toggle {
+  margin-bottom: 0;
+}
+
+.music-source-tab,
+.spotify-view-tab {
+  border: none;
+  background: transparent;
+  color: rgba(242, 245, 247, 0.58);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.music-source-tab:hover {
-  background: rgba(255, 255, 255, 0.1);
+.music-source-tab:hover,
+.spotify-view-tab:hover {
+  color: rgba(242, 245, 247, 0.82);
+  background: rgba(255, 255, 255, 0.04);
 }
 
-.music-source-tab.active {
-  border-color: rgba(30, 215, 96, 0.55);
-  background: rgba(30, 215, 96, 0.2);
-  color: #fff;
+.music-source-tab.active,
+.spotify-view-tab.active {
+  color: rgba(242, 245, 247, 0.95);
+  background: rgba(30, 215, 96, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(30, 215, 96, 0.35);
 }
 
 .music-source-tab.spotify-source-tab.active {
-  color: #1ed760;
+  color: #8ef0b0;
+}
+
+.side-pane-header:has(.music-source-toggle) {
+  margin-bottom: 8px;
+  padding-bottom: 0;
 }
 
 .music-pane-stack[hidden] {
@@ -2604,46 +2644,50 @@ body.chat-started .input-container {
 }
 
 .free-music-section-title {
-  margin: 0 0 12px;
-  font-size: 11px;
-  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(242, 245, 247, 0.5);
 }
 
 .free-music-section-title--sounds {
-  margin-top: 22px;
-  margin-bottom: 14px;
+  margin-top: 12px;
+  margin-bottom: 8px;
 }
 
 .free-music-section-title--playlists {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .free-music-playlist-cards {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
 }
 
 .free-music-playlist-card {
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.22);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  overflow: hidden;
+  border-radius: 0;
+  background: transparent;
+  border: none;
+  overflow: visible;
 }
 
 .free-music-playlist-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px;
+  padding: 8px 10px;
   cursor: pointer;
   user-select: none;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.035);
 }
 
 .free-music-playlist-head:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(30, 215, 96, 0.1);
+  border-color: rgba(30, 215, 96, 0.18);
 }
 
 .free-music-playlist-head.is-expanded .free-music-playlist-chevron {
@@ -2772,21 +2816,22 @@ body.chat-started .input-container {
 .free-music-sound-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
 }
 
 .free-music-sound-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .free-music-sound-row:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(30, 215, 96, 0.1);
+  border-color: rgba(30, 215, 96, 0.18);
 }
 
 .free-music-sound-row-play {
@@ -2826,83 +2871,122 @@ body.chat-started .input-container {
 .spotify-panel-body {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 10px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.music-pane-stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.music-pane-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.music-list-scroll {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .spotify-view-toggle {
-  display: inline-flex;
-  gap: 20px;
-  margin-top: 4px;
-  margin-bottom: 14px;
+  margin: 0;
 }
 
-.spotify-view-tab {
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
-  border-radius: 999px;
-  padding: 6px 12px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.spotify-view-tab.active {
-  border-color: rgba(30, 215, 96, 0.5);
-  background: rgba(30, 215, 96, 0.22);
-}
-
-.spotify-now-playing {
+.spotify-now-playing,
+.music-now-playing {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.music-now-playing-body {
+  display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
-  border-radius: 14px;
-  background: rgba(0, 0, 0, 0.28);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  position: relative;
+  gap: 10px;
+  min-width: 0;
+}
+
+.music-now-playing-status {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: none;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(242, 245, 247, 0.58);
+}
+
+.music-now-playing-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.music-now-playing-progress {
+  margin-top: 0;
+}
+
+.music-now-playing-transport {
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
 }
 
 /* Source badge — always visible label that says where playback is coming
    from ("Playing from Built-in" / "Playing from Spotify" / "Not playing").
    Lives inside .spotify-now-playing in a stable top-row position. */
 .music-source-badge {
-  width: 100%;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.62);
-  padding-bottom: 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  margin-bottom: 4px;
+  color: rgba(242, 245, 247, 0.58);
 }
 .music-source-badge[data-active-source="builtin"] {
-  color: #c0d4ff;
+  color: #9ec4ff;
 }
 .music-source-badge[data-active-source="spotify"] {
   color: #1ed760;
 }
 .music-source-badge[data-active-source="none"] {
-  color: rgba(255, 255, 255, 0.4);
-  text-transform: none;
-  font-weight: 500;
-  letter-spacing: normal;
+  color: rgba(242, 245, 247, 0.5);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.03em;
 }
 .music-source-badge::before {
   content: "";
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
-  opacity: 0.85;
+  opacity: 0.9;
 }
 .music-source-badge[data-active-source="none"]::before {
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(242, 245, 247, 0.35);
+}
+.music-source-badge[data-active-source="builtin"]::before,
+.music-source-badge[data-active-source="spotify"]::before {
+  box-shadow: 0 0 0 2px rgba(30, 215, 96, 0.15);
 }
 
 /* Inactive-source banner — shown above the content stack when the
@@ -2952,11 +3036,12 @@ body.chat-started .input-container {
   filter: saturate(0.6) brightness(0.85);
 }
 
-.spotify-art-placeholder {
+.spotify-art-placeholder,
+.music-now-playing-art {
   width: 56px;
   height: 56px;
-  border-radius: 8px;
-  background: linear-gradient(145deg, rgba(30, 215, 96, 0.25), rgba(0, 0, 0, 0.4));
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(30, 215, 96, 0.22), rgba(0, 0, 0, 0.42));
   flex-shrink: 0;
 }
 
@@ -2966,17 +3051,17 @@ body.chat-started .input-container {
 }
 
 .spotify-track-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  color: #f5f7fb;
+  color: rgba(242, 245, 247, 0.9);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .spotify-track-artist {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.55);
+  font-size: 11px;
+  color: rgba(242, 245, 247, 0.58);
   margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -2984,17 +3069,17 @@ body.chat-started .input-container {
 }
 
 .spotify-progress-wrap {
-  margin-top: 8px;
+  margin-top: 0;
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .spotify-time-text {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.62);
-  min-width: 32px;
+  font-size: 10px;
+  color: rgba(242, 245, 247, 0.58);
+  min-width: 28px;
   text-align: center;
 }
 
@@ -3007,22 +3092,24 @@ body.chat-started .input-container {
 .spotify-transport {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
   justify-content: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .spotify-transport-btn {
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
-  font-size: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(242, 245, 247, 0.92);
+  font-size: 12px;
+  line-height: 1;
   cursor: pointer;
   transition: background 0.2s ease;
+  padding: 0;
 }
 
 .spotify-transport-btn:hover:not(:disabled) {
@@ -3035,34 +3122,36 @@ body.chat-started .input-container {
 }
 
 .spotify-play-btn {
-  width: 48px;
-  height: 48px;
-  background: rgba(30, 215, 96, 0.25);
-  border-color: rgba(30, 215, 96, 0.4);
+  width: 36px;
+  height: 36px;
+  background: rgba(30, 215, 96, 0.22);
+  border-color: rgba(30, 215, 96, 0.38);
 }
 
 .spotify-volume-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin-left: 4px;
-  padding: 0 6px;
+  gap: 4px;
+  margin-left: 2px;
+  padding: 0 2px;
 }
 
 .spotify-volume-icon {
-  font-size: 12px;
-  opacity: 0.8;
+  font-size: 11px;
+  opacity: 0.72;
+  color: rgba(242, 245, 247, 0.7);
 }
 
 .spotify-volume {
-  width: 96px;
+  width: 72px;
   accent-color: #1ed760;
   cursor: pointer;
 }
 
 .spotify-search-form {
   display: flex;
-  gap: 8px;
+  gap: 6px;
+  align-items: center;
 }
 
 /* Playlist tab: catalog search is hidden (belt-and-suspenders with [hidden] — flex on <form> can win in some engines). */
@@ -3073,42 +3162,46 @@ body.chat-started .input-container {
 .spotify-search-input {
   flex: 1;
   min-width: 0;
-  padding: 10px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.35);
-  color: #fff;
-  font-size: 13px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(242, 245, 247, 0.9);
+  font-size: 12px;
 }
 
 .spotify-search-input::placeholder {
-  color: rgba(255, 255, 255, 0.38);
+  color: rgba(242, 245, 247, 0.42);
 }
 
 .spotify-search-submit {
   flex-shrink: 0;
-  padding: 10px 16px;
-  border-radius: 999px;
-  border: 1px solid rgba(30, 215, 96, 0.4);
-  background: rgba(30, 215, 96, 0.18);
-  color: #fff;
-  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(30, 215, 96, 0.35);
+  background: rgba(30, 215, 96, 0.16);
+  color: rgba(242, 245, 247, 0.92);
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.2s ease;
 }
 
 .spotify-search-submit:hover {
-  background: rgba(30, 215, 96, 0.3);
+  background: rgba(30, 215, 96, 0.26);
 }
 
-.spotify-results {
+.spotify-results,
+.music-media-list {
   min-height: 0;
-  max-height: min(40vh, 320px);
+  max-height: min(36vh, 260px);
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .spotify-playlist-view {
@@ -3149,14 +3242,15 @@ body.chat-started .input-container {
   color: #ff8a8a;
 }
 
-.spotify-result-row {
+.spotify-result-row,
+.music-media-row {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.035);
   cursor: pointer;
   text-align: left;
   width: 100%;
@@ -3165,15 +3259,106 @@ body.chat-started .input-container {
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.spotify-result-row:hover {
-  background: rgba(30, 215, 96, 0.12);
-  border-color: rgba(30, 215, 96, 0.2);
+.spotify-result-row:hover,
+.music-media-row:hover {
+  background: rgba(30, 215, 96, 0.1);
+  border-color: rgba(30, 215, 96, 0.18);
+}
+
+.music-media-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.music-media-row-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(242, 245, 247, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.music-media-row-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: rgba(242, 245, 247, 0.58);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.music-media-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: rgba(0, 0, 0, 0.35);
+  flex-shrink: 0;
+}
+
+.music-media-thumb--builtin {
+  background: linear-gradient(145deg, rgba(30, 215, 96, 0.2), rgba(0, 0, 0, 0.42));
+}
+
+.music-media-thumb--sound {
+  background: linear-gradient(145deg, rgba(120, 170, 255, 0.18), rgba(0, 0, 0, 0.42));
+}
+
+.music-media-row-action {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(242, 245, 247, 0.88);
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.music-media-row-action-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(30, 215, 96, 0.18);
+  color: rgba(242, 245, 247, 0.92);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.music-media-row-action-btn:hover {
+  background: rgba(30, 215, 96, 0.32);
+  border-color: rgba(30, 215, 96, 0.4);
+}
+
+.music-media-row-chevron {
+  flex: 0 0 auto;
+  font-size: 16px;
+  line-height: 1;
+  color: rgba(242, 245, 247, 0.45);
+  transition: transform 0.15s ease;
+}
+
+.free-music-playlist-head.is-expanded .music-media-row-chevron {
+  transform: rotate(90deg);
 }
 
 .spotify-result-thumb {
-  width: 40px;
-  height: 40px;
-  border-radius: 6px;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
   object-fit: cover;
   background: rgba(0, 0, 0, 0.35);
   flex-shrink: 0;
@@ -3370,40 +3555,69 @@ body.chat-started .input-container {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 0;
+  padding: 0 2px;
+}
+
+.spotify-connect-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(242, 245, 247, 0.82);
+}
+
+.spotify-connect-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #1ed760;
+  box-shadow: 0 0 0 2px rgba(30, 215, 96, 0.2);
+  flex-shrink: 0;
 }
 
 .spotify-connect-link {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  color: #1ed760;
+  color: #8ef0b0;
   text-decoration: none;
-  padding: 8px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(30, 215, 96, 0.45);
-  background: rgba(30, 215, 96, 0.1);
+  padding: 6px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(30, 215, 96, 0.35);
+  background: rgba(30, 215, 96, 0.14);
   transition: background 0.2s ease;
 }
 
 .spotify-connect-link:hover {
-  background: rgba(30, 215, 96, 0.2);
+  background: rgba(30, 215, 96, 0.24);
 }
 
 .spotify-logout-btn {
   font-size: 11px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.75);
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: rgba(242, 245, 247, 0.62);
   cursor: pointer;
 }
 
+.spotify-logout-btn:hover {
+  color: rgba(242, 245, 247, 0.88);
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .spotify-connected-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-size: 11px;
   font-weight: 600;
-  color: rgba(30, 215, 96, 0.9);
+  color: rgba(242, 245, 247, 0.82);
 }
 
 body.chat-started .input-bar {
@@ -4643,8 +4857,8 @@ body.chat-started .input-bar {
 #vera-app.work-mode .vera-wm-music-body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
-  padding: 8px;
+  overflow: hidden;
+  padding: 6px 8px 8px;
 }
 
 #vera-app.work-mode #vera-side-pane {
@@ -4654,7 +4868,31 @@ body.chat-started .input-bar {
   width: 100% !important;
   max-width: none !important;
   max-height: none !important;
-  height: auto !important;
+  height: 100% !important;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+#vera-app.work-mode #vera-side-pane .spotify-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#vera-app.work-mode #vera-side-pane .spotify-results,
+#vera-app.work-mode #vera-side-pane .music-media-list {
+  max-height: none;
+  flex: 1 1 auto;
 }
 
 #vera-app.work-mode .vera-wm-music-body .side-pane-close {
@@ -5716,6 +5954,66 @@ body.chat-started .input-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.vera-settings-section-lead {
+  margin-top: -2px;
+  margin-bottom: 14px;
+  max-width: 62ch;
+}
+
+.vera-settings-asr-section {
+  padding: 16px 16px 14px;
+}
+
+.vera-settings-asr-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.vera-settings-asr-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-height: 92px;
+  padding: 14px 14px 12px;
+  border-radius: 12px;
+  text-align: left;
+  line-height: 1.35;
+}
+
+.vera-settings-asr-option-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.vera-settings-asr-option-desc {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(220, 228, 245, 0.68);
+  font-weight: 400;
+}
+
+.vera-settings-asr-option.is-active .vera-settings-asr-option-desc {
+  color: rgba(230, 240, 255, 0.82);
+}
+
+.vera-settings-session-section .vera-settings-session-action {
+  margin-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .vera-settings-asr-options {
+    grid-template-columns: 1fr;
+  }
 }
 
 .vera-settings-radio {
@@ -7639,6 +7937,7 @@ body.bmo-open .spotify-now-playing {
 }
 
 body.bmo-open .spotify-connect-link,
+body.bmo-open .spotify-connect-status,
 body.bmo-open .spotify-connected-badge,
 body.bmo-open .spotify-volume-icon {
   color: #0f2e22;
