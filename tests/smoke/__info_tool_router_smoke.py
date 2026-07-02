@@ -1301,6 +1301,174 @@ finally:
     _ws_panel._serper_media = _OriginalMedia
 
 # ============================================================================
+# 2026-07-01 — place recommendation location clarification (live-route guards)
+# ============================================================================
+section("Places — empty client context → location_required, no Serper Places")
+_asian_q = "Can you recommend an Asian restaurant?"
+_places_calls: list[dict] = []
+
+
+def _track_places_serper(endpoint, q, limit, prefix):
+    _places_calls.append({"endpoint": endpoint, "query": q, "prefix": prefix})
+    return _fake_media(endpoint, q, limit, prefix)
+
+
+_ws_panel._serper_search_organic = _fake_organic
+_ws_panel._serper_media = _track_places_serper
+try:
+    prepared_asian = _ws_panel.prepare_web_search_streaming(
+        _FakeVeraWeb(),
+        _asian_q,
+        raw_user_text=_asian_q,
+        client_location="",
+        client_location_source="",
+        client_latitude=None,
+        client_longitude=None,
+    )
+    ok(prepared_asian is not None, "Asian restaurant empty context → prepared clarification")
+    _msgs, _ui_asian, _fin_asian = prepared_asian
+    ar_asian = _fin_asian("")
+    ok(ar_asian.get("location_required") is True, "finalize marks location_required=True")
+    ok(
+        "city" in (ar_asian.get("spoken_reply") or "").lower()
+        or "area" in (ar_asian.get("spoken_reply") or "").lower(),
+        "spoken reply asks for city/area",
+        detail=str(ar_asian.get("spoken_reply")),
+    )
+    ok(_ui_asian is None, "no Places panel ui_payload on clarification")
+    ok(
+        not any(c.get("prefix") == "places" for c in _places_calls),
+        "no Serper Places call when location missing",
+        detail=str(_places_calls),
+    )
+finally:
+    _ws_panel._serper_search_organic = _OriginalOrganic
+    _ws_panel._serper_media = _OriginalMedia
+
+section("Places — saved default Fountain Valley → search near saved city")
+_places_calls_saved: list[dict] = []
+
+
+def _track_places_saved(endpoint, q, limit, prefix):
+    _places_calls_saved.append({"endpoint": endpoint, "query": q, "prefix": prefix})
+    return _fake_media(endpoint, q, limit, prefix)
+
+
+_ws_panel._serper_search_organic = _fake_organic
+_ws_panel._serper_media = _track_places_saved
+try:
+    prepared_saved = _ws_panel.prepare_web_search_streaming(
+        _FakeVeraWeb(),
+        _asian_q,
+        raw_user_text=_asian_q,
+        client_location="Fountain Valley, CA",
+        client_location_source="saved_default",
+    )
+    ok(prepared_saved is not None, "saved default → prepared search payload")
+    _m2, ui_saved, _f2 = prepared_saved
+    ok(ui_saved is not None, "Places panel payload emitted with saved default")
+    ok(
+        ui_saved.get("location") == "Fountain Valley, CA",
+        "panel subheader uses Fountain Valley",
+        detail=str(ui_saved.get("location")),
+    )
+    ok(
+        any(c.get("prefix") == "places" for c in _places_calls_saved),
+        "Serper Places called with saved default",
+        detail=str(_places_calls_saved),
+    )
+finally:
+    _ws_panel._serper_search_organic = _OriginalOrganic
+    _ws_panel._serper_media = _OriginalMedia
+
+section("Places — explicit Irvine in utterance")
+irvine_q = "Best sushi near Irvine"
+irvine_panel = _ws_panel.classify_web_search_panel(irvine_q)
+ok(irvine_panel.get("location") == "Irvine", "explicit Irvine extracted")
+ok(irvine_panel.get("location_source") == "utterance", "explicit location_source=utterance")
+ok(irvine_panel.get("location_required") is False, "explicit Irvine does not clarify")
+
+section("Places — browser geolocation only")
+browser_panel = _ws_panel.classify_web_search_panel(
+    _asian_q,
+    client_location="your current location",
+    client_location_source="browser_geolocation",
+    client_latitude=33.6846,
+    client_longitude=-117.8265,
+)
+ok(browser_panel.get("location_required") is False, "browser coords resolve venue query")
+ok(
+    browser_panel.get("location_source") == "browser_geolocation",
+    "location_source=browser_geolocation",
+    detail=str(browser_panel),
+)
+
+section("Server — location availability rejects null island coords")
+app.latest_client_context_snapshot["smoke-null-island"] = {
+    "search_location": "your current location",
+    "search_location_source": "browser_geolocation",
+    "search_latitude": 0,
+    "search_longitude": 0,
+}
+ok(
+    app._client_search_location_available("smoke-null-island") is False,
+    "0,0 browser coords do not count as location_available",
+)
+app.latest_client_context_snapshot.pop("smoke-null-island", None)
+
+section("Server — build_route clarifies venue when snapshot has no location")
+app.latest_client_context_snapshot["smoke-empty-loc"] = {
+    "search_location": "",
+    "search_location_source": "",
+    "search_latitude": None,
+    "search_longitude": None,
+}
+c_empty = classify(_asian_q, location_available=False)
+built_empty = app.build_route_from_info_tool(_asian_q, c_empty, session_id="smoke-empty-loc")
+ok(
+    built_empty is not None
+    and built_empty.get("needs_followup") is True
+    and built_empty.get("missing_slot") == "location",
+    "build_route → needs_followup location for empty snapshot",
+    detail=str(built_empty),
+)
+app.latest_client_context_snapshot["smoke-saved-fv"] = {
+    "search_location": "Fountain Valley, CA",
+    "search_location_source": "saved_default",
+    "search_latitude": None,
+    "search_longitude": None,
+}
+c_saved = classify(_asian_q, location_available=True)
+built_saved = app.build_route_from_info_tool(_asian_q, c_saved, session_id="smoke-saved-fv")
+ok(
+    built_saved is not None
+    and built_saved.get("needs_followup") is False
+    and built_saved.get("action_name") == "web.search",
+    "build_route → web.search when saved default present",
+    detail=str(built_saved),
+)
+app.latest_client_context_snapshot.pop("smoke-empty-loc", None)
+app.latest_client_context_snapshot.pop("smoke-saved-fv", None)
+
+section("Server — clearing client snapshot drops stale saved location")
+app.latest_client_context_snapshot["smoke-stale"] = {
+    "search_location": "Fountain Valley, CA",
+    "search_location_source": "saved_default",
+}
+app._store_client_context_snapshot(
+    "smoke-stale",
+    {
+        "search_location": "",
+        "search_location_source": "",
+        "search_latitude": None,
+        "search_longitude": None,
+    },
+)
+stale_after = app._get_client_search_location("smoke-stale")
+ok(stale_after.get("location") == "", "stale saved location cleared from server snapshot")
+app.latest_client_context_snapshot.pop("smoke-stale", None)
+
+# ============================================================================
 # Final tally
 # ============================================================================
 print(f"\n{'='*60}")

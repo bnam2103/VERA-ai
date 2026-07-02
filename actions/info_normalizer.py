@@ -570,15 +570,22 @@ def _is_explicit_news_request(text: str) -> bool:
 
 
 def _is_location_query(text: str) -> bool:
-    """Venue-noun + optional "in <place>" / "near me"."""
+    """Venue-noun + optional "in <place>" / "near me", or bare venue recommend."""
     if not text:
         return False
     if not _LOCATION_VENUE_RE.search(text):
         return False
-    return bool(
-        _LOCATION_IN_PLACE_RE.search(text)
-        or _LOCATION_NEAR_ME_RE.search(text)
-    )
+    if _LOCATION_IN_PLACE_RE.search(text) or _LOCATION_NEAR_ME_RE.search(text):
+        return True
+    # "Can you recommend an Asian restaurant?" — venue intent without area yet.
+    if re.search(
+        r"\b(?:recommend(?:s|ing|ed|ation|ations)?|suggest(?:s|ing|ed)?|"
+        r"best|top|good|nice|any)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
 
 
 def _extract_location_query_place(text: str) -> str:

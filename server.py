@@ -64,6 +64,7 @@ from actions.finance import (
     is_finance_analytics_query,
 )
 from actions.web_search import (
+    classify_web_search_panel,
     handle_web_search_request,
     prepare_web_search_streaming,
 )
@@ -1267,6 +1268,24 @@ recent_action_context = {}
 latest_client_context_snapshot = {}
 anonymous_work_mode_checklists = {}
 
+def _coords_are_usable_search_location(
+    latitude: float | None, longitude: float | None
+) -> bool:
+    """True only for real browser coordinates — not null island or out of range."""
+    if latitude is None or longitude is None:
+        return False
+    try:
+        lat_f = float(latitude)
+        lng_f = float(longitude)
+    except (TypeError, ValueError):
+        return False
+    if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lng_f <= 180.0):
+        return False
+    if abs(lat_f) < 1e-6 and abs(lng_f) < 1e-6:
+        return False
+    return True
+
+
 def _get_client_search_location(session_id: str) -> dict:
     """Read saved/browser search location from the latest client snapshot."""
     snap = latest_client_context_snapshot.get(session_id) or {}
@@ -1287,12 +1306,45 @@ def _get_client_search_location(session_id: str) -> dict:
         lng_f = float(lng) if lng is not None and str(lng).strip() != "" else None
     except (TypeError, ValueError):
         lng_f = None
+    if not _coords_are_usable_search_location(lat_f, lng_f):
+        lat_f = None
+        lng_f = None
+    label = str(snap.get("search_location") or "").strip()
+    source = str(snap.get("search_location_source") or "").strip()
+    if label.lower() in {"your current location", "current location"}:
+        if not _coords_are_usable_search_location(lat_f, lng_f):
+            label = ""
+            source = ""
     return {
-        "location": str(snap.get("search_location") or "").strip(),
-        "source": str(snap.get("search_location_source") or "").strip(),
+        "location": label,
+        "source": source,
         "latitude": lat_f,
         "longitude": lng_f,
     }
+
+
+def _client_search_location_available(session_id: str) -> bool:
+    """Whether venue/place search may proceed without asking for a city."""
+    loc = _get_client_search_location(session_id)
+    if loc.get("location"):
+        return True
+    return _coords_are_usable_search_location(
+        loc.get("latitude"), loc.get("longitude")
+    )
+
+
+def _store_client_context_snapshot(session_id: str, client_context: dict | None) -> dict | None:
+    """Persist the latest client snapshot, clearing stale location when the client did."""
+    if not session_id or not isinstance(client_context, dict):
+        return client_context if isinstance(client_context, dict) else None
+    snap = dict(client_context)
+    if not str(snap.get("search_location") or "").strip():
+        snap["search_location"] = ""
+        snap["search_location_source"] = ""
+        snap["search_latitude"] = None
+        snap["search_longitude"] = None
+    latest_client_context_snapshot[session_id] = snap
+    return snap
 # After "clear the checklist", we stash the previous items so "undo that"
 # can restore them. Per session_id; expires after CHECKLIST_UNDO_TTL_SEC.
 checklist_undo_snapshots: dict[str, dict] = {}
@@ -6214,14 +6266,7 @@ def route_action_request(session_id: str, text: str) -> dict:
     # Only confident picks short-circuit; "uncertain" falls through so the
     # existing news_intent + LLM router can still take over.
     sports_ctx = get_recent_sports_context(session_id)
-    _client_search_loc = _get_client_search_location(session_id)
-    _location_available = bool(
-        _client_search_loc.get("location")
-        or (
-            _client_search_loc.get("latitude") is not None
-            and _client_search_loc.get("longitude") is not None
-        )
-    )
+    _location_available = _client_search_location_available(session_id)
     try:
         _info_tool = classify_info_tool(
             text,
@@ -7034,6 +7079,28 @@ def prepare_streaming_structured_action(
     slots = route.get("slots", {})
 
     if route.get("needs_followup"):
+        if action_name == "web.search" and route.get("missing_slot") == "location":
+            query = (slots.get("query") or slots.get("user_text") or text or "").strip()
+            if not query:
+                return None
+            set_pending_action(session_id, "web.search", "location", dict(slots or {}))
+            prepared = prepare_web_search_streaming(
+                vera,
+                query,
+                raw_user_text=(slots.get("user_text") or text or "").strip() or None,
+                client_location="",
+                client_location_source="",
+                client_latitude=None,
+                client_longitude=None,
+            )
+            if prepared is None:
+                return None
+            messages, ui_payload, fin = prepared
+
+            def finalize(full_reply: str) -> dict:
+                return fin(full_reply or "")
+
+            return PreparedStreamingAction(messages, "web_search", ui_payload, finalize)
         return None
 
     try:
@@ -11600,6 +11667,25 @@ def build_route_from_info_tool(
             slots["product_intent"] = dict(classification.get("product_intent") or {})
         if classification.get("normalized_query"):
             slots["normalized_query"] = str(classification.get("normalized_query") or "")
+        # Venue/place queries without a resolvable location must clarify even
+        # when classify_info_tool thought location_available (stale snapshot).
+        _client_loc = _get_client_search_location(session_id) if session_id else {}
+        _panel = classify_web_search_panel(
+            raw,
+            client_location=str(_client_loc.get("location") or ""),
+            client_location_source=str(_client_loc.get("source") or ""),
+            client_latitude=_client_loc.get("latitude"),
+            client_longitude=_client_loc.get("longitude"),
+        )
+        if _panel.get("location_required"):
+            return {
+                "domain": "web",
+                "is_action_request": True,
+                "action_name": "web.search",
+                "slots": slots,
+                "needs_followup": True,
+                "missing_slot": "location",
+            }
         return {
             "domain": "web",
             "is_action_request": True,
@@ -21240,7 +21326,7 @@ async def infer(
     anchor_imp = (thread_follow_up_anchor or "").strip() or None
     client_context = _normalize_client_context_snapshot(context_snapshot)
     if client_context:
-        latest_client_context_snapshot[session_id] = client_context
+        client_context = _store_client_context_snapshot(session_id, client_context)
     else:
         client_context = latest_client_context_snapshot.get(session_id)
     coach_reply = _normalize_reasoning_voice_reply(coach_imp, client_context)
@@ -26811,6 +26897,7 @@ def _dispatch_planned_action_directly(
                     recent_news_context=get_recent_news_context(session_id),
                     recent_sports_context=get_recent_sports_context(session_id),
                     session_id=session_id,
+                    location_available=_client_search_location_available(session_id),
                 )
                 route = build_route_from_info_tool(info_span, classification, session_id)
                 info_action_type = str((route or {}).get("action_name") or "")
@@ -29767,7 +29854,7 @@ async def text_input(request: Request, data: TextInput):
     t_llm_start = perf_counter()
     client_context = _normalize_client_context_snapshot(data.context_snapshot)
     if client_context:
-        latest_client_context_snapshot[session_id] = client_context
+        client_context = _store_client_context_snapshot(session_id, client_context)
     else:
         client_context = latest_client_context_snapshot.get(session_id)
     memory_reply = None

@@ -329,6 +329,102 @@ _LOCATION_ACRONYMS = frozenset({"uci", "ucla", "usc", "csuf", "csulb"})
 PLACE_SEARCH_LOCATION_PROMPT = "What city or area should I search near?"
 
 
+def _log_places_location_resolution(
+    stage: str,
+    *,
+    query: str = "",
+    explicit_location: str = "",
+    saved_location_present: bool = False,
+    browser_location_present: bool = False,
+    resolved_location: str = "",
+    location_source: str = "",
+    location_required: bool = False,
+    note: str = "",
+) -> None:
+    """Safe debug logs for place/location resolution (no secrets)."""
+    tag = f"[places_location_resolution_{stage}]"
+    try:
+        import json as _json
+
+        print(
+            tag
+            + " "
+            + _json.dumps(
+                {
+                    "query": (query or "")[:200],
+                    "explicit_location": (explicit_location or "")[:120],
+                    "saved_location_present": bool(saved_location_present),
+                    "browser_location_present": bool(browser_location_present),
+                    "resolved_location": (resolved_location or "")[:120],
+                    "location_source": (location_source or "")[:40],
+                    "location_required": bool(location_required),
+                    "note": (note or "")[:160],
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        try:
+            print(f"{tag} log_failed", flush=True)
+        except Exception:
+            pass
+
+
+def _log_places_location_required(query: str, *, note: str = "") -> None:
+    try:
+        import json as _json
+
+        print(
+            "[places_location_required] "
+            + _json.dumps(
+                {"query": (query or "")[:200], "note": (note or "")[:160]},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+def _log_places_serper_call(query: str, *, resolved_location: str = "") -> None:
+    try:
+        import json as _json
+
+        print(
+            "[places_serper_call] "
+            + _json.dumps(
+                {
+                    "query": (query or "")[:200],
+                    "resolved_location": (resolved_location or "")[:120],
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+def _places_search_params_have_location(search_params: dict | None) -> bool:
+    if not isinstance(search_params, dict):
+        return False
+    loc = str(search_params.get("location") or "").strip()
+    lat = search_params.get("latitude")
+    lng = search_params.get("longitude")
+    if loc:
+        if loc.lower() in {"your current location", "current location"}:
+            try:
+                return lat is not None and lng is not None
+            except (TypeError, ValueError):
+                return False
+        return True
+    try:
+        return lat is not None and lng is not None
+    except (TypeError, ValueError):
+        return False
+
+
 def _normalize_city_for_display(cleaned: str) -> str:
     """Title-case a parsed city, preserving common 2-letter state suffixes.
 
@@ -487,6 +583,25 @@ def classify_web_search_panel(
     if not raw:
         return out
 
+    client_loc = (client_location or "").strip()
+    client_src = (client_location_source or "").strip()
+    saved_present = bool(client_loc and client_src != "browser_geolocation")
+    if client_loc and client_src == "browser_geolocation":
+        saved_present = False
+    elif client_loc and not client_src:
+        saved_present = True
+    browser_present = bool(
+        client_latitude is not None
+        and client_longitude is not None
+        and client_src == "browser_geolocation"
+    )
+    _log_places_location_resolution(
+        "start",
+        query=raw,
+        saved_location_present=saved_present,
+        browser_location_present=browser_present,
+    )
+
     open_now = bool(_OPEN_NOW_RE.search(raw))
     radius_miles = None
     m_radius = _RADIUS_MILES_RE.search(raw)
@@ -500,8 +615,6 @@ def classify_web_search_panel(
     if venue_match:
         near_me = _NEAR_ME_RE.search(raw)
         explicit_location = _extract_explicit_place_location(raw)
-        client_loc = (client_location or "").strip()
-        client_src = (client_location_source or "").strip()
 
         if explicit_location:
             display = explicit_location
@@ -521,6 +634,16 @@ def classify_web_search_panel(
                 search_params=params,
                 reason="venue_query_with_explicit_city",
             )
+            _log_places_location_resolution(
+                "result",
+                query=raw,
+                explicit_location=explicit_location,
+                saved_location_present=saved_present,
+                browser_location_present=browser_present,
+                resolved_location=display,
+                location_source="utterance",
+                location_required=False,
+            )
             return out
 
         if near_me and not client_loc:
@@ -529,6 +652,17 @@ def classify_web_search_panel(
                 panel_mode="location",
                 location_required=True,
                 reason="venue_query_near_me_missing_location",
+            )
+            _log_places_location_resolution(
+                "result",
+                query=raw,
+                explicit_location="",
+                saved_location_present=saved_present,
+                browser_location_present=browser_present,
+                resolved_location="",
+                location_source="",
+                location_required=True,
+                note="near_me_without_client_location",
             )
             return out
 
@@ -547,6 +681,17 @@ def classify_web_search_panel(
                 panel_mode="location",
                 location_required=True,
                 reason="venue_query_missing_location",
+            )
+            _log_places_location_resolution(
+                "result",
+                query=raw,
+                explicit_location="",
+                saved_location_present=saved_present,
+                browser_location_present=browser_present,
+                resolved_location="",
+                location_source="",
+                location_required=True,
+                note="venue_query_missing_location",
             )
             return out
 
@@ -574,6 +719,16 @@ def classify_web_search_panel(
                 if resolved_source
                 else "venue_query_with_resolved_location"
             ),
+        )
+        _log_places_location_resolution(
+            "result",
+            query=raw,
+            explicit_location=explicit_location,
+            saved_location_present=saved_present,
+            browser_location_present=browser_present,
+            resolved_location=display,
+            location_source=resolved_source or "saved_default",
+            location_required=False,
         )
         return out
 
@@ -1450,6 +1605,10 @@ def prepare_web_search_streaming(
     search_params = panel_decision.get("search_params") or {}
 
     if panel_decision.get("location_required"):
+        _log_places_location_required(
+            user_question or q,
+            note=str(panel_decision.get("reason") or "venue_query_missing_location"),
+        )
 
         def _location_clarify_finalize(_response: str = "") -> dict:
             spoken = ( _response or "").strip() or PLACE_SEARCH_LOCATION_PROMPT
@@ -1523,8 +1682,45 @@ def prepare_web_search_streaming(
             products = []
     elif panel_mode == "location":
         if not panel_decision.get("location_required"):
+            if not _places_search_params_have_location(search_params):
+                _log_places_location_required(
+                    user_question or q,
+                    note="hard_guard_before_serper_places_missing_resolved_location",
+                )
+
+                def _late_location_clarify_finalize(_response: str = "") -> dict:
+                    spoken = (_response or "").strip() or PLACE_SEARCH_LOCATION_PROMPT
+                    return {
+                        "spoken_reply": spoken,
+                        "action_type": "web_search",
+                        "data": {
+                            "query": q,
+                            "user_query": user_question,
+                            "location_required": True,
+                            "panel_mode": "location",
+                        },
+                        "ui_payload": None,
+                        "location_required": True,
+                    }
+
+                try:
+                    clarify_messages = vera.build_messages(
+                        [],
+                        "Reply ONLY with this exact question and nothing else: "
+                        + PLACE_SEARCH_LOCATION_PROMPT,
+                    )
+                except Exception:
+                    clarify_messages = [
+                        {"role": "user", "content": PLACE_SEARCH_LOCATION_PROMPT}
+                    ]
+                return clarify_messages, None, _late_location_clarify_finalize
+
             places_query = (
                 _compose_places_serper_query(search_params) if search_params else q
+            )
+            _log_places_serper_call(
+                places_query,
+                resolved_location=str(panel_decision.get("location") or ""),
             )
             try:
                 places_payload = _serper_media(
