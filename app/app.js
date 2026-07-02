@@ -1960,8 +1960,8 @@ function syncVeraFlowVoiceDockLayoutClass() {
   const voiceDock = voiceVisible && (rec || mutedIdle);
   const dock = voiceDock || keyboardVisible;
   veraApp.classList.toggle("vera-flow-voice-docked", dock);
-  if (dock) {
-    ensureChatStartedLayout();
+  if (rec) {
+    markVeraConversationActive("voice-recording");
   }
 }
 
@@ -2426,10 +2426,16 @@ function syncVeraInputEmptyState() {
       document.body.classList.add("chat-started");
       dismissGuide();
     }
+    if (typeof window.syncAskRotatorVisibility === "function") {
+      window.syncAskRotatorVisibility();
+    }
   } else {
     document.body.classList.remove("chat-started");
     app.classList.remove("vera-flow-voice-docked");
     app.classList.remove("vera-flow-input-active");
+    if (typeof window.syncAskRotatorVisibility === "function") {
+      window.syncAskRotatorVisibility({ resetSequence: true });
+    }
   }
 }
 
@@ -26489,6 +26495,7 @@ function updateMainBrowserLiveBubble(fullText, interim) {
   const hasFinal = String(fullText || "").trim().length > 0;
   if (!hasFinal && line.length < mainAsrPartialMinChars) return;
   if (!line) return;
+  markVeraConversationActive("partial-transcript");
   if (!mainBrowserLiveBubble || !mainBrowserLiveBubble.isConnected) {
     mainBrowserLiveBubble = addBubble(line, "user", { path: "main-browser-partial" });
   } else {

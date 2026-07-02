@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=29">
+  <link rel="stylesheet" href="../styles.css?v=30">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -326,10 +326,10 @@
     </div>
 
     <div class="input-container">
-      <div class="vera-input-dock">
-        <p class="vera-empty-greeting" id="vera-empty-greeting" aria-hidden="false">Ready when you are.</p>
-        <div class="vera-input-dock-row">
-          <div class="ask-rotator" id="vera-ask-rotator" aria-live="polite"></div>
+      <div class="vera-startup-center vera-input-dock">
+        <p class="vera-startup-greeting vera-empty-greeting" id="vera-empty-greeting" aria-hidden="false">Ready when you are.</p>
+        <div class="ask-rotator guide-text-rotator" id="vera-ask-rotator" aria-live="polite"></div>
+        <div class="vera-input-area-wrapper vera-input-dock-row">
           <button
             id="vera-input-toggle"
             class="input-toggle-btn"
@@ -372,21 +372,21 @@
           ></div>
         </div>
       </div>
-      <div class="vera-bottom-status-footer credit-status vera-input-meta" aria-label="Usage status">
-        <div id="vera-usage-credits" class="credit-status-line bottom-status-row vera-bottom-status-inner" aria-live="polite">
-          <span class="vera-headset-hint">VERA works best with a headset or AirPods.</span>
-          <span class="vera-bottom-status-sep" aria-hidden="true">|</span>
-          <span id="vera-usage-credits-text" class="credit-status-text"></span>
-          <button
-            type="button"
-            id="vera-no-cap-toggle"
-            class="credit-status-no-cap no-cap-toggle"
-            hidden
-            title="Testing only: disables credit cap enforcement but still logs usage."
-          >
-            No cap: Off
-          </button>
-        </div>
+    </div>
+    <div class="vera-bottom-status vera-bottom-status-footer credit-status vera-input-meta" aria-label="Usage status">
+      <div id="vera-usage-credits" class="credit-status-line bottom-status-row vera-bottom-status-inner" aria-live="polite">
+        <span class="vera-headset-hint">VERA works best with a headset or AirPods.</span>
+        <span class="vera-bottom-status-sep" aria-hidden="true">|</span>
+        <span id="vera-usage-credits-text" class="credit-status-text"></span>
+        <button
+          type="button"
+          id="vera-no-cap-toggle"
+          class="credit-status-no-cap no-cap-toggle"
+          hidden
+          title="Testing only: disables credit cap enforcement but still logs usage."
+        >
+          No cap: Off
+        </button>
       </div>
     </div>
       </div>
@@ -1272,8 +1272,8 @@
 <script src="../news/newsRouter.js?v=3"></script>
 <script src="../news/newsPanel.js?v=5"></script>
 <script src="../news/weatherPanel.js?v=2"></script>
-<script src="app.js?v=131"></script>
-<script src="shell.js?v=2"></script>
+<script src="app.js?v=132"></script>
+<script src="shell.js?v=3"></script>
 <!-- voice/musicNavigation.js — shared track navigation dedupe + ended guard -->
 <script src="../voice/musicNavigation.js?v=1"></script>
 <!-- voice/musicSequence.js — multi-action music sequential dispatch + provider exclusivity -->

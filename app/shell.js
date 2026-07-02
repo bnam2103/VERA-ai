@@ -638,8 +638,14 @@ function stopAskRotator() {
 function syncAskRotatorLayout() {
   ["vera", "bmo"].forEach((prefix) => {
     const askEl = document.getElementById(`${prefix}-ask-rotator`);
-    const container = askEl?.closest(".input-container");
-    if (!askEl || !container) return;
+    if (!askEl) return;
+    if (prefix === "vera") {
+      askEl.style.left = "";
+      askEl.style.width = "";
+      return;
+    }
+    const container = askEl.closest(".input-container");
+    if (!container) return;
 
     const activeBar = getActiveInputBar(prefix);
     if (!activeBar) return;
@@ -765,6 +771,8 @@ window.setAskRotatorEnabled = function setAskRotatorEnabled(on) {
   }
   syncAskRotatorVisibility({ resetSequence: true });
 };
+
+window.syncAskRotatorVisibility = syncAskRotatorVisibility;
 
 window.isAskRotatorEnabled = function isAskRotatorEnabled() {
   return askRotatorEnabled;
