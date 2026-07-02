@@ -95,6 +95,7 @@ function makeStubEl(className) {
       if (sel === ".vera-feedback-note-wrap") return cls === "vera-feedback-note-wrap";
       if (sel === ".vera-feedback-note") return cls === "vera-feedback-note";
       if (sel === ".vera-feedback-note-submit") return cls === "vera-feedback-note-submit";
+      if (sel === ".vera-feedback-note-cancel") return cls === "vera-feedback-note-cancel";
       if (sel === ".vera-feedback-controls") return cls === "vera-feedback-controls";
       if (sel === ".vera-feedback-thanks") return cls === "vera-feedback-thanks";
       if (sel === ".bubble.vera") return cls === "bubble vera";
@@ -247,8 +248,10 @@ async function main() {
   sandbox.veraFeedbackMarkFinal(finalRow.bubble, { requestId: "req_1", turnId: "wm-1" });
   const bar = finalRow.row.querySelector(".vera-feedback-bar");
   const noteWrap = finalRow.row.querySelector(".vera-feedback-note-wrap");
+  const thanksInitial = finalRow.row.querySelector(".vera-feedback-thanks");
   ok(bar != null, "feedback bar attached to final Vera bubble");
   ok(bar?.hidden === false, "feedback bar visible when authenticated");
+  ok(thanksInitial != null && thanksInitial.hidden === true, "thanks hidden initially");
   ok(noteWrap != null && noteWrap.hidden === true, "note field hidden initially");
   ok(
     !noteWrap?.classList.contains("is-open"),
@@ -279,6 +282,7 @@ async function main() {
   row2.row.querySelector(".vera-feedback-btn--down")?._listeners?.click?.();
   const noteWrap2 = row2.row.querySelector(".vera-feedback-note-wrap");
   ok(noteWrap2?.classList.contains("is-open"), "thumbs down opens note editor");
+  ok(row2.row.querySelector(".vera-feedback-thanks")?.hidden === true, "thanks hidden before send");
   row2.row.querySelector(".vera-feedback-note-submit")?._listeners?.click?.();
   ok(row2.row.dataset.feedbackSubmitted === "1", "thumbs down send submits");
   ok(sandbox2._fetchCalls === 1, "thumbs down submit fires once");
@@ -310,6 +314,18 @@ async function main() {
   const wrapEsc = rowEsc.row.querySelector(".vera-feedback-note-wrap");
   ok(!wrapEsc?.classList.contains("is-open"), "Escape closes note editor");
   ok(rowEsc.row.dataset.feedbackSubmitted !== "1", "Escape does not submit");
+
+  section("cancel closes note");
+  const domCancel = makeDom();
+  const sandboxCancel = makeSandbox(domCancel);
+  const rowCancel = makeVeraRow(domCancel);
+  sandboxCancel.veraFeedbackMarkFinal(rowCancel.bubble, { requestId: "req_cancel" });
+  rowCancel.row.querySelector(".vera-feedback-btn--down")?._listeners?.click?.();
+  rowCancel.row.querySelector(".vera-feedback-note-cancel")?._listeners?.click?.();
+  const wrapCancel = rowCancel.row.querySelector(".vera-feedback-note-wrap");
+  ok(!wrapCancel?.classList.contains("is-open"), "Cancel closes note editor");
+  ok(rowCancel.row.dataset.feedbackSubmitted !== "1", "Cancel does not submit");
+  ok(rowCancel.row.querySelector(".vera-feedback-thanks")?.hidden === true, "Cancel does not show thanks");
 
   section("thumbs up while note open submits up");
   const domMix = makeDom();

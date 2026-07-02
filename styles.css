@@ -7843,8 +7843,40 @@ body.bmo-open .bubble.user.interrupt-preview {
   padding: 0 2px;
 }
 
+.vera-feedback-thanks[hidden] {
+  display: none !important;
+}
+
+.vera-feedback-controls[hidden] {
+  display: none !important;
+}
+
 .vera-feedback-bar.is-submitted .vera-feedback-thanks {
   margin-top: 4px;
+}
+
+.vera-feedback-note-cancel {
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: rgba(242, 245, 247, 0.62);
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.vera-feedback-note-cancel:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(242, 245, 247, 0.82);
 }
 
 @media (max-width: 520px) {

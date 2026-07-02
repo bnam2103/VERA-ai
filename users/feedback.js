@@ -119,6 +119,22 @@
     _dismissTimers.set(bar, tid);
   }
 
+  function resetFeedbackBarToInitial(bar) {
+    if (!(bar instanceof HTMLElement)) return;
+    clearThanksDismissTimer(bar);
+    bar.classList.remove("is-submitted", "is-fading");
+    const { controls, thanks } = getBarParts(bar);
+    closeNoteEditor(bar);
+    if (controls instanceof HTMLElement) {
+      controls.hidden = false;
+      controls.removeAttribute("aria-hidden");
+    }
+    if (thanks instanceof HTMLElement) {
+      thanks.hidden = true;
+      thanks.setAttribute("aria-hidden", "true");
+    }
+  }
+
   function showThanksState(bar) {
     if (!(bar instanceof HTMLElement)) return;
     closeNoteEditor(bar);
@@ -217,7 +233,7 @@
     noteInput.className = "vera-feedback-note";
     noteInput.rows = 2;
     noteInput.maxLength = MAX_NOTE;
-    noteInput.placeholder = "What went wrong? (optional)";
+    noteInput.placeholder = "What went wrong? Optional.";
     noteInput.setAttribute("aria-label", "Optional feedback note");
 
     const noteSubmit = document.createElement("button");
@@ -225,14 +241,21 @@
     noteSubmit.className = "vera-feedback-note-submit";
     noteSubmit.textContent = "Send";
 
+    const noteCancel = document.createElement("button");
+    noteCancel.type = "button";
+    noteCancel.className = "vera-feedback-note-cancel";
+    noteCancel.textContent = "Cancel";
+    noteCancel.setAttribute("aria-label", "Cancel feedback");
+
     noteWrap.appendChild(noteInput);
     noteWrap.appendChild(noteSubmit);
+    noteWrap.appendChild(noteCancel);
 
     const thanks = document.createElement("span");
     thanks.className = "vera-feedback-thanks";
     thanks.hidden = true;
     thanks.setAttribute("aria-hidden", "true");
-    thanks.textContent = "Thanks for the feedback";
+    thanks.textContent = "Thanks for the feedback.";
 
     upBtn.addEventListener("click", () => {
       if (row.dataset.feedbackSubmitted === "1") return;
@@ -251,6 +274,11 @@
 
     noteSubmit.addEventListener("click", () => {
       submitFeedback(row, "down", noteInput.value);
+    });
+
+    noteCancel.addEventListener("click", () => {
+      if (row.dataset.feedbackSubmitted === "1") return;
+      closeNoteEditor(bar);
     });
 
     noteInput.addEventListener("keydown", (ev) => {
@@ -278,6 +306,7 @@
     clearActiveFeedbackBars();
     _activeRow = row;
     const bar = buildFeedbackBar(row);
+    resetFeedbackBarToInitial(bar);
     bar.hidden = false;
     bar.removeAttribute("aria-hidden");
   }
