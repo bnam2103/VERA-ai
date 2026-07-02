@@ -1303,14 +1303,8 @@ body.chat-started .input-container {
   --vera-sidebar-expanded-width: 240px;
 }
 
-#vera-app:has(.vera-sidebar:hover),
-#vera-app:has(.vera-sidebar:focus-within) {
-  --vera-sidebar-width: var(--vera-sidebar-expanded-width);
-}
-
 #vera-app.vera-app-shell {
   padding-left: var(--vera-sidebar-width);
-  transition: padding-left 180ms ease;
   box-sizing: border-box;
 }
 
@@ -1320,14 +1314,25 @@ body.chat-started .input-container {
   top: 0;
   bottom: 0;
   width: var(--vera-sidebar-width);
-  z-index: 80;
+  z-index: 100;
   display: flex;
   flex-direction: column;
   border-right: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(6, 12, 20, 0.82);
   backdrop-filter: blur(14px);
-  transition: width 180ms ease, box-shadow 180ms ease;
+  transition:
+    width 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
   overflow: hidden;
+}
+
+.vera-sidebar:hover,
+.vera-sidebar:focus-within,
+.vera-sidebar.is-expanded {
+  width: var(--vera-sidebar-expanded-width);
+  background: rgba(5, 10, 15, 0.96);
+  box-shadow: 18px 0 60px rgba(0, 0, 0, 0.22);
 }
 
 .vera-sidebar-inner {
@@ -1537,55 +1542,74 @@ body.chat-started .input-container {
   margin-top: 0;
 }
 
-.credit-status-line {
+.credit-status-line,
+.bottom-status-row {
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 0;
+  gap: 14px;
   max-width: 100%;
   font-size: 12px;
   line-height: 1.45;
-  color: rgba(242, 245, 247, 0.48);
+  color: rgba(242, 245, 247, 0.52);
   text-align: center;
 }
 
 .credit-status-text {
-  color: rgba(242, 245, 247, 0.48);
+  color: rgba(242, 245, 247, 0.52);
 }
 
 .credit-status-sep {
-  color: rgba(242, 245, 247, 0.32);
+  display: none !important;
 }
 
-.credit-status-no-cap {
+.credit-status-no-cap,
+.no-cap-toggle {
   pointer-events: auto;
   margin: 0;
-  padding: 0;
-  border: none;
-  background: none;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
   font-family: inherit;
-  font-size: inherit;
-  line-height: inherit;
-  color: rgba(242, 245, 247, 0.48);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.25;
+  color: rgba(242, 245, 247, 0.68);
   cursor: pointer;
   text-decoration: none;
-  transition: color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
-.credit-status-no-cap:hover {
-  color: rgba(242, 245, 247, 0.68);
+.credit-status-no-cap:hover,
+.no-cap-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(242, 245, 247, 0.82);
 }
 
-.credit-status-no-cap.is-on {
-  color: rgba(253, 230, 138, 0.72);
+.credit-status-no-cap.is-on,
+.no-cap-toggle.is-on {
+  border-color: rgba(32, 183, 168, 0.35);
+  background: rgba(32, 183, 168, 0.12);
+  color: rgba(32, 183, 168, 0.95);
+}
+
+.credit-status-no-cap.is-off,
+.no-cap-toggle.is-off {
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .credit-status-no-cap:focus-visible {
   outline: 1px solid rgba(32, 183, 168, 0.45);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: 999px;
 }
 
 #vera-app:not(.work-mode) .input-container .credit-status.vera-input-meta {

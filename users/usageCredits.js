@@ -50,7 +50,7 @@
     if (sep instanceof HTMLElement) sep.hidden = !enabled;
     if (!enabled) {
       btn.hidden = true;
-      btn.classList.remove("is-on");
+      btn.classList.remove("is-on", "is-off");
       btn.textContent = "No cap: Off";
       _noCapActive = false;
       return;
@@ -58,6 +58,7 @@
     _noCapActive = readNoCapActive(payload);
     btn.hidden = false;
     btn.classList.toggle("is-on", _noCapActive);
+    btn.classList.toggle("is-off", !_noCapActive);
     btn.textContent = _noCapActive ? "No cap: On" : "No cap: Off";
     btn.setAttribute(
       "aria-pressed",

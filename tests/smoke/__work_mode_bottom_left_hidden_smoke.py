@@ -48,6 +48,9 @@ ok("sidebar-actions" in html, "sidebar actions at bottom")
 ok('open-bmo-from-vera' not in html, "BMO header button removed")
 ok('id="vera-usage-credits"' in html, "credits pill in DOM")
 ok("credit-status" in html, "subtle credit status line")
+ok("bottom-status-row" in html, "credits and no-cap share separated bottom status row")
+ok("no-cap-toggle" in html, "no-cap toggle keeps button styling class")
+ok("vera-credit-status-sep" not in html, "legacy inline credit separator removed")
 ok('id="vera-explicit-feedback-btn"' in html, "feedback button in DOM")
 ok('id="vera-account-open"' in html, "account button in DOM")
 ok('id="vera-settings-open"' in html, "settings button in DOM")
@@ -61,15 +64,20 @@ with open(os.path.join(_ROOT, "styles.css"), encoding="utf-8") as f:
     css = f.read()
 ok(".vera-sidebar" in css, "sidebar styles present")
 ok("--vera-sidebar-width" in css, "sidebar width variable present")
-ok("#vera-app.vera-app-shell" in css and "padding-left" in css.split("#vera-app.vera-app-shell")[1].split("}")[0], "app shell shifts with sidebar")
+shell_block = css.split("#vera-app.vera-app-shell", 1)[1].split("}", 1)[0]
+ok("padding-left: var(--vera-sidebar-width)" in shell_block, "app shell reserves collapsed rail only")
+ok("transition: padding-left" not in shell_block, "sidebar hover no longer animates app shell padding")
+ok("--vera-sidebar-width: var(--vera-sidebar-expanded-width)" not in css, "sidebar hover does not push app content")
 ok(".sidebar-brand" in css, "sidebar brand styles present")
 ok("getVeraMarketingHomeUrl" in open(os.path.join(_ROOT, "app/shell.js"), encoding="utf-8").read(), "sidebar home navigation helper exists")
 sidebar_z = css.split(".vera-sidebar {", 1)[1].split("}", 1)[0]
-ok("z-index: 80" in sidebar_z, "sidebar sits above bottom fade layer")
+ok("z-index: 100" in sidebar_z, "sidebar sits above bottom fade layer")
+ok(".vera-sidebar:hover" in css and "width: var(--vera-sidebar-expanded-width)" in css, "sidebar expands as overlay on hover/focus")
 fade_block = css.split("body.chat-started .chat-centered::after {", 1)[1].split("}", 1)[0]
 ok("z-index: 2" in fade_block, "bottom fade stays below sidebar and input")
 ok("pointer-events: none" in fade_block, "bottom fade does not block clicks")
 ok(".credit-status" in css, "subtle credit status styled")
+ok(".no-cap-toggle" in css and "border-radius: 999px" in css, "no-cap is styled as a small pill button")
 ok(
     "#vera-app.work-mode .vera-bottom-left-tools" not in css,
     "work mode no longer hides removed bottom-left cluster",

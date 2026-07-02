@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=19">
+  <link rel="stylesheet" href="../styles.css?v=20">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -365,13 +365,12 @@
         aria-live="polite"
       ></div>
       <div class="credit-status vera-input-meta" aria-label="Usage status">
-        <div id="vera-usage-credits" class="credit-status-line" hidden aria-live="polite">
+        <div id="vera-usage-credits" class="credit-status-line bottom-status-row" hidden aria-live="polite">
           <span id="vera-usage-credits-text" class="credit-status-text"></span>
-          <span id="vera-credit-status-sep" class="credit-status-sep" hidden aria-hidden="true"> · </span>
           <button
             type="button"
             id="vera-no-cap-toggle"
-            class="credit-status-no-cap"
+            class="credit-status-no-cap no-cap-toggle"
             hidden
             title="Testing only: disables credit cap enforcement but still logs usage."
           >
@@ -1127,7 +1126,7 @@
 <script src="../users/usageFeatureEvents.js?v=1"></script>
 <!-- users/usageCredits.js — daily credit usage pill (read-only).
      Must load AFTER usageFeatureEvents.js (reasoning refresh hook), BEFORE app.js. -->
-<script src="../users/usageCredits.js?v=7"></script>
+<script src="../users/usageCredits.js?v=8"></script>
 <!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
      Must load AFTER usageCredits.js, BEFORE app.js. -->
 <script src="../users/explicitFeedback.js?v=3"></script>
