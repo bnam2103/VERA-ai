@@ -24,12 +24,22 @@ const sandboxSource = `
 let keyboardSubmitInFlight = 0;
 let normalInferInFlightForKeyboardGate = 0;
 let workModeTypedVoiceInferDepth = 0;
+let mainTtsPlaybackToken = 0;
+let workModeTtsCurrentlyPlaying = null;
+const workModeTypedTurnQueue = [];
 const WORK_MODE_TYPED_VOICE_CHAIN_MAX = 12;
+function getTtsCancelDebugState() {
+  return {
+    isSpeaking: false,
+    speakingUntil: 0,
+  };
+}
 ${helpersSource}
 function simulate(opts = {}) {
   keyboardSubmitInFlight = Number(opts.keyboardSubmitInFlight) || 0;
   normalInferInFlightForKeyboardGate = Number(opts.normalInferInFlight) || 0;
   workModeTypedVoiceInferDepth = keyboardSubmitInFlight;
+  workModeTypedTurnQueue.length = Number(opts.queueLen) || 0;
   const fromQueue = Boolean(opts.fromQueue);
   return {
     shouldQueue: shouldQueueKeyboardSubmit(fromQueue),
@@ -118,6 +128,7 @@ section("7 — fromQueue bypasses queue gate");
 
 section("Source contracts — voice lifecycle untouched by queue enqueue");
 const INDEX_HTML = fs.readFileSync(path.resolve(__dirname, "../../app/index.html"), "utf8");
+const TTS_QUEUE_JS = fs.readFileSync(path.resolve(__dirname, "../../voice/ttsQueue.js"), "utf8");
 {
   ok(
     APP_JS.includes("[keyboard_queue_does_not_block_voice]"),
@@ -150,6 +161,22 @@ const INDEX_HTML = fs.readFileSync(path.resolve(__dirname, "../../app/index.html
   ok(
     /scheduleWorkModeKeyboardQueueDrainIfReady/.test(APP_JS),
     "drain tied to infer completion not reasoning stream"
+  );
+  ok(
+    APP_JS.includes("assistantPlaybackEndWaiters"),
+    "assistant playback end waiters are tracked"
+  );
+  ok(
+    APP_JS.includes("releaseAssistantPlaybackEndWaitersAfterTtsCancel"),
+    "TTS cancel can release playback waiters"
+  );
+  ok(
+    TTS_QUEUE_JS.includes("releaseAssistantPlaybackEndWaitersAfterTtsCancel"),
+    "cancelMainTtsPlayback calls waiter release hook"
+  );
+  ok(
+    APP_JS.includes("[keyboard_queue_released_after_tts_cancel]"),
+    "keyboard queue release-after-cancel log present"
   );
 }
 

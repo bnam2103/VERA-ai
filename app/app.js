@@ -9168,7 +9168,23 @@ function getKeyboardQueueBusyReason(fromQueue) {
 /** True when a keyboard submit should wait visually — narrow /infer-only gate. */
 function shouldQueueKeyboardSubmit(fromQueue) {
   if (fromQueue) return false;
-  return keyboardSubmitInFlight > 0 || normalInferInFlightForKeyboardGate > 0;
+  const shouldQueue = keyboardSubmitInFlight > 0 || normalInferInFlightForKeyboardGate > 0;
+  if (shouldQueue) {
+    try {
+      console.info("[keyboard_queue_blocked_by_speaking]", {
+        reason: getKeyboardQueueBusyReason(fromQueue),
+        queue_len: workModeTypedTurnQueue.length,
+        isSpeaking: getTtsCancelDebugState().isSpeaking,
+        speakingUntil: getTtsCancelDebugState().speakingUntil,
+        keyboard_submit_in_flight: keyboardSubmitInFlight,
+        normal_infer_in_flight: normalInferInFlightForKeyboardGate,
+        current_turn_id: workModeTtsCurrentlyPlaying?.turn_id || null,
+        tts_token:
+          typeof mainTtsPlaybackToken !== "undefined" ? mainTtsPlaybackToken : null,
+      });
+    } catch (_) {}
+  }
+  return shouldQueue;
 }
 
 function isWorkModeTypedVoiceInferChainSaturated() {
@@ -9240,6 +9256,18 @@ async function drainWorkModeTypedTurnQueue() {
   if (!isVeraWorkModeOn() || appModePrefix() !== "vera") return;
   workModeTypedQueueDraining = true;
   try {
+    console.info("[keyboard_queue_drain_start]", {
+      queue_len: workModeTypedTurnQueue.length,
+      isSpeaking: getTtsCancelDebugState().isSpeaking,
+      speakingUntil: getTtsCancelDebugState().speakingUntil,
+      keyboard_submit_in_flight: keyboardSubmitInFlight,
+      normal_infer_in_flight: normalInferInFlightForKeyboardGate,
+      current_turn_id: workModeTtsCurrentlyPlaying?.turn_id || null,
+      tts_token:
+        typeof mainTtsPlaybackToken !== "undefined" ? mainTtsPlaybackToken : null,
+    });
+  } catch (_) {}
+  try {
     while (workModeTypedTurnQueue.length > 0) {
       if (shouldQueueKeyboardSubmit(false)) break;
       const next = workModeTypedTurnQueue.shift();
@@ -9274,6 +9302,18 @@ async function drainWorkModeTypedTurnQueue() {
   } finally {
     workModeTypedQueueDraining = false;
     renderKeyboardQueueUi();
+    try {
+      console.info("[keyboard_queue_drain_done]", {
+        queue_len: workModeTypedTurnQueue.length,
+        isSpeaking: getTtsCancelDebugState().isSpeaking,
+        speakingUntil: getTtsCancelDebugState().speakingUntil,
+        keyboard_submit_in_flight: keyboardSubmitInFlight,
+        normal_infer_in_flight: normalInferInFlightForKeyboardGate,
+        current_turn_id: workModeTtsCurrentlyPlaying?.turn_id || null,
+        tts_token:
+          typeof mainTtsPlaybackToken !== "undefined" ? mainTtsPlaybackToken : null,
+      });
+    } catch (_) {}
   }
 }
 
@@ -25325,15 +25365,98 @@ function resolveAudioUrls(data) {
  * Stage 5 (the file that created voice/ttsQueue.js) explicitly listed
  * these as future-move candidates in its header comment. */
 
+const assistantPlaybackEndWaiters = new Set();
+
+function getTtsCancelDebugState() {
+  let audioPlaying = false;
+  try {
+    const a = getAudioEl();
+    audioPlaying = Boolean(a && !a.paused);
+  } catch (_) {}
+  let webTtsPlaying = false;
+  try {
+    webTtsPlaying = Boolean(mainTtsPlaybackActive || activeMainTtsBufferSources.length > 0);
+  } catch (_) {}
+  let token = null;
+  try {
+    token = typeof mainTtsPlaybackToken !== "undefined" ? mainTtsPlaybackToken : null;
+  } catch (_) {}
+  return {
+    isSpeaking: Boolean(audioPlaying || webTtsPlaying || waveState === "speaking"),
+    speakingUntil: 0,
+    queue_len: Array.isArray(workModeTypedTurnQueue) ? workModeTypedTurnQueue.length : 0,
+    keyboard_submit_in_flight: keyboardSubmitInFlight,
+    normal_infer_in_flight: normalInferInFlightForKeyboardGate,
+    tts_token: token,
+    current_turn_id: workModeTtsCurrentlyPlaying?.turn_id || null,
+  };
+}
+
+function releaseAssistantPlaybackEndWaitersAfterTtsCancel(reason = "tts_cancel") {
+  const before = getTtsCancelDebugState();
+  const waiters = [...assistantPlaybackEndWaiters];
+  try {
+    console.info("[tts_waiters_released]", {
+      reason,
+      waiter_count: waiters.length,
+      queue_len: before.queue_len,
+      isSpeaking_before: before.isSpeaking,
+      speakingUntil_before: before.speakingUntil,
+      current_turn_id: before.current_turn_id,
+      tts_token: before.tts_token,
+    });
+  } catch (_) {}
+  for (const waiter of waiters) {
+    try {
+      waiter.release(reason);
+    } catch (_) {}
+  }
+  const after = getTtsCancelDebugState();
+  try {
+    console.info("[tts_speaking_state_cleared]", {
+      reason,
+      queue_len: after.queue_len,
+      isSpeaking_before: before.isSpeaking,
+      isSpeaking_after: after.isSpeaking,
+      speakingUntil_before: before.speakingUntil,
+      speakingUntil_after: after.speakingUntil,
+      current_turn_id: after.current_turn_id,
+      tts_token: after.tts_token,
+    });
+  } catch (_) {}
+  if (after.queue_len > 0) {
+    try {
+      console.info("[keyboard_queue_released_after_tts_cancel]", {
+        reason,
+        queue_len: after.queue_len,
+        keyboard_submit_in_flight: after.keyboard_submit_in_flight,
+        normal_infer_in_flight: after.normal_infer_in_flight,
+      });
+    } catch (_) {}
+    scheduleWorkModeKeyboardQueueDrainIfReady();
+  }
+}
+
 async function waitForAssistantPlaybackEnd(onFinishHook) {
   let done = false;
   let resolveDone;
+  let timeoutId = null;
+  const waiter = {
+    release(reason) {
+      try {
+        if (typeof onFinishHook === "function") onFinishHook({ canceled: true, reason });
+      } finally {
+        finishDone();
+      }
+    }
+  };
   const donePromise = new Promise((resolve) => {
     resolveDone = resolve;
   });
   const finishDone = () => {
     if (done) return;
     done = true;
+    assistantPlaybackEndWaiters.delete(waiter);
     resolveDone?.();
   };
   const wrappedOnFinish = () => {
@@ -25344,10 +25467,14 @@ async function waitForAssistantPlaybackEnd(onFinishHook) {
     }
   };
   // Safety timeout in case a browser event is missed.
-  const timeoutId = window.setTimeout(finishDone, 45000);
+  timeoutId = window.setTimeout(finishDone, 45000);
+  assistantPlaybackEndWaiters.add(waiter);
   return {
     wrappedOnFinish,
-    donePromise: donePromise.finally(() => window.clearTimeout(timeoutId))
+    donePromise: donePromise.finally(() => {
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+      assistantPlaybackEndWaiters.delete(waiter);
+    })
   };
 }
 

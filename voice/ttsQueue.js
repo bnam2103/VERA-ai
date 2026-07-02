@@ -182,6 +182,22 @@ function cancelMainTtsPlayback() {
   const _dbgActiveSourcesBefore = activeMainTtsBufferSources.length;
   const _dbgMainTtsActiveBefore = mainTtsPlaybackActive;
   const _dbgReaderBefore = Boolean(activeNdjsonBodyReader);
+  try {
+    console.info("[tts_cancel_requested]", {
+      reason: _dbgSource,
+      isSpeaking_before: Boolean(_dbgMainTtsActiveBefore || _dbgActiveSourcesBefore > 0 || (getAudioEl?.() && !getAudioEl().paused)),
+      speakingUntil_before: 0,
+      current_turn_id:
+        typeof workModeTtsCurrentlyPlaying !== "undefined"
+          ? workModeTtsCurrentlyPlaying?.turn_id || null
+          : null,
+      tts_token: _dbgOldToken,
+      queue_len:
+        typeof workModeTypedTurnQueue !== "undefined" && Array.isArray(workModeTypedTurnQueue)
+          ? workModeTypedTurnQueue.length
+          : null,
+    });
+  } catch (_) {}
   /* PART 1 — t6: cancelMainTtsPlayback entered.
      PART 4 — tts_cancel_source_trace. */
   _recordInterruptTimingPoint("t6_cancelMainTtsPlayback_called", {
@@ -234,6 +250,30 @@ function cancelMainTtsPlayback() {
     activeReaderAfter: Boolean(activeNdjsonBodyReader),
     interruptRecording,
   });
+  try {
+    console.info("[tts_cancel_applied]", {
+      reason: _dbgSource,
+      isSpeaking_before: Boolean(_dbgMainTtsActiveBefore || _dbgActiveSourcesBefore > 0),
+      isSpeaking_after: Boolean(mainTtsPlaybackActive || activeMainTtsBufferSources.length > 0 || (getAudioEl?.() && !getAudioEl().paused)),
+      speakingUntil_before: 0,
+      speakingUntil_after: 0,
+      current_turn_id:
+        typeof workModeTtsCurrentlyPlaying !== "undefined"
+          ? workModeTtsCurrentlyPlaying?.turn_id || null
+          : null,
+      tts_token_before: _dbgOldToken,
+      tts_token_after: mainTtsPlaybackToken,
+      queue_len:
+        typeof workModeTypedTurnQueue !== "undefined" && Array.isArray(workModeTypedTurnQueue)
+          ? workModeTypedTurnQueue.length
+          : null,
+    });
+  } catch (_) {}
+  try {
+    if (typeof releaseAssistantPlaybackEndWaitersAfterTtsCancel === "function") {
+      releaseAssistantPlaybackEndWaitersAfterTtsCancel(_dbgSource);
+    }
+  } catch (_) {}
 }
 
 /* =========================
