@@ -10163,6 +10163,16 @@ const _REASONING_PANEL_PREP_RE = "(?:in|into|inside|within|on|via|using|to)";
 const _REASONING_PANEL_ACTION_PUT_RE =
   "(?:put|place|write|answer|show|drop|paste|explain|send|move|open|work\\s+out|do)";
 
+const _REASONING_PANEL_TOPIC_PUT_RE = new RegExp(
+  "\\b(?:explain|describe|write|summari[sz]e|analy[sz]e|teach(?:\\s+me)?(?:\\s+about)?|walk\\s+me\\s+through|solve|work\\s+out)\\s+(.+?)\\s+" +
+    _REASONING_PANEL_PREP_RE +
+    "\\s+(?:(?:the|a|my)\\s+)?" +
+    _REASONING_PANEL_DEST_ADJ_RE +
+    _REASONING_PANEL_DEST_NOUN +
+    "\\b",
+  "i"
+);
+
 const _REASONING_PANEL_PUT_RE = new RegExp(
   "\\b" + _REASONING_PANEL_ACTION_PUT_RE +
   "\\s+(?:(this|that|it|them)|the\\s+answer|the\\s+explanation|an?\\s+explanation\\s+of\\s+(.+?))" +
@@ -10362,6 +10372,28 @@ function isExplicitReasoningPanelReference(text) {
       targetPanel,
       wasPronoun: Boolean(pronoun),
       pronoun
+    };
+  }
+  const mTopicPut = s.match(_REASONING_PANEL_TOPIC_PUT_RE);
+  if (mTopicPut) {
+    try {
+      console.info("[explicit_panel_reasoning_target_detected]", {
+        raw_text: s.slice(0, 240),
+        form: "topic_put",
+      });
+    } catch (_) {}
+    const explicitTopic = (mTopicPut[1] || "").trim() || null;
+    const num = mTopicPut[2] ? parseInt(mTopicPut[2], 10) : null;
+    const ord = (mTopicPut[3] || "").toLowerCase();
+    const targetPanel = Number.isFinite(num)
+      ? num
+      : (_REASONING_PANEL_ORD_MAP[ord] != null ? _REASONING_PANEL_ORD_MAP[ord] : null);
+    return {
+      matched: true,
+      topic: explicitTopic,
+      targetPanel,
+      wasPronoun: false,
+      pronoun: null,
     };
   }
   const mIn = s.match(_REASONING_PANEL_IN_RE);
@@ -16346,6 +16378,7 @@ async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
       if (recent) {
         const recentIdx = Number(recent.tabIndex);
         const explicitTargetIdx = Number(opts.explicitTargetLaneIdx);
+        const explicitPanel1 = Number(opts.explicitTargetPanel1Based);
         const hasExplicitTarget =
           Number.isFinite(explicitTargetIdx) && explicitTargetIdx >= 0;
         const recentPanelEl = document.querySelector(
@@ -16357,8 +16390,21 @@ async function selectLaneForWorkModeReasoningTurn(trimmed, opts = {}) {
         const panelIsActive = recentPanelEl
           ? recentPanelEl.classList.contains("is-active")
           : false;
-        const explicitReferenceBlocks =
-          hasExplicitTarget && explicitTargetIdx !== recentIdx;
+        let explicitReferenceBlocks = hasExplicitTarget && explicitTargetIdx !== recentIdx;
+        if (
+          !explicitReferenceBlocks &&
+          Number.isFinite(explicitPanel1) &&
+          explicitPanel1 >= 1 &&
+          typeof getReasoningPanelOrder === "function"
+        ) {
+          const recentVisual = getReasoningPanelOrder().find(
+            (p) => Number(p.tabIndex) === recentIdx
+          );
+          const recentVisual1 = Number(recentVisual?.visualIndex);
+          if (Number.isFinite(recentVisual1) && recentVisual1 !== explicitPanel1) {
+            explicitReferenceBlocks = true;
+          }
+        }
         if (
           Number.isFinite(recentIdx) &&
           recentPanelEl &&
@@ -18517,7 +18563,9 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
         : forceActiveLaneReasoningContent
           ? await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0)
           : await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
-              continuePriorLane: continueLaneForThisTurn
+              continuePriorLane: continueLaneForThisTurn,
+              explicitTargetLaneIdx: explicitTargetLaneIdx,
+              explicitTargetPanel1Based: explicitTargetPanel1Based,
             });
   /* PART 3+7 (2026-05-28): consume the recently-opened bias flag once
      a reasoning turn lands, and emit [reasoning_destination_resolved]
@@ -21754,30 +21802,33 @@ async function applyNdjsonActionPayloadEvent(event, ndjsonEventType = "unknown")
  */
 function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
   const promptClean = String(payload?.prompt || "").trim();
-  const tgt0 = Number(payload?.target_panel_index_0based);
-  let resolvedIdx0 = Number.isFinite(tgt0) ? tgt0 : null;
-  if (resolvedIdx0 == null) {
-    const tgt1 = Number(payload?.target_panel_index_1based);
-    if (Number.isFinite(tgt1) && tgt1 >= 1) resolvedIdx0 = tgt1 - 1;
-  }
   const titleHint = String(payload?.title_hint || "").trim();
-  let target1based = Number.isFinite(Number(payload?.target_panel_index_1based))
-    ? Number(payload.target_panel_index_1based)
-    : (Number.isFinite(resolvedIdx0) ? resolvedIdx0 + 1 : null);
-  const wantsNewPanel =
-    payload?.target_panel === "new" ||
-    payload?.target_new_panel === true ||
-    String(payload?.target_panel || "").toLowerCase() === "new";
   const newPanelRequestId = String(payload?.new_panel_request_id || payload?.panel_open_request_id || "").trim();
   const actionPlanId = String(payload?.action_plan_id || "").trim();
   const reasoningRequestId = String(payload?.reasoning_request_id || payload?.request_id || "").trim();
   const actionId = String(payload?.action_id || "").trim();
   const parentTurnId = String(payload?.parent_turn_id || data?.parent_turn_id || "").trim();
-  /* 2026-06-12 — the user gave an explicit panel destination ("... in
-     panel N", "... in a new panel"). The recursive reasoning turn must be
-     FORCED into the reasoning panel even if the bare task ("explain
-     tennis") would otherwise qualify as a simple Voice-UI answer. */
   const explicitPanelDestination = payload?.explicit_panel_destination === true;
+
+  const resolvedTarget =
+    typeof resolveReasoningTabIndexForPanelPayload === "function"
+      ? resolveReasoningTabIndexForPanelPayload(payload, {
+          source: "open_and_stream_dispatcher",
+          requestId: newPanelRequestId || actionPlanId,
+        })
+      : null;
+  const wantsNewPanel = Boolean(resolvedTarget?.wantsNewPanel) ||
+    payload?.target_panel === "new" ||
+    payload?.target_new_panel === true ||
+    String(payload?.target_panel || "").toLowerCase() === "new";
+  let target1based = Number.isFinite(Number(resolvedTarget?.visualIndex1Based))
+    ? Number(resolvedTarget.visualIndex1Based)
+    : Number.isFinite(Number(payload?.target_panel_index_1based))
+      ? Number(payload.target_panel_index_1based)
+      : null;
+  let resolvedIdx0 = Number.isFinite(Number(resolvedTarget?.tabIndex))
+    ? Number(resolvedTarget.tabIndex)
+    : null;
 
   try {
     console.info("[open_and_stream_payload_received]", {
@@ -21905,26 +21956,32 @@ function applyWorkModeReasoningOpenAndStreamPayload(payload, data) {
     }
   }
 
-  /* Activate or open the target panel. If the requested index doesn't
-     exist yet (e.g. user asked for Panel 4 but only Panel 1-2 are open),
-     create extra panels until the index is reachable. ``addReasoningTab``
-     enforces ``REASONING_TABS_MAX`` so we can't open more than the limit. */
+  /* Activate or open the target panel using visual tab order (1-based).
+     ``target_panel_index_0based`` is a mirror of visual index minus one —
+     never use it directly as ``data-tab-index``. */
   if (panelsRoot && resolvedIdx0 == null && !wantsNewPanel && typeof getActiveReasoningLaneIndex === "function") {
     const activeIdx = getActiveReasoningLaneIndex();
     if (Number.isFinite(activeIdx) && activeIdx >= 0) {
       resolvedIdx0 = activeIdx;
-      target1based = activeIdx + 1;
+      if (!Number.isFinite(target1based) && typeof getReasoningPanelOrder === "function") {
+        const activeEntry = getReasoningPanelOrder().find((p) => Number(p.tabIndex) === activeIdx);
+        target1based = Number.isFinite(Number(activeEntry?.visualIndex))
+          ? Number(activeEntry.visualIndex)
+          : activeIdx + 1;
+      }
     }
   }
-  if (panelsRoot && resolvedIdx0 != null) {
-    const explicitVisual1 = Number.isFinite(target1based) ? target1based : null;
-    if (explicitVisual1 != null && typeof ensureReasoningPanelVisualIndexExists === "function") {
-      const tabIdx = ensureReasoningPanelVisualIndexExists(explicitVisual1, {
+  if (resolvedTarget?.outOfRange) {
+    try {
+      console.warn("[panel_target_missing]", {
+        target_panel: target1based,
+        reason: "target_exceeds_max_panels",
         source: "open_and_stream_dispatcher",
-        requestId: newPanelRequestId || actionPlanId,
       });
-      if (Number.isFinite(tabIdx)) resolvedIdx0 = tabIdx;
-    }
+    } catch (_) {}
+    return;
+  }
+  if (panelsRoot && resolvedIdx0 != null) {
     const panelEl = panelsRoot.querySelector(
       `.vera-reasoning-tab-panel[data-tab-index="${resolvedIdx0}"]`
     );

@@ -208,6 +208,9 @@ const DEST_CASES = [
   ["put that in panel three", "reasoning_panel", "explicit_panel_reference", 3],
   ["explain this in panel 2", "reasoning_panel", "explicit_panel_reference", 2],
   ["explain tennis in panel 2", "reasoning_panel", "explicit_panel_reference", 2],
+  ["explain the binomial lattice in panel 4", "reasoning_panel", "explicit_panel_reference", 4],
+  ["explain the Vietnam War in panel 3", "reasoning_panel", "explicit_panel_reference", 3],
+  ["write this in panel two", "reasoning_panel", "explicit_panel_reference", 2],
   ["send this to panel 2", "reasoning_panel", "explicit_panel_reference", 2],
   ["show this on panel 2", "reasoning_panel", "explicit_panel_reference", 2],
   ["put it inside panel 2", "reasoning_panel", "explicit_panel_reference", 2],
@@ -239,6 +242,8 @@ section("Direct-topic explicit panel — numbered target + cleaned task");
 const DIRECT_PANEL_CASES = [
   ["can you explain tennis in panel 2?", 2, "Explain tennis."],
   ["explain photosynthesis in panel 3", 3, "Explain photosynthesis."],
+  ["explain the binomial lattice in panel 4", 4, "binomial lattice"],
+  ["explain the Vietnam War in panel 3", 3, "Vietnam War"],
   ["write about the Vietnam War in panel 1", 1, "Write about the Vietnam War."],
   ["put a summary of tennis in panel 2", 2, "tennis"],
   ["show the steps in panel 3", 3, "Show the steps."],

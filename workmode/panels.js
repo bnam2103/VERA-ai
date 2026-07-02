@@ -244,10 +244,13 @@ function createReasoningLanePanel(idx, html = "", isActive = false, tabMeta = {}
   panel.dataset.laneId = stableLaneId;
   panel.dataset.tabTopic = String(tabMeta.topic || REASONING_UNTITLED_TAB_NAME);
   panel.dataset.tabTopicSet = String(tabMeta.topicSet != null ? tabMeta.topicSet : "0");
-  panel.dataset.laneLabel = String(tabMeta.laneLabel || `Panel ${Number(idx) + 1}`);
+  const displayNum = Number.isFinite(Number(tabMeta.visualLabel))
+    ? Number(tabMeta.visualLabel)
+    : Number(idx) + 1;
+  panel.dataset.laneLabel = String(tabMeta.laneLabel || `Panel ${displayNum}`);
   panel.id = `vera-reasoning-tab-panel-${idx}`;
   panel.setAttribute("role", "tabpanel");
-  panel.setAttribute("aria-label", `Panel ${idx + 1}`);
+  panel.setAttribute("aria-label", `Panel ${displayNum}`);
   const scroll = document.createElement("div");
   scroll.className = "vera-reasoning-scroll vera-reasoning-md-panel";
   if (idx === 0) scroll.id = "vera-reasoning-md";
@@ -551,9 +554,11 @@ function addReasoningTab(opts) {
     -1
   );
   const idx = maxIdx + 1;
+  const visualNum = panelsBefore.length + 1;
   panelsBefore.forEach((p) => p.classList.remove("is-active"));
   const panel = createReasoningLanePanel(idx, "", true, {
-    laneLabel: `Panel ${idx + 1}`
+    laneLabel: `Panel ${visualNum}`,
+    visualLabel: visualNum,
   });
   panelsRoot.appendChild(panel);
   syncReasoningLaneBusySlotsAfterDomChange();
@@ -1110,6 +1115,68 @@ function resolveReasoningPanelTabIndexFromVisual1(visualIndex1Based) {
 }
 
 /**
+ * True when a user-facing panel number (1-based visual order) already exists.
+ */
+function reasoningVisualPanelExists(visualIndex1Based) {
+  const want = Number(visualIndex1Based);
+  if (!Number.isFinite(want) || want < 1) return false;
+  return getReasoningPanelOrder().length >= want;
+}
+
+/**
+ * Resolve a planner/frontend payload to a stable tab index using VISUAL panel
+ * order only. Never treats ``target_panel_index_0based`` as ``data-tab-index``.
+ */
+function resolveReasoningTabIndexForPanelPayload(payload, opts = {}) {
+  const wantsNew =
+    payload?.target_panel === "new" ||
+    payload?.target_new_panel === true ||
+    String(payload?.target_panel || "").toLowerCase() === "new";
+  if (wantsNew) return { wantsNewPanel: true, visualIndex1Based: null, tabIndex: null };
+
+  let visual1 = Number(payload?.target_panel_index_1based);
+  if (!Number.isFinite(visual1) || visual1 < 1) {
+    const mirror0 = Number(payload?.target_panel_index_0based);
+    if (Number.isFinite(mirror0) && mirror0 >= 0) {
+      visual1 = mirror0 + 1;
+    }
+  }
+  if (!Number.isFinite(visual1) || visual1 < 1) {
+    return { wantsNewPanel: false, visualIndex1Based: null, tabIndex: null };
+  }
+  if (visual1 > REASONING_TABS_MAX) {
+    try {
+      console.warn("[panel_target_out_of_range]", {
+        target_panel: visual1,
+        max_panels: REASONING_TABS_MAX,
+        source: String(opts.source || "resolve_panel_payload"),
+      });
+    } catch (_) {}
+    return { wantsNewPanel: false, visualIndex1Based: visual1, tabIndex: null, outOfRange: true };
+  }
+
+  const existedBefore = reasoningVisualPanelExists(visual1);
+  let tabIndex = null;
+  if (existedBefore) {
+    tabIndex = resolveReasoningPanelTabIndexFromVisual1(visual1);
+  } else if (opts.allowCreate !== false && typeof ensureReasoningPanelVisualIndexExists === "function") {
+    tabIndex = ensureReasoningPanelVisualIndexExists(visual1, {
+      source: String(opts.source || "resolve_panel_payload"),
+      requestId: String(opts.requestId || opts.request_id || "").trim(),
+    });
+  } else {
+    tabIndex = resolveReasoningPanelTabIndexFromVisual1(visual1);
+  }
+  return {
+    wantsNewPanel: false,
+    visualIndex1Based: visual1,
+    tabIndex: Number.isFinite(tabIndex) ? tabIndex : null,
+    existedBefore,
+    createdPanel: !existedBefore && Number.isFinite(tabIndex),
+  };
+}
+
+/**
  * Ensure a user-facing panel number exists in visible tab order. Creates panels
  * at the end until `visualIndex1Based` is reachable — never hunts for sparse
  * `data-tab-index` gaps (which caused runaway panel 7/8/9 creation).
@@ -1118,8 +1185,29 @@ function resolveReasoningPanelTabIndexFromVisual1(visualIndex1Based) {
 function ensureReasoningPanelVisualIndexExists(visualIndex1Based, opts = {}) {
   const want = Number(visualIndex1Based);
   if (!Number.isFinite(want) || want < 1) return null;
+  if (want > REASONING_TABS_MAX) {
+    try {
+      console.warn("[panel_ensure_index_out_of_range]", {
+        target_index: want,
+        max_panels: REASONING_TABS_MAX,
+        request_id: String(opts.requestId || opts.request_id || "").trim() || null,
+      });
+    } catch (_) {}
+    return null;
+  }
   const panelsRoot = document.getElementById("vera-reasoning-tab-panels");
   if (!panelsRoot || typeof addReasoningTab !== "function") return null;
+  const existingTab = resolveReasoningPanelTabIndexFromVisual1(want);
+  if (Number.isFinite(existingTab)) {
+    try {
+      console.info("[panel_ensure_index_reuse_existing]", {
+        target_index: want,
+        tab_index: existingTab,
+        request_id: String(opts.requestId || opts.request_id || "").trim() || null,
+      });
+    } catch (_) {}
+    return existingTab;
+  }
   const requestId = String(opts.requestId || opts.request_id || "").trim();
   const beforeOrder = getReasoningPanelOrder();
   const beforeCount = beforeOrder.length;
@@ -1945,6 +2033,8 @@ try {
     window.renderReasoningCloseAssistantConfirmation = renderReasoningCloseAssistantConfirmation;
     window.getReasoningPanelOrder = getReasoningPanelOrder;
   window.resolveReasoningPanelTabIndexFromVisual1 = resolveReasoningPanelTabIndexFromVisual1;
+  window.reasoningVisualPanelExists = reasoningVisualPanelExists;
+  window.resolveReasoningTabIndexForPanelPayload = resolveReasoningTabIndexForPanelPayload;
   window.ensureReasoningPanelVisualIndexExists = ensureReasoningPanelVisualIndexExists;
   window._isExplicitReasoningPanelCloseCommand = _isExplicitReasoningPanelCloseCommand;
     window.getReasoningPanelDebugState = getReasoningPanelDebugState;
@@ -3126,6 +3216,8 @@ try {
   window.findReasoningPanelIndicesByTitleQuery = findReasoningPanelIndicesByTitleQuery;
   window.getReasoningPanelOrder = getReasoningPanelOrder;
   window.resolveReasoningPanelTabIndexFromVisual1 = resolveReasoningPanelTabIndexFromVisual1;
+  window.reasoningVisualPanelExists = reasoningVisualPanelExists;
+  window.resolveReasoningTabIndexForPanelPayload = resolveReasoningTabIndexForPanelPayload;
   window.ensureReasoningPanelVisualIndexExists = ensureReasoningPanelVisualIndexExists;
   window._isExplicitReasoningPanelCloseCommand = _isExplicitReasoningPanelCloseCommand;
   window.maybeHandleCloseReasoningPanelShortcut = maybeHandleCloseReasoningPanelShortcut;
