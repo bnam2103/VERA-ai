@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=24">
+  <link rel="stylesheet" href="../styles.css?v=25">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -965,30 +965,41 @@
     </section>
 
     <section class="vera-settings-section">
-      <h3>Universal</h3>
+      <h3>Voice timing</h3>
 
       <div class="vera-settings-row">
-        <label for="vera-setting-silence" class="vera-settings-label">Silence time after ASR</label>
+        <label for="vera-setting-silence" class="vera-settings-label">Pause before VERA responds</label>
+        <p class="vera-settings-hint">How long VERA waits after you stop speaking before treating your speech as a complete request.</p>
         <div class="vera-settings-slider-wrap settings-slider-wrap">
-          <input id="vera-setting-silence" type="range" min="0" max="2" step="1" value="1" />
+          <input id="vera-setting-silence" type="range" min="0" max="2" step="1" value="1" aria-valuetext="Balanced (1.3s)" />
           <div class="vera-settings-slider-ticks" aria-hidden="true">
-            <span class="vera-settings-slider-tick" style="--tick-pct: 0">1.0s</span>
-            <span class="vera-settings-slider-tick" style="--tick-pct: 0.5">1.3s</span>
-            <span class="vera-settings-slider-tick" style="--tick-pct: 1">1.6s</span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0">
+              <span class="vera-settings-slider-tick-name">Fast</span>
+              <span class="vera-settings-slider-tick-meta">1.0s</span>
+            </span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 0.5">
+              <span class="vera-settings-slider-tick-name">Balanced</span>
+              <span class="vera-settings-slider-tick-meta">1.3s</span>
+            </span>
+            <span class="vera-settings-slider-tick" style="--tick-pct: 1">
+              <span class="vera-settings-slider-tick-name">Patient</span>
+              <span class="vera-settings-slider-tick-meta">1.6s</span>
+            </span>
           </div>
         </div>
       </div>
 
       <div class="vera-settings-row">
-        <div class="vera-settings-label">ASR mode</div>
-        <div class="vera-settings-radio-row" role="radiogroup" aria-label="ASR mode">
-          <button type="button" id="vera-setting-asr-streaming" class="vera-settings-radio" data-asr-mode="streaming" aria-pressed="true" title="Fast live captions with lower accuracy.">
+        <div class="vera-settings-label">Speech recognition mode</div>
+        <p class="vera-settings-hint">Choose between faster real-time transcription and slower, more accurate recognition.</p>
+        <div class="vera-settings-radio-row" role="radiogroup" aria-label="Speech recognition mode">
+          <button type="button" id="vera-setting-asr-streaming" class="vera-settings-radio" data-asr-mode="streaming" aria-pressed="true" title="Shows speech in real time and responds faster, but may be less accurate.">
             <span class="dot" aria-hidden="true"></span> Fast / Streaming
           </button>
-          <button type="button" id="vera-setting-asr-whisper" class="vera-settings-radio" data-asr-mode="whisper" aria-pressed="false" title="More accurate transcription, but slower.">
+          <button type="button" id="vera-setting-asr-whisper" class="vera-settings-radio" data-asr-mode="whisper" aria-pressed="false" title="More accurate transcription, but responses may take longer.">
             <span class="dot" aria-hidden="true"></span> Accurate / Whisper
           </button>
-          <button type="button" id="vera-setting-asr-hybrid" class="vera-settings-radio" data-asr-mode="hybrid" aria-pressed="false" title="Live captions with Whisper correction for selected requests.">
+          <button type="button" id="vera-setting-asr-hybrid" class="vera-settings-radio" data-asr-mode="hybrid" aria-pressed="false" title="Uses streaming for responsiveness and Whisper for accuracy when available.">
             <span class="dot" aria-hidden="true"></span> Hybrid
           </button>
         </div>
@@ -1027,44 +1038,13 @@
     </section>
 
     <section class="vera-settings-section">
-      <h3>Main Streaming ASR (Experimental)</h3>
-
-      <div class="vera-settings-row">
-        <label for="vera-setting-main-partial-min" class="vera-settings-label">Min chars before showing partial</label>
-        <div class="vera-settings-slider-wrap settings-slider-wrap">
-          <input id="vera-setting-main-partial-min" type="range" min="0" max="4" step="1" value="0" />
-          <div
-            class="vera-settings-slider-ticks vera-settings-slider-ticks--partial-min"
-            aria-hidden="true"
-            title="Infinity: hide live captions until you finish the utterance (transcript appears when sending to VERA)."
-          >
-            <span class="vera-settings-slider-tick" style="--tick-pct: 0">10</span>
-            <span class="vera-settings-slider-tick" style="--tick-pct: 0.25">15</span>
-            <span class="vera-settings-slider-tick" style="--tick-pct: 0.5">20</span>
-            <span class="vera-settings-slider-tick" style="--tick-pct: 0.75">25</span>
-            <span class="vera-settings-slider-tick" style="--tick-pct: 1">Infinity</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="vera-settings-section">
       <h3>Work Mode</h3>
       <div class="vera-settings-row vera-settings-toggle-row">
-        <span class="vera-settings-label">Text guide rotator</span>
-        <button type="button" id="vera-setting-text-guide-rotator" class="vera-settings-toggle" aria-pressed="true" title="Show rotating text guide above input">
-          <span class="knob"></span>
-        </button>
-      </div>
-      <div class="vera-settings-row vera-settings-toggle-row">
-        <span class="vera-settings-label">Mute VERA in work mode</span>
-        <button type="button" id="vera-setting-workmode-mute" class="vera-settings-toggle" aria-pressed="false" title="Mute VERA in work mode only">
-          <span class="knob"></span>
-        </button>
-      </div>
-      <div class="vera-settings-row vera-settings-toggle-row">
-        <span class="vera-settings-label">Timer for explicit due-in plans</span>
-        <button type="button" id="vera-setting-planning-deadline-timer" class="vera-settings-toggle is-on" aria-pressed="true" title="When on, due-in phrases start a countdown that ends 10 minutes before the time you gave">
+        <div class="vera-settings-toggle-copy">
+          <span class="vera-settings-label">Mute spoken responses in Work Mode</span>
+          <p class="vera-settings-hint">Use this when you want Work Mode to respond visually without speaking aloud.</p>
+        </div>
+        <button type="button" id="vera-setting-workmode-mute" class="vera-settings-toggle" aria-pressed="false" title="Mute spoken responses in Work Mode" aria-label="Mute spoken responses in Work Mode">
           <span class="knob"></span>
         </button>
       </div>
@@ -1269,7 +1249,7 @@
 <script src="../news/newsRouter.js?v=3"></script>
 <script src="../news/newsPanel.js?v=4"></script>
 <script src="../news/weatherPanel.js?v=1"></script>
-<script src="app.js?v=128"></script>
+<script src="app.js?v=129"></script>
 <script src="shell.js?v=2"></script>
 <!-- voice/musicNavigation.js — shared track navigation dedupe + ended guard -->
 <script src="../voice/musicNavigation.js?v=1"></script>

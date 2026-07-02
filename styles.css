@@ -5540,10 +5540,25 @@ body.chat-started .input-bar {
       var(--tick-pct) * (100% - var(--settings-thumb-size))
   );
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
   font-size: 12px;
   line-height: 1.2;
   opacity: 0.72;
   white-space: nowrap;
+}
+
+.vera-settings-slider-tick-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(242, 245, 247, 0.82);
+}
+
+.vera-settings-slider-tick-meta {
+  font-size: 10px;
+  color: rgba(242, 245, 247, 0.52);
 }
 
 .vera-settings-slider-ticks--partial-min .vera-settings-slider-tick {
@@ -5612,6 +5627,20 @@ body.chat-started .input-bar {
   font-size: 12px;
   line-height: 1.45;
   color: rgba(220, 228, 245, 0.78);
+}
+
+.vera-settings-row > .vera-settings-label + .vera-settings-hint {
+  margin-top: -2px;
+}
+
+.vera-settings-toggle-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vera-settings-toggle-copy .vera-settings-hint {
+  margin-top: 6px;
+  margin-bottom: 0;
 }
 
 .vera-settings-guide-section.is-highlighted {
@@ -5701,7 +5730,7 @@ body.chat-started .input-bar {
 
 .vera-settings-toggle-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }

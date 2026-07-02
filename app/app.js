@@ -30303,26 +30303,20 @@ function wireVeraSettingsPanel() {
   /* Legacy id ("Single ASR pipeline") may still exist in cached HTML — keep
      a soft alias to the Whisper button so existing cached pages don't break. */
   const asrSingleBtn = asrWhisperBtn || document.getElementById("vera-setting-asr-single");
-  const mainPartialMinSel = document.getElementById("vera-setting-main-partial-min");
   const resetSessionBtn = document.getElementById("vera-setting-reset-session");
   const costLogDevSection = document.getElementById("vera-cost-log-dev-section");
   const costArchiveBtn = document.getElementById("vera-cost-archive-clean-btn");
   const costScenarioSelect = document.getElementById("vera-cost-scenario-select");
   const costLogStatusPre = document.getElementById("vera-cost-log-status");
-  const textGuideRotatorBtn = document.getElementById("vera-setting-text-guide-rotator");
   const workModeMuteBtn = document.getElementById("vera-setting-workmode-mute");
-  const planningDeadlineTimerBtn = document.getElementById("vera-setting-planning-deadline-timer");
   const saveBtn = document.getElementById("vera-settings-save");
   if (!(modal instanceof HTMLElement)) return;
 
   const silenceOptions = [1000, 1300, 1600];
+  const silenceAriaLabels = ["Fast (1.0s)", "Balanced (1.3s)", "Patient (1.6s)"];
   let draftSilenceMs = getVeraAsrSilenceMs();
   let draftAsrMode = getVeraAsrMode();
-  let draftTextGuideRotator = isTextGuideRotatorEnabled();
   let draftWorkModeMute = isWorkModeMuteEnabled();
-  let draftPlanningDeadlineTimer = isPlanningDeadlineTimerEnabled();
-  let draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
-  const partialMinCharOptions = MAIN_ASR_PARTIAL_MIN_CHAR_OPTIONS;
   const silenceToIndex = (ms) => {
     const idx = silenceOptions.indexOf(ms);
     return idx >= 0 ? idx : 1;
@@ -30333,15 +30327,11 @@ function wireVeraSettingsPanel() {
     const idx = Number.isFinite(raw) ? Math.max(0, Math.min(2, raw)) : 1;
     return silenceOptions[idx];
   };
-  const partialMinCharsToIndex = (n) => {
-    const idx = partialMinCharOptions.indexOf(normalizeMainAsrPartialMinChars(n));
-    return idx >= 0 ? idx : 0;
-  };
-  const readSliderPartialMinChars = () => {
-    if (!(mainPartialMinSel instanceof HTMLInputElement)) return draftMainAsrPartialMinChars;
-    const raw = Number(mainPartialMinSel.value);
-    const idx = Number.isFinite(raw) ? Math.max(0, Math.min(partialMinCharOptions.length - 1, raw)) : 2;
-    return partialMinCharOptions[idx];
+  const syncSilenceAria = () => {
+    if (!(silenceSlider instanceof HTMLInputElement)) return;
+    const raw = Number(silenceSlider.value);
+    const idx = Number.isFinite(raw) ? Math.max(0, Math.min(2, raw)) : 1;
+    silenceSlider.setAttribute("aria-valuetext", silenceAriaLabels[idx] || silenceAriaLabels[1]);
   };
 
   const applyAsrModeUi = (mode) => {
@@ -30363,37 +30353,16 @@ function wireVeraSettingsPanel() {
       workModeMuteBtn.setAttribute("aria-pressed", on ? "true" : "false");
     }
   };
-  const applyTextGuideRotatorUi = () => {
-    const on = draftTextGuideRotator;
-    if (textGuideRotatorBtn instanceof HTMLButtonElement) {
-      textGuideRotatorBtn.classList.toggle("is-on", on);
-      textGuideRotatorBtn.setAttribute("aria-pressed", on ? "true" : "false");
-    }
-  };
-  const applyPlanningDeadlineTimerUi = () => {
-    const on = draftPlanningDeadlineTimer;
-    if (planningDeadlineTimerBtn instanceof HTMLButtonElement) {
-      planningDeadlineTimerBtn.classList.toggle("is-on", on);
-      planningDeadlineTimerBtn.setAttribute("aria-pressed", on ? "true" : "false");
-    }
-  };
   const hydrate = () => {
     draftSilenceMs = getVeraAsrSilenceMs();
     draftAsrMode = getVeraAsrMode();
-    draftTextGuideRotator = isTextGuideRotatorEnabled();
     draftWorkModeMute = isWorkModeMuteEnabled();
-    draftPlanningDeadlineTimer = isPlanningDeadlineTimerEnabled();
-    draftMainAsrPartialMinChars = getMainAsrPartialMinChars();
     if (silenceSlider instanceof HTMLInputElement) {
       silenceSlider.value = String(silenceToIndex(draftSilenceMs));
-    }
-    if (mainPartialMinSel instanceof HTMLInputElement) {
-      mainPartialMinSel.value = String(partialMinCharsToIndex(draftMainAsrPartialMinChars));
+      syncSilenceAria();
     }
     applyAsrModeUi(draftAsrMode);
-    applyTextGuideRotatorUi();
     applyMuteUi();
-    applyPlanningDeadlineTimerUi();
     applyVeraWorkModeMuteSetting();
     applyTextGuideRotatorSetting();
   };
@@ -30430,10 +30399,7 @@ function wireVeraSettingsPanel() {
       panel: "settings",
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
-      text_guide_rotator: draftTextGuideRotator ? 1 : 0,
       workmode_mute: draftWorkModeMute ? 1 : 0,
-      planning_deadline_timer: draftPlanningDeadlineTimer ? 1 : 0,
-      main_asr_partial_min_chars: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
     });
     if (modal instanceof HTMLElement) modal.removeAttribute("hidden");
     scrollSettingsCardToTop(modal);
@@ -30484,6 +30450,7 @@ function wireVeraSettingsPanel() {
 
   const syncDraftSilenceFromSlider = () => {
     draftSilenceMs = readSliderSilenceMs();
+    syncSilenceAria();
     logVeraSettings("draft_silence_ms", { value: draftSilenceMs });
   };
   silenceSlider?.addEventListener("input", syncDraftSilenceFromSlider);
@@ -30499,50 +30466,25 @@ function wireVeraSettingsPanel() {
   wireAsrModeRadio(asrStreamingBtn, "streaming");
   wireAsrModeRadio(asrWhisperBtn, "whisper");
   wireAsrModeRadio(asrHybridBtn, "hybrid");
-  const syncDraftPartialMinChars = () => {
-    draftMainAsrPartialMinChars = readSliderPartialMinChars();
-    logVeraSettings("draft_main_asr_partial_min_chars", {
-      value: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
-    });
-  };
-  mainPartialMinSel?.addEventListener("input", syncDraftPartialMinChars);
-  mainPartialMinSel?.addEventListener("change", syncDraftPartialMinChars);
-  textGuideRotatorBtn?.addEventListener("click", () => {
-    draftTextGuideRotator = !draftTextGuideRotator;
-    applyTextGuideRotatorUi();
-    logVeraSettings("draft_text_guide_rotator", { value: draftTextGuideRotator ? 1 : 0 });
-  });
   workModeMuteBtn?.addEventListener("click", () => {
     draftWorkModeMute = !draftWorkModeMute;
     applyMuteUi();
     logVeraSettings("draft_workmode_mute", { value: draftWorkModeMute ? 1 : 0 });
-  });
-  planningDeadlineTimerBtn?.addEventListener("click", () => {
-    draftPlanningDeadlineTimer = !draftPlanningDeadlineTimer;
-    applyPlanningDeadlineTimerUi();
-    logVeraSettings("draft_planning_deadline_timer", { value: draftPlanningDeadlineTimer ? 1 : 0 });
   });
   saveBtn?.addEventListener("click", () => {
     if (!(saveBtn instanceof HTMLButtonElement)) return;
     const originalLabel = saveBtn.textContent || "Save settings";
     saveBtn.disabled = true;
     draftSilenceMs = readSliderSilenceMs();
-    draftMainAsrPartialMinChars = readSliderPartialMinChars();
     logVeraSettings("save_click", {
       silence_ms: draftSilenceMs,
       asr_mode: draftAsrMode,
-      text_guide_rotator: draftTextGuideRotator ? 1 : 0,
       workmode_mute: draftWorkModeMute ? 1 : 0,
-      planning_deadline_timer: draftPlanningDeadlineTimer ? 1 : 0,
-      main_asr_partial_min_chars: draftMainAsrPartialMinChars === Infinity ? "inf" : draftMainAsrPartialMinChars,
     });
     try {
       setVeraAsrSilenceMs(draftSilenceMs);
       setVeraAsrMode(draftAsrMode);
-      setMainAsrPartialMinChars(draftMainAsrPartialMinChars);
-      setTextGuideRotatorEnabled(draftTextGuideRotator);
       setWorkModeMuteEnabled(draftWorkModeMute);
-      setPlanningDeadlineTimerEnabled(draftPlanningDeadlineTimer);
       if (typeof syncLocalVeraPrefsToSupabase === "function") {
         void syncLocalVeraPrefsToSupabase("settings_panel_save");
       }

@@ -60,6 +60,13 @@ ok("window.veraOpenSettingsModal = () => openSettings()" in app_js, "settings op
 ok("window.veraOpenAccountModal = () => openAccount()" in app_js, "account opens via veraOpenAccountModal")
 ok("window.veraOpenSettingsToAccountSection = () => openAccount()" in app_js, "legacy account hook maps to account modal")
 ok("scrollToGuide" not in app_js, "no auto-scroll to old guide section")
+ok("Pause before VERA responds" in html, "voice timing label uses user-facing copy")
+ok("Speech recognition mode" in html, "ASR section uses user-facing heading")
+ok("Mute spoken responses in Work Mode" in html, "work mode mute uses clarified label")
+ok('id="vera-setting-main-partial-min"' not in html, "main streaming ASR control removed from settings")
+ok('id="vera-setting-text-guide-rotator"' not in html, "text guide rotator removed from settings")
+ok('id="vera-setting-planning-deadline-timer"' not in html, "planning deadline timer removed from settings")
+ok("setMainAsrPartialMinChars(draftMainAsrPartialMinChars)" not in app_js, "save no longer writes hidden main ASR partial setting")
 ok("closeSettings();" in app_js and "saveBtn.textContent = \"Saved\"" in app_js, "save settings shows confirmation and closes modal")
 
 section("settings save button styles")
