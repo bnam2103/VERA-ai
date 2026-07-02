@@ -75,12 +75,12 @@ ok('id="vera-setting-planning-deadline-timer"' not in html, "planning deadline t
 ok("setMainAsrPartialMinChars(draftMainAsrPartialMinChars)" not in app_js, "save no longer writes hidden main ASR partial setting")
 ok("syncVeraInputEmptyState" in app_js and "markVeraConversationActive" in app_js, "empty-state input helpers exist")
 ok('id="vera-empty-greeting"' in html and "Ready when you are." in html, "centered empty greeting present")
-ok("vera-startup-center" in html and "guide-text-rotator" in html, "startup center groups greeting rotator and input")
+ok("vera-input-stage" in html and "vera-input-shell" in html, "input stage wraps greeting rotator and bar")
 ok("vera-headset-hint" in html and "VERA works best with a headset or AirPods." in html, "bottom headset guidance present")
 with open(os.path.join(_ROOT, "styles.css"), encoding="utf-8") as f:
     css = f.read()
-ok("is-empty-state" in css and "has-conversation" in css, "empty-state layout classes styled")
-ok("vera-startup-center" in css and ".guide-text-rotator" in css, "startup center and rotator column layout styled")
+ok("is-startup-empty" in css and "is-active-session" in css, "startup/active session layout classes styled")
+ok(".vera-input-stage" in css and ".guide-text-rotator" in css, "fixed input stage and rotator column styled")
 ok("closeSettings();" in app_js and "saveBtn.textContent = \"Saved\"" in app_js, "save settings shows confirmation and closes modal")
 
 section("settings save button styles")

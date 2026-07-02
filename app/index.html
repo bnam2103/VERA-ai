@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=30">
+  <link rel="stylesheet" href="../styles.css?v=31">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -34,7 +34,7 @@
   </div>
 </div>
 
-<section id="vera-app" class="vera-app-shell" hidden>
+<section id="vera-app" class="vera-app-shell is-startup-empty" hidden>
   <aside class="vera-sidebar" id="vera-sidebar" aria-label="App menu">
     <div class="vera-sidebar-inner">
       <a class="sidebar-brand" id="vera-sidebar-brand-home" href="/" aria-label="Back to VERA home">
@@ -326,10 +326,10 @@
     </div>
 
     <div class="input-container">
-      <div class="vera-startup-center vera-input-dock">
-        <p class="vera-startup-greeting vera-empty-greeting" id="vera-empty-greeting" aria-hidden="false">Ready when you are.</p>
+      <div class="vera-input-stage" id="vera-input-stage">
+        <p class="vera-startup-greeting" id="vera-empty-greeting" aria-hidden="false">Ready when you are.</p>
         <div class="ask-rotator guide-text-rotator" id="vera-ask-rotator" aria-live="polite"></div>
-        <div class="vera-input-area-wrapper vera-input-dock-row">
+        <div class="vera-input-shell vera-input-area-wrapper">
           <button
             id="vera-input-toggle"
             class="input-toggle-btn"
@@ -1272,8 +1272,8 @@
 <script src="../news/newsRouter.js?v=3"></script>
 <script src="../news/newsPanel.js?v=5"></script>
 <script src="../news/weatherPanel.js?v=2"></script>
-<script src="app.js?v=132"></script>
-<script src="shell.js?v=3"></script>
+<script src="app.js?v=133"></script>
+<script src="shell.js?v=4"></script>
 <!-- voice/musicNavigation.js — shared track navigation dedupe + ended guard -->
 <script src="../voice/musicNavigation.js?v=1"></script>
 <!-- voice/musicSequence.js — multi-action music sequential dispatch + provider exclusivity -->

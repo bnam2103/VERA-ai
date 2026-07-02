@@ -457,6 +457,9 @@ function revealApp() {
 
     requestAnimationFrame(() => {
       veraApp.classList.add("fade-in");
+      if (typeof window.syncVeraInputEmptyState === "function") {
+        window.syncVeraInputEmptyState();
+      }
       scheduleAskRotatorLayoutSync();
       syncAskRotatorVisibility({ resetSequence: true });
       requestAnimationFrame(() => {
@@ -487,6 +490,10 @@ document.getElementById("return-home")?.addEventListener("click", async () => {
     veraApp.hidden = false;
     veraApp.classList.remove("fade-out");
     veraApp.classList.add("fade-in");
+
+    if (typeof window.syncVeraInputEmptyState === "function") {
+      window.syncVeraInputEmptyState();
+    }
 
     window.dispatchEvent(new Event("resize"));
     if (typeof window.ensureVeraVoiceUiActive === "function") {

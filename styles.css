@@ -1188,125 +1188,78 @@ body.chat-started .input-toggle-btn {
   right: 0;
   top: 0;
   bottom: 0;
-  --dock-inset: max(40px, calc(32px + env(safe-area-inset-bottom, 0px)));
-  --dock-bar-height: 64px;
-  --dock-rotator-gap: 22px;
-  --vera-footer-reserve: 46px;
-
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 14px;
-  padding-bottom: calc(var(--dock-inset) + var(--vera-footer-reserve));
-
   pointer-events: none;
-  transition:
-    left 180ms ease,
-    padding-bottom 220ms ease,
-    align-items 220ms ease;
+  z-index: 1000;
 }
 
-.vera-startup-center,
-.vera-input-dock {
+/* Single positioning layer for greeting + rotator + input (flow mode). */
+.vera-input-stage {
+  position: fixed;
+  left: 50%;
   width: min(760px, calc(100vw - var(--vera-sidebar-width, 52px) - 48px));
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  box-sizing: border-box;
+  padding: 0 24px;
   pointer-events: none;
-  transition: transform 220ms ease, opacity 180ms ease;
+  z-index: 40;
+  transition:
+    top 0.28s ease,
+    bottom 0.28s ease,
+    transform 0.28s ease;
 }
 
-.vera-input-dock-row,
+#vera-app.is-startup-empty:not(.work-mode) .vera-input-stage {
+  top: 50%;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+}
+
+#vera-app.is-active-session:not(.work-mode) .vera-input-stage {
+  top: auto;
+  bottom: calc(max(8px, env(safe-area-inset-bottom, 0px)) + 44px);
+  transform: translateX(-50%);
+}
+
+.vera-input-shell,
 .vera-input-area-wrapper {
-  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 14px;
   width: 100%;
-  max-width: 760px;
   pointer-events: none;
 }
 
-.vera-input-dock-row > .input-toggle-btn,
-.vera-input-dock-row > .input-bar,
-.vera-input-dock-row > .vera-keyboard-queue-host,
+.vera-input-shell > .input-toggle-btn,
+.vera-input-shell > .input-bar,
+.vera-input-shell > .vera-keyboard-queue-host,
 .vera-input-area-wrapper > .input-toggle-btn,
 .vera-input-area-wrapper > .input-bar,
 .vera-input-area-wrapper > .vera-keyboard-queue-host {
   pointer-events: auto;
 }
 
-.vera-empty-greeting,
 .vera-startup-greeting {
+  display: none;
   margin: 0 0 18px;
+  width: 100%;
   font-size: clamp(1.25rem, 2.8vw, 1.5rem);
   font-weight: 650;
   letter-spacing: 0.02em;
   line-height: 1.35;
   color: rgba(242, 245, 247, 0.92);
   text-align: center;
-  opacity: 0;
-  max-height: 0;
-  overflow: hidden;
-  transform: translateY(10px);
   pointer-events: none;
-  transition:
-    opacity 180ms ease,
-    transform 220ms ease,
-    max-height 220ms ease,
-    margin 220ms ease;
 }
 
-#vera-app.is-empty-state .vera-empty-greeting,
-#vera-app.is-empty-state .vera-startup-greeting {
-  opacity: 1;
-  max-height: 4rem;
-  transform: translateY(0);
+#vera-app.is-startup-empty .vera-startup-greeting {
+  display: block;
 }
 
-#vera-app.has-conversation .vera-empty-greeting,
-#vera-app.has-conversation .vera-startup-greeting {
+#vera-app.is-active-session .vera-startup-greeting {
   display: none;
-  opacity: 0;
-  max-height: 0;
-  margin: 0;
-}
-
-#vera-app:not(.work-mode).is-empty-state .input-container {
-  align-items: center;
-  justify-content: center;
-  padding-bottom: var(--vera-footer-reserve);
-}
-
-#vera-app:not(.work-mode).is-empty-state .vera-startup-center,
-#vera-app:not(.work-mode).is-empty-state .vera-input-dock {
-  transform: none;
-  padding: 0 24px;
-  box-sizing: border-box;
-}
-
-#vera-app:not(.work-mode).has-conversation .input-container,
-#vera-app:not(.work-mode).vera-flow-voice-docked.has-conversation .input-container {
-  align-items: flex-end;
-  justify-content: center;
-  padding-bottom: calc(var(--dock-inset) + var(--vera-footer-reserve));
-}
-
-#vera-app:not(.work-mode).has-conversation .vera-startup-center,
-#vera-app:not(.work-mode).has-conversation .vera-input-dock,
-#vera-app:not(.work-mode).vera-flow-voice-docked .vera-startup-center,
-#vera-app:not(.work-mode).vera-flow-voice-docked .vera-input-dock {
-  transform: none;
-  padding: 0 24px;
-  box-sizing: border-box;
-}
-
-#vera-app:not(.work-mode).is-empty-state.vera-flow-voice-docked .input-container {
-  align-items: center;
-  justify-content: center;
-  padding-bottom: var(--vera-footer-reserve);
 }
 
 /* Interrupt / VAD debug (sibling of .input-bar): parent has pointer-events: none */
@@ -1341,9 +1294,9 @@ body.chat-started .input-toggle-btn {
 
 .ask-rotator,
 .guide-text-rotator {
-  position: static;
-  left: auto;
-  transform: none;
+  position: static !important;
+  left: auto !important;
+  transform: none !important;
   width: 100%;
   max-width: 760px;
   display: flex;
@@ -1366,13 +1319,18 @@ body.chat-started .input-toggle-btn {
 .ask-rotator.visible,
 .guide-text-rotator.visible {
   opacity: 0.92;
+}
+
+#vera-app.is-startup-empty .ask-rotator.visible,
+#vera-app.is-startup-empty .guide-text-rotator.visible {
   margin-bottom: 22px;
 }
 
-#vera-app.has-conversation .ask-rotator.visible,
-#vera-app.has-conversation .guide-text-rotator.visible {
+#vera-app.is-active-session .ask-rotator.visible,
+#vera-app.is-active-session .guide-text-rotator.visible {
   margin-bottom: 10px;
 }
+
 body.bmo-open .ask-rotator {
   color: rgba(24, 49, 39, 0.82);
 }
@@ -1381,13 +1339,7 @@ body.bmo-open .ask-rotator {
 ========================= */
 
 body.chat-started .input-container {
-  align-items: flex-end;
-  padding-bottom: calc(var(--dock-inset) + var(--vera-footer-reserve, 46px));
-}
-
-#vera-app.is-empty-state .input-container {
-  align-items: center;
-  padding-bottom: var(--vera-footer-reserve, 46px);
+  z-index: 1000;
 }
 
 /* Bottom-right: productivity (music) + optional signed-in user label */
@@ -1795,14 +1747,16 @@ body.chat-started .input-container {
 #vera-app:not(.work-mode) .vera-bottom-status-footer,
 #vera-app:not(.work-mode) .vera-bottom-status {
   position: fixed;
-  left: var(--vera-sidebar-width, 52px);
-  right: 0;
-  bottom: max(8px, env(safe-area-inset-bottom, 0px));
-  z-index: 1015;
+  left: 50%;
+  right: auto;
+  bottom: max(14px, env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 35;
   display: flex;
   justify-content: center;
   padding: 0 16px 4px;
   pointer-events: none;
+  max-width: min(760px, calc(100vw - var(--vera-sidebar-width, 52px) - 32px));
 }
 
 #vera-app:not(.work-mode) .vera-bottom-status-footer .vera-bottom-status-inner {
@@ -4015,16 +3969,9 @@ body.chat-started .input-bar {
   display: none !important;
 }
 
-/* Flow mode: while actively listening, dock input row bottom-center above corner tools */
+/* Flow mode: voice-docked class retained for corner-tool layering only. */
 #vera-app:not(.work-mode) .input-container {
-  transition: padding-bottom 0.38s ease;
-}
-
-/* Match body.chat-started bottom inset so listening and muted land in the same slot */
-#vera-app:not(.work-mode).vera-flow-voice-docked.has-conversation .input-container {
-  align-items: flex-end;
-  justify-content: center;
-  padding-bottom: max(40px, calc(32px + env(safe-area-inset-bottom, 0px) + var(--vera-footer-reserve, 46px)));
+  transition: none;
 }
 
 /* Bottom fade — any time voice or keyboard bar is visible in flow mode, not only listening */
@@ -5652,6 +5599,8 @@ body.chat-started .input-bar {
   position: static !important;
   left: auto !important;
   right: auto !important;
+  top: auto !important;
+  bottom: auto !important;
   pointer-events: auto !important;
   flex-direction: column;
   align-items: stretch;
@@ -5660,6 +5609,18 @@ body.chat-started .input-bar {
   padding: 8px 10px 12px !important;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.35);
+  z-index: auto;
+}
+
+#vera-app.work-mode .vera-wm-right .vera-input-stage {
+  position: static !important;
+  left: auto !important;
+  top: auto !important;
+  bottom: auto !important;
+  transform: none !important;
+  width: 100%;
+  max-width: none;
+  padding: 0;
 }
 
 #vera-app.work-mode .vera-wm-right .credit-status.vera-input-meta,

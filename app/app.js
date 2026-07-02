@@ -2411,17 +2411,17 @@ function veraConversationHasDomMessages() {
 
 function syncVeraInputEmptyState() {
   const app = document.getElementById("vera-app");
-  if (!app || app.hidden) return;
+  if (!app) return;
   const workMode = app.classList.contains("work-mode");
   const hasContent = workMode || veraConversationStarted || veraConversationHasDomMessages();
-  const empty = !workMode && !hasContent;
-  app.classList.toggle("is-empty-state", empty);
-  app.classList.toggle("has-conversation", !empty);
+  const startupEmpty = !workMode && !hasContent;
+  app.classList.toggle("is-startup-empty", startupEmpty);
+  app.classList.toggle("is-active-session", !startupEmpty);
   const greeting = document.getElementById("vera-empty-greeting");
   if (greeting instanceof HTMLElement) {
-    greeting.setAttribute("aria-hidden", empty ? "false" : "true");
+    greeting.setAttribute("aria-hidden", startupEmpty ? "false" : "true");
   }
-  if (!empty) {
+  if (!startupEmpty) {
     if (!document.body.classList.contains("chat-started")) {
       document.body.classList.add("chat-started");
       dismissGuide();
