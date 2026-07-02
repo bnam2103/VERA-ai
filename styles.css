@@ -1354,18 +1354,17 @@ body.chat-started .input-container {
   text-decoration: none;
   color: inherit;
   cursor: pointer;
-  border-radius: 8px;
-  transition: background 160ms ease;
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 .sidebar-brand:hover,
 .sidebar-brand:focus-visible {
-  background: rgba(255, 255, 255, 0.04);
+  background: transparent;
+  border: none;
+  box-shadow: none;
   outline: none;
-}
-
-.sidebar-brand:focus-visible {
-  box-shadow: 0 0 0 1px rgba(32, 183, 168, 0.45);
 }
 
 .sidebar-brand-collapsed {
@@ -1374,8 +1373,12 @@ body.chat-started .input-container {
   font-weight: 600;
   letter-spacing: 0.02em;
   line-height: 1;
-  color: rgba(242, 245, 247, 0.55);
-  transition: opacity 160ms ease;
+  color: rgba(242, 245, 247, 0.45);
+  opacity: 1;
+  transition:
+    opacity 160ms ease,
+    color 160ms ease,
+    text-shadow 160ms ease;
 }
 
 .sidebar-brand-expanded {
@@ -1386,17 +1389,36 @@ body.chat-started .input-container {
   transition: opacity 160ms ease;
 }
 
+.sidebar-brand:hover .sidebar-brand-collapsed,
+.sidebar-brand:focus-visible .sidebar-brand-collapsed {
+  opacity: 0.85;
+  color: rgba(242, 245, 247, 0.88);
+  text-shadow: 0 0 18px rgba(242, 245, 247, 0.08);
+}
+
+.sidebar-brand:hover .sidebar-brand-expanded .vera-logo-dim,
+.sidebar-brand:focus-visible .sidebar-brand-expanded .vera-logo-dim {
+  opacity: 0.85;
+  color: rgba(242, 245, 247, 0.88);
+  text-shadow: 0 0 18px rgba(242, 245, 247, 0.08);
+}
+
 .sidebar-brand-expanded .vera-logo-text-stack {
   position: relative;
   display: inline-block;
 }
 
 .sidebar-brand-expanded .vera-logo-dim {
-  opacity: 0.38;
+  opacity: 0.45;
   font-size: 22px;
   font-weight: 600;
   letter-spacing: 0.02em;
   white-space: nowrap;
+  color: rgba(242, 245, 247, 0.45);
+  transition:
+    opacity 160ms ease,
+    color 160ms ease,
+    text-shadow 160ms ease;
 }
 
 .sidebar-brand-expanded .vera-logo-sweep {
@@ -5080,7 +5102,8 @@ body.chat-started .input-bar {
 }
 
 #vera-sidebar-brand-home .vera-logo-dim {
-  opacity: 0.38;
+  opacity: 0.45;
+  color: rgba(242, 245, 247, 0.45);
 }
 
 #vera-sidebar-brand-home .vera-logo-sweep {
