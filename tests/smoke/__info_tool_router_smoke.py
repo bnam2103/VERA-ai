@@ -400,7 +400,7 @@ section("Dispatch — execute_structured_action dispatches web.search")
 calls: list[dict] = []
 
 
-def fake_web(vera, query: str, *, raw_user_text: str | None = None):
+def fake_web(vera, query: str, *, raw_user_text: str | None = None, **kwargs):
     calls.append({"query": query, "raw_user_text": raw_user_text})
     return {
         "spoken_reply": f"fake reply for {query}",
@@ -822,6 +822,45 @@ ok(in_city.get("location_required") is False,
    "'Coffee shops in Irvine' does NOT require clarification",
    detail=str(in_city))
 
+asian_no_loc = _ws_panel.classify_web_search_panel("Can you recommend an Asian restaurant?")
+ok(asian_no_loc.get("location_required") is True,
+   "Asian restaurant without location marks location_required=True",
+   detail=str(asian_no_loc))
+gyms_nearby = _ws_panel.classify_web_search_panel("Gyms nearby")
+ok(gyms_nearby.get("location_required") is True,
+   "'Gyms nearby' without client location marks location_required=True",
+   detail=str(gyms_nearby))
+asian_saved = _ws_panel.classify_web_search_panel(
+    "Can you recommend an Asian restaurant?",
+    client_location="Fountain Valley, CA",
+    client_location_source="saved_default",
+)
+ok(asian_saved.get("location_required") is False,
+   "Asian restaurant uses saved default when provided",
+   detail=str(asian_saved))
+ok(asian_saved.get("location") == "Fountain Valley, CA",
+   "saved default location surfaces in panel decision",
+   detail=str(asian_saved))
+ok(isinstance(asian_saved.get("search_params"), dict),
+   "search_params dict present for resolved venue query",
+   detail=str(asian_saved.get("search_params")))
+ok(asian_saved["search_params"].get("category") == "restaurant",
+   "search_params.category=restaurant for Asian restaurant query",
+   detail=str(asian_saved.get("search_params")))
+irvine_explicit = _ws_panel.classify_web_search_panel("Best sushi near Fountain Valley")
+ok(irvine_explicit.get("location") == "Fountain Valley",
+   "explicit near-city location extracted from utterance",
+   detail=str(irvine_explicit))
+
+c_asian = classify("Can you recommend an Asian restaurant?", location_available=False)
+ok(c_asian["route"] == "clarification_needed",
+   "info-tool asks for location on venue query without city",
+   detail=str(c_asian))
+c_asian_loc = classify("Can you recommend an Asian restaurant?", location_available=True)
+ok(c_asian_loc["route"] == "general_web_search_tool",
+   "info-tool routes venue query when client location is available",
+   detail=str(c_asian_loc))
+
 section("Panel routing — web.search emits matching panel ui_payload")
 _OriginalOrganic = _ws_panel._serper_search_organic
 _OriginalMedia = _ws_panel._serper_media
@@ -1045,6 +1084,12 @@ try:
     ok(ui_payload.get("location") == "Irvine",
        "location field surfaces the parsed city",
        detail=str(ui_payload.get("location")))
+    ok(bool(ui_payload.get("subheader")),
+       "location panel includes human-readable subheader",
+       detail=str(ui_payload.get("subheader")))
+    ok(isinstance(ui_payload.get("search_params"), dict),
+       "location panel includes structured search_params",
+       detail=str(ui_payload.get("search_params")))
 finally:
     _ws_panel._serper_search_organic = _OriginalOrganic
     _ws_panel._serper_media = _OriginalMedia
@@ -1058,7 +1103,7 @@ _OriginalHandleA = _app_pl.handle_web_search_request
 _calls = {"args": []}
 
 
-def _capture_handle(vera_arg, query, raw_user_text=None):
+def _capture_handle(vera_arg, query, raw_user_text=None, **kwargs):
     _calls["args"].append({"query": query, "raw_user_text": raw_user_text})
     # Pretend the resumed call returns a populated location_map_panel.
     return {
@@ -1201,7 +1246,7 @@ _OrigHandleB = _app_pl2.handle_web_search_request
 _calls2 = {"args": []}
 
 
-def _capture_handle2(vera_arg, query, raw_user_text=None):
+def _capture_handle2(vera_arg, query, raw_user_text=None, **kwargs):
     _calls2["args"].append({"query": query, "raw_user_text": raw_user_text})
     return {
         "spoken_reply": "Here are coffee shops in Fountain Valley.",

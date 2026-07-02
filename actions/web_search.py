@@ -75,14 +75,16 @@ WEB_SEARCH_PRODUCT_PREAMBLE = (
 
 WEB_SEARCH_LOCATION_PREAMBLE = (
     "You are answering a local place/venue question for a voice assistant.\n\n"
-    "CRITICAL: You will receive a CANONICAL PLACE LIST. Your answer MUST "
-    "summarize ONLY places from that list, using the exact names shown. Do NOT "
-    "invent or name other businesses. The map/place panel shows the same list.\n\n"
+    "CRITICAL: You will receive a CANONICAL PLACE LIST and a SEARCH LOCATION. "
+    "Your answer MUST summarize ONLY places from that list, using the exact names shown. "
+    "Do NOT invent or name other businesses. The map/place panel shows the same list.\n\n"
     "How to answer:\n"
-    "  1. Summarize the top 2-4 options from the list in 2-4 short sentences.\n"
-    "  2. Mention ratings or open status when available.\n"
-    "  3. Voice-friendly tone. No markdown, no bullet lists.\n"
-    "  4. If the list is empty, say the place search did not return results.\n\n"
+    "  1. Begin with one short sentence that names the search area used "
+    "(e.g. 'Sure — here are Asian restaurants near Fountain Valley, CA.').\n"
+    "  2. Summarize the top 2-4 options from the list in 2-4 short sentences.\n"
+    "  3. Mention ratings or open status when available.\n"
+    "  4. Voice-friendly tone. No markdown, no bullet lists.\n"
+    "  5. If the list is empty, say the place search did not return results for that area.\n\n"
 )
 
 # Beta voice tone, no markdown, no fabricated numbers, never falls back to
@@ -312,7 +314,19 @@ def _clean_in_city_capture(capture: str) -> str:
     return cleaned
 
 
+_OPEN_NOW_RE = re.compile(r"\bopen\s+now\b", re.IGNORECASE)
+_RADIUS_MILES_RE = re.compile(
+    r"\b(?:within|under|less\s+than)\s+(\d{1,2})\s*(?:mile|mi|miles)\b",
+    re.IGNORECASE,
+)
+_CUISINE_HINT_RE = re.compile(
+    r"\b(asian|chinese|japanese|korean|thai|vietnamese|indian|mexican|italian|"
+    r"sushi|ramen|pho|tacos|pizza|mediterranean|vegan|vegetarian)\b",
+    re.IGNORECASE,
+)
 _LOCATION_ACRONYMS = frozenset({"uci", "ucla", "usc", "csuf", "csulb"})
+
+PLACE_SEARCH_LOCATION_PROMPT = "What city or area should I search near?"
 
 
 def _normalize_city_for_display(cleaned: str) -> str:
@@ -337,52 +351,179 @@ def _normalize_city_for_display(cleaned: str) -> str:
     return " ".join(out_parts)
 
 
-def classify_web_search_panel(query: str) -> dict:
+def _extract_explicit_place_location(raw: str) -> str:
+    """Return the last explicit in/near/around city capture from the utterance."""
+    location = ""
+    for m in _IN_CITY_RE.finditer(raw or ""):
+        candidate = _clean_in_city_capture(m.group("place") or "")
+        if not candidate:
+            continue
+        if _VENUE_NOUN_RE.fullmatch(candidate) or _VENUE_NOUN_RE.fullmatch(
+            candidate.split()[-1]
+        ):
+            continue
+        location = candidate
+    if not location:
+        return ""
+    return _normalize_city_for_display(location)
+
+
+def _extract_place_query_text(raw: str) -> str:
+    """Venue/cuisine phrase for display and Serper (without location tail)."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    cuisine = ""
+    m_cuisine = _CUISINE_HINT_RE.search(text)
+    if m_cuisine:
+        cuisine = m_cuisine.group(1).strip().lower()
+    venue = extract_venue_category(text)
+    if cuisine and venue and cuisine not in venue:
+        return f"{cuisine} {venue}".strip()
+    if venue:
+        return venue
+    return text
+
+
+def _build_place_search_params(
+    query: str,
+    *,
+    location: str = "",
+    location_source: str = "",
+    category: str = "",
+    radius_miles: int | None = None,
+    open_now: bool = False,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> dict:
+    raw = (query or "").strip()
+    place_query = _extract_place_query_text(raw) or raw
+    cat = (category or extract_venue_category(raw) or "place").strip().lower()
+    loc = (location or "").strip()
+    return {
+        "query": place_query,
+        "location": loc,
+        "location_source": (location_source or "").strip(),
+        "radius_miles": radius_miles,
+        "open_now": bool(open_now),
+        "category": cat,
+        "latitude": latitude,
+        "longitude": longitude,
+    }
+
+
+def _compose_places_serper_query(search_params: dict) -> str:
+    """Build the Serper Places query from structured search params."""
+    place_q = str(search_params.get("query") or "").strip()
+    loc = str(search_params.get("location") or "").strip()
+    open_now = bool(search_params.get("open_now"))
+    radius = search_params.get("radius_miles")
+    lat = search_params.get("latitude")
+    lng = search_params.get("longitude")
+    parts = [place_q or "places"]
+    if loc and loc.lower() not in {"your current location", "current location"}:
+        parts.append(f"in {loc}")
+    elif lat is not None and lng is not None:
+        try:
+            parts.append(f"near {float(lat):.5f},{float(lng):.5f}")
+        except (TypeError, ValueError):
+            pass
+    if open_now:
+        parts.append("open now")
+    if isinstance(radius, int) and radius > 0:
+        parts.append(f"within {radius} miles")
+    return " ".join(p for p in parts if p).strip()
+
+
+def _display_location_label(location: str, *, location_source: str = "") -> str:
+    loc = (location or "").strip()
+    if loc:
+        return loc
+    if location_source == "browser_geolocation":
+        return "your current location"
+    return ""
+
+
+def _location_fallback_notice(location_source: str) -> str:
+    if location_source == "saved_default":
+        return " (saved default location)"
+    if location_source == "browser_geolocation":
+        return " (browser location)"
+    return ""
+
+
+def _build_place_panel_subheader(search_params: dict) -> str:
+    place_q = str(search_params.get("query") or "Places").strip()
+    loc = str(search_params.get("location") or "").strip()
+    if loc:
+        return f"{place_q.title()} near {loc}"
+    return place_q.title()
+
+
+def classify_web_search_panel(
+    query: str,
+    *,
+    client_location: str = "",
+    client_location_source: str = "",
+    client_latitude: float | None = None,
+    client_longitude: float | None = None,
+) -> dict:
     """Decide which side-panel a generic web.search result should land in.
 
     Returns ``{panel_type, panel_mode, location, location_required,
-    product_query_detected, reason}``. Used by both the streaming and the
-    synchronous web-search dispatch so the panel type is consistent.
+    location_source, search_params, product_query_detected, reason}``.
     """
     raw = (query or "").strip()
     out = {
         "panel_type": "media_tabs",
         "panel_mode": "general",
         "location": "",
+        "location_source": "",
         "location_required": False,
+        "search_params": None,
         "product_query_detected": False,
         "reason": "default_search_panel",
     }
     if not raw:
         return out
 
+    open_now = bool(_OPEN_NOW_RE.search(raw))
+    radius_miles = None
+    m_radius = _RADIUS_MILES_RE.search(raw)
+    if m_radius:
+        try:
+            radius_miles = int(m_radius.group(1))
+        except (TypeError, ValueError):
+            radius_miles = None
+
     venue_match = _VENUE_NOUN_RE.search(raw)
     if venue_match:
         near_me = _NEAR_ME_RE.search(raw)
-        # Pick the *last* in/near/around match so "coffee near irvine" yields
-        # "irvine" and "coffee shops near me in fountain valley" yields
-        # "fountain valley" instead of "me".
-        location = ""
-        for m in _IN_CITY_RE.finditer(raw):
-            candidate = _clean_in_city_capture(m.group("place") or "")
-            if not candidate:
-                continue
-            # If the regex captured a venue noun itself ("near coffee"),
-            # skip — that's not a city.
-            if _VENUE_NOUN_RE.fullmatch(candidate) or _VENUE_NOUN_RE.fullmatch(candidate.split()[-1]):
-                continue
-            location = candidate
-        if location:
-            display = _normalize_city_for_display(location)
+        explicit_location = _extract_explicit_place_location(raw)
+        client_loc = (client_location or "").strip()
+        client_src = (client_location_source or "").strip()
+
+        if explicit_location:
+            display = explicit_location
+            params = _build_place_search_params(
+                raw,
+                location=display,
+                location_source="utterance",
+                radius_miles=radius_miles,
+                open_now=open_now,
+            )
             out.update(
                 panel_type="location_map_panel",
                 panel_mode="location",
                 location=display,
+                location_source="utterance",
                 location_required=False,
+                search_params=params,
                 reason="venue_query_with_explicit_city",
             )
             return out
-        if near_me:
+
+        if near_me and not client_loc:
             out.update(
                 panel_type="location_map_panel",
                 panel_mode="location",
@@ -390,13 +531,49 @@ def classify_web_search_panel(query: str) -> dict:
                 reason="venue_query_near_me_missing_location",
             )
             return out
-        # Venue noun without "near me" and without "in <City>" — still a
-        # location intent (e.g. "Gyms with childcare"); show the map panel
-        # if we have results.
+
+        resolved_location = client_loc
+        resolved_source = client_src or ("saved_default" if client_loc else "")
+        if near_me and client_loc:
+            resolved_source = client_src or "saved_default"
+
+        if not resolved_location and client_latitude is not None and client_longitude is not None:
+            resolved_location = "your current location"
+            resolved_source = client_src or "browser_geolocation"
+
+        if not resolved_location:
+            out.update(
+                panel_type="location_map_panel",
+                panel_mode="location",
+                location_required=True,
+                reason="venue_query_missing_location",
+            )
+            return out
+
+        display = _normalize_city_for_display(resolved_location)
+        if display.lower() in {"your current location", "current location"}:
+            display = "your current location"
+        params = _build_place_search_params(
+            raw,
+            location=display,
+            location_source=resolved_source or "saved_default",
+            radius_miles=radius_miles,
+            open_now=open_now,
+            latitude=client_latitude if resolved_source == "browser_geolocation" else None,
+            longitude=client_longitude if resolved_source == "browser_geolocation" else None,
+        )
         out.update(
             panel_type="location_map_panel",
             panel_mode="location",
-            reason="venue_query_no_location_qualifier",
+            location=display,
+            location_source=resolved_source or "saved_default",
+            location_required=False,
+            search_params=params,
+            reason=(
+                "venue_query_with_client_location"
+                if resolved_source
+                else "venue_query_with_resolved_location"
+            ),
         )
         return out
 
@@ -757,12 +934,31 @@ def _build_canonical_product_prompt(
 
 
 def _build_canonical_place_prompt(
-    query: str, canonical_places: list[dict], snippets: list[dict]
+    query: str,
+    canonical_places: list[dict],
+    snippets: list[dict],
+    *,
+    search_location: str = "",
+    location_source: str = "",
 ) -> str:
+    loc_label = _display_location_label(search_location, location_source=location_source)
     lines = [
         f"User query: {query}",
-        "\nCANONICAL PLACE LIST (summarize ONLY these — panel uses this exact list):",
+        f"SEARCH LOCATION USED: {loc_label or '(not specified)'}",
     ]
+    if location_source == "saved_default" and loc_label:
+        lines.append(
+            f"Note: no city was named in the question — using the saved default "
+            f"location ({loc_label}). Say so briefly in your opening sentence."
+        )
+    elif location_source == "browser_geolocation" and loc_label:
+        lines.append(
+            "Note: using the browser's approximate current location. Mention that "
+            "briefly if helpful."
+        )
+    lines.append(
+        "\nCANONICAL PLACE LIST (summarize ONLY these — panel uses this exact list):"
+    )
     if not canonical_places:
         lines.append("(empty — say place search returned no results)")
     for i, p in enumerate(canonical_places[:8], 1):
@@ -936,13 +1132,16 @@ def _normalize_places(payload: dict) -> list[dict]:
                 break
         directions_url = (item.get("directions") or item.get("directionsLink") or "").strip()
         link = (item.get("website") or item.get("link") or item.get("url") or "").strip()
+        distance = _clean(item.get("distance") or item.get("distanceText") or "")
         out.append(
             {
                 "name": title,
                 "address": address,
                 "rating": rating_text,
+                "review_count": str(rating_count) if rating_count else "",
                 "open_state": open_state,
                 "category": _clean(item.get("category")),
+                "distance": distance,
                 "source": item.get("source") or _source_from_url(link or directions_url),
                 "url": link,
                 "directions_url": directions_url,
@@ -985,7 +1184,13 @@ def _build_product_panel_payload(
 
 
 def _build_location_panel_payload(
-    query: str, items: list[dict], *, location: str = "", request_id: str = ""
+    query: str,
+    items: list[dict],
+    *,
+    location: str = "",
+    location_source: str = "",
+    search_params: dict | None = None,
+    request_id: str = "",
 ) -> dict:
     """Build the location/map side-panel payload.
 
@@ -993,6 +1198,13 @@ def _build_location_panel_payload(
     eventual real map view) so the frontend can render either a real map
     when coordinates exist or a card-only placeholder when they don't.
     """
+    sp = search_params or _build_place_search_params(
+        query, location=location, location_source=location_source
+    )
+    loc_display = _display_location_label(
+        str(sp.get("location") or location or ""),
+        location_source=str(sp.get("location_source") or location_source or ""),
+    )
     title = "Places"
     map_pins = []
     for item in items or []:
@@ -1016,8 +1228,11 @@ def _build_location_panel_payload(
     payload = {
         "panel_type": "location_map_panel",
         "title": title,
-        "query": query,
-        "location": location,
+        "subheader": _build_place_panel_subheader(sp),
+        "query": str(sp.get("query") or query),
+        "location": loc_display,
+        "location_source": str(sp.get("location_source") or location_source or ""),
+        "search_params": sp,
         "places": items,
         "canonical_places": items,
         "map_pins": map_pins,
@@ -1203,7 +1418,14 @@ def _build_media_tabs_payload(
 
 
 def prepare_web_search_streaming(
-    vera, query: str, *, raw_user_text: str | None = None
+    vera,
+    query: str,
+    *,
+    raw_user_text: str | None = None,
+    client_location: str = "",
+    client_location_source: str = "",
+    client_latitude: float | None = None,
+    client_longitude: float | None = None,
 ):
     """Streaming entry point for ``web.search``.
 
@@ -1217,8 +1439,63 @@ def prepare_web_search_streaming(
 
     user_question = (raw_user_text or q).strip()
     request_id = _current_request_id()
-    panel_decision = classify_web_search_panel(user_question or q)
+    panel_decision = classify_web_search_panel(
+        user_question or q,
+        client_location=client_location,
+        client_location_source=client_location_source,
+        client_latitude=client_latitude,
+        client_longitude=client_longitude,
+    )
     panel_mode = panel_decision.get("panel_mode") or "general"
+    search_params = panel_decision.get("search_params") or {}
+
+    if panel_decision.get("location_required"):
+
+        def _location_clarify_finalize(_response: str = "") -> dict:
+            spoken = ( _response or "").strip() or PLACE_SEARCH_LOCATION_PROMPT
+            return {
+                "spoken_reply": spoken,
+                "action_type": "web_search",
+                "data": {
+                    "query": q,
+                    "user_query": user_question,
+                    "location_required": True,
+                    "panel_mode": "location",
+                },
+                "ui_payload": None,
+                "location_required": True,
+            }
+
+        try:
+            clarify_messages = vera.build_messages(
+                [],
+                "Reply ONLY with this exact question and nothing else: "
+                + PLACE_SEARCH_LOCATION_PROMPT,
+            )
+        except Exception:
+            clarify_messages = [
+                {
+                    "role": "user",
+                    "content": PLACE_SEARCH_LOCATION_PROMPT,
+                }
+            ]
+        try:
+            _import_panel_routing_logger()(
+                selected_route="clarification_needed",
+                selected_tool="web_search",
+                selected_panel_type="location_map_panel",
+                query=q,
+                entity_extracted="",
+                location_required=True,
+                location_available=False,
+                product_query_detected=False,
+                cards_count=0,
+                panel_payload_sent=False,
+                note=panel_decision.get("reason") or "venue_query_missing_location",
+            )
+        except Exception:
+            pass
+        return clarify_messages, None, _location_clarify_finalize
 
     items: list[dict] = []
     images: list[dict] = []
@@ -1246,9 +1523,12 @@ def prepare_web_search_streaming(
             products = []
     elif panel_mode == "location":
         if not panel_decision.get("location_required"):
+            places_query = (
+                _compose_places_serper_query(search_params) if search_params else q
+            )
             try:
                 places_payload = _serper_media(
-                    SERPER_PLACES_ENDPOINT, q, PLACES_RESULT_LIMIT, "places"
+                    SERPER_PLACES_ENDPOINT, places_query, PLACES_RESULT_LIMIT, "places"
                 )
                 places = _normalize_places(places_payload)
             except Exception as exc:
@@ -1327,6 +1607,8 @@ def prepare_web_search_streaming(
                 q,
                 canonical_places,
                 location=panel_decision.get("location") or "",
+                location_source=panel_decision.get("location_source") or "",
+                search_params=search_params or None,
                 request_id=request_id,
             )
             cards_count = len(canonical_places)
@@ -1394,7 +1676,17 @@ def prepare_web_search_streaming(
     elif panel_mode == "location" and canonical_places and not panel_decision.get(
         "location_required"
     ):
-        prompt_body = _build_canonical_place_prompt(q, canonical_places, items)
+        prompt_body = _build_canonical_place_prompt(
+            q,
+            canonical_places,
+            items,
+            search_location=str(search_params.get("location") or panel_decision.get("location") or ""),
+            location_source=str(
+                search_params.get("location_source")
+                or panel_decision.get("location_source")
+                or ""
+            ),
+        )
         preamble = WEB_SEARCH_LOCATION_PREAMBLE
     else:
         prompt_body = _build_prompt(q, items)
@@ -1424,6 +1716,9 @@ def prepare_web_search_streaming(
                 "images": images,
                 "videos": videos,
                 "panel_mode": panel_mode,
+                "search_params": search_params or None,
+                "location": panel_decision.get("location") or "",
+                "location_source": panel_decision.get("location_source") or "",
             },
             "ui_payload": ui_payload,
         }
@@ -1439,7 +1734,14 @@ def _import_panel_routing_logger():
 
 
 def handle_web_search_request(
-    vera, query: str, *, raw_user_text: str | None = None
+    vera,
+    query: str,
+    *,
+    raw_user_text: str | None = None,
+    client_location: str = "",
+    client_location_source: str = "",
+    client_latitude: float | None = None,
+    client_longitude: float | None = None,
 ) -> dict:
     """Synchronous entry point. Mirrors ``handle_finance_analytics_request``.
 
@@ -1454,7 +1756,15 @@ def handle_web_search_request(
             "data": None,
             "ui_payload": None,
         }
-    prepared = prepare_web_search_streaming(vera, q, raw_user_text=raw_user_text)
+    prepared = prepare_web_search_streaming(
+        vera,
+        q,
+        raw_user_text=raw_user_text,
+        client_location=client_location,
+        client_location_source=client_location_source,
+        client_latitude=client_latitude,
+        client_longitude=client_longitude,
+    )
     if prepared is None:
         return {
             "spoken_reply": "I couldn't reach the search service right now.",
@@ -1464,5 +1774,7 @@ def handle_web_search_request(
             "service_failure": "web_search",
         }
     messages, _ui, finalize = prepared
+    if not messages:
+        return finalize()
     response, _ = vera.generate(messages)
     return finalize(response)

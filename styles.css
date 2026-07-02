@@ -7611,6 +7611,42 @@ body.bmo-open #bmo-side-pane.side-pane {
   color: rgba(242, 245, 247, 0.52);
   font-size: 11px;
 }
+.location-map-placeholder-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(242, 245, 247, 0.52);
+}
+
+.location-used-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.location-used-label {
+  color: rgba(242, 245, 247, 0.62);
+  font-weight: 600;
+}
+
+.location-used-value {
+  color: rgba(242, 245, 247, 0.92);
+  font-weight: 600;
+}
+
+.location-used-source {
+  color: rgba(242, 245, 247, 0.5);
+  font-size: 11px;
+}
+
 .location-map-pin-list {
   display: flex;
   flex-wrap: wrap;
@@ -7735,6 +7771,10 @@ body.bmo-open #bmo-side-pane.side-pane {
 
 .location-result-rating {
   color: #f3d68c;
+}
+
+.location-result-distance {
+  color: #b4dcff;
 }
 
 .location-result-open {

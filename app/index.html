@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=40">
+  <link rel="stylesheet" href="../styles.css?v=41">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -1126,6 +1126,7 @@
      / sessionStorage / JSON wrappers used by app.js settings + debug gates
      (extracted 2026-05-27, Stage 2). -->
 <script src="../utils/storage.js?v=1"></script>
+<script src="../utils/searchLocation.js?v=1"></script>
 <!-- utils/logging.js must also load BEFORE app.js — defines pure console /
      debug-log helpers (logInputLimitDebug, logVeraCapabilityFailure,
      logCapabilityFallbackDebug, logBargeInLatencyDebug,
@@ -1294,9 +1295,9 @@
      `getNewsPanelDebugState()` mirror the other stage debug accessors.
      Extracted 2026-05-27, Stage 10. -->
 <script src="../news/newsRouter.js?v=3"></script>
-<script src="../news/newsPanel.js?v=5"></script>
+<script src="../news/newsPanel.js?v=6"></script>
 <script src="../news/weatherPanel.js?v=2"></script>
-<script src="app.js?v=136"></script>
+<script src="app.js?v=137"></script>
 <script src="shell.js?v=5"></script>
 <!-- voice/musicNavigation.js — shared track navigation dedupe + ended guard -->
 <script src="../voice/musicNavigation.js?v=1"></script>

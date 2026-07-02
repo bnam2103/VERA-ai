@@ -581,27 +581,40 @@ function renderProductResultsPanel(payload) {
  * - Each place card mirrors the spec fields (name, address, rating,
  *   open state, category, source, link, directions). */
 function renderLocationMapPlaceholderMarkup(payload) {
-  const pins = Array.isArray(payload?.map_pins) ? payload.map_pins : [];
   const placeCount = Number(payload?.place_count || (payload?.places?.length ?? 0));
-  const pinChips = pins.slice(0, 12).map((pin, i) => `
-    <span class="location-map-pin" title="${escapeHtml(pin?.name || "")}${pin?.address ? ' — ' + escapeHtml(pin.address) : ""}">
-      <span class="location-map-pin-index">${i + 1}</span>
-      ${escapeHtml((pin?.name || "Place").slice(0, 28))}
-    </span>
-  `).join("");
-  const coordsHint = pins.length
-    ? `${pins.length} place${pins.length === 1 ? "" : "s"} ready for map pins`
-    : placeCount
-      ? `${placeCount} result${placeCount === 1 ? "" : "s"} listed below`
+  const locationLabel = String(payload?.location || "").trim();
+  const countLine = placeCount
+    ? `${placeCount} place${placeCount === 1 ? "" : "s"} found${locationLabel ? ` near ${locationLabel}` : ""}`
+    : locationLabel
+      ? `No places found near ${locationLabel}`
       : "No places to show yet";
   return `
-    <div class="location-map-placeholder location-map-coming-soon" data-map-pins="${pins.length}">
+    <div class="location-map-placeholder location-map-coming-soon" data-map-pins="0">
       <div class="location-map-placeholder-label">Map preview coming soon</div>
       <p class="location-map-placeholder-summary">
-        Interactive zoom and pan maps are not enabled yet. Browse numbered results below for ratings, addresses, and directions.
-        <span class="location-map-placeholder-meta">${escapeHtml(coordsHint)}.</span>
+        ${escapeHtml(countLine)}
       </p>
-      ${pinChips ? `<div class="location-map-pin-list" aria-label="Numbered place previews">${pinChips}</div>` : ""}
+      <p class="location-map-placeholder-note">
+        Interactive maps are not enabled yet. Browse numbered results below for ratings, addresses, and directions.
+      </p>
+    </div>
+  `;
+}
+
+function renderLocationUsedRowMarkup(payload) {
+  const locationLabel = String(payload?.location || "").trim();
+  if (!locationLabel) return "";
+  const source = String(payload?.location_source || "").trim();
+  let sourceHint = "";
+  if (source === "saved_default") {
+    sourceHint = " <span class=\"location-used-source\">(saved default)</span>";
+  } else if (source === "browser_geolocation") {
+    sourceHint = " <span class=\"location-used-source\">(browser location)</span>";
+  }
+  return `
+    <div class="location-used-row">
+      <span class="location-used-label">Location used:</span>
+      <span class="location-used-value">${escapeHtml(locationLabel)}</span>${sourceHint}
     </div>
   `;
 }
@@ -616,11 +629,18 @@ function renderLocationPlaceListMarkup(places) {
         const name = (item.name || "").trim();
         const address = (item.address || "").trim();
         const rating = (item.rating || "").trim();
+        const reviewCount = String(item.review_count || "").trim();
         const openState = (item.open_state || "").trim();
         const category = (item.category || "").trim();
+        const distance = (item.distance || "").trim();
         const source = (item.source || "Unknown source").trim();
         const url = (item.url || "").trim();
         const directions = (item.directions_url || item.directionsLink || "").trim();
+        const ratingDisplay = rating
+          ? reviewCount && !rating.includes("(")
+            ? `★ ${escapeHtml(rating)} (${escapeHtml(reviewCount)} reviews)`
+            : `★ ${escapeHtml(rating)}`
+          : "";
         return `
           <article class="location-result-card">
             <div class="location-result-card-head">
@@ -632,7 +652,8 @@ function renderLocationPlaceListMarkup(places) {
             </div>
             ${address ? `<div class="location-result-address">${escapeHtml(address)}</div>` : ""}
             <div class="location-result-meta-row">
-              ${rating ? `<span class="location-result-rating">★ ${escapeHtml(rating)}</span>` : ""}
+              ${ratingDisplay ? `<span class="location-result-rating">${ratingDisplay}</span>` : ""}
+              ${distance ? `<span class="location-result-distance">${escapeHtml(distance)}</span>` : ""}
               ${openState ? `<span class="location-result-open">${escapeHtml(openState)}</span>` : ""}
             </div>
             <div class="location-result-footer">
@@ -673,7 +694,9 @@ function renderLocationMapPanel(payload) {
       : Array.isArray(payload?.places)
         ? payload.places
         : [];
-    const subtitle = (payload?.location || payload?.query || "").trim();
+    const subheader = String(
+      payload?.subheader || payload?.location || payload?.query || ""
+    ).trim();
 
     sidePaneEl.hidden = false;
     delete sidePaneEl.dataset.sidePaneKind;
@@ -683,13 +706,14 @@ function renderLocationMapPanel(payload) {
     <div class="side-pane-header">
       <div class="side-pane-heading">
         <h3 class="side-pane-title">${escapeHtml(payload?.title || "Places")}</h3>
-        <div class="side-pane-subtitle">${escapeHtml(subtitle)}</div>
+        ${subheader ? `<div class="side-pane-subtitle">${escapeHtml(subheader)}</div>` : ""}
       </div>
       <div class="side-pane-controls">
         <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
       </div>
     </div>
     <div class="side-pane-tab-panel active" data-tab-panel="places">
+      ${renderLocationUsedRowMarkup(payload)}
       ${renderLocationMapPlaceholderMarkup(payload)}
       ${renderLocationPlaceListMarkup(places)}
     </div>

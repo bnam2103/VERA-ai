@@ -43,6 +43,8 @@ import uuid
 import string
 import secrets
 import base64
+import hashlib
+import hmac
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1264,6 +1266,33 @@ pending_action = {}
 recent_action_context = {}
 latest_client_context_snapshot = {}
 anonymous_work_mode_checklists = {}
+
+def _get_client_search_location(session_id: str) -> dict:
+    """Read saved/browser search location from the latest client snapshot."""
+    snap = latest_client_context_snapshot.get(session_id) or {}
+    if not isinstance(snap, dict):
+        return {
+            "location": "",
+            "source": "",
+            "latitude": None,
+            "longitude": None,
+        }
+    lat = snap.get("search_latitude")
+    lng = snap.get("search_longitude")
+    try:
+        lat_f = float(lat) if lat is not None and str(lat).strip() != "" else None
+    except (TypeError, ValueError):
+        lat_f = None
+    try:
+        lng_f = float(lng) if lng is not None and str(lng).strip() != "" else None
+    except (TypeError, ValueError):
+        lng_f = None
+    return {
+        "location": str(snap.get("search_location") or "").strip(),
+        "source": str(snap.get("search_location_source") or "").strip(),
+        "latitude": lat_f,
+        "longitude": lng_f,
+    }
 # After "clear the checklist", we stash the previous items so "undo that"
 # can restore them. Per session_id; expires after CHECKLIST_UNDO_TTL_SEC.
 checklist_undo_snapshots: dict[str, dict] = {}
@@ -6185,12 +6214,21 @@ def route_action_request(session_id: str, text: str) -> dict:
     # Only confident picks short-circuit; "uncertain" falls through so the
     # existing news_intent + LLM router can still take over.
     sports_ctx = get_recent_sports_context(session_id)
+    _client_search_loc = _get_client_search_location(session_id)
+    _location_available = bool(
+        _client_search_loc.get("location")
+        or (
+            _client_search_loc.get("latitude") is not None
+            and _client_search_loc.get("longitude") is not None
+        )
+    )
     try:
         _info_tool = classify_info_tool(
             text,
             recent_news_context=news_ctx,
             recent_sports_context=sports_ctx,
             session_id=session_id,
+            location_available=_location_available,
         )
     except Exception as _info_exc:
         print("[info_tool_route] classifier_exception:", _info_exc, flush=True)
@@ -6679,8 +6717,15 @@ def execute_structured_action(
         except Exception:
             pass
         raw_user_text = (slots.get("user_text") or text or "").strip() or None
+        _client_loc = _get_client_search_location(session_id)
         action_result = handle_web_search_request(
-            vera, query=query, raw_user_text=raw_user_text
+            vera,
+            query=query,
+            raw_user_text=raw_user_text,
+            client_location=str(_client_loc.get("location") or ""),
+            client_location_source=str(_client_loc.get("source") or ""),
+            client_latitude=_client_loc.get("latitude"),
+            client_longitude=_client_loc.get("longitude"),
         )
         set_recent_action_from_result(
             session_id, action_name, {"query": query, **slots}, action_result
@@ -7214,15 +7259,22 @@ def prepare_streaming_structured_action(
         if not query:
             return None
         raw_user_text = (slots.get("user_text") or text or "").strip() or None
+        _client_loc = _get_client_search_location(session_id)
         prepared = prepare_web_search_streaming(
-            vera, query, raw_user_text=raw_user_text
+            vera,
+            query,
+            raw_user_text=raw_user_text,
+            client_location=str(_client_loc.get("location") or ""),
+            client_location_source=str(_client_loc.get("source") or ""),
+            client_latitude=_client_loc.get("latitude"),
+            client_longitude=_client_loc.get("longitude"),
         )
         if prepared is None:
             return None
         messages, ui_payload, fin = prepared
 
         def finalize(full_reply: str) -> dict:
-            ar = fin(full_reply)
+            ar = fin(full_reply or "") if messages else fin()
             set_recent_action_from_result(
                 session_id, "web.search", {"query": query, **slots}, ar
             )
@@ -11139,11 +11191,11 @@ def _classify_info_tool_deterministic(
         )
         return out
 
-    # ---- 11) LOCAL — "near me" needs location; "in <city>" does not ----
+    # ---- 11) LOCAL — venue queries need a location; never guess silently ----
     if _INFO_TOOL_VENUE_RE.search(raw):
         near_me_flag = bool(_INFO_TOOL_NEAR_ME_RE.search(raw))
         loc_in_text = _info_tool_extract_location_in_text(raw)
-        if near_me_flag and not loc_in_text and not location_available:
+        if not loc_in_text and not location_available:
             out.update(
                 route="clarification_needed",
                 tool="none",
@@ -23698,6 +23750,80 @@ SPOTIFY_USER_SCOPES = (
 SPOTIFY_HANDOFFS: dict[str, dict] = {}
 SPOTIFY_BEARER_TOKENS: dict[str, dict] = {}
 SPOTIFY_HANDOFF_TTL_SEC = 600.0
+SPOTIFY_OAUTH_STATE_TTL_SEC = 600.0
+
+
+def _spotify_oauth_public_error(code: str | None) -> str:
+    """Map internal OAuth errors to short public codes for the app redirect."""
+    c = (code or "").strip().lower()
+    if c == "invalid_state":
+        return "expired"
+    if c in ("access_denied", "user_cancelled"):
+        return "cancelled"
+    if c:
+        return "failed"
+    return ""
+
+
+def _spotify_oauth_make_state(opener_origin: str | None) -> str:
+    """Signed OAuth state — validates without relying on session cookies across hosts."""
+    payload: dict[str, Any] = {
+        "n": secrets.token_urlsafe(12),
+        "e": int(time()) + int(SPOTIFY_OAUTH_STATE_TTL_SEC),
+    }
+    oo = _validate_spotify_opener_origin(opener_origin or "")
+    if oo:
+        payload["o"] = oo
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    sig = hmac.new(_SESSION_SECRET.encode("utf-8"), b64.encode("ascii"), hashlib.sha256).hexdigest()[:32]
+    return f"{b64}.{sig}"
+
+
+def _spotify_oauth_verify_state(state: str | None) -> dict | None:
+    raw = (state or "").strip()
+    if not raw or "." not in raw:
+        return None
+    b64, sig = raw.rsplit(".", 1)
+    if not b64 or not sig:
+        return None
+    expected = hmac.new(_SESSION_SECRET.encode("utf-8"), b64.encode("ascii"), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(sig, expected):
+        return None
+    pad = "=" * (-len(b64) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(b64 + pad).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if int(payload.get("e") or 0) < int(time()):
+        return None
+    return payload
+
+
+def _spotify_oauth_app_return_url(opener_origin: str | None = None) -> str:
+    """Frontend app entry to land on after OAuth (not the bare API host root)."""
+    oo = _validate_spotify_opener_origin(opener_origin or "")
+    if oo:
+        try:
+            p = urllib.parse.urlparse(oo)
+            if p.scheme in ("http", "https") and p.netloc:
+                base = f"{p.scheme}://{p.netloc}"
+                path = (p.path or "").rstrip("/")
+                if path.endswith("/app"):
+                    return f"{base}{path}"
+                if not path or path == "/":
+                    return f"{base}/app"
+                return f"{base}{path}/app"
+        except Exception:
+            pass
+    env_base = os.environ.get("SPOTIFY_OAUTH_RETURN_URL", "").strip().rstrip("/")
+    if env_base:
+        if env_base.endswith("/app"):
+            return env_base
+        return f"{env_base}/app"
+    return ""
 
 _spotify_bearer_disk_lock = threading.Lock()
 
@@ -23753,17 +23879,21 @@ def _persist_spotify_bearer_disk() -> None:
 _load_spotify_bearer_disk()
 
 
-def _spotify_oauth_app_redirect(params: dict[str, str]) -> str:
+def _spotify_oauth_app_redirect(params: dict[str, str], *, return_url: str | None = None) -> str:
     """
-    After /auth/spotify/callback, redirect here. Default is /?spotify_*=… on the API host.
-    Set SPOTIFY_OAUTH_RETURN_URL (e.g. https://you.github.io/Online_demo) so GitHub Pages users
-    land on the static site with ?spotify_connected=1 instead of the Worker root.
+    After /auth/spotify/callback, redirect here. Prefer signed opener origin or
+    SPOTIFY_OAUTH_RETURN_URL so users land on /app/ instead of the API host root.
     """
-    base = os.environ.get("SPOTIFY_OAUTH_RETURN_URL", "").strip().rstrip("/")
-    qs = urllib.parse.urlencode(params)
-    if not base:
-        return f"/?{qs}"
-    return f"{base}/?{qs}"
+    base = (return_url or "").strip().rstrip("/")
+    public = dict(params)
+    if "spotify_error" in public:
+        mapped = _spotify_oauth_public_error(public.get("spotify_error"))
+        if mapped:
+            public["spotify_error"] = mapped
+    qs = urllib.parse.urlencode(public)
+    if base:
+        return f"{base}?{qs}"
+    return f"/?{qs}"
 
 
 def _spotify_request_public_host(request: Request) -> str:
@@ -23800,7 +23930,8 @@ def _warn_if_spotify_login_host_differs_from_redirect_uri(request: Request) -> N
 
 def _validate_spotify_opener_origin(raw: str) -> str | None:
     """
-    Origin of the tab that opened OAuth (for postMessage after callback). Tight allowlist.
+    Origin (and optional static-site repo prefix) of the tab that opened OAuth.
+    Example: https://bnam2103.github.io/VERA-ai
     """
     s = (raw or "").strip()
     if not s:
@@ -23824,19 +23955,42 @@ def _validate_spotify_opener_origin(raw: str) -> str | None:
     )
     if not allowed:
         return None
-    return f"{p.scheme}://{netloc}"
+    path = (p.path or "").strip()
+    if path:
+        if ".." in path:
+            return None
+        path = re.sub(r"/app/?.*$", "", path, flags=re.IGNORECASE).rstrip("/")
+    base = f"{p.scheme}://{netloc}"
+    if path and path != "/":
+        return f"{base}{path}"
+    return base
 
 
-def _spotify_oauth_finish_redirect(request: Request, *, error: str | None = None) -> RedirectResponse:
-    """If popup flow stored an opener origin, finish on API host with postMessage; else redirect to app URL."""
-    if request.session.get("spotify_oauth_opener_origin"):
+def _spotify_oauth_finish_redirect(
+    request: Request, *, error: str | None = None, handoff: str | None = None
+) -> RedirectResponse:
+    """
+    If popup flow has an opener origin, finish on the API host with a postMessage page;
+    else redirect to the app URL. `opener` and `handoff` are also carried in the query so
+    the flow survives even when the cross-site session cookie is dropped by the browser.
+    """
+    verified = _spotify_oauth_verify_state(request.query_params.get("state"))
+    opener = request.session.get("spotify_oauth_opener_origin")
+    if not opener and isinstance(verified, dict):
+        opener = _validate_spotify_opener_origin(str(verified.get("o") or ""))
+        if opener:
+            request.session["spotify_oauth_opener_origin"] = opener
+    return_url = _spotify_oauth_app_return_url(opener)
+    if opener:
+        params: dict[str, str] = {"opener": opener}
         if error:
-            q = urllib.parse.urlencode({"error": error})
-            return RedirectResponse(f"/auth/spotify/oauth-complete?{q}")
-        return RedirectResponse("/auth/spotify/oauth-complete")
+            params["error"] = _spotify_oauth_public_error(error) or error
+        elif handoff:
+            params["handoff"] = handoff
+        return RedirectResponse(f"/auth/spotify/oauth-complete?{urllib.parse.urlencode(params)}")
     if error:
-        return RedirectResponse(_spotify_oauth_app_redirect({"spotify_error": error}))
-    return RedirectResponse(_spotify_oauth_app_redirect({"spotify_connected": "1"}))
+        return RedirectResponse(_spotify_oauth_app_redirect({"spotify_error": error}, return_url=return_url))
+    return RedirectResponse(_spotify_oauth_app_redirect({"spotify_connected": "1"}, return_url=return_url))
 
 
 def _spotify_redirect_uri(request: Request | None = None) -> str:
@@ -23953,7 +24107,7 @@ def spotify_oauth_login(request: Request, opener_origin: str | None = None):
         request.session["spotify_oauth_opener_origin"] = oo
     else:
         request.session.pop("spotify_oauth_opener_origin", None)
-    state = secrets.token_urlsafe(16)
+    state = _spotify_oauth_make_state(oo)
     request.session["spotify_oauth_state"] = state
     redirect_uri = _spotify_redirect_uri(request)
     params = urllib.parse.urlencode(
@@ -23976,19 +24130,42 @@ def spotify_oauth_callback(
     state: str | None = None,
     error: str | None = None,
 ):
+    try:
+        print(
+            "[spotify_oauth_callback_start] "
+            + json.dumps(
+                {"has_code": bool(code), "has_state": bool(state), "error": error or None,
+                 "host": _spotify_request_public_host(request)},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
     if error:
+        try:
+            print(f"[spotify_oauth_error] provider_error={error}", flush=True)
+        except Exception:
+            pass
         return _spotify_oauth_finish_redirect(request, error=error)
     expected = request.session.get("spotify_oauth_state")
     request.session.pop("spotify_oauth_state", None)
-    if not state or state != expected:
+    verified = _spotify_oauth_verify_state(state)
+    state_ok = bool(verified) or (state and expected and state == expected)
+    if not state_ok:
         logging.warning(
-            "Spotify OAuth invalid_state: cookie_state=%s query_state=%s host=%s "
-            "(open /auth/spotify/login on the SAME host as SPOTIFY_REDIRECT_URI)",
-            "missing" if expected is None else "mismatch",
+            "Spotify OAuth invalid_state: cookie_state=%s signed_state=%s query_state=%s host=%s "
+            "(login host must match SPOTIFY_REDIRECT_URI; signed state requires stable SESSION_SECRET)",
+            "missing" if expected is None else "present",
+            "ok" if verified else "invalid",
             state,
             _spotify_request_public_host(request),
         )
         return _spotify_oauth_finish_redirect(request, error="invalid_state")
+    if isinstance(verified, dict):
+        oo = _validate_spotify_opener_origin(str(verified.get("o") or ""))
+        if oo:
+            request.session["spotify_oauth_opener_origin"] = oo
     if not code:
         return _spotify_oauth_finish_redirect(request, error="missing_code")
     redirect_uri = _spotify_redirect_uri(request)
@@ -24001,11 +24178,23 @@ def spotify_oauth_callback(
             }
         )
     except HTTPException:
+        try:
+            print("[spotify_oauth_error] token_exchange_failed", flush=True)
+        except Exception:
+            pass
         return _spotify_oauth_finish_redirect(request, error="token_exchange_failed")
     rt = body.get("refresh_token")
     at = body.get("access_token")
     if not rt or not at:
+        try:
+            print("[spotify_oauth_error] no_refresh_token", flush=True)
+        except Exception:
+            pass
         return _spotify_oauth_finish_redirect(request, error="no_refresh_token")
+    try:
+        print("[spotify_oauth_token_exchange_ok]", flush=True)
+    except Exception:
+        pass
     exp = time() + float(body.get("expires_in", 3600))
     request.session["spotify_refresh_token"] = rt
     request.session["spotify_access_token"] = at
@@ -24018,33 +24207,61 @@ def spotify_oauth_callback(
         "created_at": time(),
     }
     request.session["spotify_oauth_handoff"] = handoff
-    return _spotify_oauth_finish_redirect(request, error=None)
+    try:
+        print("[spotify_oauth_handoff_created]", flush=True)
+    except Exception:
+        pass
+    return _spotify_oauth_finish_redirect(request, error=None, handoff=handoff)
 
 
 @app.get("/auth/spotify/oauth-complete")
-def spotify_oauth_complete_page(request: Request, error: str | None = None):
+def spotify_oauth_complete_page(
+    request: Request,
+    error: str | None = None,
+    opener: str | None = None,
+    handoff: str | None = None,
+):
     """
     Loaded in the OAuth popup tab: postMessage to opener (GitHub Pages / local) then window.close().
+    opener + handoff are read from session first, then query params so the flow survives a dropped
+    cross-site session cookie. postMessage targets the validated opener origin only.
     """
-    opener = request.session.pop("spotify_oauth_opener_origin", None)
-    handoff = request.session.pop("spotify_oauth_handoff", None)
+    sess_opener = request.session.pop("spotify_oauth_opener_origin", None)
+    sess_handoff = request.session.pop("spotify_oauth_handoff", None)
+    opener = _validate_spotify_opener_origin(sess_opener or opener or "")
+    handoff = sess_handoff or handoff
+    return_url = _spotify_oauth_app_return_url(opener)
     if not opener:
         if error:
-            return RedirectResponse(_spotify_oauth_app_redirect({"spotify_error": error}))
-        return RedirectResponse(_spotify_oauth_app_redirect({"spotify_connected": "1"}))
-    err_js = json.dumps(error) if error else "null"
+            return RedirectResponse(_spotify_oauth_app_redirect({"spotify_error": error}, return_url=return_url))
+        return RedirectResponse(_spotify_oauth_app_redirect({"spotify_connected": "1"}, return_url=return_url))
+    err_public = _spotify_oauth_public_error(error) if error else None
+    err_js = json.dumps(err_public or error) if error else "null"
     ok_js = "false" if error else "true"
     handoff_js = json.dumps(handoff) if (handoff and not error) else "null"
+    target_origin_js = json.dumps(opener)
+    try:
+        print(
+            "[spotify_oauth_complete_rendered] "
+            + json.dumps({"ok": not bool(error), "has_handoff": bool(handoff and not error)}, ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Spotify</title></head>
 <body>
 <script>
 (function() {{
   var err = {err_js};
+  var target = {target_origin_js};
   try {{
     if (window.opener && !window.opener.closed) {{
       var msg = {{ type: "vera-spotify-oauth", ok: {ok_js}, error: err, handoff: {handoff_js} }};
-      window.opener.postMessage(msg, "*");
+      // Prefer the exact opener origin; fall back to "*" only if the target has a path (postMessage needs origin only).
+      var originOnly = target;
+      try {{ var tu = new URL(target); originOnly = tu.origin; }} catch (e) {{}}
+      window.opener.postMessage(msg, originOnly || "*");
     }}
   }} catch (e) {{}}
   try {{ window.close(); }} catch (e) {{}}

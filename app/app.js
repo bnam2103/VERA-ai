@@ -5887,6 +5887,11 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
     ? Math.max(0, Math.round((timerFireMs - Date.now()) / 1000))
     : 0;
 
+  const searchLoc =
+    typeof getVeraSearchLocationSnapshot === "function"
+      ? getVeraSearchLocationSnapshot()
+      : { location: "", source: "", latitude: null, longitude: null };
+
   return {
     mode: inWorkMode ? "work" : "flow",
     app: prefix,
@@ -5937,6 +5942,16 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
         : null,
     planning_deadline_timer: isPlanningDeadlineTimerEnabled(),
     reasoning_auto_route: isWorkModeReasoningAutoRouteEnabled(),
+    search_location: String(searchLoc.location || "").trim(),
+    search_location_source: String(searchLoc.source || "").trim(),
+    search_latitude:
+      searchLoc.latitude != null && Number.isFinite(Number(searchLoc.latitude))
+        ? Number(searchLoc.latitude)
+        : null,
+    search_longitude:
+      searchLoc.longitude != null && Number.isFinite(Number(searchLoc.longitude))
+        ? Number(searchLoc.longitude)
+        : null,
   };
 }
 
