@@ -773,7 +773,7 @@ function _panelShouldShowEmptyHint(panelEl) {
 }
 
 /* Recompute the two empty-state hints ("No reasoning in this panel
-   yet." per-panel and "Fresh workspace ready." workspace-wide).
+   yet." per-panel and "Workspace ready" workspace-wide).
    Exposed as its own helper so app.js can call it on the cheap
    chokepoints — busy-state toggles, stream start, stream end — without
    re-rendering the entire tab strip. ``renderReasoningTabStrip``
