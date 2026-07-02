@@ -7167,7 +7167,7 @@ function renderProductivityPanel(opts = {}) {
         <button type="button" class="music-source-tab" id="${prefix}-music-tab-builtin" data-music-source="builtin" aria-selected="false">Built-in</button>
       </div>
     </div>
-    <div class="spotify-panel-body" data-productivity-root="${prefix}" data-music-source="spotify" data-inactive-tab="0">
+    <div class="spotify-panel-body music-panel-body" data-productivity-root="${prefix}" data-music-source="spotify" data-inactive-tab="0">
       <div class="spotify-now-playing music-now-playing">
         <div class="music-now-playing-status music-source-badge" id="${prefix}-music-source-badge" data-active-source="none" aria-live="polite">Not playing</div>
         <div class="music-now-playing-body">
@@ -7202,7 +7202,7 @@ function renderProductivityPanel(opts = {}) {
           </div>
         </div>
       </div>
-      <div id="${prefix}-spotify-stack" class="music-pane-stack">
+      <div id="${prefix}-spotify-stack" class="music-pane-stack music-panel-list">
         <div class="music-inactive-source-banner" id="${prefix}-spotify-inactive-banner" hidden>
           <span class="music-inactive-source-banner-text" id="${prefix}-spotify-inactive-banner-text">Built-in Music is currently playing.</span>
           <button type="button" class="music-inactive-source-banner-action" id="${prefix}-spotify-inactive-switch" data-music-action="switch-to-spotify">Switch to Spotify</button>
@@ -7242,12 +7242,12 @@ function renderProductivityPanel(opts = {}) {
           </div>
         </div>
       </div>
-      <div id="${prefix}-builtin-stack" class="music-pane-stack" hidden>
+      <div id="${prefix}-builtin-stack" class="music-pane-stack music-panel-list" hidden>
         <div class="music-inactive-source-banner" id="${prefix}-builtin-inactive-banner" hidden>
           <span class="music-inactive-source-banner-text" id="${prefix}-builtin-inactive-banner-text">Spotify is currently playing.</span>
           <button type="button" class="music-inactive-source-banner-action" id="${prefix}-builtin-inactive-switch" data-music-action="switch-to-builtin">Switch to Built-in</button>
         </div>
-        <div class="free-music-pane-inner music-pane-content">
+        <div class="free-music-pane-inner music-pane-content music-panel-main">
           <p class="free-music-hint" id="${prefix}-free-music-hint"></p>
           <div class="free-music-catalog music-media-list" id="${prefix}-free-music-catalog"></div>
         </div>

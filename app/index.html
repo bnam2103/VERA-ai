@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=33">
+  <link rel="stylesheet" href="../styles.css?v=37">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -272,10 +272,12 @@
             </div>
           </div>
           <p class="vera-wm-empty-hint vera-wm-empty-hint--reasoning" aria-hidden="true">
-            No reasoning in this panel yet. Ask VERA to work through something, or type below.
+            <span class="vera-wm-empty-hint-title">No reasoning in this panel yet</span>
+            <span class="vera-wm-empty-hint-body">Ask VERA to work through something, or type below.</span>
           </p>
           <p class="vera-wm-empty-hint vera-wm-empty-hint--fresh" aria-hidden="true" hidden>
-            Fresh workspace ready.
+            <span class="vera-wm-empty-hint-title">Workspace ready</span>
+            <span class="vera-wm-empty-hint-body">Ask VERA to reason through a task, plan something, or explain an idea.</span>
           </p>
         </div>
         <div class="vera-reasoning-compose">
@@ -310,7 +312,7 @@
         <div class="vera-reasoning-attach-meta" id="vera-reasoning-attach-meta" aria-live="polite"></div>
         </div>
         <p class="vera-reasoning-typed-note">
-          VERA will speak aloud unless you mute (same behavior as Voice UI). In-app mute for typed replies is coming soon; for now use system volume or your device mute when you need silence.
+          Typed replies may be spoken aloud unless muted. Use system volume or device mute when you need silence.
         </p>
       </section>
       <div class="vera-wm-right" id="vera-wm-right">
@@ -319,7 +321,8 @@
       <div class="vera-wm-conversation-wrap">
         <div class="conversation" id="vera-conversation"></div>
         <p class="vera-wm-empty-hint vera-wm-empty-hint--voice" aria-hidden="true">
-          Conversation with VERA appears in this panel.
+          <span class="vera-wm-empty-hint-title">Conversation appears here</span>
+          <span class="vera-wm-empty-hint-body">Speak naturally or type below to begin.</span>
         </p>
       </div>
       <aside id="vera-side-pane" class="side-pane" hidden></aside>
@@ -1006,23 +1009,21 @@
             <span class="dot" aria-hidden="true"></span>
             <span class="vera-settings-asr-option-label">Fast / Streaming</span>
           </span>
-          <span class="vera-settings-asr-option-desc">Faster and shows speech in real time.</span>
         </button>
         <button type="button" id="vera-setting-asr-whisper" class="vera-settings-radio vera-settings-asr-option" data-asr-mode="whisper" aria-pressed="false" title="More accurate transcription, but responses may take longer.">
           <span class="vera-settings-asr-option-head">
             <span class="dot" aria-hidden="true"></span>
             <span class="vera-settings-asr-option-label">Accurate / Whisper</span>
           </span>
-          <span class="vera-settings-asr-option-desc">More accurate, but may take longer.</span>
         </button>
         <button type="button" id="vera-setting-asr-hybrid" class="vera-settings-radio vera-settings-asr-option" data-asr-mode="hybrid" aria-pressed="false" title="Uses streaming for responsiveness and Whisper for accuracy when available.">
           <span class="vera-settings-asr-option-head">
             <span class="dot" aria-hidden="true"></span>
             <span class="vera-settings-asr-option-label">Hybrid</span>
           </span>
-          <span class="vera-settings-asr-option-desc">Balances speed and accuracy when available.</span>
         </button>
       </div>
+      <p class="vera-settings-hint vera-settings-asr-helper">Fast shows speech in real time. Whisper is more accurate but slower. Hybrid balances both.</p>
     </section>
 
     <section id="vera-cost-log-dev-section" class="vera-settings-section" hidden>
@@ -1134,7 +1135,7 @@
 <script src="../users/accountSettingsSync.js?v=2"></script>
 <!-- users/feedback.js — thumbs up/down on main chat Vera replies (Feedback MVP).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
-<script src="../users/feedback.js?v=4"></script>
+<script src="../users/feedback.js?v=5"></script>
 <!-- users/usageEvents.js — lightweight behavioral analytics (MVP).
      Must load AFTER utils/ids.js + supabaseAuth.js, BEFORE app.js. -->
 <script src="../users/usageEvents.js?v=3"></script>
@@ -1272,7 +1273,7 @@
 <script src="../news/newsRouter.js?v=3"></script>
 <script src="../news/newsPanel.js?v=5"></script>
 <script src="../news/weatherPanel.js?v=2"></script>
-<script src="app.js?v=135"></script>
+<script src="app.js?v=136"></script>
 <script src="shell.js?v=5"></script>
 <!-- voice/musicNavigation.js — shared track navigation dedupe + ended guard -->
 <script src="../voice/musicNavigation.js?v=1"></script>
