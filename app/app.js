@@ -3671,21 +3671,23 @@ function renderFreeMusicCatalogHtml(prefix, data) {
     return html;
   }
   if (playlists.length) {
-    html += `<p class="free-music-section-title free-music-section-title--playlists">Playlists</p><div class="free-music-playlist-cards">`;
+    html += `<p class="free-music-section-title free-music-section-title--playlists">Playlists</p><div class="free-music-playlist-cards music-media-list">`;
     for (const p of playlists) {
       const n = p.tracks?.length || 0;
       const title = escapeHtml(String(p.title || p.id || "Playlist"));
       const pid = escapeHtml(String(p.id || ""));
       const sid = freeMusicDomIdSafe(p.id);
       const trackRows = freeMusicPlaylistTrackRowsHtml(prefix, p);
-      html += `<div class="free-music-playlist-card" data-free-playlist-id="${pid}">
-        <div class="free-music-playlist-head" role="button" tabindex="0" aria-expanded="false" aria-controls="${prefix}-free-pl-tracks-${sid}">
-          <span class="free-music-playlist-chevron" aria-hidden="true">▶</span>
-          <div class="free-music-playlist-head-text">
-            <div class="free-music-playlist-title">${title}</div>
-            <div class="free-music-playlist-meta">${n} track${n === 1 ? "" : "s"}</div>
+      const displayTitle = title.replace(/_/g, " ");
+      html += `<div class="free-music-playlist-card music-media-row-wrap" data-free-playlist-id="${pid}">
+        <div class="free-music-playlist-head music-media-row" role="button" tabindex="0" aria-expanded="false" aria-controls="${prefix}-free-pl-tracks-${sid}">
+          <div class="music-media-thumb music-media-thumb--builtin" aria-hidden="true"></div>
+          <div class="free-music-playlist-head-text music-media-row-text">
+            <div class="free-music-playlist-title music-media-row-title">${displayTitle}</div>
+            <div class="free-music-playlist-meta music-media-row-sub">${n} track${n === 1 ? "" : "s"}</div>
           </div>
-          <button type="button" class="free-music-playlist-header-play" aria-label="Play ${title}">▶</button>
+          <button type="button" class="free-music-playlist-header-play music-media-row-action-btn" aria-label="Play ${displayTitle}">▶</button>
+          <span class="free-music-playlist-chevron music-media-row-chevron" aria-hidden="true">›</span>
         </div>
         <div class="free-music-playlist-tracks" id="${prefix}-free-pl-tracks-${sid}" hidden>${trackRows}</div>
       </div>`;
@@ -3693,13 +3695,14 @@ function renderFreeMusicCatalogHtml(prefix, data) {
     html += `</div>`;
   }
   if (tracks.length) {
-    html += `<p class="free-music-section-title free-music-section-title--sounds">Sounds</p><div class="free-music-sound-list">`;
+    html += `<p class="free-music-section-title free-music-section-title--sounds">Sounds</p><div class="free-music-sound-list music-media-list">`;
     for (const t of freeMusicSortBuiltinSounds(tracks)) {
       const title = escapeHtml(freeMusicSoundDisplayTitle(t));
       const url = escapeHtml(String(t.url || ""));
-      html += `<div class="free-music-sound-row" data-free-url="${url}" data-free-sound-id="${escapeHtml(String(t.id || ""))}">
-        <button type="button" class="free-music-sound-row-play" aria-label="Play ${title}">▶</button>
-        <span class="free-music-sound-row-title">${title}</span>
+      html += `<div class="free-music-sound-row music-media-row" data-free-url="${url}" data-free-sound-id="${escapeHtml(String(t.id || ""))}">
+        <div class="music-media-thumb music-media-thumb--sound" aria-hidden="true"></div>
+        <span class="free-music-sound-row-title music-media-row-text music-media-row-title">${title}</span>
+        <button type="button" class="free-music-sound-row-play music-media-row-action-btn" aria-label="Play ${title}">▶</button>
       </div>`;
     }
     html += `</div>`;
@@ -4790,12 +4793,13 @@ function renderSpotifyPlaylistResults(prefix, playlists) {
         ? `<img class="spotify-result-thumb" src="${escapeHtml(p.image_url)}" alt="" loading="lazy" />`
         : `<div class="spotify-result-thumb" aria-hidden="true"></div>`;
       return `
-        <button type="button" class="spotify-result-row spotify-playlist-row" data-playlist-id="${pid}" data-playlist-uri="${uri}">
+        <button type="button" class="spotify-result-row spotify-playlist-row music-media-row" data-playlist-id="${pid}" data-playlist-uri="${uri}">
           ${img}
           <div class="spotify-result-text">
             <div class="spotify-result-title">${name}</div>
-            <div class="spotify-result-sub">${total} tracks${owner ? ` • ${owner}` : ""}</div>
+            <div class="spotify-result-sub">${total} tracks${owner ? ` · ${owner}` : ""}</div>
           </div>
+          <span class="music-media-row-action" aria-hidden="true">▶</span>
         </button>
       `;
     })
@@ -6170,10 +6174,8 @@ function spotifyApplyNowStateToPanel(prefix) {
 
   if (badgeEl) {
     badgeEl.dataset.activeSource = activeSource;
-    if (activeSource === "builtin") {
-      badgeEl.textContent = "Playing from Built-in Music";
-    } else if (activeSource === "spotify") {
-      badgeEl.textContent = "Playing from Spotify";
+    if (activeSource === "builtin" || activeSource === "spotify") {
+      badgeEl.textContent = "Playing";
     } else {
       badgeEl.textContent = "Not playing";
     }
@@ -7125,47 +7127,47 @@ function renderProductivityPanel(opts = {}) {
     document.body.classList.add("news-panel-open");
 
     sidePaneEl.innerHTML = `
-    <div class="side-pane-header">
-      <div class="side-pane-heading">
-        <h3 class="side-pane-title">Music panel</h3>
-        <div class="music-source-toggle" role="tablist" aria-label="Music source">
-          <button type="button" class="music-source-tab spotify-source-tab active" id="${prefix}-music-tab-spotify" data-music-source="spotify" aria-selected="true">Spotify</button>
-          <button type="button" class="music-source-tab" id="${prefix}-music-tab-builtin" data-music-source="builtin" aria-selected="false">Built-in music</button>
-        </div>
-      </div>
-      <div class="side-pane-controls">
+    <div class="side-pane-header music-panel-header">
+      <div class="music-panel-header-top">
+        <h3 class="side-pane-title music-panel-title">Music</h3>
         <button class="side-pane-close" type="button" aria-label="Close panel">×</button>
+      </div>
+      <div class="music-source-toggle music-segmented-control" role="tablist" aria-label="Music source">
+        <button type="button" class="music-source-tab spotify-source-tab active" id="${prefix}-music-tab-spotify" data-music-source="spotify" aria-selected="true">Spotify</button>
+        <button type="button" class="music-source-tab" id="${prefix}-music-tab-builtin" data-music-source="builtin" aria-selected="false">Built-in</button>
       </div>
     </div>
     <div class="spotify-panel-body" data-productivity-root="${prefix}" data-music-source="spotify" data-inactive-tab="0">
-      <div class="spotify-now-playing">
-        <div class="music-source-badge" id="${prefix}-music-source-badge" data-active-source="none" aria-live="polite">Not playing</div>
-        <div class="spotify-art-placeholder" id="${prefix}-spotify-art-placeholder" aria-hidden="true"></div>
-        <div class="spotify-track-meta">
-          <div class="spotify-track-title" id="${prefix}-spotify-track-title">Nothing playing</div>
-          <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Connect Spotify for in-browser playback, or use search + preview / Open in Spotify.</div>
-          <div class="spotify-progress-wrap">
-            <span class="spotify-time-text" id="${prefix}-spotify-time-elapsed">0:00</span>
-            <input
-              type="range"
-              class="spotify-progress"
-              id="${prefix}-spotify-progress"
-              min="0"
-              max="0"
-              step="250"
-              value="0"
-              aria-label="Track position"
-              disabled
-            />
-            <span class="spotify-time-text" id="${prefix}-spotify-time-total">0:00</span>
+      <div class="spotify-now-playing music-now-playing">
+        <div class="music-now-playing-status music-source-badge" id="${prefix}-music-source-badge" data-active-source="none" aria-live="polite">Not playing</div>
+        <div class="music-now-playing-body">
+          <div class="spotify-art-placeholder music-now-playing-art" id="${prefix}-spotify-art-placeholder" aria-hidden="true"></div>
+          <div class="spotify-track-meta music-now-playing-meta">
+            <div class="spotify-track-title" id="${prefix}-spotify-track-title">Nothing playing</div>
+            <div class="spotify-track-artist" id="${prefix}-spotify-track-artist">Connect Spotify for in-browser playback, or use search + preview / Open in Spotify.</div>
           </div>
         </div>
-        <div class="spotify-transport">
+        <div class="spotify-progress-wrap music-now-playing-progress">
+          <span class="spotify-time-text" id="${prefix}-spotify-time-elapsed">0:00</span>
+          <input
+            type="range"
+            class="spotify-progress"
+            id="${prefix}-spotify-progress"
+            min="0"
+            max="0"
+            step="250"
+            value="0"
+            aria-label="Track position"
+            disabled
+          />
+          <span class="spotify-time-text" id="${prefix}-spotify-time-total">0:00</span>
+        </div>
+        <div class="spotify-transport music-now-playing-transport">
           <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-prev" aria-label="Previous">⏮</button>
           <button type="button" class="spotify-transport-btn spotify-play-btn" id="${prefix}-spotify-play" aria-label="Play / pause">▶</button>
           <button type="button" class="spotify-transport-btn" id="${prefix}-spotify-next" aria-label="Next">⏭</button>
           <div class="spotify-volume-wrap" title="Volume">
-            <span class="spotify-volume-icon" aria-hidden="true">🔊</span>
+            <span class="spotify-volume-icon" aria-hidden="true">♪</span>
             <input type="range" class="spotify-volume" id="${prefix}-spotify-volume" min="0" max="35" step="1" value="10" aria-label="Volume" />
           </div>
         </div>
@@ -7175,26 +7177,29 @@ function renderProductivityPanel(opts = {}) {
           <span class="music-inactive-source-banner-text" id="${prefix}-spotify-inactive-banner-text">Built-in Music is currently playing.</span>
           <button type="button" class="music-inactive-source-banner-action" id="${prefix}-spotify-inactive-switch" data-music-action="switch-to-spotify">Switch to Spotify</button>
         </div>
-        <div id="${prefix}-spotify-view-root" data-spotify-view="search">
+        <div id="${prefix}-spotify-view-root" class="music-pane-content" data-spotify-view="search">
           <div class="spotify-connect-row" id="${prefix}-spotify-connect-row">
-            <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link">Connect Spotify (Premium)</a>
+            <div class="spotify-connect-status" id="${prefix}-spotify-connected-badge" hidden>
+              <span class="spotify-connect-dot" aria-hidden="true"></span>
+              <span class="spotify-connect-label">Connected to Spotify</span>
+            </div>
+            <a class="spotify-connect-link" href="#" id="${prefix}-spotify-connect-link">Connect Spotify</a>
             <button type="button" class="spotify-logout-btn" id="${prefix}-spotify-logout" hidden>Disconnect</button>
-            <span class="spotify-connected-badge" id="${prefix}-spotify-connected-badge" hidden>Connected</span>
           </div>
-          <div class="spotify-view-toggle" role="tablist" aria-label="Search and playlists">
+          <div class="spotify-view-toggle music-segmented-control" role="tablist" aria-label="Search and playlists">
             <button type="button" class="spotify-view-tab active" id="${prefix}-spotify-tab-song" data-spotify-view="song" aria-selected="true">Search</button>
-            <button type="button" class="spotify-view-tab" id="${prefix}-spotify-tab-playlist" data-spotify-view="playlist" aria-selected="false">Playlist</button>
+            <button type="button" class="spotify-view-tab" id="${prefix}-spotify-tab-playlist" data-spotify-view="playlist" aria-selected="false">Playlists</button>
           </div>
           <form class="spotify-search-form" id="${prefix}-spotify-search-form">
             <input type="search" class="spotify-search-input" id="${prefix}-spotify-search-input" placeholder="Search tracks, artists, albums…" autocomplete="off" />
             <button type="submit" class="spotify-search-submit">Search</button>
           </form>
-          <div class="spotify-song-view" id="${prefix}-spotify-song-view">
-            <div class="spotify-results" id="${prefix}-spotify-results" role="listbox" aria-label="Search results"></div>
+          <div class="spotify-song-view music-list-scroll" id="${prefix}-spotify-song-view">
+            <div class="spotify-results music-media-list" id="${prefix}-spotify-results" role="listbox" aria-label="Search results"></div>
           </div>
-          <div class="spotify-playlist-view" id="${prefix}-spotify-playlist-view" hidden>
+          <div class="spotify-playlist-view music-list-scroll" id="${prefix}-spotify-playlist-view" hidden>
             <div
-              class="spotify-results spotify-playlist-root"
+              class="spotify-results spotify-playlist-root music-media-list"
               id="${prefix}-spotify-playlist-root"
               role="listbox"
               aria-label="Your playlists"
@@ -7209,9 +7214,9 @@ function renderProductivityPanel(opts = {}) {
           <span class="music-inactive-source-banner-text" id="${prefix}-builtin-inactive-banner-text">Spotify is currently playing.</span>
           <button type="button" class="music-inactive-source-banner-action" id="${prefix}-builtin-inactive-switch" data-music-action="switch-to-builtin">Switch to Built-in</button>
         </div>
-        <div class="free-music-pane-inner">
+        <div class="free-music-pane-inner music-pane-content">
           <p class="free-music-hint" id="${prefix}-free-music-hint"></p>
-          <div class="free-music-catalog" id="${prefix}-free-music-catalog"></div>
+          <div class="free-music-catalog music-media-list" id="${prefix}-free-music-catalog"></div>
         </div>
       </div>
     </div>
