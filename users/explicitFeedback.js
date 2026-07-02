@@ -116,6 +116,48 @@
     if (form instanceof HTMLElement) form.hidden = !visible;
   }
 
+  function feedbackDialogEl() {
+    return document.querySelector(".feedback-modal-dialog");
+  }
+
+  function setConfirmationVisible(visible, message) {
+    const conf = $("vera-explicit-feedback-confirmation");
+    const msgEl = $("vera-explicit-feedback-confirmation-message");
+    const dialog = feedbackDialogEl();
+    if (conf instanceof HTMLElement) {
+      conf.hidden = !visible;
+      conf.setAttribute("aria-hidden", visible ? "false" : "true");
+    }
+    if (msgEl instanceof HTMLElement && typeof message === "string") {
+      msgEl.textContent = message;
+    }
+    if (dialog instanceof HTMLElement) {
+      dialog.classList.toggle("is-submitted", visible);
+    }
+  }
+
+  function resetModalForEdit() {
+    setConfirmationVisible(false);
+    setFormVisible(true);
+    const headerText = document.querySelector(".feedback-header-text");
+    if (headerText instanceof HTMLElement) headerText.hidden = false;
+    showSuccess("");
+    showError("");
+    clearRatingError();
+    const submitBtn = $("vera-explicit-feedback-submit");
+    if (submitBtn instanceof HTMLButtonElement) submitBtn.disabled = false;
+  }
+
+  function showConfirmationState(message) {
+    setFormVisible(false);
+    showSuccess("");
+    showError("");
+    clearRatingError();
+    const headerText = document.querySelector(".feedback-header-text");
+    if (headerText instanceof HTMLElement) headerText.hidden = true;
+    setConfirmationVisible(true, message);
+  }
+
   function updateFeedbackButton() {
     const btn = ensureFeedbackButtonDom();
     if (!(btn instanceof HTMLButtonElement)) return;
@@ -191,10 +233,7 @@
       logWarn("feedback modal markup missing");
       return;
     }
-    showError("");
-    showSuccess("");
-    clearRatingError();
-    setFormVisible(true);
+    resetModalForEdit();
     const contactWrap = $("vera-explicit-feedback-contact-wrap");
     const signedIn =
       typeof isSupabaseUserAuthenticated === "function" &&
@@ -214,6 +253,7 @@
     if (!(modal instanceof HTMLElement)) return;
     modal.hidden = true;
     modal.setAttribute("aria-hidden", "true");
+    resetModalForEdit();
   }
 
   function scheduleStatusRetry(reason) {
@@ -327,17 +367,14 @@
       }
       const granted = Number(data.granted_bonus_credits) || 0;
       if (granted > 0) {
-        showSuccess("Thanks — +50 credits unlocked.");
+        showConfirmationState("Thanks — +50 credits unlocked.");
         _alreadyClaimed = true;
         _eligible = false;
-        setFormVisible(false);
       } else if (data.already_claimed) {
-        showSuccess("Thanks for your feedback. Bonus already claimed today.");
+        showConfirmationState("Thanks for your feedback. Bonus already claimed today.");
         _alreadyClaimed = true;
-        setFormVisible(false);
       } else {
-        showSuccess("Thanks for your feedback.");
-        setFormVisible(false);
+        showConfirmationState("Thanks for your feedback.");
       }
       updateFeedbackButton();
       try {
@@ -360,6 +397,7 @@
     });
     $("vera-explicit-feedback-close")?.addEventListener("click", closeModal);
     $("vera-explicit-feedback-cancel")?.addEventListener("click", closeModal);
+    $("vera-explicit-feedback-done")?.addEventListener("click", closeModal);
     $("vera-explicit-feedback-modal")?.addEventListener("click", (ev) => {
       if (ev.target instanceof HTMLElement && ev.target.classList.contains("vera-explicit-feedback-backdrop")) {
         closeModal();

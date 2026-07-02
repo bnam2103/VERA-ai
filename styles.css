@@ -2051,13 +2051,23 @@ body.chat-started .input-container {
   position: relative;
   width: min(580px, 100%);
   max-height: min(90vh, 760px);
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border-radius: 24px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(10, 16, 24, 0.96);
   color: #f2f5f7;
-  padding: 32px;
+  padding: 28px 28px 24px;
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.45);
+}
+
+.feedback-modal-dialog.is-submitted {
+  padding-top: 24px;
+}
+
+.feedback-modal-dialog.is-submitted .feedback-header,
+.feedback-modal-dialog.is-submitted .feedback-alert {
+  display: none !important;
 }
 
 .vera-explicit-feedback-header,
@@ -2084,10 +2094,52 @@ body.chat-started .input-container {
 }
 
 .feedback-subtitle {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   color: rgba(242, 245, 247, 0.66);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
+  max-width: 52ch;
+}
+
+.feedback-confirmation {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 12px 4px 4px;
+}
+
+.feedback-confirmation[hidden] {
+  display: none !important;
+}
+
+.feedback-confirmation-badge {
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(32, 183, 168, 0.16);
+  border: 1px solid rgba(32, 183, 168, 0.38);
+  color: rgba(32, 183, 168, 0.95);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.feedback-confirmation-message {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.55;
+  color: rgba(242, 245, 247, 0.9);
+  max-width: 34ch;
+}
+
+.feedback-done-btn {
+  margin-top: 4px;
+  min-width: 120px;
 }
 
 .vera-explicit-feedback-close,
@@ -2131,6 +2183,10 @@ body.chat-started .input-container {
   line-height: 1.45;
 }
 
+.feedback-alert[hidden] {
+  display: none !important;
+}
+
 .feedback-alert--error,
 .vera-explicit-feedback-modal .vera-account-error {
   border: 1px solid rgba(255, 120, 120, 0.35);
@@ -2148,13 +2204,22 @@ body.chat-started .input-container {
 .feedback-form {
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 20px;
+}
+
+.feedback-form[hidden] {
+  display: none !important;
 }
 
 .feedback-field {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+}
+
+.feedback-field--rating {
+  gap: 6px;
 }
 
 .feedback-label {
@@ -2165,8 +2230,10 @@ body.chat-started .input-container {
 }
 
 .feedback-label-optional {
+  font-size: 12px;
   font-weight: 500;
-  color: rgba(242, 245, 247, 0.48);
+  color: rgba(242, 245, 247, 0.42);
+  margin-left: 4px;
 }
 
 .feedback-helper {
@@ -2186,16 +2253,16 @@ body.chat-started .input-container {
 .vera-explicit-feedback-reason,
 .feedback-textarea {
   width: 100%;
-  min-height: 120px;
+  min-height: 128px;
   box-sizing: border-box;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 16px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.04);
   color: #f2f5f7;
-  padding: 14px 16px;
+  padding: 12px 14px;
   font-family: inherit;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
   resize: vertical;
   transition:
     border-color 0.18s ease,
@@ -2330,12 +2397,12 @@ body.chat-started .input-container {
 
 .feedback-actions {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px 20px;
-  margin-top: 4px;
-  padding-top: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  margin-top: 2px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .feedback-actions-buttons {
@@ -2354,10 +2421,12 @@ body.chat-started .input-container {
 }
 
 .feedback-reward-note {
+  margin: 0;
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: rgba(32, 183, 168, 0.82);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.45;
+  color: rgba(32, 183, 168, 0.72);
 }
 
 @media (max-width: 560px) {
@@ -2372,8 +2441,7 @@ body.chat-started .input-container {
   }
 
   .feedback-actions {
-    flex-direction: column;
-    align-items: stretch;
+    gap: 10px;
   }
 
   .feedback-actions-buttons {
@@ -2385,11 +2453,6 @@ body.chat-started .input-container {
   .feedback-cancel-btn {
     width: 100%;
     min-width: 0;
-  }
-
-  .feedback-reward-note {
-    text-align: center;
-    width: 100%;
   }
 }
 
@@ -2583,8 +2646,14 @@ body.chat-started .input-container {
   font-weight: 600;
 }
 
-.music-panel-header {
-  margin-bottom: 8px;
+.music-panel-header,
+.side-pane-header.music-panel-header {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
   padding-bottom: 0;
 }
 
@@ -2592,16 +2661,27 @@ body.chat-started .input-container {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  margin-bottom: 0;
 }
 
 .music-panel-title {
   margin: 0;
-  font-size: 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16px;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  color: rgba(242, 245, 247, 0.9);
+  letter-spacing: 0.01em;
+  color: rgba(242, 245, 247, 0.92);
+  line-height: 1.2;
+}
+
+.music-panel-header .side-pane-close {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0;
 }
 
 #vera-app.work-mode .music-panel-title {
@@ -2620,10 +2700,12 @@ body.chat-started .input-container {
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.035);
+  width: 100%;
 }
 
 .music-source-toggle {
   margin-bottom: 0;
+  width: 100%;
 }
 
 .music-source-tab,
@@ -2657,8 +2739,18 @@ body.chat-started .input-container {
 }
 
 .side-pane-header:has(.music-source-toggle) {
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   padding-bottom: 0;
+}
+
+.music-panel-header + .spotify-panel-body,
+.music-panel-header + .music-panel-body {
+  margin-top: 2px;
+}
+
+.spotify-panel-body,
+.music-panel-body {
+  padding-top: 2px;
 }
 
 .music-pane-stack[hidden] {
@@ -4967,13 +5059,16 @@ body.chat-started .input-bar {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   overflow: hidden;
+  padding: 6px 10px 10px;
 }
 
 #vera-app.work-mode #vera-side-pane .side-pane-header.music-panel-header {
   flex: 0 0 auto;
   margin-bottom: 0;
+  padding: 8px 10px 0;
+  gap: 8px;
 }
 
 #vera-app.work-mode #vera-side-pane .music-now-playing {
@@ -6271,7 +6366,18 @@ body.work-mode-transitioning #vera-app.work-mode .vera-body-grid {
 }
 
 .vera-settings-asr-section {
-  padding: 16px 16px 14px;
+  padding: 14px 14px 12px;
+}
+
+.vera-settings-asr-section h3 {
+  margin-bottom: 8px;
+}
+
+.vera-settings-asr-section .vera-settings-section-lead {
+  margin-top: 0;
+  margin-bottom: 12px;
+  line-height: 1.55;
+  max-width: 62ch;
 }
 
 .vera-settings-asr-options {
@@ -6286,12 +6392,13 @@ body.work-mode-transitioning #vera-app.work-mode .vera-body-grid {
   align-items: center;
   justify-content: center;
   width: auto;
-  min-height: 42px;
-  padding: 0 14px;
+  min-height: 38px;
+  padding: 0 12px;
   border-radius: 999px;
   text-align: center;
-  line-height: 1.2;
+  line-height: 1.25;
   white-space: nowrap;
+  flex: 0 1 auto;
 }
 
 .vera-settings-asr-option-head {
@@ -6303,14 +6410,21 @@ body.work-mode-transitioning #vera-app.work-mode .vera-body-grid {
   color: rgba(242, 245, 247, 0.9);
 }
 
+.vera-settings-asr-option-label {
+  line-height: 1.25;
+}
+
 .vera-settings-asr-option-desc {
   display: none;
 }
 
 .vera-settings-asr-helper {
-  margin-top: 8px;
+  margin-top: 12px;
   margin-bottom: 0;
-  color: rgba(242, 245, 247, 0.5);
+  line-height: 1.55;
+  font-size: 12px;
+  color: rgba(242, 245, 247, 0.52);
+  max-width: 62ch;
 }
 
 .vera-settings-session-section .vera-settings-session-action {
@@ -6324,6 +6438,11 @@ body.work-mode-transitioning #vera-app.work-mode .vera-body-grid {
 
   .vera-settings-asr-option {
     flex: 1 1 100%;
+    white-space: normal;
+  }
+
+  .vera-settings-asr-option-label {
+    white-space: normal;
   }
 }
 

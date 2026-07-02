@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=38">
+  <link rel="stylesheet" href="../styles.css?v=40">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -794,6 +794,11 @@
     </div>
     <p id="vera-explicit-feedback-error" class="vera-account-error feedback-alert feedback-alert--error" hidden role="alert"></p>
     <p id="vera-explicit-feedback-success" class="vera-account-success feedback-alert feedback-alert--success" hidden role="status"></p>
+    <div id="vera-explicit-feedback-confirmation" class="feedback-confirmation" hidden role="status" aria-live="polite">
+      <div class="feedback-confirmation-badge" aria-hidden="true">✓</div>
+      <p id="vera-explicit-feedback-confirmation-message" class="feedback-confirmation-message"></p>
+      <button type="button" id="vera-explicit-feedback-done" class="vera-account-secondary-btn feedback-done-btn">Close</button>
+    </div>
     <div id="vera-explicit-feedback-form" class="feedback-form">
       <div class="feedback-field feedback-field--rating">
         <span id="vera-explicit-feedback-rating-label" class="feedback-label">How was this experience?</span>
@@ -822,11 +827,11 @@
         </label>
       </div>
       <div class="feedback-actions">
+        <p class="feedback-reward-note">+50 credits after submission</p>
         <div class="feedback-actions-buttons">
           <button type="button" id="vera-explicit-feedback-submit" class="vera-settings-save-btn feedback-submit-btn">Submit feedback</button>
           <button type="button" id="vera-explicit-feedback-cancel" class="vera-account-secondary-btn feedback-cancel-btn">Cancel</button>
         </div>
-        <span class="feedback-reward-note">+50 credits after submission</span>
       </div>
     </div>
   </div>
@@ -843,6 +848,23 @@
       <p id="vera-account-status" class="vera-settings-hint">Loading account…</p>
       <p id="vera-account-error" class="vera-account-error" hidden role="alert"></p>
       <p id="vera-account-success" class="vera-account-success" hidden role="status"></p>
+
+      <div id="vera-cloud-sync-signed-out" class="vera-cloud-sync-card" hidden>
+        <h4 class="vera-cloud-sync-heading">Cloud sync</h4>
+        <p class="vera-settings-hint vera-cloud-sync-signed-out-copy">Sign in to save checklist, Work Mode panels, memories, and settings across devices.</p>
+        <p class="vera-settings-hint vera-cloud-sync-anon-note">No cloud sync is active for anonymous sessions.</p>
+      </div>
+
+      <div id="vera-cloud-sync-signed-in" class="vera-cloud-sync-card" hidden>
+        <h4 class="vera-cloud-sync-heading">Cloud sync</h4>
+        <ul id="vera-cloud-sync-list" class="vera-cloud-sync-list" aria-live="polite"></ul>
+        <p class="vera-settings-hint vera-cloud-sync-memories-note">Memories are saved to your account when you ask VERA to remember something.</p>
+        <p id="vera-cloud-sync-last" class="vera-cloud-sync-last">Last synced: —</p>
+        <p id="vera-cloud-sync-banner" class="vera-cloud-sync-banner" hidden role="status"></p>
+        <div class="vera-cloud-sync-actions">
+          <button type="button" id="vera-cloud-sync-now" class="vera-account-secondary-btn vera-cloud-sync-now-btn">Sync now</button>
+        </div>
+      </div>
 
       <div id="vera-account-signed-out">
         <div id="vera-account-login-view">
@@ -910,7 +932,6 @@
           <button type="button" id="vera-account-save-profile" class="vera-settings-save-btn">Save profile</button>
           <button type="button" id="vera-account-sign-out" class="vera-account-secondary-btn">Log out</button>
         </div>
-        <p id="vera-checklist-sync-status" class="vera-settings-hint vera-checklist-sync-status" hidden></p>
         <div id="vera-account-memories-wrap" class="vera-account-memories-wrap" hidden>
           <h4 class="vera-account-memories-heading">Saved memories</h4>
           <p class="vera-settings-hint">Things you've explicitly asked Vera to remember.</p>
@@ -1132,7 +1153,10 @@
 <script src="../users/supabaseAuth.js?v=18"></script>
 <!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
-<script src="../users/accountSettingsSync.js?v=2"></script>
+<script src="../users/accountSettingsSync.js?v=3"></script>
+<!-- users/cloudSyncStatus.js — account cloud sync status card + manual sync.
+     Must load AFTER accountSettingsSync.js, checklist.js, workspaceSync.js. -->
+<script src="../users/cloudSyncStatus.js?v=1"></script>
 <!-- users/feedback.js — thumbs up/down on main chat Vera replies (Feedback MVP).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="../users/feedback.js?v=6"></script>
@@ -1147,7 +1171,7 @@
 <script src="../users/usageCredits.js?v=9"></script>
 <!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
      Must load AFTER usageCredits.js, BEFORE app.js. -->
-<script src="../users/explicitFeedback.js?v=5"></script>
+<script src="../users/explicitFeedback.js?v=6"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies
