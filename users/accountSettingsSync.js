@@ -27,9 +27,11 @@ const LS_MAIN_PARTIAL_MIN = "vera_setting_main_asr_partial_min_chars_v1";
 const LS_WORKMODE_MUTE = "vera_setting_workmode_mute_v1";
 const LS_TEXT_GUIDE = "vera_setting_text_guide_rotator_v1";
 const LS_LEFT_PANES_LAYOUT = "vera_wm_left_panes_layout_v1";
+const LS_SETTINGS_UNSYNCED_KEY = "vera_settings_supabase_unsynced_v1";
 
 let _hydratePromise = null;
 let _patchInFlight = null;
+let _settingsSyncStatus = "synced";
 /** Bumped on logout so in-flight account PATCHes cannot overwrite Supabase. */
 let _settingsAuthWriteGeneration = 0;
 
@@ -169,6 +171,39 @@ function applyVeraPrefsToLocal(prefs) {
   }
 }
 
+function _notifyCloudSyncChanged() {
+  try {
+    window.dispatchEvent(new CustomEvent("vera:cloud-sync-changed"));
+    window.veraRefreshCloudSyncStatusUi?.();
+  } catch (_) {}
+}
+
+function _markSettingsUnsynced(unsynced) {
+  try {
+    if (unsynced) localStorage.setItem(LS_SETTINGS_UNSYNCED_KEY, "1");
+    else localStorage.removeItem(LS_SETTINGS_UNSYNCED_KEY);
+  } catch (_) {}
+  _settingsSyncStatus = unsynced ? "unsynced" : "synced";
+  _notifyCloudSyncChanged();
+}
+
+function isVeraSettingsSupabaseUnsynced() {
+  try {
+    return localStorage.getItem(LS_SETTINGS_UNSYNCED_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function getVeraSettingsSyncDebugState() {
+  return {
+    unsynced: isVeraSettingsSupabaseUnsynced(),
+    syncing: Boolean(_patchInFlight),
+    pending: false,
+    status: _settingsSyncStatus,
+  };
+}
+
 function _settingsCancelPendingAccountSync() {
   _patchInFlight = null;
   _hydratePromise = null;
@@ -185,6 +220,8 @@ async function patchVeraPrefsToSupabase(prefs, { reason } = {}) {
 
   const genAtStart = _settingsAuthWriteGeneration;
   const body = { vera_prefs_v1: prefs };
+  _settingsSyncStatus = "syncing";
+  _notifyCloudSyncChanged();
   const run = async () => {
     if (genAtStart !== _settingsAuthWriteGeneration) return false;
     try {
@@ -197,11 +234,20 @@ async function patchVeraPrefsToSupabase(prefs, { reason } = {}) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         console.warn("[VERA][SETTINGS] patch failed", reason || "", data);
+        _markSettingsUnsynced(true);
+        _settingsSyncStatus = "failed";
+        _notifyCloudSyncChanged();
         return false;
       }
+      _markSettingsUnsynced(false);
+      _settingsSyncStatus = "synced";
+      _notifyCloudSyncChanged();
       return true;
     } catch (err) {
       console.warn("[VERA][SETTINGS] patch error", reason || "", err);
+      _markSettingsUnsynced(true);
+      _settingsSyncStatus = "failed";
+      _notifyCloudSyncChanged();
       return false;
     }
   };
@@ -250,13 +296,21 @@ async function hydrateVeraSettingsFromSupabase() {
       if (!_prefsIsEmpty(remote)) {
         if (genAtStart !== _settingsAuthWriteGeneration) return false;
         applyVeraPrefsToLocal(remote);
+        _markSettingsUnsynced(false);
+        _settingsSyncStatus = "synced";
+        _notifyCloudSyncChanged();
         return true;
       }
 
       const local = collectLocalVeraPrefs();
       if (!_prefsIsEmpty(local)) {
         if (genAtStart !== _settingsAuthWriteGeneration) return false;
-        await patchVeraPrefsToSupabase(local, { reason: "seed_from_local" });
+        const seeded = await patchVeraPrefsToSupabase(local, { reason: "seed_from_local" });
+        if (seeded) {
+          _markSettingsUnsynced(false);
+          _settingsSyncStatus = "synced";
+        }
+        _notifyCloudSyncChanged();
       }
       return genAtStart === _settingsAuthWriteGeneration;
     } catch (err) {
@@ -273,6 +327,8 @@ async function hydrateVeraSettingsFromSupabase() {
 function clearSettingsAfterLogout() {
   console.info("[settings_logout_cleanup]", { phase: "start" });
   _settingsBlockAccountWrites();
+  _markSettingsUnsynced(false);
+  _settingsSyncStatus = "synced";
   const anon = readAnonymousVeraPrefsSnapshot();
   const restore = anon || getSafeDefaultVeraPrefs();
   applyVeraPrefsToLocal(restore);
@@ -292,6 +348,8 @@ try {
     window.hydrateVeraSettingsFromSupabase = hydrateVeraSettingsFromSupabase;
     window.syncLocalVeraPrefsToSupabase = syncLocalVeraPrefsToSupabase;
     window.clearSettingsAfterLogout = clearSettingsAfterLogout;
+    window.isVeraSettingsSupabaseUnsynced = isVeraSettingsSupabaseUnsynced;
+    window.getVeraSettingsSyncDebugState = getVeraSettingsSyncDebugState;
     window.saveAnonymousVeraPrefsSnapshot = saveAnonymousVeraPrefsSnapshot;
     window.readAnonymousVeraPrefsSnapshot = readAnonymousVeraPrefsSnapshot;
     window.getSafeDefaultVeraPrefs = getSafeDefaultVeraPrefs;

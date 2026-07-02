@@ -30534,6 +30534,9 @@ function wireVeraSettingsPanel() {
     if (typeof refreshSupabaseAccountLabel === "function") {
       refreshSupabaseAccountLabel().catch(() => {});
     }
+    if (typeof window.veraOnAccountPanelOpened === "function") {
+      window.veraOnAccountPanelOpened();
+    }
     requestAnimationFrame(() => {
       const email = document.getElementById("vera-account-email");
       if (email instanceof HTMLInputElement && !email.disabled) {

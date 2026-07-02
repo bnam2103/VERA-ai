@@ -129,12 +129,29 @@ function _workspaceMinPanels() {
   return typeof MIN_REASONING_PANELS === "number" ? MIN_REASONING_PANELS : 3;
 }
 
+function _notifyCloudSyncChanged() {
+  try {
+    window.dispatchEvent(new CustomEvent("vera:cloud-sync-changed"));
+    window.veraRefreshCloudSyncStatusUi?.();
+  } catch (_) {}
+}
+
 function _markWorkspaceUnsynced(unsynced) {
   try {
     if (unsynced) localStorage.setItem(WORKSPACE_UNSYNCED_KEY, "1");
     else localStorage.removeItem(WORKSPACE_UNSYNCED_KEY);
   } catch (_) {}
   _workspaceSyncStatus = unsynced ? "unsynced" : "synced";
+  _notifyCloudSyncChanged();
+}
+
+function getWorkModeWorkspaceSyncDebugState() {
+  return {
+    unsynced: isWorkModeWorkspaceUnsynced(),
+    syncing: Boolean(_workspaceSaveInFlight),
+    pending: Boolean(_workspaceSaveTimer),
+    status: _workspaceSyncStatus,
+  };
 }
 
 function isWorkModeWorkspaceUnsynced() {
@@ -744,6 +761,7 @@ function _publishWorkModeWorkspaceSyncApi() {
   window.scheduleWorkModeWorkspaceHydrateBestEffort = scheduleWorkModeWorkspaceHydrateBestEffort;
   window.retryWorkModeWorkspaceSyncIfUnsynced = retryWorkModeWorkspaceSyncIfUnsynced;
   window.isWorkModeWorkspaceUnsynced = isWorkModeWorkspaceUnsynced;
+  window.getWorkModeWorkspaceSyncDebugState = getWorkModeWorkspaceSyncDebugState;
   window.shouldSkipLocalReasoningTabsRestoreForCloud = shouldSkipLocalReasoningTabsRestoreForCloud;
   window.scheduleDeferredVeraChatRestoreIfAnonymous = scheduleDeferredVeraChatRestoreIfAnonymous;
   window.clearWorkModeWorkspaceAfterLogout = clearWorkModeWorkspaceAfterLogout;

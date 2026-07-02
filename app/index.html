@@ -1154,9 +1154,6 @@
 <!-- users/accountSettingsSync.js — account prefs ↔ Supabase user_settings (Phase 4).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="../users/accountSettingsSync.js?v=3"></script>
-<!-- users/cloudSyncStatus.js — account cloud sync status card + manual sync.
-     Must load AFTER accountSettingsSync.js, checklist.js, workspaceSync.js. -->
-<script src="../users/cloudSyncStatus.js?v=1"></script>
 <!-- users/feedback.js — thumbs up/down on main chat Vera replies (Feedback MVP).
      Must load AFTER supabaseAuth.js (authFetch, isSupabaseUserAuthenticated). -->
 <script src="../users/feedback.js?v=6"></script>
@@ -1260,7 +1257,9 @@
      Extracted 2026-05-27, Stage 9. -->
 <script src="../workmode/checklist.js?v=11"></script>
 <!-- Account Work Mode workspace sync (reasoning tabs/spaces only). -->
-<script src="../workmode/workspaceSync.js?v=6"></script>
+<script src="../workmode/workspaceSync.js?v=7"></script>
+<!-- users/cloudSyncStatus.js — account cloud sync status card + manual sync. -->
+<script src="../users/cloudSyncStatus.js?v=1"></script>
 <!-- Account checklist Supabase sync is bundled in workmode/checklist.js (Phase 4b). -->
 <!-- workmode/multiActionPlanner.js must load AFTER workmode/panels.js +
      workmode/checklist.js (the executor calls activateReasoningTab /

@@ -3888,28 +3888,25 @@ function _checklistSbSyncDebugCounts() {
     unsynced: isWorkChecklistSupabaseUnsynced(),
     auth_present: _checklistSbAuthPresent(),
     status: _checklistSbSyncStatus,
+    syncing: Boolean(
+      _checklistSbSaveInFlight ||
+        _checklistSbRetryInFlight ||
+        _checklistSbSyncStatus === "retrying"
+    ),
+    pending: Boolean(workChecklistSyncTimer != null || isWorkChecklistSupabaseUnsynced()),
   };
+}
+
+function getChecklistSupabaseSyncDebugState() {
+  return _checklistSbSyncDebugCounts();
 }
 
 function _setChecklistSupabaseSyncStatus(status) {
   _checklistSbSyncStatus = status;
-  const el = document.getElementById("vera-checklist-sync-status");
-  if (!(el instanceof HTMLElement)) return;
-  if (!_checklistSbIsLoggedIn()) {
-    el.hidden = true;
-    el.textContent = "";
-    return;
-  }
-  const labels = {
-    synced: "Checklist: synced to account",
-    unsynced: "Checklist: not synced — will retry",
-    retrying: "Checklist: syncing…",
-    failed: "Checklist: sync failed — will retry",
-  };
-  const text = labels[status] || labels.unsynced;
-  el.textContent = text;
-  el.hidden = false;
-  el.dataset.syncState = status;
+  try {
+    window.dispatchEvent(new CustomEvent("vera:cloud-sync-changed"));
+    window.veraRefreshCloudSyncStatusUi?.();
+  } catch (_) {}
 }
 
 function _markChecklistSupabaseUnsynced(unsynced) {
@@ -4108,6 +4105,7 @@ try {
   window.hydrateChecklistMergeOnLogin = hydrateChecklistMergeOnLogin;
   window.retryChecklistSupabaseSyncIfUnsynced = retryChecklistSupabaseSyncIfUnsynced;
   window.isWorkChecklistSupabaseUnsynced = isWorkChecklistSupabaseUnsynced;
+  window.getChecklistSupabaseSyncDebugState = getChecklistSupabaseSyncDebugState;
   window.wireChecklistSupabaseRetryListeners = wireChecklistSupabaseRetryListeners;
   window.clearChecklistAfterLogout = clearChecklistAfterLogout;
   window.getAnonymousChecklistStorageKey = getAnonymousChecklistStorageKey;

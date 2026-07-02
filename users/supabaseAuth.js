@@ -469,7 +469,7 @@ function _renderAccountPanel(me) {
     }
     refreshSupabaseMemoriesList().catch(() => {});
   } else {
-    if (statusEl) statusEl.textContent = "Not signed in — Vera works anonymously.";
+    if (statusEl) statusEl.textContent = "Not signed in — VERA works anonymously.";
     signedOut?.removeAttribute("hidden");
     signedIn?.setAttribute("hidden", "");
     memoriesWrap?.setAttribute("hidden", "");
@@ -483,6 +483,9 @@ function _renderAccountPanel(me) {
     _showAccountAuthView();
     _clearAccountSuccess();
   }
+  try {
+    window.veraRefreshCloudSyncStatusUi?.();
+  } catch (_) {}
 }
 
 async function refreshSupabaseMemoriesList() {
@@ -730,6 +733,9 @@ function _applySupabaseAccountChrome(me, opts = {}) {
       syncEl.hidden = true;
       syncEl.textContent = "";
     }
+    try {
+      window.veraRefreshCloudSyncStatusUi?.();
+    } catch (_) {}
     _workspaceHydratedUserId = null;
     _workspaceHydrateAttempts = 0;
     if (_workspaceHydrateRetryTimer) {
