@@ -136,13 +136,51 @@ function _notifyCloudSyncChanged() {
   } catch (_) {}
 }
 
-function _markWorkspaceUnsynced(unsynced) {
+function _markWorkspaceUnsynced(unsynced, statusOverride = null) {
   try {
     if (unsynced) localStorage.setItem(WORKSPACE_UNSYNCED_KEY, "1");
     else localStorage.removeItem(WORKSPACE_UNSYNCED_KEY);
   } catch (_) {}
-  _workspaceSyncStatus = unsynced ? "unsynced" : "synced";
+  if (statusOverride) {
+    _workspaceSyncStatus = statusOverride;
+  } else {
+    _workspaceSyncStatus = unsynced ? "unsynced" : "synced";
+  }
   _notifyCloudSyncChanged();
+}
+
+function _markWorkspaceSyncFailed() {
+  _markWorkspaceUnsynced(true, "failed");
+}
+
+function _seedLocalReasoningTabsForAccountIfCloudEmpty(source = "unknown") {
+  if (!_workspaceIsLoggedIn() || !_workspaceIsVeraWorkModeContext()) return false;
+  if (typeof restoreReasoningTabsState !== "function") return false;
+  let hasLocal = false;
+  try {
+    const key =
+      typeof getReasoningTabsStateStorageKey === "function"
+        ? getReasoningTabsStateStorageKey()
+        : "";
+    hasLocal = Boolean(key && localStorage.getItem(key));
+  } catch (_) {
+    hasLocal = false;
+  }
+  if (!hasLocal) return false;
+  try {
+    console.info("[workmode_panel_sync_start]", { source, reason: "local_seed_after_empty_cloud" });
+    restoreReasoningTabsState();
+    _markWorkspaceUnsynced(true);
+    queueWorkModeWorkspaceSync({ immediate: true });
+    console.info("[workmode_panel_sync_done]", { source, reason: "local_seed_queued" });
+    return true;
+  } catch (err) {
+    console.warn("[workmode_panel_sync_failed]", {
+      source,
+      error: String(err?.message || err),
+    });
+    return false;
+  }
 }
 
 function getWorkModeWorkspaceSyncDebugState() {
@@ -466,9 +504,16 @@ async function syncWorkModeWorkspaceToSupabaseNow() {
   if (typeof authFetch !== "function" || typeof authApiUrl !== "function") return false;
 
   const writeGen = _workspaceWriteGeneration;
+  console.info("[workmode_panel_sync_start]", { source: "sync_now" });
+  _workspaceSyncStatus = "syncing";
+  _notifyCloudSyncChanged();
   const token = await _workspaceAwaitAuthToken();
   if (!token || writeGen !== _workspaceWriteGeneration || !_workspaceIsLoggedIn()) {
-    if (token && _workspaceIsLoggedIn()) _markWorkspaceUnsynced(true);
+    _markWorkspaceUnsynced(true);
+    console.warn("[workmode_panel_sync_failed]", {
+      source: "sync_now",
+      reason: token ? "write_generation_changed" : "missing_auth_token",
+    });
     return false;
   }
 
@@ -504,7 +549,12 @@ async function syncWorkModeWorkspaceToSupabaseNow() {
           active_lane_id: snapshot.active_lane_id || null,
           client_revision: snapshot.client_revision ?? null,
         });
-        _markWorkspaceUnsynced(true);
+        _markWorkspaceSyncFailed();
+        console.warn("[workmode_panel_sync_failed]", {
+          source: "sync_now",
+          status: res.status,
+          error: err.error || null,
+        });
         return false;
       }
       _markWorkspaceUnsynced(false);
@@ -513,10 +563,19 @@ async function syncWorkModeWorkspaceToSupabaseNow() {
         tab_count: Array.isArray(snapshot.tabs) ? snapshot.tabs.length : 0,
         client_revision: snapshot.client_revision,
       });
+      console.info("[workmode_panel_sync_done]", {
+        source: "sync_now",
+        tab_count: Array.isArray(snapshot.tabs) ? snapshot.tabs.length : 0,
+        active_lane_id: snapshot.active_lane_id || null,
+      });
       return true;
     } catch (err) {
       console.warn("[workspace_sync] PUT error", err);
-      _markWorkspaceUnsynced(true);
+      _markWorkspaceSyncFailed();
+      console.warn("[workmode_panel_sync_failed]", {
+        source: "sync_now",
+        error: String(err?.message || err),
+      });
       return false;
     }
   };
@@ -536,6 +595,7 @@ async function syncWorkModeWorkspaceToSupabaseNow() {
 
 function queueWorkModeWorkspaceSync(opts = {}) {
   if (!_workspaceIsLoggedIn() || !_workspaceIsVeraWorkModeContext()) return;
+  _markWorkspaceUnsynced(true);
   if (opts.immediate) {
     if (_workspaceSaveTimer) {
       window.clearTimeout(_workspaceSaveTimer);
@@ -623,6 +683,7 @@ async function hydrateWorkModeWorkspaceFromServer(force = false, opts = {}) {
       if (data.empty || !Array.isArray(data.tabs) || !data.tabs.length) {
         outcome = "empty";
         console.info("[workspace_hydrate_empty]", { source });
+        _seedLocalReasoningTabsForAccountIfCloudEmpty(source);
         return false;
       }
       if (!_workspaceIsLoggedIn()) {

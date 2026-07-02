@@ -5921,9 +5921,25 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
       inWorkMode && prefix === "vera" && wmReasoningPanels
         ? {
             active_panel_index: activeLaneIdx,
+            active_panel_id:
+              activeLaneIdx != null && Number.isFinite(Number(activeLaneIdx))
+                ? getWorkModeReasoningLaneId(Number(activeLaneIdx)) || getActiveDomReasoningLaneId() || ""
+                : getActiveDomReasoningLaneId() || "",
             active_panel_label:
               activeLaneIdx != null && Number.isFinite(Number(activeLaneIdx))
                 ? getWorkModeReasoningLaneLabel(Number(activeLaneIdx))
+                : "",
+            active_panel_title:
+              activeLaneIdx != null && Number.isFinite(Number(activeLaneIdx))
+                ? (() => {
+                    const panel =
+                      typeof getReasoningPanelElementByLaneIdx === "function"
+                        ? getReasoningPanelElementByLaneIdx(Number(activeLaneIdx))
+                        : null;
+                    return panel
+                      ? String(getReasoningTabTopicLabel(panel) || "").trim()
+                      : getWorkModeReasoningLaneLabel(Number(activeLaneIdx));
+                  })()
                 : "",
             pinned_lane_id: pinnedLaneId || null,
             pinned_lane_title: pinnedLaneId
@@ -13975,7 +13991,7 @@ function commitActiveWorkModeReasoningContext(payload, meta = {}) {
   notifyWorkModeTtsReasoningCommitted(commitLaneId, o);
 
   if (typeof queueWorkModeWorkspaceSync === "function") {
-    queueWorkModeWorkspaceSync();
+    queueWorkModeWorkspaceSync({ immediate: true });
   }
 
   if (frozenTurnId) {
@@ -14061,20 +14077,21 @@ function resolveWorkModeLaneHandoffForInfer(laneId, opts = {}) {
 function pickWorkModeReasoningLaneIdFromUserMessage(userText) {
   const t = String(userText || "").toLowerCase().trim();
   if (!t) return "";
+  const hasExplicitPanelTitleRef =
+    /\b(?:in|use|reuse|with|on|continue)\s+(?:the\s+)?[\w"'-]+/i.test(t) &&
+    (/\bpanel\b/i.test(t) || /\btab\b/i.test(t));
+  if (!hasExplicitPanelTitleRef) return "";
   let bestLaneId = "";
   let bestScore = 0;
   const consider = (laneId, label) => {
     const id = String(laneId || "").trim();
     const low = String(label || "").toLowerCase().trim();
-    if (!id || !low) return;
-    let score = 0;
-    if (low.length >= 4 && t.includes(low)) score = 100;
-    for (const w of low.split(/\s+/).filter((w) => w.length >= 5)) {
-      if (t.includes(w)) score = Math.max(score, 72);
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestLaneId = id;
+    if (!id || !low || low.length < 4) return;
+    if (t.includes(low)) {
+      if (100 > bestScore) {
+        bestScore = 100;
+        bestLaneId = id;
+      }
     }
   };
   for (const p of collectWorkModeReasoningPanelsSnapshot()?.panels || []) {
@@ -14084,7 +14101,7 @@ function pickWorkModeReasoningLaneIdFromUserMessage(userText) {
     const row = workModeCompletedReasoningByLaneId[laneId];
     consider(laneId, row?.title || row?.lane_title);
   }
-  return bestScore >= 72 ? bestLaneId : "";
+  return bestScore >= 100 ? bestLaneId : "";
 }
 
 function resolveWorkModeReasoningContextForInferWithMeta(formData, userText, prep) {
@@ -15959,16 +15976,14 @@ function runOnLaneReasoningChain(laneIdx, task) {
 
    Decision order, all gated through shouldReuseActiveReasoningPanel():
      1. Action intent (checklist edit etc.) → no_reasoning_needed.
-     2. Explicit panel target ("in panel 2", "use the homework panel",
+     2. Explicit new panel ("open a new panel", "in a new tab") → create_new_panel.
+     3. Explicit panel target ("in panel 2", "use the homework panel",
         "in this panel") → reuse_active_panel (or targeted lane).
-     3. Explicit continuation cue ("continue this", "make this shorter",
-        "revise this") + non-trivial topic similarity → reuse.
-     4. High topic similarity (active panel title+excerpt vs latest text +
-        recent voice context) → reuse.
-     5. New-deliverable verb ("write an email", "draft a complaint",
-        "write code", …) + low active-panel similarity → create_new_panel.
+     4. Strong / soft continuation cues → reuse active when appropriate.
+     5. New-deliverable verb + low active-panel similarity → create_new_panel.
      6. Voice context clearly dominates active panel topic → create_new_panel.
-     7. Default: reuse only if active similarity ≥ REUSE_FLOOR, else create.
+     7. Default (no explicit target): reuse the currently active panel.
+        Do not create a topic-named panel just because the utterance names a topic.
 
    All decisions are logged with [REASONING_PANEL_ROUTE_DEBUG] so the routing
    path is auditable per the spec's debug-log requirements.
@@ -16235,7 +16250,89 @@ function shouldReuseActiveReasoningPanel(opts = {}) {
     return { decision: "reuse_active_panel", reason: "above_reuse_floor", targetLaneIdx: activeLaneIdx, ...base };
   }
 
-  return { decision: "create_new_panel", reason: "low_active_topic_similarity", targetLaneIdx: null, ...base };
+  if (activeLaneIdx != null && Number.isFinite(Number(activeLaneIdx))) {
+    return {
+      decision: "reuse_active_panel",
+      reason: "active_panel_default_no_explicit_target",
+      targetLaneIdx: activeLaneIdx,
+      ...base
+    };
+  }
+
+  return { decision: "create_new_panel", reason: "no_active_panel_safe_fallback", targetLaneIdx: null, ...base };
+}
+
+function logWorkModeRouteTrace(tag, payload = {}) {
+  try {
+    console.info(`[${tag}]`, payload);
+  } catch (_) {}
+}
+
+function logWorkModeRouteDecisionBundle({
+  utterance = "",
+  snap = null,
+  explicitTarget = null,
+  explicitNewPanel = false,
+  routeDecision = null,
+  finalLaneIdx = null,
+  panelCreated = false
+} = {}) {
+  const activeIdx = snap?.activeLaneIdx ?? getActiveReasoningLaneIndex();
+  const activePanelId =
+    snap?.activePanelId ||
+    (activeIdx != null ? getWorkModeReasoningLaneId(Number(activeIdx)) : "") ||
+    getActiveDomReasoningLaneId() ||
+    "";
+  const activePanelTitle =
+    snap?.activePanelTitle ||
+    (activeIdx != null ? getWorkModeReasoningLaneLabel(Number(activeIdx)) : "");
+  const snippet = String(utterance || "").slice(0, 160);
+  logWorkModeRouteTrace("workmode_route_start", { utterance: snippet });
+  logWorkModeRouteTrace("workmode_active_panel_context", {
+    utterance: snippet,
+    active_panel_id: activePanelId || null,
+    active_panel_index: activeIdx != null ? Number(activeIdx) + 1 : null,
+    active_panel_title: String(activePanelTitle || "").slice(0, 120)
+  });
+  if (explicitTarget?.matched) {
+    logWorkModeRouteTrace("workmode_explicit_panel_target", {
+      utterance: snippet,
+      explicit_target: explicitTarget.reason || "matched",
+      target_lane_idx: explicitTarget.targetLaneIdx
+    });
+  }
+  if (explicitNewPanel) {
+    logWorkModeRouteTrace("workmode_new_panel_requested", { utterance: snippet, new_panel_requested: true });
+  }
+  if (routeDecision) {
+    logWorkModeRouteTrace("workmode_route_decision", {
+      utterance: snippet,
+      decision: routeDecision.decision,
+      reason: routeDecision.reason,
+      new_panel_requested: Boolean(explicitNewPanel)
+    });
+  }
+  if (finalLaneIdx != null && Number.isFinite(Number(finalLaneIdx))) {
+    const finalPanelId = getWorkModeReasoningLaneId(Number(finalLaneIdx)) || "";
+    const finalTitle =
+      (typeof getReasoningPanelElementByLaneIdx === "function"
+        ? getReasoningTabTopicLabel(getReasoningPanelElementByLaneIdx(Number(finalLaneIdx)))
+        : "") || getWorkModeReasoningLaneLabel(Number(finalLaneIdx));
+    logWorkModeRouteTrace("workmode_panel_write_target", {
+      utterance: snippet,
+      final_target_panel_id: finalPanelId || null,
+      final_target_panel_index: Number(finalLaneIdx) + 1,
+      final_target_panel_title: String(finalTitle || "").slice(0, 120),
+      panel_created: Boolean(panelCreated)
+    });
+    if (panelCreated) {
+      logWorkModeRouteTrace("workmode_panel_created", {
+        utterance: snippet,
+        final_target_panel_id: finalPanelId || null,
+        final_target_panel_title: String(finalTitle || "").slice(0, 120)
+      });
+    }
+  }
 }
 
 function logReasoningPanelRouteDebug(payload) {
@@ -18551,23 +18648,58 @@ async function maybePrepareWorkModeReasoning(formData, trimmed, signal, opts = {
     }
   } catch (_) {}
   const frozenIdx = frozenTurnLaneIndex(turnContext);
+  const activeDomLaneIdx = getActiveReasoningLaneIndex();
+  const explicitNewPanelRequested = detectExplicitNewPanelRequest(String(effectiveUserText || ""));
+  const routeSnap = captureReasoningPanelRoutingSnapshot(effectiveUserText, { hasUpload });
+  const routeExplicitTarget = detectExplicitPanelTarget(String(effectiveUserText || ""));
+  const routePreviewDecision = shouldReuseActiveReasoningPanel({
+    latestUserText: effectiveUserText,
+    recentVoiceContext: routeSnap.recentVoiceContext,
+    activePanelTitle: routeSnap.activePanelTitle,
+    activePanelExcerpt: routeSnap.activePanelExcerpt,
+    activeLaneIdx: routeSnap.activeLaneIdx,
+    hasUpload
+  });
   const reasoningUserFocusLaneIdx =
     explicitTargetLaneIdx != null
       ? explicitTargetLaneIdx
-      : (frozenIdx != null ? frozenIdx : getActiveReasoningLaneIndex());
+      : (activeDomLaneIdx ?? frozenIdx ?? getActiveReasoningLaneIndex());
   const reasoningUploadState = hasUpload ? { failed: false } : null;
-  const laneIdx =
-    explicitTargetLaneIdx != null
-      ? await acquireWorkModeReasoningLaneForIndex(explicitTargetLaneIdx)
-      : frozenIdx != null
-        ? await acquireWorkModeReasoningLaneForIndex(frozenIdx)
-        : forceActiveLaneReasoningContent
-          ? await acquireWorkModeReasoningLaneForIndex(getActiveReasoningLaneIndex() ?? 0)
-          : await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
-              continuePriorLane: continueLaneForThisTurn,
-              explicitTargetLaneIdx: explicitTargetLaneIdx,
-              explicitTargetPanel1Based: explicitTargetPanel1Based,
-            });
+  let laneIdx;
+  let routePanelCreated = false;
+  if (explicitTargetLaneIdx != null) {
+    laneIdx = await acquireWorkModeReasoningLaneForIndex(explicitTargetLaneIdx);
+  } else if (explicitNewPanelRequested || routePreviewDecision.decision === "create_new_panel") {
+    const priorOrder =
+      typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder().length : 0;
+    laneIdx = await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
+      continuePriorLane: continueLaneForThisTurn,
+      explicitTargetLaneIdx: explicitTargetLaneIdx,
+      explicitTargetPanel1Based: explicitTargetPanel1Based,
+    });
+    const afterOrder =
+      typeof getReasoningPanelOrder === "function" ? getReasoningPanelOrder().length : priorOrder;
+    routePanelCreated = afterOrder > priorOrder;
+  } else if (forceActiveLaneReasoningContent) {
+    laneIdx = await acquireWorkModeReasoningLaneForIndex(activeDomLaneIdx ?? 0);
+  } else if (reasoningUserFocusLaneIdx != null) {
+    laneIdx = await acquireWorkModeReasoningLaneForIndex(reasoningUserFocusLaneIdx);
+  } else {
+    laneIdx = await selectLaneForWorkModeReasoningTurn(effectiveUserText, {
+      continuePriorLane: continueLaneForThisTurn,
+      explicitTargetLaneIdx: explicitTargetLaneIdx,
+      explicitTargetPanel1Based: explicitTargetPanel1Based,
+    });
+  }
+  logWorkModeRouteDecisionBundle({
+    utterance: effectiveUserText,
+    snap: routeSnap,
+    explicitTarget: routeExplicitTarget,
+    explicitNewPanel: explicitNewPanelRequested,
+    routeDecision: routePreviewDecision,
+    finalLaneIdx: laneIdx,
+    panelCreated: routePanelCreated
+  });
   /* PART 3+7 (2026-05-28): consume the recently-opened bias flag once
      a reasoning turn lands, and emit [reasoning_destination_resolved]
      so the console shows resolution provenance for every reasoning

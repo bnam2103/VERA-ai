@@ -262,6 +262,29 @@ sandbox.authFetch = async () => ({ ok: false, json: async () => ({ detail: "fail
 apiCalls = 0;
 await sandbox.syncWorkModeWorkspaceToSupabaseNow();
 ok(sandbox.isWorkModeWorkspaceUnsynced(), "failed PUT marks unsynced");
+ok(sandbox.getWorkModeWorkspaceSyncDebugState().status === "failed", "failed PUT sets failed status");
+
+sandbox.getSupabaseAccessToken = async () => null;
+storage.delete("vera_wm_workspace_unsynced_v1");
+await sandbox.syncWorkModeWorkspaceToSupabaseNow();
+ok(sandbox.isWorkModeWorkspaceUnsynced(), "missing token marks unsynced");
+
+sandbox.getSupabaseAccessToken = async () => "test-token";
+sandbox.authFetch = async (url, init) => {
+  if (url.includes("/api/work-mode/workspace") && init?.method === "PUT") {
+    return {
+      ok: true,
+      text: async () => JSON.stringify({ ok: true }),
+      json: async () => ({ ok: true }),
+    };
+  }
+  return { ok: false, text: async () => "{}", json: async () => ({}) };
+};
+storage.delete("vera_wm_workspace_unsynced_v1");
+sandbox.queueWorkModeWorkspaceSync();
+ok(sandbox.isWorkModeWorkspaceUnsynced(), "queueWorkModeWorkspaceSync marks pending unsynced");
+await sandbox.syncWorkModeWorkspaceToSupabaseNow();
+ok(!sandbox.isWorkModeWorkspaceUnsynced(), "successful sync clears unsynced");
 
 console.log(`\n${"=".repeat(40)}`);
 console.log(`Passed: ${passed}  Failed: ${failed}`);
