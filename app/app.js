@@ -3574,6 +3574,29 @@ function freeMusicDomIdSafe(s) {
   return String(s || "").replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+function freeMusicSoundDisplayTitle(track) {
+  const key = freeMusicNormalizeCatalogKey(track?.id || track?.title);
+  const labels = {
+    brown_noise: "Brown Noise",
+    white_noise: "White Noise",
+    rain_sound: "Rain Sounds",
+  };
+  return labels[key] || String(track?.title || track?.id || "Sound");
+}
+
+function freeMusicSortBuiltinSounds(tracks) {
+  const order = ["rain_sound", "brown_noise", "white_noise"];
+  const rank = new Map(order.map((id, idx) => [id, idx]));
+  return tracks.slice().sort((a, b) => {
+    const ak = freeMusicNormalizeCatalogKey(a?.id || a?.title);
+    const bk = freeMusicNormalizeCatalogKey(b?.id || b?.title);
+    const ar = rank.has(ak) ? rank.get(ak) : 999;
+    const br = rank.has(bk) ? rank.get(bk) : 999;
+    if (ar !== br) return ar - br;
+    return freeMusicSoundDisplayTitle(a).localeCompare(freeMusicSoundDisplayTitle(b));
+  });
+}
+
 function freeMusicPlaylistTrackRowsHtml(prefix, playlist) {
   const ordered = freeMusicOrderedTracks(prefix, playlist);
   return ordered
@@ -3626,10 +3649,10 @@ function renderFreeMusicCatalogHtml(prefix, data) {
   }
   if (tracks.length) {
     html += `<p class="free-music-section-title free-music-section-title--sounds">Sounds</p><div class="free-music-sound-list">`;
-    for (const t of tracks) {
-      const title = escapeHtml(String(t.title || t.id));
+    for (const t of freeMusicSortBuiltinSounds(tracks)) {
+      const title = escapeHtml(freeMusicSoundDisplayTitle(t));
       const url = escapeHtml(String(t.url || ""));
-      html += `<div class="free-music-sound-row" data-free-url="${url}">
+      html += `<div class="free-music-sound-row" data-free-url="${url}" data-free-sound-id="${escapeHtml(String(t.id || ""))}">
         <button type="button" class="free-music-sound-row-play" aria-label="Play ${title}">▶</button>
         <span class="free-music-sound-row-title">${title}</span>
       </div>`;

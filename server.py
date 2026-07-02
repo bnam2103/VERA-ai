@@ -23481,6 +23481,48 @@ def api_work_mode_checklist_put(body: WorkChecklistSaveBody):
 
 FREE_MUSIC_DIR_NAME = "Free_music"
 FREE_MUSIC_AUDIO_SUFFIXES = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".opus"}
+FREE_MUSIC_SOUND_TITLES = {
+    "brown_noise": "Brown Noise",
+    "white_noise": "White Noise",
+    "rain_sound": "Rain Sounds",
+}
+
+
+def _free_music_normalize_key(value: str) -> str:
+    key = str(value or "").strip().lower().replace("-", "_")
+    key = "_".join(part for part in key.replace(" ", "_").split("_") if part)
+    return key
+
+
+def _free_music_sound_canonical(stem: str) -> tuple[str, str]:
+    """Map on-disk stems (snake_case or human names) to stable ids + UI labels."""
+    norm = _free_music_normalize_key(stem)
+    aliases = {
+        "brown_noise": "brown_noise",
+        "brownnoise": "brown_noise",
+        "brown": "brown_noise",
+        "white_noise": "white_noise",
+        "whitenoise": "white_noise",
+        "white": "white_noise",
+        "rain_sound": "rain_sound",
+        "rain_sounds": "rain_sound",
+        "rain_and_thunder": "rain_sound",
+        "rain_and_thunder_sound": "rain_sound",
+        "rainandthunder": "rain_sound",
+        "thunderstorm": "rain_sound",
+        "thunder": "rain_sound",
+        "raining": "rain_sound",
+    }
+    canonical = aliases.get(norm)
+    if not canonical:
+        for alias, role in aliases.items():
+            if norm == alias or norm.startswith(f"{alias}_"):
+                canonical = role
+                break
+    if canonical:
+        return canonical, FREE_MUSIC_SOUND_TITLES.get(canonical, stem.replace("_", " ").strip().title() or stem)
+    title = stem.replace("_", " ").strip().title() or stem
+    return stem, title
 
 
 def _free_music_root() -> Path:
@@ -23546,10 +23588,12 @@ def api_free_music_catalog():
                 )
         elif entry.is_file() and entry.suffix.lower() in FREE_MUSIC_AUDIO_SUFFIXES:
             rel = entry.name
+            track_id, track_title = _free_music_sound_canonical(entry.stem)
             tracks.append(
                 {
-                    "id": entry.stem,
-                    "title": entry.stem.replace("_", " ").strip().title() or entry.stem,
+                    "id": track_id,
+                    "title": track_title,
+                    "filename": entry.name,
                     "url": f"/api/free-music/stream?rel={urllib.parse.quote(rel, safe='')}",
                 }
             )

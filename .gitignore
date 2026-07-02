@@ -31,7 +31,8 @@ chat_log/
 # OS / editor
 .DS_Store
 
-# Large built-in audio assets — deploy separately on the server (see Free_music/README.md).
+# Large built-in audio assets — optional high-quality deploy files (see Free_music/README.md).
+# Canonical snake_case WAV loops are tracked in git; regenerate via scripts/generate_free_music_ambience.py.
 Free_music/Brown Noise.mp3
 Free_music/Rain and Thunder Sound.mp3
 Free_music/White Noise.mp3
