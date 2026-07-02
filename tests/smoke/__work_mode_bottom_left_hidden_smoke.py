@@ -71,10 +71,16 @@ ok("padding-left: var(--vera-sidebar-width)" in shell_block, "app shell reserves
 ok("transition: padding-left" not in shell_block, "sidebar hover no longer animates app shell padding")
 ok("--vera-sidebar-width: var(--vera-sidebar-expanded-width)" not in css, "sidebar hover does not push app content")
 ok(".sidebar-reward" in css, "feedback reward badge styled")
-ok(".sidebar-brand" in css, "sidebar brand styles present")
+ok(".feedback-modal-dialog" in css or ".feedback-title" in css, "feedback modal polish styles present")
+ok(".rating-button" in css and ".category-chip" in css, "feedback rating/category polish styles present")
 brand_hover = css.split(".sidebar-brand:hover,", 1)[1].split("}", 1)[0] if ".sidebar-brand:hover," in css else ""
 ok("text-shadow" in brand_hover and "background: transparent" in brand_hover, "sidebar brand hover brightens text without background")
 ok("setFeedbackSidebarLabel" in open(os.path.join(_ROOT, "users/explicitFeedback.js"), encoding="utf-8").read(), "feedback label preserves +50 credits badge")
+feedback_js = open(os.path.join(_ROOT, "users/explicitFeedback.js"), encoding="utf-8").read()
+ok('id="vera-explicit-feedback-rating-error"' in html, "feedback rating field error element exists")
+ok("feedback-title" in html and "feedback-subtitle" in html, "feedback modal uses polished header copy")
+ok("Submit feedback" in html and "+50 credits after submission" in html, "feedback modal action copy updated")
+ok("showRatingError" in feedback_js and "Thanks — +50 credits unlocked." in feedback_js, "feedback JS keeps rating error + success copy")
 ok("getVeraMarketingHomeUrl" in open(os.path.join(_ROOT, "app/shell.js"), encoding="utf-8").read(), "sidebar home navigation helper exists")
 sidebar_z = css.split(".vera-sidebar {", 1)[1].split("}", 1)[0]
 ok("z-index: 1100" in sidebar_z, "sidebar sits above input layer and bottom fade")

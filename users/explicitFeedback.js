@@ -93,6 +93,17 @@
     el.hidden = !msg;
   }
 
+  function showRatingError(msg) {
+    const el = $("vera-explicit-feedback-rating-error");
+    if (!(el instanceof HTMLElement)) return;
+    el.textContent = msg || "";
+    el.hidden = !msg;
+  }
+
+  function clearRatingError() {
+    showRatingError("");
+  }
+
   function showSuccess(msg) {
     const el = $("vera-explicit-feedback-success");
     if (!(el instanceof HTMLElement)) return;
@@ -131,12 +142,13 @@
     for (const opt of CATEGORY_OPTIONS) {
       const chip = document.createElement("button");
       chip.type = "button";
-      chip.className = "vera-feedback-category-chip";
+      chip.className = "vera-feedback-category-chip category-chip";
       chip.dataset.category = opt.key;
       chip.textContent = opt.label;
       chip.setAttribute("aria-pressed", "false");
       chip.addEventListener("click", () => {
         const on = chip.classList.toggle("is-selected");
+        chip.classList.toggle("active", on);
         chip.setAttribute("aria-pressed", on ? "true" : "false");
       });
       wrap.appendChild(chip);
@@ -163,11 +175,12 @@
     wrap.querySelectorAll(".vera-feedback-rating-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         wrap.querySelectorAll(".vera-feedback-rating-btn").forEach((b) => {
-          b.classList.remove("is-selected");
+          b.classList.remove("is-selected", "active");
           b.setAttribute("aria-pressed", "false");
         });
-        btn.classList.add("is-selected");
+        btn.classList.add("is-selected", "active");
         btn.setAttribute("aria-pressed", "true");
+        clearRatingError();
       });
     });
   }
@@ -180,6 +193,7 @@
     }
     showError("");
     showSuccess("");
+    clearRatingError();
     setFormVisible(true);
     const contactWrap = $("vera-explicit-feedback-contact-wrap");
     const signedIn =
@@ -264,15 +278,16 @@
   async function submitFeedback() {
     showError("");
     showSuccess("");
+    clearRatingError();
     const rating = selectedRating();
     const reasonEl = $("vera-explicit-feedback-reason");
     const reason = reasonEl instanceof HTMLTextAreaElement ? reasonEl.value.trim() : "";
     if (!rating) {
-      showError("Please choose a rating from 1 to 5.");
+      showRatingError("Please choose a rating from 1 to 5.");
       return;
     }
     if (!reason) {
-      showError("Please tell us why you chose this rating.");
+      showError("Please tell us what should improve.");
       return;
     }
     const sid = typeof getSessionId === "function" ? String(getSessionId() || "").trim() : "";
@@ -305,14 +320,14 @@
         showError(
           typeof detail === "string"
             ? detail
-            : "Could not submit feedback. Please try again later."
+            : "Could not submit feedback. Please try again."
         );
         logWarn("submit failed", res.status, detail || data);
         return;
       }
       const granted = Number(data.granted_bonus_credits) || 0;
       if (granted > 0) {
-        showSuccess("Thanks — 50 bonus credits unlocked for today.");
+        showSuccess("Thanks — +50 credits unlocked.");
         _alreadyClaimed = true;
         _eligible = false;
         setFormVisible(false);
@@ -352,6 +367,12 @@
     });
     $("vera-explicit-feedback-submit")?.addEventListener("click", () => {
       void submitFeedback();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape") return;
+      const modal = $("vera-explicit-feedback-modal");
+      if (!(modal instanceof HTMLElement) || modal.hidden) return;
+      closeModal();
     });
   }
 
