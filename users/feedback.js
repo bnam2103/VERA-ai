@@ -232,7 +232,7 @@
     thanks.className = "vera-feedback-thanks";
     thanks.hidden = true;
     thanks.setAttribute("aria-hidden", "true");
-    thanks.textContent = "Thanks";
+    thanks.textContent = "Thanks for the feedback";
 
     upBtn.addEventListener("click", () => {
       if (row.dataset.feedbackSubmitted === "1") return;
@@ -265,8 +265,8 @@
 
     controls.appendChild(upBtn);
     controls.appendChild(downBtn);
-    controls.appendChild(noteWrap);
     bar.appendChild(controls);
+    bar.appendChild(noteWrap);
     bar.appendChild(thanks);
     row.appendChild(bar);
     return bar;
