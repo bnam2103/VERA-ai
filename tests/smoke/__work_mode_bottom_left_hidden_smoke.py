@@ -52,6 +52,8 @@ ok("bottom-status-row" in html, "credits and no-cap share separated bottom statu
 ok("no-cap-toggle" in html, "no-cap toggle keeps button styling class")
 ok("vera-credit-status-sep" not in html, "legacy inline credit separator removed")
 ok('id="vera-explicit-feedback-btn"' in html, "feedback button in DOM")
+ok('sidebar-reward' in html, "feedback reward badge in sidebar markup")
+ok('Give feedback and earn 50 credits' in html, "feedback aria-label mentions 50 credits")
 ok('id="vera-account-open"' in html, "account button in DOM")
 ok('id="vera-settings-open"' in html, "settings button in DOM")
 ok("vera-bottom-left-tools" not in html, "legacy bottom-left cluster removed")
@@ -68,7 +70,11 @@ shell_block = css.split("#vera-app.vera-app-shell", 1)[1].split("}", 1)[0]
 ok("padding-left: var(--vera-sidebar-width)" in shell_block, "app shell reserves collapsed rail only")
 ok("transition: padding-left" not in shell_block, "sidebar hover no longer animates app shell padding")
 ok("--vera-sidebar-width: var(--vera-sidebar-expanded-width)" not in css, "sidebar hover does not push app content")
+ok(".sidebar-reward" in css, "feedback reward badge styled")
 ok(".sidebar-brand" in css, "sidebar brand styles present")
+brand_hover = css.split(".sidebar-brand:hover,", 1)[1].split("}", 1)[0] if ".sidebar-brand:hover," in css else ""
+ok("text-shadow" in brand_hover and "background: transparent" in brand_hover, "sidebar brand hover brightens text without background")
+ok("setFeedbackSidebarLabel" in open(os.path.join(_ROOT, "users/explicitFeedback.js"), encoding="utf-8").read(), "feedback label preserves +50 credits badge")
 ok("getVeraMarketingHomeUrl" in open(os.path.join(_ROOT, "app/shell.js"), encoding="utf-8").read(), "sidebar home navigation helper exists")
 sidebar_z = css.split(".vera-sidebar {", 1)[1].split("}", 1)[0]
 ok("z-index: 100" in sidebar_z, "sidebar sits above bottom fade layer")

@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=21">
+  <link rel="stylesheet" href="../styles.css?v=22">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -53,14 +53,17 @@
           type="button"
           id="vera-explicit-feedback-btn"
           class="vera-sidebar-btn vera-sidebar-btn--feedback vera-explicit-feedback-btn"
-          aria-label="Feedback — share feedback and unlock bonus credits"
+          aria-label="Give feedback and earn 50 credits"
         >
           <span class="vera-sidebar-btn-icon" aria-hidden="true">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
             </svg>
           </span>
-          <span class="vera-sidebar-btn-label">Feedback</span>
+          <span class="vera-sidebar-btn-label vera-sidebar-btn-label--feedback">
+            <span class="sidebar-feedback-text">Feedback</span>
+            <span class="sidebar-reward">+50 credits</span>
+          </span>
         </button>
         <button
           type="button"
@@ -1129,7 +1132,7 @@
 <script src="../users/usageCredits.js?v=8"></script>
 <!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
      Must load AFTER usageCredits.js, BEFORE app.js. -->
-<script src="../users/explicitFeedback.js?v=3"></script>
+<script src="../users/explicitFeedback.js?v=4"></script>
 <!-- voice/asr.js must load AFTER utils/storage.js (uses safeSetLocalStorage)
      and BEFORE voice/ttsQueue.js + voice/interruption.js + app.js. Stage 6's
      voice/interruption.js calls browserAsrPreferred() from function bodies

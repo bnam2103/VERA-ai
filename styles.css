@@ -1352,19 +1352,25 @@ body.chat-started .input-container {
   align-items: center;
   justify-content: center;
   text-decoration: none;
-  color: inherit;
+  color: rgba(242, 245, 247, 0.34);
   cursor: pointer;
   background: transparent;
   border: none;
   box-shadow: none;
+  transition:
+    color 160ms ease,
+    opacity 160ms ease,
+    text-shadow 160ms ease;
 }
 
 .sidebar-brand:hover,
 .sidebar-brand:focus-visible {
+  color: rgba(242, 245, 247, 0.82);
   background: transparent;
   border: none;
   box-shadow: none;
   outline: none;
+  text-shadow: 0 0 18px rgba(242, 245, 247, 0.1);
 }
 
 .sidebar-brand-collapsed {
@@ -1373,7 +1379,7 @@ body.chat-started .input-container {
   font-weight: 600;
   letter-spacing: 0.02em;
   line-height: 1;
-  color: rgba(242, 245, 247, 0.45);
+  color: inherit;
   opacity: 1;
   transition:
     opacity 160ms ease,
@@ -1390,17 +1396,21 @@ body.chat-started .input-container {
 }
 
 .sidebar-brand:hover .sidebar-brand-collapsed,
-.sidebar-brand:focus-visible .sidebar-brand-collapsed {
-  opacity: 0.85;
-  color: rgba(242, 245, 247, 0.88);
-  text-shadow: 0 0 18px rgba(242, 245, 247, 0.08);
+.sidebar-brand:focus-visible .sidebar-brand-collapsed,
+.sidebar-brand:hover .sidebar-brand-expanded,
+.sidebar-brand:focus-visible .sidebar-brand-expanded {
+  opacity: 1;
 }
 
 .sidebar-brand:hover .sidebar-brand-expanded .vera-logo-dim,
-.sidebar-brand:focus-visible .sidebar-brand-expanded .vera-logo-dim {
-  opacity: 0.85;
+.sidebar-brand:focus-visible .sidebar-brand-expanded .vera-logo-dim,
+#vera-sidebar-brand-home:hover .sidebar-brand-collapsed,
+#vera-sidebar-brand-home:focus-visible .sidebar-brand-collapsed,
+#vera-sidebar-brand-home:hover .vera-logo-dim,
+#vera-sidebar-brand-home:focus-visible .vera-logo-dim {
+  opacity: 1;
   color: rgba(242, 245, 247, 0.88);
-  text-shadow: 0 0 18px rgba(242, 245, 247, 0.08);
+  text-shadow: 0 0 18px rgba(242, 245, 247, 0.1);
 }
 
 .sidebar-brand-expanded .vera-logo-text-stack {
@@ -1414,7 +1424,7 @@ body.chat-started .input-container {
   font-weight: 600;
   letter-spacing: 0.02em;
   white-space: nowrap;
-  color: rgba(242, 245, 247, 0.45);
+  color: rgba(242, 245, 247, 0.34);
   transition:
     opacity 160ms ease,
     color 160ms ease,
@@ -1515,6 +1525,22 @@ body.chat-started .input-container {
   transition:
     opacity 160ms ease,
     width 160ms ease;
+}
+
+.vera-sidebar-btn-label--feedback {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-reward {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: rgba(32, 183, 168, 0.9);
+  opacity: 0.9;
 }
 
 #vera-app:has(.vera-sidebar:hover) .vera-sidebar-btn-label,
@@ -5103,7 +5129,7 @@ body.chat-started .input-bar {
 
 #vera-sidebar-brand-home .vera-logo-dim {
   opacity: 0.45;
-  color: rgba(242, 245, 247, 0.45);
+  color: rgba(242, 245, 247, 0.34);
 }
 
 #vera-sidebar-brand-home .vera-logo-sweep {

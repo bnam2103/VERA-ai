@@ -45,14 +45,18 @@
     return document.getElementById(id);
   }
 
-  function setSidebarButtonLabel(btn, label) {
+  function setFeedbackSidebarLabel(btn) {
     if (!(btn instanceof HTMLButtonElement)) return;
-    const labelEl = btn.querySelector(".vera-sidebar-btn-label");
-    if (labelEl instanceof HTMLElement) {
-      labelEl.textContent = label;
-      return;
+    let labelEl = btn.querySelector(".vera-sidebar-btn-label");
+    if (!(labelEl instanceof HTMLElement)) {
+      labelEl = document.createElement("span");
+      labelEl.className = "vera-sidebar-btn-label vera-sidebar-btn-label--feedback";
+      btn.appendChild(labelEl);
     }
-    btn.textContent = label;
+    labelEl.className = "vera-sidebar-btn-label vera-sidebar-btn-label--feedback";
+    labelEl.innerHTML =
+      '<span class="sidebar-feedback-text">Feedback</span>' +
+      '<span class="sidebar-reward">+50 credits</span>';
   }
 
   function ensureFeedbackButtonDom() {
@@ -67,13 +71,16 @@
     btn.type = "button";
     btn.id = "vera-explicit-feedback-btn";
     btn.className = "vera-sidebar-btn vera-sidebar-btn--feedback vera-explicit-feedback-btn";
-    btn.setAttribute("aria-label", "Feedback — share feedback and unlock bonus credits");
+    btn.setAttribute("aria-label", "Give feedback and earn 50 credits");
     btn.innerHTML =
       '<span class="vera-sidebar-btn-icon" aria-hidden="true">' +
       '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' +
       '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>' +
       "</svg></span>" +
-      '<span class="vera-sidebar-btn-label">Feedback</span>';
+      '<span class="vera-sidebar-btn-label vera-sidebar-btn-label--feedback">' +
+      '<span class="sidebar-feedback-text">Feedback</span>' +
+      '<span class="sidebar-reward">+50 credits</span>' +
+      "</span>";
     nav.prepend(btn);
     logInfo("created feedback button in sidebar");
     return btn;
@@ -101,7 +108,8 @@
   function updateFeedbackButton() {
     const btn = ensureFeedbackButtonDom();
     if (!(btn instanceof HTMLButtonElement)) return;
-    setSidebarButtonLabel(btn, "Feedback");
+    setFeedbackSidebarLabel(btn);
+    btn.setAttribute("aria-label", "Give feedback and earn 50 credits");
     btn.hidden = false;
     btn.style.display = "";
     btn.removeAttribute("aria-hidden");
