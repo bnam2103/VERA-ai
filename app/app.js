@@ -2439,8 +2439,8 @@ function syncVeraInputEmptyState() {
     document.body.classList.remove("chat-started");
     app.classList.remove("vera-flow-voice-docked");
     app.classList.remove("vera-flow-input-active");
-    if (typeof window.syncAskRotatorVisibility === "function") {
-      window.syncAskRotatorVisibility({ resetSequence: true });
+    if (typeof window.hideVeraAskRotatorForStartup === "function") {
+      window.hideVeraAskRotatorForStartup();
     }
   }
 }
@@ -2461,7 +2461,7 @@ function resetVeraInputEmptyState() {
   veraConversationStarted = false;
   syncVeraInputEmptyState();
   try {
-    setStatus("Ready", "idle");
+    setStatus("Tap to speak", "idle");
   } catch (_) {}
 }
 
@@ -5952,6 +5952,7 @@ function buildClientContextSnapshot(snapshotOpts = {}) {
       searchLoc.longitude != null && Number.isFinite(Number(searchLoc.longitude))
         ? Number(searchLoc.longitude)
         : null,
+    use_saved_location_automatically: false,
   };
 }
 

@@ -1342,13 +1342,19 @@ body.chat-started .input-toggle-btn {
   opacity: 0.92;
 }
 
-#vera-app.is-startup-empty .ask-rotator.visible,
-#vera-app.is-startup-empty .guide-text-rotator.visible {
-  margin-bottom: 22px;
+#vera-app.is-startup-empty:not(.work-mode) .ask-rotator,
+#vera-app.is-startup-empty:not(.work-mode) .guide-text-rotator {
+  display: none !important;
+  opacity: 0 !important;
+  margin: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  overflow: hidden;
 }
 
-#vera-app.is-active-session .ask-rotator.visible,
-#vera-app.is-active-session .guide-text-rotator.visible {
+#vera-app.is-active-session:not(.work-mode) .ask-rotator.visible,
+#vera-app.is-active-session:not(.work-mode) .guide-text-rotator.visible {
+  display: flex;
   margin-bottom: 10px;
 }
 

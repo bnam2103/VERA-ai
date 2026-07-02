@@ -664,6 +664,31 @@ function stopAskRotator() {
   askRotatorTimer = null;
 }
 
+const askRotatorRevealTimers = new Map();
+const askRotatorHasRevealed = new Map();
+
+function veraAskRotatorSuppressedForStartup() {
+  return (
+    typeof window.isVeraStartupEmptyState === "function" &&
+    window.isVeraStartupEmptyState()
+  );
+}
+
+function hideVeraAskRotatorForStartup() {
+  stopAskRotator();
+  const askEl = document.getElementById("vera-ask-rotator");
+  if (askEl) {
+    askEl.classList.remove("visible");
+    askEl.textContent = "";
+  }
+  const oldTimer = askRotatorRevealTimers.get("vera");
+  if (oldTimer) clearTimeout(oldTimer);
+  askRotatorRevealTimers.delete("vera");
+  askRotatorHasRevealed.set("vera", false);
+}
+
+window.hideVeraAskRotatorForStartup = hideVeraAskRotatorForStartup;
+
 function syncAskRotatorLayout() {
   ["vera", "bmo"].forEach((prefix) => {
     const askEl = document.getElementById(`${prefix}-ask-rotator`);
@@ -689,9 +714,6 @@ function syncAskRotatorLayout() {
   });
 }
 
-const askRotatorRevealTimers = new Map();
-const askRotatorHasRevealed = new Map();
-
 function parseMaxCssTimeMs(value) {
   if (!value) return 0;
   return value
@@ -708,6 +730,10 @@ function parseMaxCssTimeMs(value) {
 
 function revealAskRotatorAfterBarAnimation(prefix, options = {}) {
   const resetSequence = Boolean(options.resetSequence);
+  if (prefix === "vera" && veraAskRotatorSuppressedForStartup()) {
+    hideVeraAskRotatorForStartup();
+    return;
+  }
   const askEl = document.getElementById(`${prefix}-ask-rotator`);
   const pageEl = document.getElementById(prefix === "bmo" ? "bmo-page" : "vera-app");
   const activeBar = getActiveInputBar(prefix);
@@ -787,7 +813,11 @@ function syncAskRotatorVisibility(options = {}) {
     });
     return;
   }
+  if (veraAskRotatorSuppressedForStartup()) {
+    hideVeraAskRotatorForStartup();
+  }
   ["vera", "bmo"].forEach((prefix) => {
+    if (prefix === "vera" && veraAskRotatorSuppressedForStartup()) return;
     revealAskRotatorAfterBarAnimation(prefix, options);
   });
 }
