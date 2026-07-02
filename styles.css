@@ -1199,7 +1199,98 @@ body.chat-started .input-toggle-btn {
   padding-bottom: var(--dock-inset);
 
   pointer-events: none;
-  transition: left 180ms ease;
+  transition:
+    left 180ms ease,
+    padding-bottom 220ms ease,
+    align-items 220ms ease;
+}
+
+.vera-input-dock {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: transform 220ms ease, opacity 180ms ease;
+}
+
+.vera-input-dock-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+  max-width: 760px;
+  pointer-events: none;
+}
+
+.vera-input-dock-row > .input-toggle-btn,
+.vera-input-dock-row > .input-bar,
+.vera-input-dock-row > .vera-keyboard-queue-host {
+  pointer-events: auto;
+}
+
+.vera-empty-greeting {
+  margin: 0 0 18px;
+  font-size: clamp(1.05rem, 2.2vw, 1.28rem);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  color: rgba(242, 245, 247, 0.72);
+  text-align: center;
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transform: translateY(10px);
+  pointer-events: none;
+  transition:
+    opacity 180ms ease,
+    transform 220ms ease,
+    max-height 220ms ease,
+    margin 220ms ease;
+}
+
+#vera-app.is-empty-state .vera-empty-greeting {
+  opacity: 1;
+  max-height: 3rem;
+  transform: translateY(0);
+}
+
+#vera-app.has-conversation .vera-empty-greeting {
+  opacity: 0;
+  max-height: 0;
+  margin: 0;
+}
+
+#vera-app:not(.work-mode).is-empty-state:not(.vera-flow-voice-docked) .input-container {
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 0;
+}
+
+#vera-app:not(.work-mode).is-empty-state:not(.vera-flow-voice-docked) .vera-input-dock {
+  transform: translateY(-5%);
+  padding: 0 24px 84px;
+  box-sizing: border-box;
+}
+
+#vera-app:not(.work-mode).has-conversation .input-container,
+#vera-app:not(.work-mode).vera-flow-voice-docked .input-container {
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: var(--dock-inset);
+}
+
+#vera-app:not(.work-mode).has-conversation .vera-input-dock,
+#vera-app:not(.work-mode).vera-flow-voice-docked .vera-input-dock {
+  transform: none;
+  padding: 0;
+}
+
+#vera-app.is-empty-state .ask-rotator {
+  display: none !important;
 }
 
 /* Interrupt / VAD debug (sibling of .input-bar): parent has pointer-events: none */
@@ -1664,11 +1755,53 @@ body.chat-started .input-container {
   border-radius: 999px;
 }
 
-#vera-app:not(.work-mode) .input-container .credit-status.vera-input-meta {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: max(4px, calc(var(--dock-inset) - 44px));
+.vera-slider-tick-meta,
+.vera-settings-slider-tick-meta {
+  font-size: 10px;
+  color: rgba(242, 245, 247, 0.52);
+}
+
+#vera-app:not(.work-mode) .vera-bottom-status-footer {
+  position: fixed;
+  left: var(--vera-sidebar-width, 52px);
+  right: 0;
+  bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  z-index: 1015;
+  display: flex;
+  justify-content: center;
+  padding: 0 16px 4px;
+  pointer-events: none;
+}
+
+#vera-app:not(.work-mode) .vera-bottom-status-footer .vera-bottom-status-inner {
+  pointer-events: auto;
+}
+
+.vera-headset-hint {
+  color: rgba(242, 245, 247, 0.42);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.vera-bottom-status-sep {
+  color: rgba(242, 245, 247, 0.22);
+  font-size: 12px;
+  line-height: 1;
+}
+
+@media (max-width: 720px) {
+  .vera-bottom-status-inner {
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 6px;
+    max-width: min(100%, 520px);
+    text-align: center;
+  }
+
+  .vera-headset-hint {
+    white-space: normal;
+  }
 }
 
 .vera-input-meta > * {
@@ -5259,12 +5392,16 @@ body.chat-started .input-bar {
   background: rgba(0, 0, 0, 0.35);
 }
 
-#vera-app.work-mode .vera-wm-right .credit-status.vera-input-meta {
+#vera-app.work-mode .vera-wm-right .credit-status.vera-input-meta,
+#vera-app.work-mode .vera-wm-right .vera-bottom-status-footer {
   width: 100%;
   justify-content: center;
   padding-top: 6px;
   position: static;
   transform: none;
+  left: auto;
+  right: auto;
+  bottom: auto;
 }
 
 #vera-app.work-mode .vera-wm-right .input-bar,

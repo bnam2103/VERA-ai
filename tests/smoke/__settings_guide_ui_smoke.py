@@ -67,6 +67,12 @@ ok('id="vera-setting-main-partial-min"' not in html, "main streaming ASR control
 ok('id="vera-setting-text-guide-rotator"' not in html, "text guide rotator removed from settings")
 ok('id="vera-setting-planning-deadline-timer"' not in html, "planning deadline timer removed from settings")
 ok("setMainAsrPartialMinChars(draftMainAsrPartialMinChars)" not in app_js, "save no longer writes hidden main ASR partial setting")
+ok("syncVeraInputEmptyState" in app_js and "markVeraConversationActive" in app_js, "empty-state input helpers exist")
+ok('id="vera-empty-greeting"' in html and "Ready when you are." in html, "centered empty greeting present")
+ok("vera-headset-hint" in html and "VERA works best with a headset or AirPods." in html, "bottom headset guidance present")
+with open(os.path.join(_ROOT, "styles.css"), encoding="utf-8") as f:
+    css = f.read()
+ok("is-empty-state" in css and "has-conversation" in css, "empty-state layout classes styled")
 ok("closeSettings();" in app_js and "saveBtn.textContent = \"Saved\"" in app_js, "save settings shows confirmation and closes modal")
 
 section("settings save button styles")

@@ -105,10 +105,13 @@ let bmoLoadingDotsInterval = null;
       void window.ensureVeraVoiceUiActive();
     }
     if (!skipUsageSync) {
-      try {
-        window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "work_mode_exit" });
-      } catch (_) {}
+    try {
+      window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "work_mode_exit" });
+    } catch (_) {}
+    if (typeof window.syncVeraInputEmptyState === "function") {
+      window.syncVeraInputEmptyState();
     }
+  }
   }
 
   function enterVeraWorkMode() {
@@ -141,6 +144,9 @@ let bmoLoadingDotsInterval = null;
     try {
       window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "work_mode_enter" });
     } catch (_) {}
+    if (typeof window.syncVeraInputEmptyState === "function") {
+      window.syncVeraInputEmptyState();
+    }
   }
 
   window.setVeraWorkMode = function setVeraWorkMode(on) {

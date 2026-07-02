@@ -193,6 +193,8 @@ function resetVeraSessionAndUi() {
 
   hideSidePanel();
 
+  resetVeraInputEmptyState();
+
   try {
     window.trackUsageSessionStart?.();
   } catch (_) {}
@@ -2400,11 +2402,53 @@ function dismissGuide() {
 }
 
 /** Bottom-centered input dock (same as after first LLM reply) — not only after server text. */
-function ensureChatStartedLayout() {
-  if (!document.body.classList.contains("chat-started")) {
-    document.body.classList.add("chat-started");
-    dismissGuide();
+let veraConversationStarted = false;
+
+function veraConversationHasDomMessages() {
+  const convo = document.getElementById("vera-conversation");
+  return Boolean(convo && convo.children.length > 0);
+}
+
+function syncVeraInputEmptyState() {
+  const app = document.getElementById("vera-app");
+  if (!app || app.hidden) return;
+  const workMode = app.classList.contains("work-mode");
+  const hasContent = workMode || veraConversationStarted || veraConversationHasDomMessages();
+  const empty = !workMode && !hasContent;
+  app.classList.toggle("is-empty-state", empty);
+  app.classList.toggle("has-conversation", !empty);
+  const greeting = document.getElementById("vera-empty-greeting");
+  if (greeting instanceof HTMLElement) {
+    greeting.setAttribute("aria-hidden", empty ? "false" : "true");
   }
+  if (!empty) {
+    if (!document.body.classList.contains("chat-started")) {
+      document.body.classList.add("chat-started");
+      dismissGuide();
+    }
+  } else {
+    document.body.classList.remove("chat-started");
+    app.classList.remove("vera-flow-voice-docked");
+    app.classList.remove("vera-flow-input-active");
+  }
+}
+
+function markVeraConversationActive(_source) {
+  if (!veraConversationStarted) veraConversationStarted = true;
+  syncVeraInputEmptyState();
+}
+
+function resetVeraInputEmptyState() {
+  veraConversationStarted = false;
+  syncVeraInputEmptyState();
+}
+
+window.syncVeraInputEmptyState = syncVeraInputEmptyState;
+window.markVeraConversationActive = markVeraConversationActive;
+window.resetVeraInputEmptyState = resetVeraInputEmptyState;
+
+function ensureChatStartedLayout() {
+  markVeraConversationActive("ensureChatStartedLayout");
 }
 
 window.ensureChatStartedLayout = ensureChatStartedLayout;
@@ -2605,6 +2649,7 @@ function addBubble(text, who, meta) {
   }
   if (!chatStateHydrating && (who === "user" || who === "vera")) {
     persistVeraChatState();
+    markVeraConversationActive("addBubble");
   }
   return bubble;
 }
@@ -7374,7 +7419,12 @@ function restoreVeraChatState() {
         rb ? mergeReplyBackIntoBubbleMeta({ path: "restore-chat-state" }, rb) : { path: "restore-chat-state" }
       );
     });
-    if (convo.children.length > 0) ensureChatStartedLayout();
+    if (convo.children.length > 0) {
+      veraConversationStarted = true;
+      ensureChatStartedLayout();
+    } else {
+      syncVeraInputEmptyState();
+    }
   } finally {
     chatStateHydrating = false;
   }
@@ -7816,6 +7866,11 @@ function wireReasoningTabStrip() {
   mainTextInput?.addEventListener("focus", () => {
     const idx = getActiveReasoningLaneIndex();
     if (idx != null) setFocusedWorkModeLaneFromIndex(idx);
+  });
+  mainTextInput?.addEventListener("input", () => {
+    if (String(mainTextInput?.value || "").trim()) {
+      markVeraConversationActive("keyboard-input");
+    }
   });
   addBtn?.addEventListener("click", () => addReasoningTab({ source: "ui_plus_button" }));
   renderReasoningTabStrip();
@@ -20525,6 +20580,7 @@ if (typeof scheduleDeferredVeraChatRestoreIfAnonymous === "function") {
 } else {
   restoreVeraChatState();
 }
+syncVeraInputEmptyState();
 wireReasoningTabStrip();
 
 /* [reasoning_close_handler_registered] PART 8: post-boot diagnostic — prove

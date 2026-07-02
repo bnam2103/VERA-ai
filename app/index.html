@@ -7,7 +7,7 @@
   <meta name="vera-local-backend-origin" content="">
   <meta name="vera-api-base-url" content="">
   <title>VERA AI</title>
-  <link rel="stylesheet" href="../styles.css?v=25">
+  <link rel="stylesheet" href="../styles.css?v=26">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
   <script>
@@ -326,49 +326,56 @@
     </div>
 
     <div class="input-container">
-      <div class="ask-rotator" id="vera-ask-rotator" aria-live="polite"></div>
-      <button
-        id="vera-input-toggle"
-        class="input-toggle-btn"
-        title="Switch input mode"
-        type="button"
-      >
-      ⌨️
-      </button>
-      <div id="vera-voice-bar" class="input-bar">
-        <div class="mic-status">
-          <button id="vera-record" type="button" title="Voice input">🎧</button>
-          <span id="vera-status" class="status idle">Idle</span>
+      <div class="vera-input-dock">
+        <p class="vera-empty-greeting" id="vera-empty-greeting" aria-hidden="false">Ready when you are.</p>
+        <div class="vera-input-dock-row">
+          <div class="ask-rotator" id="vera-ask-rotator" aria-live="polite"></div>
+          <button
+            id="vera-input-toggle"
+            class="input-toggle-btn"
+            title="Switch input mode"
+            type="button"
+          >
+          ⌨️
+          </button>
+          <div id="vera-voice-bar" class="input-bar">
+            <div class="mic-status">
+              <button id="vera-record" type="button" title="Voice input">🎧</button>
+              <span id="vera-status" class="status idle">Idle</span>
+            </div>
+            <div class="wave-container">
+              <canvas id="vera-waveform"></canvas>
+            </div>
+            <button id="vera-ptt" class="ptt-btn" type="button">🎤</button>
+            <span
+              id="vera-server-status-inline"
+              class="server-status offline mobile-only"
+            >
+              🔴 Offline
+            </span>
+          </div>
+          <div id="vera-keyboard-bar" class="input-bar hidden">
+            <input
+              id="vera-text-input"
+              type="text"
+              placeholder="Type a message…"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="vera-send-text" type="button" title="Send message">➤</button>
+          </div>
+          <div
+            id="vera-keyboard-queue-host"
+            class="vera-keyboard-queue-host"
+            hidden
+            aria-live="polite"
+          ></div>
         </div>
-        <div class="wave-container">
-          <canvas id="vera-waveform"></canvas>
-        </div>
-        <button id="vera-ptt" class="ptt-btn" type="button">🎤</button>
-        <span
-          id="vera-server-status-inline"
-          class="server-status offline mobile-only"
-        >
-          🔴 Offline
-        </span>
       </div>
-      <div id="vera-keyboard-bar" class="input-bar hidden">
-        <input
-          id="vera-text-input"
-          type="text"
-          placeholder="Type a message…"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <button id="vera-send-text" type="button" title="Send message">➤</button>
-      </div>
-      <div
-        id="vera-keyboard-queue-host"
-        class="vera-keyboard-queue-host"
-        hidden
-        aria-live="polite"
-      ></div>
-      <div class="credit-status vera-input-meta" aria-label="Usage status">
-        <div id="vera-usage-credits" class="credit-status-line bottom-status-row" hidden aria-live="polite">
+      <div class="vera-bottom-status-footer credit-status vera-input-meta" aria-label="Usage status">
+        <div id="vera-usage-credits" class="credit-status-line bottom-status-row vera-bottom-status-inner" aria-live="polite">
+          <span class="vera-headset-hint">VERA works best with a headset or AirPods.</span>
+          <span class="vera-bottom-status-sep" aria-hidden="true">|</span>
           <span id="vera-usage-credits-text" class="credit-status-text"></span>
           <button
             type="button"
@@ -1120,7 +1127,7 @@
 <script src="../users/usageFeatureEvents.js?v=1"></script>
 <!-- users/usageCredits.js — daily credit usage pill (read-only).
      Must load AFTER usageFeatureEvents.js (reasoning refresh hook), BEFORE app.js. -->
-<script src="../users/usageCredits.js?v=8"></script>
+<script src="../users/usageCredits.js?v=9"></script>
 <!-- users/explicitFeedback.js — explicit feedback form + bonus credits.
      Must load AFTER usageCredits.js, BEFORE app.js. -->
 <script src="../users/explicitFeedback.js?v=5"></script>
@@ -1249,7 +1256,7 @@
 <script src="../news/newsRouter.js?v=3"></script>
 <script src="../news/newsPanel.js?v=4"></script>
 <script src="../news/weatherPanel.js?v=1"></script>
-<script src="app.js?v=129"></script>
+<script src="app.js?v=130"></script>
 <script src="shell.js?v=2"></script>
 <!-- voice/musicNavigation.js — shared track navigation dedupe + ended guard -->
 <script src="../voice/musicNavigation.js?v=1"></script>

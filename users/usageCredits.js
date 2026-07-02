@@ -11,8 +11,8 @@
   let _noCapToggleInFlight = false;
 
   function hideUsagePill() {
-    const el = document.getElementById("vera-usage-credits");
-    if (el instanceof HTMLElement) el.hidden = true;
+    const textEl = document.getElementById("vera-usage-credits-text");
+    if (textEl instanceof HTMLElement) textEl.textContent = "";
   }
 
   function readNoCapToggleEnabled(payload) {
@@ -106,7 +106,6 @@
           : `Free credits: ${used} / ${cap}`;
     }
     wrap.title = formatUsageTooltip(authMode, bonus, noCapActive);
-    wrap.hidden = false;
   }
 
   async function toggleNoCapTesting() {
