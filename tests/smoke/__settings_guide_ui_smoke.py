@@ -75,8 +75,13 @@ ok('id="vera-setting-planning-deadline-timer"' not in html, "planning deadline t
 ok("setMainAsrPartialMinChars(draftMainAsrPartialMinChars)" not in app_js, "save no longer writes hidden main ASR partial setting")
 ok("syncVeraInputEmptyState" in app_js and "markVeraConversationActive" in app_js, "empty-state input helpers exist")
 ok('id="vera-empty-greeting"' in html and "Ready when you are." in html, "centered empty greeting present")
+ok('id="vera-status"' in html and "Tap to speak" in html, "startup voice status prompts tap to speak")
 ok("vera-input-stage" in html and "vera-input-shell" in html, "input stage wraps greeting rotator and bar")
-ok("vera-headset-hint" in html and "VERA works best with a headset or AirPods." in html, "bottom headset guidance present")
+ok(
+    "vera-headset-hint" in html
+    and "For best voice detection, use headphones or AirPods to prevent speaker echo." in html,
+    "bottom headset guidance present",
+)
 with open(os.path.join(_ROOT, "styles.css"), encoding="utf-8") as f:
     css = f.read()
 ok("is-startup-empty" in css and "is-active-session" in css, "startup/active session layout classes styled")

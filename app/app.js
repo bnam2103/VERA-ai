@@ -1960,9 +1960,6 @@ function syncVeraFlowVoiceDockLayoutClass() {
   const voiceDock = voiceVisible && (rec || mutedIdle);
   const dock = voiceDock || keyboardVisible;
   veraApp.classList.toggle("vera-flow-voice-docked", dock);
-  if (rec) {
-    markVeraConversationActive("voice-recording");
-  }
 }
 
 window.syncVeraFlowVoiceDockLayoutClass = syncVeraFlowVoiceDockLayoutClass;
@@ -1972,10 +1969,19 @@ window.syncVeraVoiceListeningLayoutClass = syncVeraFlowVoiceDockLayoutClass;
 function setStatus(text, cls) {
   const statusEl = uiEl("status");
   if (!statusEl) return;
+  let displayText = text;
+  if (
+    statusEl.id === "vera-status" &&
+    cls === "idle" &&
+    isVeraStartupEmptyState() &&
+    /^(ready|idle)$/i.test(String(text || "").trim())
+  ) {
+    displayText = "Tap to speak";
+  }
   if (cls === "thinking") {
-    statusEl.innerHTML = `${text}<span class="thinking-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>`;
+    statusEl.innerHTML = `${displayText}<span class="thinking-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>`;
   } else {
-    statusEl.textContent = text;
+    statusEl.textContent = displayText;
   }
   statusEl.className = `status ${cls}`;
   if (statusEl.id === "vera-status") {
@@ -2439,6 +2445,13 @@ function syncVeraInputEmptyState() {
   }
 }
 
+function isVeraStartupEmptyState() {
+  const app = document.getElementById("vera-app");
+  if (!app || app.classList.contains("work-mode")) return false;
+  if (app.classList.contains("is-startup-empty")) return true;
+  return !veraConversationStarted && !veraConversationHasDomMessages();
+}
+
 function markVeraConversationActive(_source) {
   if (!veraConversationStarted) veraConversationStarted = true;
   syncVeraInputEmptyState();
@@ -2447,11 +2460,15 @@ function markVeraConversationActive(_source) {
 function resetVeraInputEmptyState() {
   veraConversationStarted = false;
   syncVeraInputEmptyState();
+  try {
+    setStatus("Ready", "idle");
+  } catch (_) {}
 }
 
 window.syncVeraInputEmptyState = syncVeraInputEmptyState;
 window.markVeraConversationActive = markVeraConversationActive;
 window.resetVeraInputEmptyState = resetVeraInputEmptyState;
+window.isVeraStartupEmptyState = isVeraStartupEmptyState;
 
 function ensureChatStartedLayout() {
   markVeraConversationActive("ensureChatStartedLayout");
@@ -9313,7 +9330,7 @@ window.ensureWorkModeVoiceUiActive = async function ensureWorkModeVoiceUiActive(
     if (window.matchMedia("(max-width: 768px)").matches) return;
     if (appModePrefix() !== "vera") return;
     const veraAppEl = document.getElementById("vera-app");
-    if (veraAppEl?.hidden) return;
+    if (veraAppEl?.hidden || !veraAppEl.classList.contains("work-mode")) return;
     listeningMode = "continuous";
     inputMuted = false;
     updateMuteInputButton();
@@ -9329,7 +9346,36 @@ window.ensureWorkModeVoiceUiActive = async function ensureWorkModeVoiceUiActive(
     console.warn("[WorkMode] ensure voice UI active", e);
   }
 };
-window.ensureVeraVoiceUiActive = window.ensureWorkModeVoiceUiActive;
+window.ensureVeraVoiceUiActive = async function ensureVeraVoiceUiActive() {
+  try {
+    if (window.matchMedia("(max-width: 768px)").matches) return;
+    if (appModePrefix() !== "vera") return;
+    const veraAppEl = document.getElementById("vera-app");
+    if (veraAppEl?.hidden) return;
+    if (veraAppEl.classList.contains("work-mode")) {
+      return window.ensureWorkModeVoiceUiActive?.();
+    }
+    listeningMode = "continuous";
+    inputMuted = false;
+    updateMuteInputButton();
+    if (isVeraStartupEmptyState()) {
+      listening = false;
+      waveState = "idle";
+      setStatus("Ready", "idle");
+      return;
+    }
+    await initMic();
+    micStream?.getAudioTracks().forEach((track) => {
+      track.enabled = true;
+    });
+    listening = true;
+    if (!processing && getAudioEl()?.paused) {
+      startListening();
+    }
+  } catch (e) {
+    console.warn("[VERA] ensure voice UI active", e);
+  }
+};
 
 function escapeHtml(s) {
   return String(s)
@@ -30012,7 +30058,7 @@ async function beginPttRecordingNow() {
   if (browserAsrPreferred()) {
     mainBrowserFinalizeKind = "main";
     startMainBrowserRecognitionContinuous();
-    setStatus("Listening (PTT)", "recording");
+    setStatus("Listening…", "recording");
     return;
   }
 
@@ -30021,11 +30067,10 @@ async function beginPttRecordingNow() {
   mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
   mediaRecorder.onstop = handleUtterance;
   mediaRecorder.start();
-  setStatus("Listening (PTT)", "recording");
+  setStatus("Listening…", "recording");
 }
 
 async function onPttClick() {
-  ensureChatStartedLayout();
   if (isServerPipelineBusy()) {
     cancelVoicePipelineAndResetState();
     await beginPttRecordingNow();
@@ -30160,7 +30205,6 @@ async function onPttClick() {
 });
 
 async function onRecordClick() {
-  ensureChatStartedLayout();
   browserAsrMainNetworkRetries = 0;
   listeningMode = "continuous";
   updateMuteInputButton();
