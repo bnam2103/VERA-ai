@@ -4931,12 +4931,19 @@ async function refreshSpotifyConnectionUI(prefix) {
     headers: { ...veraSpotifyAuthHeaders() }
   }).catch(() => null);
   const j = res?.ok ? await res.json().catch(() => ({})) : { connected: false };
+  const connected = res?.ok && j.connected === true;
+  window.__veraSpotifyConnected = connected;
+  if (res?.ok && !connected) {
+    clearVeraSpotifyBearer();
+  }
   const badge = document.getElementById(`${prefix}-spotify-connected-badge`);
+  const disconnected = document.getElementById(`${prefix}-spotify-disconnected-badge`);
   const logout = document.getElementById(`${prefix}-spotify-logout`);
   const link = document.getElementById(`${prefix}-spotify-connect-link`);
-  if (badge) badge.hidden = !j.connected;
-  if (logout) logout.hidden = !j.connected;
-  if (link) link.style.display = j.connected ? "none" : "";
+  if (badge) badge.hidden = !connected;
+  if (disconnected) disconnected.hidden = connected;
+  if (logout) logout.hidden = !connected;
+  if (link) link.hidden = connected;
 }
 
 function spotifySyncPlayButtonUi(prefix) {
@@ -7202,6 +7209,9 @@ function renderProductivityPanel(opts = {}) {
         </div>
         <div id="${prefix}-spotify-view-root" class="music-pane-content" data-spotify-view="search">
           <div class="spotify-connect-row" id="${prefix}-spotify-connect-row">
+            <div class="spotify-connect-status spotify-connect-status--disconnected" id="${prefix}-spotify-disconnected-badge">
+              <span class="spotify-connect-label">Not connected</span>
+            </div>
             <div class="spotify-connect-status" id="${prefix}-spotify-connected-badge" hidden>
               <span class="spotify-connect-dot" aria-hidden="true"></span>
               <span class="spotify-connect-label">Connected to Spotify</span>

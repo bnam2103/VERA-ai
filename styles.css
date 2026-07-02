@@ -1053,11 +1053,21 @@ body.bmo-open #bmo-input-toggle.input-toggle-btn {
 }
 
 body.chat-started .input-toggle-btn {
-  transform: translateY(-16px); /* tweak 3–8px */
+  transform: translateY(-16px); /* legacy BMO/flow nudge — VERA overrides below */
   transition: 
     transform 0.4s cubic-bezier(0.2, 0.9, 0.3, 1),
     background 0.2s ease,
     opacity 0.2s ease;
+}
+
+/* VERA: toggle stays centered with the input bar in startup + active states */
+#vera-app .vera-input-shell .input-toggle-btn,
+#vera-app .vera-input-area-wrapper .input-toggle-btn {
+  transform: none !important;
+  align-self: center;
+  flex: 0 0 auto;
+  margin: 0;
+  transition: background 0.2s ease, opacity 0.2s ease;
 }
 
 .input-toggle-btn:hover {
@@ -1223,13 +1233,24 @@ body.chat-started .input-toggle-btn {
 }
 
 .vera-input-shell,
-.vera-input-area-wrapper {
+.vera-input-area-wrapper,
+.vera-input-row {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
   pointer-events: none;
+}
+
+#vera-app .vera-input-shell > .input-bar,
+#vera-app .vera-input-shell > #vera-voice-bar,
+#vera-app .vera-input-shell > #vera-keyboard-bar,
+#vera-app .vera-input-area-wrapper > .input-bar,
+#vera-app .vera-input-area-wrapper > #vera-voice-bar,
+#vera-app .vera-input-area-wrapper > #vera-keyboard-bar {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .vera-input-shell > .input-toggle-btn,
@@ -2619,7 +2640,29 @@ body.chat-started .input-container {
 .free-music-pane-inner {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.free-music-catalog.music-media-list,
+.free-music-playlist-cards.music-media-list,
+.free-music-sound-list.music-media-list {
+  max-height: none;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.free-music-section-title--sounds {
+  margin-top: 10px;
+  margin-bottom: 8px;
+}
+
+.free-music-section-title--playlists {
+  margin-top: 2px;
+  margin-bottom: 8px;
 }
 
 .free-music-hint {
@@ -2635,15 +2678,6 @@ body.chat-started .input-container {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: rgba(242, 245, 247, 0.5);
-}
-
-.free-music-section-title--sounds {
-  margin-top: 12px;
-  margin-bottom: 8px;
-}
-
-.free-music-section-title--playlists {
-  margin-bottom: 8px;
 }
 
 .free-music-playlist-cards {
@@ -2892,11 +2926,12 @@ body.chat-started .input-container {
 .music-now-playing {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 16px;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  flex: 0 0 auto;
 }
 
 .music-now-playing-body {
@@ -3554,6 +3589,17 @@ body.chat-started .input-container {
   font-size: 11px;
   font-weight: 600;
   color: rgba(242, 245, 247, 0.82);
+}
+
+.spotify-connect-status[hidden],
+.spotify-connect-status--disconnected[hidden],
+.spotify-logout-btn[hidden],
+.spotify-connect-link[hidden] {
+  display: none !important;
+}
+
+.spotify-connect-status--disconnected {
+  color: rgba(242, 245, 247, 0.52);
 }
 
 .spotify-connect-dot {
@@ -5621,6 +5667,39 @@ body.chat-started .input-bar {
   width: 100%;
   max-width: none;
   padding: 0;
+  transition: none !important;
+}
+
+/* Work Mode enter/exit: fade layout as a whole — no input bar slide */
+body.work-mode-transitioning .vera-input-stage {
+  transition: none !important;
+}
+
+body.work-mode-transitioning .input-container {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transition: none !important;
+}
+
+body.work-mode-transitioning #vera-app:not(.work-mode) .input-container {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transition: none !important;
+}
+
+#vera-app.work-mode .vera-body-grid {
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+body.work-mode-active #vera-app.work-mode .vera-body-grid {
+  opacity: 1;
+}
+
+body.work-mode-transitioning #vera-app.work-mode .vera-body-grid {
+  transition: none;
 }
 
 #vera-app.work-mode .vera-wm-right .credit-status.vera-input-meta,

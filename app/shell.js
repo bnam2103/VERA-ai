@@ -85,38 +85,56 @@ let bmoLoadingDotsInterval = null;
   }
   window.pauseMusicPanelOnNavAway = pauseMusicPanelOnNavAway;
 
+  const WM_TRANSITION_MS = 180;
+
+  function beginVeraWorkModeTransition() {
+    document.body.classList.add("work-mode-transitioning");
+    document.body.classList.remove("work-mode-active");
+  }
+
+  function finishVeraWorkModeTransition() {
+    window.setTimeout(() => {
+      document.body.classList.remove("work-mode-transitioning");
+    }, WM_TRANSITION_MS);
+  }
+
   function exitVeraWorkMode(opts) {
     const skipUsageSync = Boolean(opts && opts.skipUsageSync);
-    if (typeof window.layoutVeraWorkModePanels === "function") {
-      window.layoutVeraWorkModePanels(false);
-    }
-    if (typeof window.clearWorkModeReasoningPending === "function") {
-      window.clearWorkModeReasoningPending();
-    }
-    if (typeof window.clearVeraWorkModeClientTimer === "function") {
-      window.clearVeraWorkModeClientTimer();
-    }
-    veraApp?.classList.remove("work-mode");
-    veraWorkModeBtn?.setAttribute("aria-pressed", "false");
-    if (typeof window.syncVeraHeaderDateTimeForWorkMode === "function") {
-      window.syncVeraHeaderDateTimeForWorkMode();
-    }
-    if (typeof window.ensureVeraVoiceUiActive === "function") {
-      void window.ensureVeraVoiceUiActive();
-    }
-    if (!skipUsageSync) {
-    try {
-      window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "work_mode_exit" });
-    } catch (_) {}
-    if (typeof window.syncVeraInputEmptyState === "function") {
-      window.syncVeraInputEmptyState();
-    }
-  }
+    beginVeraWorkModeTransition();
+    window.setTimeout(() => {
+      if (typeof window.layoutVeraWorkModePanels === "function") {
+        window.layoutVeraWorkModePanels(false);
+      }
+      if (typeof window.clearWorkModeReasoningPending === "function") {
+        window.clearWorkModeReasoningPending();
+      }
+      if (typeof window.clearVeraWorkModeClientTimer === "function") {
+        window.clearVeraWorkModeClientTimer();
+      }
+      veraApp?.classList.remove("work-mode");
+      veraWorkModeBtn?.setAttribute("aria-pressed", "false");
+      if (typeof window.syncVeraHeaderDateTimeForWorkMode === "function") {
+        window.syncVeraHeaderDateTimeForWorkMode();
+      }
+      if (typeof window.ensureVeraVoiceUiActive === "function") {
+        void window.ensureVeraVoiceUiActive();
+      }
+      if (!skipUsageSync) {
+        try {
+          window.veraUsageSyncModeFromDom?.({ trigger: "ui", source: "work_mode_exit" });
+        } catch (_) {}
+        if (typeof window.syncVeraInputEmptyState === "function") {
+          window.syncVeraInputEmptyState();
+        }
+      }
+      finishVeraWorkModeTransition();
+    }, WM_TRANSITION_MS);
   }
 
   function enterVeraWorkMode() {
     if (!veraApp || veraApp.hidden) return;
     if (window.matchMedia("(max-width: 768px)").matches) return;
+    beginVeraWorkModeTransition();
     /* Apply work-mode before hideSidePanel so productivity/music can stay pinned and the side pane is not wiped. */
     veraApp.classList.add("work-mode");
     veraWorkModeBtn?.setAttribute("aria-pressed", "true");
@@ -147,6 +165,10 @@ let bmoLoadingDotsInterval = null;
     if (typeof window.syncVeraInputEmptyState === "function") {
       window.syncVeraInputEmptyState();
     }
+    requestAnimationFrame(() => {
+      document.body.classList.add("work-mode-active");
+      finishVeraWorkModeTransition();
+    });
   }
 
   window.setVeraWorkMode = function setVeraWorkMode(on) {
