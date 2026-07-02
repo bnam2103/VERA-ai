@@ -583,22 +583,25 @@ function renderProductResultsPanel(payload) {
 function renderLocationMapPlaceholderMarkup(payload) {
   const pins = Array.isArray(payload?.map_pins) ? payload.map_pins : [];
   const placeCount = Number(payload?.place_count || (payload?.places?.length ?? 0));
-  const summary = pins.length
-    ? `${pins.length} place${pins.length === 1 ? "" : "s"} pinned · ${placeCount} result${placeCount === 1 ? "" : "s"}`
-    : placeCount
-      ? `${placeCount} result${placeCount === 1 ? "" : "s"} (no coordinates yet — addresses below)`
-      : `No places to show yet.`;
   const pinChips = pins.slice(0, 12).map((pin, i) => `
     <span class="location-map-pin" title="${escapeHtml(pin?.name || "")}${pin?.address ? ' — ' + escapeHtml(pin.address) : ""}">
       <span class="location-map-pin-index">${i + 1}</span>
-      ${escapeHtml((pin?.name || "Pin").slice(0, 32))}
+      ${escapeHtml((pin?.name || "Place").slice(0, 28))}
     </span>
   `).join("");
+  const coordsHint = pins.length
+    ? `${pins.length} place${pins.length === 1 ? "" : "s"} ready for map pins`
+    : placeCount
+      ? `${placeCount} result${placeCount === 1 ? "" : "s"} listed below`
+      : "No places to show yet";
   return `
-    <div class="location-map-placeholder" data-map-pins="${pins.length}">
-      <div class="location-map-placeholder-label">Map preview</div>
-      <div class="location-map-placeholder-summary">${escapeHtml(summary)}</div>
-      ${pinChips ? `<div class="location-map-pin-list">${pinChips}</div>` : ""}
+    <div class="location-map-placeholder location-map-coming-soon" data-map-pins="${pins.length}">
+      <div class="location-map-placeholder-label">Map preview coming soon</div>
+      <p class="location-map-placeholder-summary">
+        Interactive zoom and pan maps are not enabled yet. Browse numbered results below for ratings, addresses, and directions.
+        <span class="location-map-placeholder-meta">${escapeHtml(coordsHint)}.</span>
+      </p>
+      ${pinChips ? `<div class="location-map-pin-list" aria-label="Numbered place previews">${pinChips}</div>` : ""}
     </div>
   `;
 }
@@ -608,7 +611,7 @@ function renderLocationPlaceListMarkup(places) {
     return `<div class="side-pane-empty">No places came back from the search.</div>`;
   }
   return `
-    <div class="news-result-list location-result-list">
+    <div class="location-result-list">
       ${places.map((item, index) => {
         const name = (item.name || "").trim();
         const address = (item.address || "").trim();
@@ -617,34 +620,33 @@ function renderLocationPlaceListMarkup(places) {
         const category = (item.category || "").trim();
         const source = (item.source || "Unknown source").trim();
         const url = (item.url || "").trim();
-        const directions = (item.directions_url || "").trim();
-        const hasCoords =
-          typeof item.latitude === "number" && typeof item.longitude === "number";
+        const directions = (item.directions_url || item.directionsLink || "").trim();
         return `
-          <article class="news-result-card location-result-card">
-            <h4 class="news-result-title">
-              <span class="location-result-pin">${index + 1}</span>
-              ${escapeHtml(name)}
-            </h4>
-            ${category ? `<div class="location-result-category">${escapeHtml(category)}</div>` : ""}
+          <article class="location-result-card">
+            <div class="location-result-card-head">
+              <span class="location-result-pin" aria-hidden="true">${index + 1}</span>
+              <div class="location-result-card-main">
+                <h4 class="location-result-title">${escapeHtml(name)}</h4>
+                ${category ? `<div class="location-result-category">${escapeHtml(category)}</div>` : ""}
+              </div>
+            </div>
             ${address ? `<div class="location-result-address">${escapeHtml(address)}</div>` : ""}
             <div class="location-result-meta-row">
               ${rating ? `<span class="location-result-rating">★ ${escapeHtml(rating)}</span>` : ""}
               ${openState ? `<span class="location-result-open">${escapeHtml(openState)}</span>` : ""}
-              ${hasCoords ? `<span class="location-result-geocoded">Geocoded</span>` : ""}
             </div>
-            <div class="news-result-meta">
-              <span>${escapeHtml(source)}</span>
-            </div>
-            <div class="location-result-links">
-              ${url ? `<a class="news-result-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open</a>` : ""}
-              ${
-                directions
-                  ? `<a class="news-result-link" href="${escapeHtml(directions)}" target="_blank" rel="noopener noreferrer">Directions</a>`
-                  : address
-                    ? `<a class="news-result-link" href="${escapeHtml('https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(name + ' ' + address))}" target="_blank" rel="noopener noreferrer">Directions</a>`
-                    : ""
-              }
+            <div class="location-result-footer">
+              <span class="location-result-source">${escapeHtml(source)}</span>
+              <div class="location-result-links">
+                ${url ? `<a class="location-result-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open</a>` : ""}
+                ${
+                  directions
+                    ? `<a class="location-result-link location-result-link--directions" href="${escapeHtml(directions)}" target="_blank" rel="noopener noreferrer">Directions</a>`
+                    : address
+                      ? `<a class="location-result-link location-result-link--directions" href="${escapeHtml('https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(name + ' ' + address))}" target="_blank" rel="noopener noreferrer">Directions</a>`
+                      : ""
+                }
+              </div>
             </div>
           </article>
         `;
